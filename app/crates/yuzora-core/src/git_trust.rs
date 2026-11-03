@@ -80,18 +80,25 @@ pub fn names_program(key: &str, value: &str) -> bool {
     true
 }
 
-/// A URL git hands to a remote helper: `<scheme>::…`, the scheme as git's
-/// `transport_get` reads it (letters and digits, then `+`, `-` or `.` too;
-/// even none).
+/// A URL git hands to a remote helper, as git's `transport_get` reads it:
+/// `<scheme>::…` (letters and digits, then `+`, `-` or `.` too; even none),
+/// or `<scheme>://…` with a scheme git doesn't serve itself, which goes to
+/// `git-remote-<scheme>`.
 fn names_helper(url: &str) -> bool {
-    url[scheme_len(url)..].starts_with("::")
+    let (scheme, rest) = url.split_at(scheme_len(url));
+    rest.starts_with("::") || (!scheme.is_empty() && rest.starts_with("://") && !OWN_SCHEMES.contains(&scheme))
 }
+
+/// The `<scheme>://` git serves itself, compared as git does (case and all):
+/// `HTTPS://` goes to `git-remote-HTTPS`.
+const OWN_SCHEMES: [&str; 9] = ["file", "git", "ssh", "git+ssh", "ssh+git", "http", "https", "ftp", "ftps"];
 
 /// Whether a URL starting with `start` may name a remote helper, whatever
 /// follows: it does already, or its scheme (maybe empty) has at most one `:`
-/// after it so far.
+/// after it so far, or `:/` after one git doesn't serve itself.
 fn may_name_helper(start: &str) -> bool {
-    matches!(&start[scheme_len(start)..], "" | ":") || names_helper(start)
+    let (scheme, rest) = start.split_at(scheme_len(start));
+    matches!(rest, "" | ":") || (rest == ":/" && !OWN_SCHEMES.contains(&scheme)) || names_helper(start)
 }
 
 fn scheme_len(url: &str) -> usize {
@@ -392,6 +399,11 @@ mod tests {
         assert!(!names_program("branch.main.remote", "origin") && !names_program("branch.main.pushremote", ".") && !names_program("remote.pushdefault", "fork"));
         assert!(names_program("remotes.all", "origin\text::x") && !names_program("remotes.all", "origin  upstream"));
         assert!(names_program("submodule.s.url", "ext::sh -c x") && !names_program("submodule.s.url", "../s.git"));
+        // `<scheme>://` with a scheme git doesn't serve itself goes to `git-remote-<scheme>` (case counts, as in git).
+        assert!(names_program("remote.o.url", "zz://payload") && names_program("remote.o.url", "ext://x/run") && names_program("remote.o.url", "HTTPS://h/r") && names_program("remote.zz://p.fetch", "+refs/heads/*:refs/remotes/x/*"));
+        assert!(["https://h/r", "http://h/r", "ssh://h/r", "git://h/r", "git+ssh://h/r", "ssh+git://h/r", "file:///srv/r", "ftp://h/r", "ftps://h/r"].iter().all(|u| !names_program("remote.o.url", u)));
+        assert!(names_program("extensions.partialclone", "zz://payload") && names_program("url.zz://p/.insteadof", "https://") && names_program("url.zz:/.insteadof", "P"));
+        assert!(!names_program("url.https:/.insteadof", "P") && !names_program("url.https://mirror/.insteadof", "https://"));
     }
 
     #[test]
@@ -836,8 +848,8 @@ mod tests {
     #[test]
     fn a_remote_named_by_a_helper_url_waits_for_trust() {
         use std::os::unix::fs::PermissionsExt;
-        // A case's setup: an `ext::` URL that runs one program, and git there.
-        type Setup = dyn Fn(&str, &dyn Fn(&str, &[&str]) -> String);
+        // A case's setup: the top, an `ext::` URL that runs one program, and git there.
+        type Setup = dyn Fn(&Path, &str, &dyn Fn(&str, &[&str]) -> String);
         let case = |name: &str, setup: &Setup, runs: &[&str]| {
             let (dir, top, git) = scratch_dir(name);
             git("", &["init", "-q", "-b", "main"]);
@@ -850,7 +862,7 @@ mod tests {
                 std::fs::set_permissions(bin.join(program), std::fs::Permissions::from_mode(0o755)).unwrap();
             }
             let cmd = format!("ext::{}", bin.join("hit").display());
-            setup(&cmd, &git);
+            setup(Path::new(&top), &cmd, &git);
             let keys = programs_within(None, &top, Duration::from_secs(30));
             let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
             // As a person's global config may allow `ext`; `zz` needs nothing.
@@ -862,30 +874,45 @@ mod tests {
         };
         let fetch_all: &[&str] = &["fetch", "-q", "--all"];
         let got = [
-            case("name-fetch", &|cmd, git| _ = git("", &["config", &format!("remote.{cmd}.fetch"), "+refs/heads/*:refs/remotes/x/*"]), fetch_all),
-            case("name-skip", &|cmd, git| _ = git("", &["config", &format!("remote.{cmd}.skipDefaultUpdate"), "false"]), fetch_all),
-            case("name-promisor", &|cmd, git| _ = git("", &["config", &format!("remote.{cmd}.promisor"), "true"]), &["cat-file", "-e", "1111111111111111111111111111111111111111"]),
-            case("branch-remote", &|cmd, git| _ = git("", &["config", "branch.main.remote", cmd]), &["fetch", "-q"]),
+            case("name-fetch", &|_, cmd, git| _ = git("", &["config", &format!("remote.{cmd}.fetch"), "+refs/heads/*:refs/remotes/x/*"]), fetch_all),
+            case("name-skip", &|_, cmd, git| _ = git("", &["config", &format!("remote.{cmd}.skipDefaultUpdate"), "false"]), fetch_all),
+            case("name-promisor", &|_, cmd, git| _ = git("", &["config", &format!("remote.{cmd}.promisor"), "true"]), &["cat-file", "-e", "1111111111111111111111111111111111111111"]),
+            case("branch-remote", &|_, cmd, git| _ = git("", &["config", "branch.main.remote", cmd]), &["fetch", "-q"]),
             // Pushing elsewhere than the branch's remote: git needs no upstream then.
-            case("branch-pushremote", &|cmd, git| {
+            case("branch-pushremote", &|_, cmd, git| {
                 git("", &["config", "branch.main.remote", "origin"]);
                 git("", &["config", "branch.main.pushRemote", cmd]);
             }, &["push", "-q"]),
-            case("push-default", &|cmd, git| {
+            case("push-default", &|_, cmd, git| {
                 git("", &["config", "branch.main.remote", "origin"]);
                 git("", &["config", "remote.pushDefault", cmd]);
             }, &["push", "-q"]),
             // A group of one is fetched as the remote of its own name: two.
-            case("group", &|cmd, git| _ = git("", &["config", "remotes.all", &format!("origin {cmd}")]), &["fetch", "-q", "all"]),
-            case("submodule-url", &|cmd, git| {
+            case("group", &|_, cmd, git| _ = git("", &["config", "remotes.all", &format!("origin {cmd}")]), &["fetch", "-q", "all"]),
+            case("submodule-url", &|_, cmd, git| {
                 git("", &["config", "-f", ".gitmodules", "submodule.s.path", "s"]);
                 git("", &["config", "-f", ".gitmodules", "submodule.s.url", "https://example.invalid/s"]);
                 let head = git("", &["rev-parse", "HEAD"]);
                 git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{head},s")]);
                 git("", &["config", "submodule.s.url", cmd]);
             }, &["submodule", "-q", "update", "--init"]),
-            case("zz-name", &|_, git| _ = git("", &["config", "remote.zz::payload.fetch", "+refs/heads/*:refs/remotes/x/*"]), fetch_all),
-            case("zz-branch", &|_, git| _ = git("", &["config", "branch.main.remote", "zz::payload"]), &["fetch", "-q"]),
+            case("zz-name", &|_, _, git| _ = git("", &["config", "remote.zz::payload.fetch", "+refs/heads/*:refs/remotes/x/*"]), fetch_all),
+            case("zz-branch", &|_, _, git| _ = git("", &["config", "branch.main.remote", "zz::payload"]), &["fetch", "-q"]),
+            // `<scheme>://` that git doesn't serve itself: the same helper.
+            case("zz-url", &|_, _, git| _ = git("", &["config", "remote.origin.url", "zz://payload"]), &["fetch", "-q", "origin"]),
+            case("zz-url-name", &|_, _, git| _ = git("", &["config", "remote.zz://payload.fetch", "+refs/heads/*:refs/remotes/x/*"]), fetch_all),
+            case("zz-url-insteadof", &|_, _, git| {
+                git("", &["remote", "add", "origin", "https://example.invalid/r"]);
+                git("", &["config", "url.zz://p/.insteadOf", "https://example.invalid/"]);
+            }, &["fetch", "-q", "origin"]),
+            case("zz-url-partialclone", &|_, _, git| _ = git("", &["config", "extensions.partialClone", "zz://payload"]), &["cat-file", "-e", "1111111111111111111111111111111111111111"]),
+            // `ext://x/run` runs `ext:/x/run`, a program the repo itself can hold.
+            case("ext-url", &|top, _, git| {
+                let run = top.join("ext:/x/run");
+                std::fs::create_dir_all(run.parent().unwrap()).unwrap();
+                std::fs::copy(top.join("bin/hit"), &run).unwrap();
+                git("", &["config", "remote.origin.url", "ext://x/run"]);
+            }, &["fetch", "-q", "origin"]),
         ];
         let want = [
             "remote.<ext>.fetch",
@@ -898,6 +925,11 @@ mod tests {
             "submodule.s.url",
             "remote.zz::payload.fetch",
             "branch.main.remote",
+            "remote.origin.url",
+            "remote.zz://payload.fetch",
+            "url.zz://p/.insteadof",
+            "extensions.partialclone",
+            "remote.origin.url",
         ];
         assert_eq!(got.to_vec(), want.map(|k| Ok(vec![k.to_string()])));
     }
