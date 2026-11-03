@@ -665,6 +665,11 @@ pub fn push(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> 
         if o.get("setUpstream").and_then(Value::as_bool).unwrap_or(preview["newBranch"].as_bool().unwrap_or(false)) {
             cmd = cmd.arg("--set-upstream");
         }
+        if !crate::trust::trusted_folder(repo) {
+            // As fetch and pull: a push that checks or pushes submodules
+            // opens each in its own process, its settings and all.
+            cmd = cmd.arg("--recurse-submodules=no");
+        }
         cmd.args([remote.clone(), format!("refs/heads/{branch}:refs/heads/{target}")])
     };
     let out = crate::trust::reach(repo, build(), true)?;

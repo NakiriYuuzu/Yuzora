@@ -539,6 +539,77 @@ mod tests {
         assert!(mark.exists(), "trusted, fetch didn't run it either: this proves nothing");
     }
 
+    // A git before 2.44 ignores GIT_NO_LAZY_FETCH: this one drops it from
+    // every git it starts, and from the ones those start (`GIT_EXEC_PATH`).
+    fn old_git(at: &std::path::Path) -> Vec<(String, String)> {
+        let real = std::process::Command::new("git").arg("--exec-path").output().unwrap();
+        let real = String::from_utf8(real.stdout).unwrap().trim().to_owned();
+        std::fs::create_dir_all(at).unwrap();
+        for e in std::fs::read_dir(&real).unwrap().map(Result::unwrap).filter(|e| e.file_name() != "git") {
+            std::os::unix::fs::symlink(e.path(), at.join(e.file_name())).unwrap();
+        }
+        std::fs::write(at.join("git"), format!("#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '{real}/git' \"$@\"\n")).unwrap();
+        std::fs::set_permissions(at.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        vec![("PATH".into(), format!("{}:{}", at.display(), std::env::var("PATH").unwrap_or_default())), ("GIT_EXEC_PATH".into(), at.display().to_string())]
+    }
+
+    // `.git/modules/<name>` may be a gitfile, here naming a partial clone
+    // that lacks the commit a push carries: a push that checks submodules
+    // (`push.recurseSubmodules`) opens it in its own process, and a git
+    // before 2.44 fetches the commit there with that repo's `uploadpack`.
+    // The scan reads the git dir the gitfile names; before trust a push
+    // checks no submodule either.
+    #[test]
+    fn a_push_before_trust_opens_no_submodule_git_dir() {
+        let (s, lib) = (scratch(), scratch());
+        let away_dir = tempfile::tempdir().unwrap();
+        let away = std::fs::canonicalize(away_dir.path()).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").args(["-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false"]).args(args).output().unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        let (src, up) = (away.join("src.git").display().to_string(), away.join("up.git").display().to_string());
+        lib.commit("f.txt", "1\n", "one");
+        git(&["clone", "-q", "--bare", lib.root(), &src]);
+        git(&["init", "-q", "--bare", &up]);
+        s.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "s"]);
+        s.git(&["commit", "-q", "-m", "sub"]);
+        s.git(&["remote", "add", "origin", &up]);
+        s.git(&["push", "-q", "origin", "main"]);
+        let sub = s.git(&["rev-parse", "HEAD"]);
+        s.git(&["submodule", "deinit", "-q", "-f", "s"]);
+        let (gd, evil) = (s.repo.git_path("modules/s"), s.repo.git_path("evil.git"));
+        std::fs::rename(&gd, &evil).unwrap();
+        std::fs::write(&gd, "gitdir: ../evil.git\n").unwrap();
+        let (mark, prog) = hit(&s, "exec git-upload-pack \"$@\"");
+        for (k, v) in [("core.worktree", "../../s"), ("remote.origin.url", &src), ("remote.origin.promisor", "true"), ("extensions.partialClone", "origin"), ("remote.origin.uploadpack", &prog)] {
+            s.git(&["--git-dir", &evil, "config", k, v]);
+        }
+        // A commit the partial clone lacks; the push carries the gitlink moved to it.
+        lib.commit("f.txt", "2\n", "two");
+        git(&["-C", lib.root(), "push", "-q", &src, "HEAD:main"]);
+        let two = lib.git(&["rev-parse", "HEAD"]);
+        s.git(&["update-index", "--cacheinfo", &format!("160000,{},s", two.trim())]);
+        s.git(&["commit", "-q", "-m", "bump"]);
+        s.git(&["config", "push.recurseSubmodules", "check"]);
+        assert_eq!(pending(&s.repo).unwrap(), [".git/modules/s: extensions.partialclone", ".git/modules/s: remote.origin.promisor", ".git/modules/s: remote.origin.uploadpack"]);
+        assert!(check(&s.repo).is_err());
+        // Past the gate (which shuts here), with a git that fetches lazily anyway.
+        let env = old_git(&away.join("old-git"));
+        crate::exec::TEST_ENV.with(|t| *t.borrow_mut() = env);
+        let _ = crate::ops::push(&s.repo, &serde_json::json!({}), None);
+        let before = mark.exists();
+        // The same push again, trusted: it opens s and fetches there.
+        git(&["--git-dir", &up, "update-ref", "refs/heads/main", sub.trim()]);
+        s.git(&["update-ref", "refs/remotes/origin/main", sub.trim()]);
+        trust(&s.repo).unwrap();
+        let _ = crate::ops::push(&s.repo, &serde_json::json!({}), None);
+        crate::exec::TEST_ENV.with(|t| t.borrow_mut().clear());
+        assert!(!before, "a push before trust ran the uploadpack of a submodule's git dir");
+        assert!(mark.exists(), "trusted, the push didn't run it either: this proves nothing");
+    }
+
     #[test]
     fn a_partial_clone_waits_for_trust_by_the_keys_git_reads() {
         let s = scratch();
