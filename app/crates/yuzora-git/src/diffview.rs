@@ -756,6 +756,20 @@ mod tests {
         assert!(entry.starts_with("120000 "), "{entry}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn part_of_a_new_link_keeps_target_bytes_that_arent_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        // `café` in Latin-1 on the first line of the target.
+        std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(b"caf\xe9\nb"), format!("{}/link", s.root())).unwrap();
+        let d = DiffSession::load(s.repo.clone(), "link".into(), None, Mode::Unstaged).unwrap();
+        d.stage(&Selection::from_json(&json!([]), &json!({ "0": { "del": [], "add": [0] } }))).unwrap();
+        let blob = std::process::Command::new("git").args(["cat-file", "blob", ":link"]).current_dir(s.root()).output().unwrap().stdout;
+        assert!(blob.starts_with(b"caf\xe9"), "{:?}", String::from_utf8_lossy(&blob));
+    }
+
     #[test]
     fn every_line_picked_one_by_one_is_the_whole_file() {
         let s = scratch();

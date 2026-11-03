@@ -130,6 +130,12 @@ pub fn auto_resolve(base: &str, ours: &str, theirs: &str) -> Option<String> {
     Some(out)
 }
 
+/// Whether every line of a chunk's sides is UTF-8: `auto` merges text, and
+/// other bytes would come back as U+FFFD.
+fn utf8(sides: [&[&[u8]]; 3]) -> bool {
+    sides.iter().all(|ls| ls.iter().all(|l| std::str::from_utf8(l).is_ok()))
+}
+
 fn token_ids<'a>(ids: &mut std::collections::HashMap<&'a str, u32>, s: &'a str, toks: &[std::ops::Range<usize>]) -> Vec<u32> {
     toks.iter()
         .map(|r| {
@@ -217,7 +223,7 @@ impl ConflictSession {
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                let auto = (c.kind == Kind::Conflict).then(|| auto_resolve(&text(&b, &c.base).join("\n"), &text(&o, &c.ours).join("\n"), &text(&t, &c.theirs).join("\n"))).flatten();
+                let auto = (c.kind == Kind::Conflict && utf8([&b[c.base.clone()], &o[c.ours.clone()], &t[c.theirs.clone()]])).then(|| auto_resolve(&text(&b, &c.base).join("\n"), &text(&o, &c.ours).join("\n"), &text(&t, &c.theirs).join("\n"))).flatten();
                 json!({
                     "index": i,
                     "kind": match c.kind { Kind::Equal => "equal", Kind::Ours => "ours", Kind::Theirs => "theirs", Kind::Same => "same", Kind::Conflict => "conflict" },
@@ -299,6 +305,9 @@ impl ConflictSession {
                 (Some("both-theirs-first"), _) => {
                     put(&t[c.theirs.clone()]);
                     put(&o[c.ours.clone()]);
+                }
+                (Some("auto"), Kind::Conflict) if !utf8([&b[c.base.clone()], &o[c.ours.clone()], &t[c.theirs.clone()]]) => {
+                    return Err(GitError::Other(format!("chunk {i} isn't UTF-8 text: it can't be resolved automatically")));
                 }
                 (Some("auto"), Kind::Conflict) => {
                     let join = |ls: &[&[u8]]| ls.iter().map(|l| String::from_utf8_lossy(diff::strip_eol(l)).into_owned()).collect::<Vec<_>>().join("\n");
@@ -568,6 +577,32 @@ mod tests {
         let c = ConflictSession::load(s.repo.clone(), "link").unwrap();
         c.resolve(&json!({ "0": "ours" })).unwrap();
         assert_eq!(std::fs::read_link(format!("{}/link", s.root())).unwrap().to_string_lossy(), "OURS\n");
+    }
+
+    #[test]
+    fn auto_leaves_a_chunk_that_isnt_utf8_alone() {
+        let s = scratch();
+        let put = |text: &[u8], msg: &str| {
+            std::fs::write(format!("{}/f.txt", s.root()), text).unwrap();
+            s.git(&["add", "f.txt"]);
+            s.git(&["commit", "-qm", msg]);
+        };
+        // Latin-1 bytes outside the conflicts and inside the second one.
+        put(b"caf\xe9 top\nlet a = 1; let b = 2;\nm1\nm2\nm3\nx = 1; y = 2; // \xe9\n", "base");
+        s.git(&["switch", "-q", "-c", "other"]);
+        put(b"caf\xe9 top\nlet a = 1; let b = 20;\nm1\nm2\nm3\nx = 1; y = 20; // \xe9\n", "theirs");
+        s.git(&["switch", "-q", "main"]);
+        put(b"caf\xe9 top\nlet a = 10; let b = 2;\nm1\nm2\nm3\nx = 10; y = 2; // \xe9\n", "ours");
+        assert!(!s.repo.run(Git::write(["merge", "other"])).unwrap().ok());
+        let c = ConflictSession::load(s.repo.clone(), "f.txt").unwrap();
+        let v = c.view();
+        let conflicts: Vec<&Value> = v["chunks"].as_array().unwrap().iter().filter(|c| c["kind"] == "conflict").collect();
+        assert_eq!(conflicts.len(), 2, "{v}");
+        let (first, second) = (conflicts[0]["index"].to_string(), conflicts[1]["index"].to_string());
+        assert_eq!((conflicts[0]["auto"].clone(), conflicts[1]["auto"].clone()), (json!("let a = 10; let b = 20;"), Value::Null));
+        assert!(c.resolve(&json!({ first.clone(): "auto", second.clone(): "auto" })).is_err());
+        c.resolve(&json!({ first: "auto", second: "ours" })).unwrap();
+        assert_eq!(std::fs::read(format!("{}/f.txt", s.root())).unwrap(), b"caf\xe9 top\nlet a = 10; let b = 20;\nm1\nm2\nm3\nx = 10; y = 2; // \xe9\n");
     }
 
     #[test]

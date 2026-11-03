@@ -78,7 +78,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - `status --porcelain=v2 -z --branch --show-stash --untracked-files=no`，untracked 另走 `ls-files --others --exclude-standard`（與 IntelliJ 一樣分開，大量 untracked 不拖慢 tracked）；被忽略的目錄只用來過濾 watcher 事件。`+/-` 行數來自 `diff --numstat`（超過 3000 個變更就略過）。全量刷新時這幾個讀取並行執行。status 與 untracked 清單超過輸出上限（64 MiB）時會被截斷，所以超過就回傳錯誤，不把只有前段的清單當成完整的存進快取（下次全部重讀）。
 - 不是 UTF-8 的路徑（unix 的檔名可以是任意位元組）在 JS 只能顯示成把壞位元組換成 U+FFFD 的字串，把這個字串交回 git 會變成另一個名稱，可能剛好是另一個真的叫這個名字的檔案。status 記下這些路徑的顯示名稱（`StatusCache::lossy`），`repo_fn` 對 `status`、`trust` 以外的呼叫檢查參數：任何字串等於這種顯示名稱，或是它所在的資料夾（本身也含 U+FFFD），就拒絕（`path.lossy`，請使用者改用終端機）。上層的正常資料夾（例如 `src`）照常可以操作，git 會用真正的位元組。watcher 看到不是 UTF-8 的路徑時整個重讀；部分刷新的路徑碰到這種顯示名稱時也改成全量，否則只用這個名稱查 git，只會列出真的叫這個名字的檔案，另一個就從快取消失。
 - watcher（notify，300 ms debounce）只在有 view 使用 repo 時運作。呼叫和等待（`changed()`、log 的 `logWait`）都算使用；超過 2 分鐘兩者都沒有，就停掉 watcher。下一次呼叫或等待會在背景執行緒重新啟動 watcher（遞迴監看可能要走過整個工作樹，不能放在 UI 執行緒），並把整個 repo 視為已變更。watcher 啟動失敗時改成輪詢（見〈pane 之間的約定〉的 `changed()`）。watcher 把事件分成 dirty scope：`.git/index` → 全部重讀；`.git` 內其他（refs、HEAD、MERGE_HEAD…）→ 全部＋refs；`.git` 雜訊（objects、logs、hooks、lock 檔…）與被忽略的目錄略過；工作目錄檔案 → 只重讀那些路徑。
-- 部分刷新只對 dirty 路徑跑 status（`GIT_LITERAL_PATHSPECS=1`），A／D／R／C 的路徑一併重讀以免拆散 rename；路徑數過多（擁擠的目錄先折疊成目錄，超過 50 000 就全量）時退回全量。submodule 裡的檔案改成查它的 gitlink（git 把裡面的變更報在 gitlink 上）；gitlink 從 index 列出（`ls-files -s` 的 `160000`），沒寫在 `.gitmodules` 的也算，與全量刷新的其他讀取並行。折疊時去掉已被目錄涵蓋的路徑，只查每個路徑的上層目錄，不做兩兩比對（watcher 在 debounce 執行緒上同步呼叫，5 萬個路徑兩兩比對要 25 億次）。重讀前從快取拿掉這些路徑底下的項目時也一樣：每個項目用自己和上層目錄去查重讀的路徑集合（10 萬個項目、5000 個路徑原本要 18 秒）。
+- 部分刷新只對 dirty 路徑跑 status（`GIT_LITERAL_PATHSPECS=1`），A／D／R／C 的路徑一併重讀以免拆散 rename；路徑數過多（擁擠的目錄先折疊成目錄，超過 50 000 就全量）時退回全量。submodule 裡的檔案改成查它的 gitlink（git 把裡面的變更報在 gitlink 上）；gitlink 從 index 列出（`ls-files -s` 的 `160000`），沒寫在 `.gitmodules` 的也算，與全量刷新的其他讀取並行。這份清單失敗或超過輸出上限時，不存前段（後面的 gitlink 會漏掉，裡面的變更就查不到），而是記成不完整，部分刷新一律改成全量。折疊時去掉已被目錄涵蓋的路徑，只查每個路徑的上層目錄，不做兩兩比對（watcher 在 debounce 執行緒上同步呼叫，5 萬個路徑兩兩比對要 25 億次）。重讀前從快取拿掉這些路徑底下的項目時也一樣：每個項目用自己和上層目錄去查重讀的路徑集合（10 萬個項目、5000 個路徑原本要 18 秒）。
 - `.git` 的操作狀態（rebase-merge／rebase-apply、MERGE_HEAD、CHERRY_PICK_HEAD、REVERT_HEAD、BISECT_LOG）直接讀檔，對應 IntelliJ 的 `GitRepositoryReader`。
 
 ### Log 與分支圖（`log.rs`、`graph.rs`、`graph_view.rs`）
@@ -96,7 +96,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 ### Diff 與部分暫存（`diff.rs`、`diffview.rs`）
 
 - 行 diff 在 Rust 計算：線性空間 Myers（middle snake），編輯數超過 `max(20000 + 10·√(n+m), 20000)`（IntelliJ `MyersLCS` 的門檻）就退回 Patience（唯一行錨點＋區段內有限 Myers）。單側超過 16 MiB 不比較並告知。
-- 內容：`git cat-file --filters <rev>:<path>`（套用 textconv 以外的 filter，與 IntelliJ 的 `git.read.content.with=FILTERS` 相同）、index 用 `:<path>`、工作目錄直接讀檔（symlink 讀目標字串）。遠端也一樣：`cat` 會讀穿 symlink，所以先在那台機器上用 `test -L`／`readlink`／`test -x` 判斷（`Repo::kind`），新檔部分暫存時的 mode（`120000`、`100755`）也照它。
+- 內容：`git cat-file --filters <rev>:<path>`（套用 textconv 以外的 filter，與 IntelliJ 的 `git.read.content.with=FILTERS` 相同）、index 用 `:<path>`、工作目錄直接讀檔（symlink 讀目標，unix 上保留原始位元組，不轉成 UTF-8）。遠端也一樣：`cat` 會讀穿 symlink，所以先在那台機器上用 `test -L`／`readlink`／`test -x` 判斷（`Repo::kind`），新檔部分暫存時的 mode（`120000`、`100755`）也照它。
 - 檢視：並排或合併、字詞層級高亮（tokens：單字、空白段、單一符號）、空白策略 Exact／Trim／Ignore（對應 IntelliJ `ComparisonPolicy`）、context 摺疊。
 - **部分暫存不動工作目錄**：把「index 版本＋選中的 hunk 或行」組成新內容，`git hash-object -w --stdin --path` 寫 blob，再 `update-index --add --cacheinfo <mode>,<oid>,<path>`。取消暫存同理（HEAD 版本＋反向選取）；捨棄 hunk 則改寫工作目錄檔案。整檔情況（新檔、刪除、全選）直接走 `add`／`reset`／`rm --cached`；逐行勾選了每個 hunk 的每一行也算全選（否則取消暫存一個新檔，會留下一個空檔在 index）。只有 mode 改變（例如 `chmod +x`）時，以 `git diff --raw` 讀兩邊的 mode（照 git 的判斷，含 `core.fileMode`），pane 顯示 mode 變更，暫存、取消暫存、捨棄都整檔處理，mode 一起帶上。已暫存的 rename 比較 HEAD 裡舊路徑的 mode 與 index 裡新路徑的 mode（`--no-renames` 會把它看成新增）。部分暫存是用開啟時讀到的內容組出來的，所以先確認工作目錄的檔案沒有被其他編輯器改過（捨棄也是），改過就要求重新載入，免得暫存檔案裡已經不存在的行。CRLF 與無結尾換行會保留。
 - 空白不是 Exact 時不允許暫存（畫面上的 hunk 與實際內容不一致）。
@@ -104,7 +104,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 ### Merge 與衝突（`merge.rs`）
 
 - 讀 index 的 stage 1／2／3（base／ours／theirs）做 diff3 分塊：equal、ours、theirs、same、conflict。
-- 「自動解決簡單衝突」：對 conflict 塊再做 token 層級三方合併，兩側改到不重疊的地方時給出 auto 解答（對應 IntelliJ 的 magic resolve）。
+- 「自動解決簡單衝突」：對 conflict 塊再做 token 層級三方合併，兩側改到不重疊的地方時給出 auto 解答（對應 IntelliJ 的 magic resolve）。塊裡有不是 UTF-8 的行時不提供 auto（token 合併以文字進行，那些位元組會變成 U+FFFD）；塊以外的行照原本的位元組寫回。
 - 結果寫回檔案後 `git add`；整檔 accept yours／theirs 用 `checkout --ours/--theirs`（刪除衝突用 `git rm`）。symlink 的衝突以 `120000` 寫回 index，結果的每個位元組都是目標路徑（結尾的換行也是），不另外去掉。
 - 任一側或工作目錄的檔案超過 16 MiB（與 diff 相同的上限）時只讀得到開頭，合併那段會丟掉檔尾：view 回傳 `tooLarge`、沒有分塊，`result`／`conflictResolve` 拒絕，merge pane 只提供整檔接受。
 - 手動編輯一塊（`{text}`）：

@@ -87,7 +87,9 @@ pub struct StatusCache {
     /// Ignored directories, so the watcher can skip a build writing into them.
     pub ignored_dirs: Vec<String>,
     /// Submodule paths: a change inside one is a change of its gitlink.
-    pub gitlinks: Vec<String>,
+    /// `None` when the index couldn't be listed whole: then a refresh of
+    /// some paths reads everything instead.
+    pub gitlinks: Option<Vec<String>>,
     /// How paths that aren't UTF-8 are shown: no call acts on them by that
     /// name ([`refuse_lossy`]).
     pub lossy: BTreeSet<String>,
@@ -374,7 +376,7 @@ fn full(repo: &Repo) -> GitResult<()> {
                 .filter_map(|p| p.strip_suffix('/').map(str::to_owned))
                 .collect())
         });
-        let links = s.spawn(|| gitlinks(repo));
+        let links = s.spawn(|| gitlinks(repo, cap));
         let st = repo.run(status_cmd(cap)).and_then(|o| whole(o, cap)).map(|o| parse_porcelain_v2(&o));
         (st, joined(untracked), joined(ignored), links.join().unwrap_or_default())
     });
@@ -408,22 +410,17 @@ fn full(repo: &Repo) -> GitResult<()> {
     Ok(())
 }
 
-/// The gitlinks in the index, whether or not `.gitmodules` names them, and
-/// the paths it names: status reports what changed inside one as the gitlink.
-fn gitlinks(repo: &Repo) -> Vec<String> {
-    let read = |cmd: Git| repo.run(cmd).ok().filter(|o| o.ok()).map(|o| o.stdout).unwrap_or_default();
-    // `<mode> <oid> <stage>\t<path>\0`, whole records only: an index past
-    // the output cap is cut short.
-    let index = read(Git::read(["ls-files", "-s", "-z"]));
-    let whole = &index[..index.iter().rposition(|b| *b == 0).map_or(0, |i| i + 1)];
-    let mut links: Vec<String> = split_z(whole).filter_map(|e| e.strip_prefix("160000 ").and_then(|e| e.split_once('\t')).map(|(_, p)| p.to_owned())).collect();
-    // `-z`: `key\nvalue\0` per entry.
-    let modules = read(Git::read(["config", "--file", ".gitmodules", "-z", "--get-regexp", r"^submodule\..*\.path$"]));
-    links.extend(String::from_utf8_lossy(&modules).split('\0').filter_map(|e| e.split_once('\n')).map(|(_, v)| v.trim_end_matches('/').to_owned()).filter(|v| !v.is_empty()));
+/// The gitlinks in the index, whether or not `.gitmodules` names them:
+/// status reports what changed inside one as the gitlink. `None` when the
+/// listing failed or was cut short (an index past the output cap): a prefix
+/// would miss the gitlinks after it.
+fn gitlinks(repo: &Repo, cap: usize) -> Option<Vec<String>> {
+    // `<mode> <oid> <stage>\t<path>\0`
+    let index = repo.run(Git::read(["ls-files", "-s", "-z"]).max_output(cap + 1)).ok().filter(|o| o.ok() && o.stdout.len() <= cap)?.stdout;
+    let mut links: Vec<String> = split_z(&index).filter_map(|e| e.strip_prefix("160000 ").and_then(|e| e.split_once('\t')).map(|(_, p)| p.to_owned())).collect();
     // A conflict lists a path once per stage.
-    links.sort();
     links.dedup();
-    links
+    Some(links)
 }
 
 fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {
@@ -431,14 +428,15 @@ fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {
     {
         let c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
         // Asked for by that name, git would list only the file that really
-        // has it and the cache would lose the other one.
-        if paths.iter().any(|p| shown_for_lossy(&c.lossy, p)) {
+        // has it and the cache would lose the other one. And without every
+        // gitlink, a file inside one can't be asked about as its gitlink.
+        if c.gitlinks.is_none() || paths.iter().any(|p| shown_for_lossy(&c.lossy, p)) {
             drop(c);
             return full(repo);
         }
         // git reports a submodule's own files as its gitlink, so ask for that.
         for p in &mut paths {
-            if let Some(g) = c.gitlinks.iter().find(|g| p.starts_with(g.as_str()) && p.as_bytes().get(g.len()) == Some(&b'/')) {
+            if let Some(g) = c.gitlinks.iter().flatten().find(|g| p.starts_with(g.as_str()) && p.as_bytes().get(g.len()) == Some(&b'/')) {
                 *p = g.clone();
             }
         }
@@ -745,7 +743,7 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         s.git(&["commit", "-qm", "sub"]);
         refresh(&s.repo).unwrap();
         assert_eq!(snapshot(&s.repo)["counts"]["total"], 0);
-        assert_eq!(s.repo.status.lock().unwrap().gitlinks, vec!["sub".to_string()]);
+        assert_eq!(s.repo.status.lock().unwrap().gitlinks, Some(vec!["sub".to_string()]));
         // What the watcher sees is the file inside; the change is the gitlink's.
         s.write("sub/f.txt", "2\n");
         s.repo.invalidate(Scope::Paths(vec!["sub/f.txt".into()]));
@@ -776,6 +774,33 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         s.repo.invalidate(Scope::Paths(vec!["sub/f.txt".into()]));
         refresh(&s.repo).unwrap();
         assert_eq!(snapshot(&s.repo)["unstaged"][0]["path"], "sub", "the cached clean gitlink stayed");
+    }
+
+    #[test]
+    fn a_gitlink_list_cut_short_isnt_taken_as_whole() {
+        let s = scratch();
+        for i in 0..10 {
+            s.write(&format!("f{i}.txt"), "1\n");
+        }
+        // A repo inside, linked in the index only, listed after the files.
+        s.write("zz/sub/f.txt", "1\n");
+        s.git(&["-C", "zz/sub", "init", "-q"]);
+        s.git(&["-C", "zz/sub", "add", "f.txt"]);
+        s.git(&["-C", "zz/sub", "-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false", "commit", "-qm", "s"]);
+        let head = s.git(&["-C", "zz/sub", "rev-parse", "HEAD"]);
+        s.git(&["add", "."]);
+        s.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{},zz/sub", head.trim())]);
+        s.git(&["commit", "-qm", "files and sub"]);
+        // The index listing (about 60 bytes an entry) is cut before `zz/sub`;
+        // status itself still fits.
+        CAP.with(|c| c.set(300));
+        refresh(&s.repo).unwrap();
+        assert_eq!(snapshot(&s.repo)["counts"]["total"], 0);
+        s.write("zz/sub/f.txt", "2\n");
+        s.repo.invalidate(Scope::Paths(vec!["zz/sub/f.txt".into()]));
+        refresh(&s.repo).unwrap();
+        CAP.with(|c| c.set(OUTPUT_CAP));
+        assert_eq!(snapshot(&s.repo)["unstaged"][0]["path"], "zz/sub", "a gitlink past the cut was never asked about");
     }
 
     #[test]

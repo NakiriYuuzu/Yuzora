@@ -349,7 +349,7 @@ pub fn kind(place: &Place, path: &str) -> GitResult<PathKind> {
     }
     let Ok(meta) = std::fs::symlink_metadata(path) else { return Ok(PathKind::Missing) };
     if meta.file_type().is_symlink() {
-        return Ok(std::fs::read_link(path).map_or(PathKind::Missing, |t| PathKind::Link(t.to_string_lossy().into_owned().into_bytes())));
+        return Ok(std::fs::read_link(path).map_or(PathKind::Missing, |t| PathKind::Link(link_bytes(t))));
     }
     #[cfg(unix)]
     let exec = {
@@ -359,6 +359,14 @@ pub fn kind(place: &Place, path: &str) -> GitResult<PathKind> {
     #[cfg(not(unix))]
     let exec = false;
     Ok(PathKind::File { exec })
+}
+
+/// A link's target as git records it: on unix, its bytes as they are.
+fn link_bytes(target: std::path::PathBuf) -> Vec<u8> {
+    #[cfg(unix)]
+    return std::os::unix::ffi::OsStringExt::into_vec(target.into_os_string());
+    #[cfg(not(unix))]
+    target.to_string_lossy().into_owned().into_bytes()
 }
 
 pub fn exists(place: &Place, path: &str) -> bool {
