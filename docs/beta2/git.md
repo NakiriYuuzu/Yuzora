@@ -75,9 +75,10 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 
 ### Status（`status.rs`、`watch.rs`）
 
-- `status --porcelain=v2 -z --branch --show-stash --untracked-files=no`，untracked 另走 `ls-files --others --exclude-standard`（與 IntelliJ 一樣分開，大量 untracked 不拖慢 tracked）；被忽略的目錄只用來過濾 watcher 事件。`+/-` 行數來自 `diff --numstat`（超過 3000 個變更就略過）。全量刷新時這幾個讀取並行執行。
+- `status --porcelain=v2 -z --branch --show-stash --untracked-files=no`，untracked 另走 `ls-files --others --exclude-standard`（與 IntelliJ 一樣分開，大量 untracked 不拖慢 tracked）；被忽略的目錄只用來過濾 watcher 事件。`+/-` 行數來自 `diff --numstat`（超過 3000 個變更就略過）。全量刷新時這幾個讀取並行執行。status 與 untracked 清單超過輸出上限（64 MiB）時會被截斷，所以超過就回傳錯誤，不把只有前段的清單當成完整的存進快取（下次全部重讀）。
+- 不是 UTF-8 的路徑（unix 的檔名可以是任意位元組）在 JS 只能顯示成把壞位元組換成 U+FFFD 的字串，把這個字串交回 git 會變成另一個名稱，可能剛好是另一個真的叫這個名字的檔案。status 記下這些路徑的顯示名稱（`StatusCache::lossy`），`repo_fn` 對 `status`、`trust` 以外的呼叫檢查參數：任何字串等於這種顯示名稱，或是它所在的資料夾（本身也含 U+FFFD），就拒絕（`path.lossy`，請使用者改用終端機）。上層的正常資料夾（例如 `src`）照常可以操作，git 會用真正的位元組。watcher 看到不是 UTF-8 的路徑時整個重讀；部分刷新的路徑碰到這種顯示名稱時也改成全量，否則只用這個名稱查 git，只會列出真的叫這個名字的檔案，另一個就從快取消失。
 - watcher（notify，300 ms debounce）只在有 view 使用 repo 時運作。呼叫和等待（`changed()`、log 的 `logWait`）都算使用；超過 2 分鐘兩者都沒有，就停掉 watcher。下一次呼叫或等待會在背景執行緒重新啟動 watcher（遞迴監看可能要走過整個工作樹，不能放在 UI 執行緒），並把整個 repo 視為已變更。watcher 啟動失敗時改成輪詢（見〈pane 之間的約定〉的 `changed()`）。watcher 把事件分成 dirty scope：`.git/index` → 全部重讀；`.git` 內其他（refs、HEAD、MERGE_HEAD…）→ 全部＋refs；`.git` 雜訊（objects、logs、hooks、lock 檔…）與被忽略的目錄略過；工作目錄檔案 → 只重讀那些路徑。
-- 部分刷新只對 dirty 路徑跑 status（`GIT_LITERAL_PATHSPECS=1`），A／D／R／C 的路徑一併重讀以免拆散 rename；路徑數過多（擁擠的目錄先折疊成目錄，超過 50 000 就全量）時退回全量。submodule 裡的檔案改成查它的 gitlink（git 把裡面的變更報在 gitlink 上）；gitlink 從 index 列出（`ls-files -s` 的 `160000`），沒寫在 `.gitmodules` 的也算，與全量刷新的其他讀取並行。折疊時去掉已被目錄涵蓋的路徑，只查每個路徑的上層目錄，不做兩兩比對（watcher 在 debounce 執行緒上同步呼叫，5 萬個路徑兩兩比對要 25 億次）。
+- 部分刷新只對 dirty 路徑跑 status（`GIT_LITERAL_PATHSPECS=1`），A／D／R／C 的路徑一併重讀以免拆散 rename；路徑數過多（擁擠的目錄先折疊成目錄，超過 50 000 就全量）時退回全量。submodule 裡的檔案改成查它的 gitlink（git 把裡面的變更報在 gitlink 上）；gitlink 從 index 列出（`ls-files -s` 的 `160000`），沒寫在 `.gitmodules` 的也算，與全量刷新的其他讀取並行。折疊時去掉已被目錄涵蓋的路徑，只查每個路徑的上層目錄，不做兩兩比對（watcher 在 debounce 執行緒上同步呼叫，5 萬個路徑兩兩比對要 25 億次）。重讀前從快取拿掉這些路徑底下的項目時也一樣：每個項目用自己和上層目錄去查重讀的路徑集合（10 萬個項目、5000 個路徑原本要 18 秒）。
 - `.git` 的操作狀態（rebase-merge／rebase-apply、MERGE_HEAD、CHERRY_PICK_HEAD、REVERT_HEAD、BISECT_LOG）直接讀檔，對應 IntelliJ 的 `GitRepositoryReader`。
 
 ### Log 與分支圖（`log.rs`、`graph.rs`、`graph_view.rs`）
@@ -105,6 +106,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - 讀 index 的 stage 1／2／3（base／ours／theirs）做 diff3 分塊：equal、ours、theirs、same、conflict。
 - 「自動解決簡單衝突」：對 conflict 塊再做 token 層級三方合併，兩側改到不重疊的地方時給出 auto 解答（對應 IntelliJ 的 magic resolve）。
 - 結果寫回檔案後 `git add`；整檔 accept yours／theirs 用 `checkout --ours/--theirs`（刪除衝突用 `git rm`）。symlink 的衝突以 `120000` 寫回 index，結果的每個位元組都是目標路徑（結尾的換行也是），不另外去掉。
+- 任一側或工作目錄的檔案超過 16 MiB（與 diff 相同的上限）時只讀得到開頭，合併那段會丟掉檔尾：view 回傳 `tooLarge`、沒有分塊，`result`／`conflictResolve` 拒絕，merge pane 只提供整檔接受。
 - 手動編輯一塊（`{text}`）：
   - 文字以 `\n` 分行，結尾的 `\n` 表示最後一行有行尾，不會多出一行。
   - `""` 代表這塊沒有任何行（刪掉整塊）；`"\n"` 代表一行空白。
@@ -179,7 +181,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - ⏳ Branch cleanup（刪除已合併分支）。
 - ✅ Protected branches（regex）：禁止 force push。
 - ✅ Tags：建立（輕量或附註）、push 單一或全部、刪除本地或遠端、checkout。
-- ✅ Remotes：新增、改 URL、改名、移除、逐一 fetch。
+- ✅ Remotes：新增、改 URL、改名、移除、逐一 fetch。`remote -v` 以 tab 與最後一個空白切開，URL 裡的空白（本機路徑）保留。
 - ✅ Fetch（prune、tags 模式 auto／always／never）、Pull…（分支 popup 的對話框：merge／rebase／ff-only，merge 可加 --no-ff、--squash、--no-commit；API 另支援 no-verify）、更新專案（依設定的更新方式）；自動 fetch（分鐘數可設）。
 - ✅ Push：預覽（目標、commits、會帶上的 tags）、force-with-lease、force（受保護分支禁止、要再按一次確認；受保護分支的 pattern 用引擎的 Rust regex 語法，設定頁以同一套語法檢查，`checkPattern`。讀不懂的 pattern 等於保護所有分支，因為 JavaScript 接受的 look-around 在引擎會編譯失敗）、tags（none／follow／all）、略過 hooks、新分支自動 set-upstream、被拒時自動更新後重推（設定）。⏳ 記住 push target、Push up to here。
 
@@ -197,7 +199,7 @@ gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會
 - ✅ 三方資料（index stage 1／2／3）、跨檔案清單、整檔接受 yours／theirs（刪除衝突用 `git rm`）。
 - ✅ 三欄合併：套用所有非衝突變更、自動解決簡單衝突（token 層級）、逐塊選擇或手動編輯、解完 `git add`。
 - ✅ rebase 中 yours／theirs 對調（設定 `swapSidesInRebase`）。
-- 🟡 二進位檔只能整檔接受。⏳ 語言特化的 imports 衝突解決。
+- 🟡 二進位檔與超過 16 MiB 的檔案只能整檔接受。⏳ 語言特化的 imports 衝突解決。
 
 ### A8. Log
 

@@ -673,12 +673,13 @@ pub fn push(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> 
 pub fn remotes(repo: &Repo) -> GitResult<Value> {
     let out = repo.text(Git::read(["remote", "-v"]))?;
     let mut m: BTreeMap<String, (String, String)> = BTreeMap::new();
+    // `name\turl (fetch)`: a URL may hold spaces (a local path), so split
+    // at the tab and at the last space only.
     for l in out.lines() {
-        let f: Vec<&str> = l.split_whitespace().collect();
-        if f.len() >= 3 {
-            let e = m.entry(f[0].to_owned()).or_default();
-            if f[2] == "(push)" { e.1 = f[1].to_owned() } else { e.0 = f[1].to_owned() }
-        }
+        let Some((name, rest)) = l.split_once('\t') else { continue };
+        let Some((url, kind)) = rest.rsplit_once(' ') else { continue };
+        let e = m.entry(name.to_owned()).or_default();
+        if kind == "(push)" { e.1 = url.to_owned() } else { e.0 = url.to_owned() }
     }
     Ok(Value::Array(m.into_iter().map(|(name, (fetch, push))| json!({ "name": name, "url": fetch, "pushUrl": push })).collect()))
 }
@@ -1134,6 +1135,14 @@ pub fn short(hash: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::repo::testing::scratch;
+
+    #[test]
+    fn a_remote_url_with_spaces_is_read_whole() {
+        let s = scratch();
+        s.git(&["remote", "add", "origin", "/srv/some dir/repo.git"]);
+        s.git(&["remote", "set-url", "--push", "origin", "/srv/push dir/a (push).git"]);
+        assert_eq!(remotes(&s.repo).unwrap(), json!([{ "name": "origin", "url": "/srv/some dir/repo.git", "pushUrl": "/srv/push dir/a (push).git" }]));
+    }
 
     #[test]
     fn commit_remembers_messages_and_branches_list_tracking() {

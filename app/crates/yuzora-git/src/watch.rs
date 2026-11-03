@@ -62,7 +62,13 @@ pub fn classify(change: &mut Change, path: &Path, root: &Path, git_dirs: &[PathB
         }
     }
     let Ok(rel) = path.strip_prefix(root) else { return };
-    let rel = rel.to_string_lossy().replace('\\', "/");
+    // A name that isn't UTF-8 can't be asked for by its shown name: read it
+    // all again ([`crate::status::refuse_lossy`]).
+    let Some(rel) = rel.to_str() else {
+        change.all = true;
+        return;
+    };
+    let rel = rel.replace('\\', "/");
     if rel.is_empty() {
         change.all = true;
         return;
@@ -217,6 +223,16 @@ mod tests {
         let mut g = Change::default();
         classify(&mut g, Path::new("/r/sub/.gitignore"), root, &git, &ignored);
         assert!(g.all && !g.refs);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_that_isnt_utf8_reads_everything_again() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = Path::new("/r");
+        let mut c = Change::default();
+        classify(&mut c, &root.join(std::ffi::OsStr::from_bytes(b"caf\xe9.txt")), root, &[], &[]);
+        assert_eq!(c, Change { all: true, refs: false, paths: vec![] });
     }
 
     #[test]

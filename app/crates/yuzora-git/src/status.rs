@@ -88,6 +88,9 @@ pub struct StatusCache {
     pub ignored_dirs: Vec<String>,
     /// Submodule paths: a change inside one is a change of its gitlink.
     pub gitlinks: Vec<String>,
+    /// How paths that aren't UTF-8 are shown: no call acts on them by that
+    /// name ([`refuse_lossy`]).
+    pub lossy: BTreeSet<String>,
     pub stash: u32,
     pub operation: Operation,
     pub loaded: bool,
@@ -170,12 +173,15 @@ pub struct Porcelain {
     pub entries: Vec<Entry>,
     pub untracked: Vec<String>,
     pub stash: u32,
+    /// How the paths that aren't UTF-8 are shown (U+FFFD for each bad byte).
+    pub lossy: Vec<String>,
 }
 
 pub fn parse_porcelain_v2(out: &[u8]) -> Porcelain {
     let mut p = Porcelain::default();
-    let mut fields = out.split(|b| *b == 0).map(|f| String::from_utf8_lossy(f).into_owned());
-    while let Some(rec) = fields.next() {
+    // Each field, and whether it had to be shown other than it is.
+    let mut fields = out.split(|b| *b == 0).map(|f| (String::from_utf8_lossy(f).into_owned(), std::str::from_utf8(f).is_err()));
+    while let Some((rec, lossy)) = fields.next() {
         if rec.is_empty() {
             continue;
         }
@@ -224,6 +230,15 @@ pub fn parse_porcelain_v2(out: &[u8]) -> Porcelain {
                 let sub = parts[2];
                 let path = parts[n - 1].to_owned();
                 let orig = if kind == b'2' { fields.next() } else { None };
+                if lossy {
+                    p.lossy.push(path.clone());
+                }
+                let orig = orig.map(|(o, bad)| {
+                    if bad {
+                        p.lossy.push(o.clone());
+                    }
+                    o
+                });
                 p.entries.push(Entry {
                     path,
                     orig,
@@ -233,7 +248,12 @@ pub fn parse_porcelain_v2(out: &[u8]) -> Porcelain {
                     conflict: kind == b'u',
                 });
             }
-            b'?' => p.untracked.push(rec[2..].to_owned()),
+            b'?' => {
+                if lossy {
+                    p.lossy.push(rec[2..].to_owned());
+                }
+                p.untracked.push(rec[2..].to_owned())
+            }
             _ => {}
         }
     }
@@ -298,8 +318,38 @@ pub fn refresh(repo: &Repo) -> GitResult<()> {
     r
 }
 
-fn status_cmd() -> Git {
-    Git::read(["status", "--porcelain=v2", "-z", "--branch", "--show-stash", "--untracked-files=no"]).env("GIT_LITERAL_PATHSPECS", "1")
+fn status_cmd(cap: usize) -> Git {
+    Git::read(["status", "--porcelain=v2", "-z", "--branch", "--show-stash", "--untracked-files=no"]).env("GIT_LITERAL_PATHSPECS", "1").max_output(cap + 1)
+}
+
+fn untracked_cmd(cap: usize) -> Git {
+    Git::read(["ls-files", "--others", "--exclude-standard", "-z"]).env("GIT_LITERAL_PATHSPECS", "1").max_output(cap + 1)
+}
+
+/// A listing read whole: past `cap` it was cut short, and a short list would
+/// leave changes out without saying so.
+fn whole(out: crate::exec::Output, cap: usize) -> GitResult<Vec<u8>> {
+    let out = out.into_result()?;
+    if out.len() > cap {
+        return Err(GitError::Other(format!("git listed more than {} MiB of changes: too many to show", cap >> 20)));
+    }
+    Ok(out)
+}
+
+/// The most a status listing may print.
+const OUTPUT_CAP: usize = crate::exec::DEFAULT_MAX_OUTPUT;
+
+#[cfg(test)]
+thread_local! {
+    /// [`OUTPUT_CAP`] for listings run on this thread (tests).
+    static CAP: std::cell::Cell<usize> = const { std::cell::Cell::new(OUTPUT_CAP) };
+}
+
+fn cap() -> usize {
+    #[cfg(test)]
+    return CAP.with(|c| c.get());
+    #[cfg(not(test))]
+    OUTPUT_CAP
 }
 
 /// Joins a scoped read; a panic there is an error here, not a second panic.
@@ -308,10 +358,14 @@ fn joined<T>(h: std::thread::ScopedJoinHandle<'_, GitResult<T>>) -> GitResult<T>
 }
 
 fn full(repo: &Repo) -> GitResult<()> {
+    let cap = cap();
     // The reads don't depend on each other (and take no lock): side by side,
     // a full refresh costs its slowest command rather than their sum.
     let (st, untracked, ignored_dirs, gitlinks) = std::thread::scope(|s| {
-        let untracked = s.spawn(|| -> GitResult<BTreeSet<String>> { Ok(split_z(&repo.run(Git::read(["ls-files", "--others", "--exclude-standard", "-z"]))?.into_result()?).collect()) });
+        let untracked = s.spawn(|| -> GitResult<(BTreeSet<String>, Vec<String>)> {
+            let out = whole(repo.run(untracked_cmd(cap))?, cap)?;
+            Ok((split_z(&out).collect(), lossy_z(&out).collect()))
+        });
         let ignored = s.spawn(|| -> GitResult<Vec<String>> {
             if repo.place.is_remote() {
                 return Ok(Vec::new());
@@ -321,10 +375,10 @@ fn full(repo: &Repo) -> GitResult<()> {
                 .collect())
         });
         let links = s.spawn(|| gitlinks(repo));
-        let st = repo.run(status_cmd()).and_then(|o| o.into_result()).map(|o| parse_porcelain_v2(&o));
+        let st = repo.run(status_cmd(cap)).and_then(|o| whole(o, cap)).map(|o| parse_porcelain_v2(&o));
         (st, joined(untracked), joined(ignored), links.join().unwrap_or_default())
     });
-    let (st, untracked, ignored_dirs) = (st?, untracked?, ignored_dirs?);
+    let (st, (untracked, untracked_lossy), ignored_dirs) = (st?, untracked?, ignored_dirs?);
     let changed = st.entries.len();
     let (staged, unstaged, skipped) = if changed > NUMSTAT_LIMIT {
         (HashMap::new(), HashMap::new(), true)
@@ -339,6 +393,7 @@ fn full(repo: &Repo) -> GitResult<()> {
     let operation = crate::repo::operation(repo);
     let mut c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
     c.gitlinks = gitlinks;
+    c.lossy = st.lossy.into_iter().chain(untracked_lossy).collect();
     c.branch = st.branch;
     c.stash = st.stash;
     c.tracked = st.entries.into_iter().map(|e| (e.path.clone(), e)).collect();
@@ -372,8 +427,15 @@ fn gitlinks(repo: &Repo) -> Vec<String> {
 }
 
 fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {
+    let cap = cap();
     {
         let c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
+        // Asked for by that name, git would list only the file that really
+        // has it and the cache would lose the other one.
+        if paths.iter().any(|p| shown_for_lossy(&c.lossy, p)) {
+            drop(c);
+            return full(repo);
+        }
         // git reports a submodule's own files as its gitlink, so ask for that.
         for p in &mut paths {
             if let Some(g) = c.gitlinks.iter().find(|g| p.starts_with(g.as_str()) && p.as_bytes().get(g.len()) == Some(&b'/')) {
@@ -391,24 +453,22 @@ fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {
     }
     paths.sort();
     paths.dedup();
-    let (cmd, kept) = status_cmd().paths_or_all(&paths);
+    let (cmd, kept) = status_cmd(cap).paths_or_all(&paths);
     if !kept {
         return full(repo);
     }
-    let st = parse_porcelain_v2(&repo.run(cmd)?.into_result()?);
-    let (ls, _) = Git::read(["ls-files", "--others", "--exclude-standard", "-z"]).env("GIT_LITERAL_PATHSPECS", "1").paths_or_all(&paths);
-    let untracked: Vec<String> = split_z(&repo.run(ls)?.into_result()?).collect();
+    let st = parse_porcelain_v2(&whole(repo.run(cmd)?, cap)?);
+    let (ls, _) = untracked_cmd(cap).paths_or_all(&paths);
+    let out = whole(repo.run(ls)?, cap)?;
+    let untracked: Vec<String> = split_z(&out).collect();
     let staged = numstat(repo, true, &paths)?;
     let unstaged = numstat(repo, false, &paths)?;
     let lines = count_untracked(repo, untracked.iter());
     let operation = crate::repo::operation(repo);
     let mut c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
-    let inside = |p: &str| paths.iter().any(|s| covers(s, p));
-    c.tracked.retain(|p, _| !inside(p));
-    c.untracked.retain(|p| !inside(p));
-    c.staged_stats.retain(|p, _| !inside(p));
-    c.unstaged_stats.retain(|p, _| !inside(p));
-    c.untracked_lines.retain(|p, _| !inside(p));
+    forget(&mut c, &paths);
+    c.lossy.extend(st.lossy);
+    c.lossy.extend(lossy_z(&out));
     c.branch = st.branch;
     c.stash = st.stash;
     for e in st.entries {
@@ -420,6 +480,19 @@ fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {
     c.untracked_lines.extend(lines);
     c.operation = operation;
     Ok(())
+}
+
+/// Drops what the cache knows inside `paths`, which were read again. Each
+/// entry looks itself and its folders up, rather than going through `paths`.
+fn forget(c: &mut StatusCache, paths: &[String]) {
+    let read: HashSet<&str> = paths.iter().map(String::as_str).collect();
+    let inside = |p: &str| read.contains(p) || ancestors(p).any(|d| read.contains(d));
+    c.tracked.retain(|p, _| !inside(p));
+    c.untracked.retain(|p| !inside(p));
+    c.staged_stats.retain(|p, _| !inside(p));
+    c.unstaged_stats.retain(|p, _| !inside(p));
+    c.untracked_lines.retain(|p, _| !inside(p));
+    c.lossy.retain(|p| !inside(p));
 }
 
 fn numstat(repo: &Repo, cached: bool, paths: &[String]) -> GitResult<HashMap<String, Stat>> {
@@ -452,6 +525,43 @@ fn count_untracked<'a>(repo: &Repo, paths: impl Iterator<Item = &'a String>) -> 
         })
         .collect()
 }
+
+/// How the `-z` fields that aren't UTF-8 are shown.
+pub fn lossy_z(out: &[u8]) -> impl Iterator<Item = String> + '_ {
+    out.split(|b| *b == 0).filter(|f| std::str::from_utf8(f).is_err()).map(|f| String::from_utf8_lossy(f).into_owned())
+}
+
+/// Whether `name` is (or is a folder of) how a path that isn't UTF-8 is
+/// shown: given to git, it is other bytes, maybe another file's name.
+fn shown_for_lossy(lossy: &BTreeSet<String>, name: &str) -> bool {
+    if !name.contains('\u{FFFD}') {
+        return false;
+    }
+    let dir = format!("{name}/");
+    lossy.contains(name) || lossy.range(dir.clone()..).next().is_some_and(|l| l.starts_with(&dir))
+}
+
+/// Refuses a call whose arguments name a path by how it is shown when that
+/// path isn't UTF-8 ([`StatusCache::lossy`]).
+pub fn refuse_lossy(repo: &Repo, args: &[Value]) -> GitResult<()> {
+    fn find<'a>(v: &'a Value, lossy: &BTreeSet<String>) -> Option<&'a str> {
+        match v {
+            Value::String(s) => shown_for_lossy(lossy, s).then_some(s.as_str()),
+            Value::Array(a) => a.iter().find_map(|v| find(v, lossy)),
+            Value::Object(o) => o.values().find_map(|v| find(v, lossy)),
+            _ => None,
+        }
+    }
+    let c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
+    if c.lossy.is_empty() {
+        return Ok(());
+    }
+    let Some(path) = args.iter().find_map(|a| find(a, &c.lossy)) else { return Ok(()) };
+    // In the shown language (the sidebar's strings); tests keep to English.
+    let text = if cfg!(test) { String::new() } else { yuzora_core::i18n::translate("yuzora-sidebar-git", "path.lossy", &[("path", path.to_owned())]) };
+    Err(GitError::Other(if text.is_empty() || text == "path.lossy" { format!("{path}: this name isn't UTF-8, so it can't be handed to git as it is; use a terminal for it") } else { text }))
+}
+
 
 pub fn split_z(out: &[u8]) -> impl Iterator<Item = String> + '_ {
     out.split(|b| *b == 0).filter(|f| !f.is_empty()).map(|f| String::from_utf8_lossy(f).into_owned())
@@ -683,5 +793,73 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
             Dirty::All => panic!("folded too far"),
         }
         assert!(took < std::time::Duration::from_secs(2), "{took:?} for 40 000 paths");
+    }
+
+    #[test]
+    fn forgetting_many_sparse_paths_looks_each_entry_up_once() {
+        let mut c = StatusCache::default();
+        for i in 0..100_000 {
+            let p = format!("d{}/f{i}", i % 1000);
+            c.tracked.insert(p.clone(), Entry { path: p.clone(), orig: None, x: '.', y: 'M', submodule: None, conflict: false });
+            c.staged_stats.insert(p.clone(), Stat::default());
+            c.unstaged_stats.insert(p, Stat::default());
+        }
+        // 5 000 files, none crowding a folder, and the folder `d7`.
+        let mut paths: Vec<String> = (0..5000).map(|i| format!("d{}/f{i}", i % 1000)).collect();
+        paths.push("d7".into());
+        let started = std::time::Instant::now();
+        forget(&mut c, &paths);
+        let took = started.elapsed();
+        // `d7` holds 100 of them, 5 of which are listed as files too.
+        let left = 100_000 - 5000 - 100 + 5;
+        assert_eq!((c.tracked.len(), c.staged_stats.len(), c.unstaged_stats.len()), (left, left, left));
+        assert!(!c.tracked.contains_key("d7/f5007") && c.tracked.contains_key("d8/f5008"));
+        assert!(took < std::time::Duration::from_secs(2), "{took:?} for 100 000 entries");
+    }
+
+    #[test]
+    fn a_listing_past_the_cap_is_an_error_not_a_short_list() {
+        let s = scratch();
+        for i in 0..5 {
+            s.commit(&format!("f{i}.txt"), "1\n", "add");
+        }
+        CAP.with(|c| c.set(200));
+        // About 110 bytes a record: five don't fit.
+        for i in 0..5 {
+            s.write(&format!("f{i}.txt"), "2\n");
+        }
+        let e = refresh(&s.repo).unwrap_err();
+        assert!(e.to_string().contains("more than"), "{e}");
+        assert!(!s.repo.status.lock().unwrap().loaded, "nothing short is kept");
+        // Only the dirty paths are read again: the same holds there.
+        CAP.with(|c| c.set(OUTPUT_CAP));
+        refresh(&s.repo).unwrap();
+        CAP.with(|c| c.set(200));
+        s.write("f0.txt", "3\n");
+        s.repo.status.lock().unwrap().dirty(Scope::Paths((0..5).map(|i| format!("f{i}.txt")).collect()));
+        assert!(refresh(&s.repo).unwrap_err().to_string().contains("more than"));
+        // Untracked files are listed by another command, with the same cap.
+        CAP.with(|c| c.set(OUTPUT_CAP));
+        s.git(&["checkout", "-q", "--", "."]);
+        refresh(&s.repo).unwrap();
+        CAP.with(|c| c.set(200));
+        for i in 0..5 {
+            s.write(&format!("an untracked file with a long name, number {i}.txt"), "x\n");
+        }
+        s.repo.status.lock().unwrap().dirty(Scope::All);
+        assert!(refresh(&s.repo).unwrap_err().to_string().contains("more than"));
+        CAP.with(|c| c.set(OUTPUT_CAP));
+    }
+
+    #[test]
+    fn names_that_arent_utf8_are_remembered_as_shown() {
+        let out = b"# branch.head main\0\
+1 .D N... 100644 100644 000000 aaa aaa caf\xe9.txt\0\
+2 R. N... 100644 100644 100644 aaa aaa R100 new.txt\0d\xe9j\xe0/old.txt\0\
+1 .M N... 100644 100644 100644 aaa aaa plain.txt\0";
+        let p = parse_porcelain_v2(out);
+        assert_eq!(p.entries.len(), 3);
+        assert_eq!(p.lossy, vec!["caf\u{FFFD}.txt".to_owned(), "d\u{FFFD}j\u{FFFD}/old.txt".to_owned()]);
+        assert_eq!(lossy_z(b"ok.txt\0b\xffd.txt\0").collect::<Vec<_>>(), vec!["b\u{FFFD}d.txt".to_owned()]);
     }
 }

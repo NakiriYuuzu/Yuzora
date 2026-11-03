@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Value, json};
 
 use crate::diff::{self, Change};
-use crate::diffview::{blob, worktree, write_index};
+use crate::diffview::{MAX_SIDE, blob, worktree, write_index};
 use crate::exec::{Git, GitError, GitResult};
 use crate::lru::Lru;
 use crate::repo::Repo;
@@ -155,6 +155,9 @@ pub struct ConflictSession {
     /// resolving checks them.
     stages: String,
     file: Option<Vec<u8>>,
+    /// A side or the file is past [`MAX_SIDE`], so only its start was read:
+    /// nothing is merged here, sides are taken whole ([`accept`]).
+    too_large: bool,
 }
 
 /// Whether lines end with their last (no lines: nothing is missing).
@@ -186,13 +189,18 @@ impl ConflictSession {
         if swapped {
             std::mem::swap(&mut ours, &mut theirs);
         }
-        let empty: &[u8] = &[];
-        let (lb, lo, lt) = (diff::lines(base.as_deref().unwrap_or(empty)), diff::lines(ours.as_deref().unwrap_or(empty)), diff::lines(theirs.as_deref().unwrap_or(empty)));
-        let [nb, no, nt] = number([&lb, &lo, &lt]);
-        let chunks = merge3(&nb, &no, &nt);
         let (stages, file) = (stages(&repo, path)?, worktree(&repo, path));
+        let too_large = [&base, &ours, &theirs, &file].iter().any(|s| s.as_ref().is_some_and(|x| x.len() > MAX_SIDE));
+        let chunks = if too_large {
+            Vec::new()
+        } else {
+            let empty: &[u8] = &[];
+            let (lb, lo, lt) = (diff::lines(base.as_deref().unwrap_or(empty)), diff::lines(ours.as_deref().unwrap_or(empty)), diff::lines(theirs.as_deref().unwrap_or(empty)));
+            let [nb, no, nt] = number([&lb, &lo, &lt]);
+            merge3(&nb, &no, &nt)
+        };
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        Ok(ConflictSession { id: NEXT.fetch_add(1, Ordering::SeqCst), repo, path: path.to_owned(), swapped, base, ours, theirs, chunks, stages, file })
+        Ok(ConflictSession { id: NEXT.fetch_add(1, Ordering::SeqCst), repo, path: path.to_owned(), swapped, base, ours, theirs, chunks, stages, file, too_large })
     }
 
     fn sides(&self) -> [Vec<&[u8]>; 3] {
@@ -240,6 +248,7 @@ impl ConflictSession {
             "labels": { "ours": yours, "theirs": theirs },
             "exists": { "base": self.base.is_some(), "ours": self.ours.is_some(), "theirs": self.theirs.is_some() },
             "binary": binary,
+            "tooLarge": self.too_large,
             "conflicts": self.chunks.iter().filter(|c| c.kind == Kind::Conflict).count(),
             "chunks": chunks,
         })
@@ -250,6 +259,9 @@ impl ConflictSession {
     /// non-conflicts take their change, unchosen conflicts are refused
     /// unless `markers` (git's conflict markers are written).
     pub fn result(&self, choices: &Value, markers: bool) -> GitResult<Vec<u8>> {
+        if self.too_large {
+            return Err(GitError::Other(format!("{}: too large to merge here (over 16 MiB); take one side whole", self.path)));
+        }
         let [b, o, t] = self.sides();
         let crlf = [&b, &o, &t].iter().any(|s| s.iter().any(|l| l.ends_with(b"\r\n")));
         let eol: &[u8] = if crlf { b"\r\n" } else { b"\n" };
@@ -556,6 +568,28 @@ mod tests {
         let c = ConflictSession::load(s.repo.clone(), "link").unwrap();
         c.resolve(&json!({ "0": "ours" })).unwrap();
         assert_eq!(std::fs::read_link(format!("{}/link", s.root())).unwrap().to_string_lossy(), "OURS\n");
+    }
+
+    #[test]
+    fn a_conflict_too_large_to_read_whole_is_refused() {
+        let s = scratch();
+        s.commit("f.txt", "top\nbase\n", "base");
+        s.git(&["switch", "-q", "-c", "other"]);
+        s.commit("f.txt", "top\nTHEIRS\n", "theirs");
+        s.git(&["switch", "-q", "main"]);
+        // Past what a side may hold, so only a prefix of it would be read.
+        s.commit("f.txt", &format!("top\nOURS\n{}", "x\n".repeat(crate::diffview::MAX_SIDE / 2 + 1)), "ours");
+        assert!(!s.repo.run(Git::write(["merge", "other"])).unwrap().ok());
+        let path = format!("{}/f.txt", s.root());
+        let before = std::fs::metadata(&path).unwrap().len();
+        let c = ConflictSession::load(s.repo.clone(), "f.txt").unwrap();
+        let v = c.view();
+        assert_eq!((v["tooLarge"].clone(), v["chunks"].as_array().map(Vec::len)), (json!(true), Some(0)));
+        let e = c.resolve(&json!({ "1": "ours" })).unwrap_err();
+        assert!(e.to_string().contains("too large"), "{e}");
+        assert!(c.result(&json!({}), true).is_err());
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), before);
+        assert!(!s.git(&["ls-files", "-u", "--", "f.txt"]).is_empty(), "still conflicted");
     }
 
     #[test]

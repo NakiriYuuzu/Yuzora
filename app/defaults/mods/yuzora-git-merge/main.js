@@ -157,6 +157,7 @@ export default class GitMerge extends View {
         if (this.ctx !== ctx || this.file !== path) return;
         this.labels = v.labels; this.labelsKey = this.opKey();
         if (v.binary) this.fileError = t("file.binary");
+        else if (v.tooLarge) this.fileError = t("file.tooLarge");
         else { this.session = v; this.prepare(); }
       } catch (e) { if (this.ctx === ctx && this.file === path) this.fileError = String(e); }
       finally { if (this.ctx === ctx && this.file === path) this.loading = false; cx.notify(); }

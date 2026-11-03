@@ -247,6 +247,7 @@ fn repo_fn(m: HostModule, name: &'static str, job: impl Fn(Arc<Repo>, Vec<Value>
             // `status` shows the trust prompt itself; `trust` answers it.
             if !matches!(name, "status" | "trust") {
                 trust::check(&repo)?;
+                status::refuse_lossy(&repo, &rest)?;
             }
             job(repo, rest)
         }))
@@ -263,7 +264,7 @@ fn repo_fn_cancellable(m: HostModule, name: &'static str, opt: usize, job: impl 
         let (cancel, token) = cancel_for(&if o.is_string() { json!({ "token": o }) } else { o });
         let job = job.clone();
         Ok(finish(name, move || {
-            let r = trust::check(&repo).and_then(|_| job(repo, rest, cancel));
+            let r = trust::check(&repo).and_then(|_| status::refuse_lossy(&repo, &rest)).and_then(|_| job(repo, rest, cancel));
             forget_cancel(token);
             r
         }))
@@ -518,5 +519,44 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("the log never loaded");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_that_isnt_utf8_is_never_acted_on_by_how_it_is_shown() {
+        use std::io::Write;
+        let s = crate::repo::testing::scratch();
+        s.commit("a.txt", "1\n", "first");
+        // `café` in Latin-1, which status shows as `caf\u{FFFD}.txt`. Only the
+        // index can hold it (APFS refuses the name), so it shows as deleted.
+        let oid = s.git(&["rev-parse", "HEAD:a.txt"]).trim().to_owned();
+        let mut add = std::process::Command::new("git").args(["update-index", "--index-info"]).current_dir(s.root()).stdin(std::process::Stdio::piped()).spawn().unwrap();
+        add.stdin.take().unwrap().write_all(&[format!("100644 {oid}\t").as_bytes(), b"caf\xe9.txt\n"].concat()).unwrap();
+        assert!(add.wait().unwrap().success());
+        s.git(&["commit", "-qm", "latin-1"]);
+        // And a file that really has the shown name.
+        s.commit("caf\u{FFFD}.txt", "shown\n", "shown");
+        s.write("caf\u{FFFD}.txt", "changed\n");
+        let r = repo::open(s.root(), None).unwrap();
+        let m = host_module();
+        let id = HostValue::Str(r.id.clone());
+        let call = |f: &str, rest: Value| crate::repo::tests::futures_lite_block(m.begin(f, &HostArguments::new([id.clone(), to_host(&rest)])).unwrap());
+        let st = json_of(&call("status", json!({})).unwrap());
+        assert!(st["unstaged"].as_array().unwrap().iter().any(|e| e["path"] == "caf\u{FFFD}.txt"), "{st}");
+        for (f, args) in [("stage", json!(["caf\u{FFFD}.txt"])), ("discard", json!(["caf\u{FFFD}.txt"])), ("diffOpen", json!({ "path": "caf\u{FFFD}.txt" }))] {
+            let e = call(f, args).unwrap_err();
+            assert!(e.message().contains("caf\u{FFFD}.txt"), "{f}: {}", e.message());
+        }
+        assert_eq!(s.git(&["diff", "--cached", "--name-only"]), "");
+        assert_eq!(std::fs::read_to_string(format!("{}/caf\u{FFFD}.txt", s.root())).unwrap(), "changed\n");
+        // The file that really has the shown name changes: reading that name
+        // again mustn't lose the other one.
+        s.write("caf\u{FFFD}.txt", "again\n");
+        r.invalidate(status::Scope::Paths(vec!["caf\u{FFFD}.txt".into()]));
+        call("status", json!({})).unwrap();
+        assert!(call("stage", json!(["caf\u{FFFD}.txt"])).is_err(), "after a partial refresh");
+        // Names that are UTF-8 still work, and so does a folder above the odd one.
+        call("stage", json!(["a.txt", "."])).unwrap();
+        repo::close(&r.id);
     }
 }
