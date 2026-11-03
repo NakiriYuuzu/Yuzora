@@ -1145,6 +1145,9 @@ with these differences.
   only from a manifest signed with the release key. `"update": {"channel":
   "stable"}` (or `"beta"`) in `yuzora/settings.json` picks the channel; an
   update waiting shows in Settings and goes in when Yuzora restarts.
+- What's new follows the language shown (`general.locale`): Chinese
+  (zh-TW) or English. A newer release's notes are kept per language,
+  `update-notes-cache.md` (English) and `update-notes-cache.zh-TW.md`.
 <!-- yuzora:lane:L7:end -->
 
 <!-- yuzora:lane:L8:start -->
