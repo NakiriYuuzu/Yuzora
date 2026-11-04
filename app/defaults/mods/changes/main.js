@@ -135,6 +135,9 @@ export default class Changes extends View {
         lines = [`@@ -0,0 +1,${file.add} @@`, ...text.slice(0, 400000).replace(/\n$/, "").split("\n").slice(0, 1500).map(l => `+${l}`)];
       }
     } else {
+      // yuzora(L2c): asked again, as the config may have gained a program since the refresh.
+      const waits = await untrusted(root, on);
+      if (waits) { if (key() === context && this.open === path) this.setLines([tr("untrusted", { keys: waits.join(", ") })]); return; }
       const r = await exec("git", [...READ, "diff", ...(this.hasHead ? ["HEAD"] : []), "--no-ext-diff", "--no-textconv", "--no-color", "--", path], { cwd: root, on });
       if (r.code !== 0) throw new Error(r.stderr);
       const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
@@ -166,6 +169,8 @@ export default class Changes extends View {
     this.busy = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
+        const waits = await untrusted(root, on); // yuzora(L2c): asked again, as on a diff
+        if (waits) throw new Error(tr("untrusted", { keys: waits.join(", ") })); // yuzora(L2c)
         for (const args of [["add", "-A"], ["commit", "-m", message]]) {
           const r = await exec("git", args, { cwd: root, on });
           if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());

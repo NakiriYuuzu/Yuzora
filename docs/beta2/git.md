@@ -94,11 +94,11 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 | 位置 | 指令 | 結論 |
 |---|---|---|
 | `app/defaults/mods/changes/main.js` | `rev-parse --show-toplevel` | 白名單 |
-| 同上 | `status`、`rev-parse --verify HEAD`、`diff HEAD --numstat`、單檔 `diff`、Commit 的 `add -A`＋`commit` | 已改：先問 `yuzora:git` 是否還在等信任。未信任時清單位置顯示提示，後面的指令都不跑，Commit 停用 |
+| 同上 | `status`、`rev-parse --verify HEAD`、`diff HEAD --numstat`、單檔 `diff`、Commit 的 `add -A`＋`commit` | 已改：先問 `yuzora:git` 是否還在等信任。未信任時清單位置顯示提示，後面的指令都不跑，Commit 停用。Commit 與單檔 diff 執行前再問一次（refresh 之後，repo 設定可能多了程式） |
 | `app/defaults/mods/files/main.js` | `rev-parse --show-toplevel` | 白名單 |
 | 同上 | `status --porcelain=v1`（檔案的 Git 標記） | 已改：未信任時不標記，清單下方顯示提示；`yuzora:git` 回答不了時也不標記，但不顯示提示 |
 | `app/defaults/mods/worktree/main.js` | `rev-parse`（`repoOf`） | 白名單 |
-| 同上 | `status --porcelain`、submodule 檢查（`rev-parse HEAD:<path>`、`cat-file -e`、`rev-list`）、`worktree list`＋`for-each-ref` 的 `committerdate`、`show-ref`、`worktree add`／`remove` | 已改：未信任時對話框顯示提示，新增、開啟、移除都不能執行。讀 commit 的指令在 partial clone 可能用 repo 的 ssh 指令去抓物件，所以開啟也一起擋 |
+| 同上 | `status --porcelain`、submodule 檢查（`rev-parse HEAD:<path>`、`cat-file -e`、`rev-list`）、`worktree list`＋`for-each-ref` 的 `committerdate`、`show-ref`、`worktree add`／`remove` | 已改：未信任時對話框顯示提示，新增、開啟、移除都不能執行。讀 commit 的指令在 partial clone 可能用 repo 的 ssh 指令去抓物件，所以開啟也一起擋。按 Enter 時再問一次，未信任就留在對話框顯示提示 |
 | `app/defaults/mods/spaces/main.js` | `status --porcelain=v2 --branch` | 已改：改用 `yuzora:shell` 的 `gitStatus`（只讀 refs、config 與 commit，partial clone 帶 `--no-lazy-fetch`），不論是否信任都不再跑 status。分離的 HEAD 顯示成 `detached` |
 | 同上 | `rev-parse --show-toplevel`、`--git-common-dir` | 白名單 |
 | `app/defaults/mods/menu/main.js` | `rev-parse --show-toplevel`、`--git-common-dir` | 白名單 |
@@ -114,16 +114,16 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 其他命中都是測試。`yuzora-statusbar`、`yuzora-modebar`、`yuzora-settings-general` 裡的 `"git"` 是模式名稱，不跑 git。
 
 - 判斷方式：
-  - mods 用 `yuzora:git` 的 `open(cwd, on)` 與 `status(id)`，`trust` 有值就是未信任。這和 Git 側欄是同一份答案，遠端 machine 也適用。已信任的資料夾，引擎會順便讀一次 status（有快取與 watcher）。
+  - mods 用 `yuzora:git` 的 `open(cwd, on)` 與 `status(id)`，`trust` 有值就是未信任。這和 Git 側欄是同一份答案，遠端 machine 也適用。沒有待信任的項目時（已信任，或設定裡本來就沒有會執行的程式），`status` 會順便讀一次 status：有快取；本機另有 watcher，遠端 machine 沒有，靠 `changed()` 逾時輪詢（見〈已知限制〉）。
   - Rust 用 `yuzora_core::git_trust::pending(None, top)`，`top` 是帶 `READ_FLAGS` 的 `rev-parse --show-toplevel` 的輸出。讀不到、不是 UTF-8 或 `Err` 都當成未信任。
 - 提示文字放在各 mod 自己的 `i18n/{en,zh-TW}.json`（`changes`、`files`、`worktree`），其他文字維持上游的英文。
 - 測試：
   - `app/src/yuzora/trust.rs`：fixture 用自己的 HOME 建立，斷言未信任時沒有任何程式執行、信任後照舊（fixture 的程式真的會被 git 執行）。白名單指令同樣在這個 fixture 跑過。Linux 上另外從 `watchFolder` 端到端跑一次。
-  - `app/scripts/yuzora-trust-mods.test.ts`：真實的 git，`yuzora:git` 的回答用 stub。也守住 default mods 跑 git 的位置數，上游同步多了新的入口時會失敗，要重新判斷。
+  - `app/scripts/yuzora-trust-mods.test.ts`：真實的 git，`yuzora:git` 的回答用 stub。也守住 default mods 跑 git 的位置數：每個 `exec("git", …)`，以及 mod 自己包住它的 helper（第一行就是 `exec("git", …)` 的函式，或 `name = (…) => exec("git", …)`，目前是 `changes` 與 `worktree` 的 `git`、`menu` 的 `checkout`）的呼叫數。上游同步在這些地方多了呼叫時會失敗，要重新判斷。經由更上層、本身會跑 git 的函式（例如 `worktree` 的 `submodules()`）多出的呼叫數不到，同步時仍要讀這幾個 mod 的 diff。
   - 拿掉任一處檢查，對應的測試都會失敗。
 - 已知限制：
   - Linux 上未信任的 repo 不知道哪些資料夾被忽略，`watchFolder` 會連 `node_modules` 這類資料夾一起監看，超過 4096 個資料夾時改成定時重讀（原本就有的退路）。
-  - 這個信任掃描在 `watchFolder` 啟動時同步執行，和原本同步執行的 `ls-files` 在同一個位置，多幾次 git 呼叫（20 萬筆 entry 的 index 約 115 ms）。
+  - 這個信任掃描和原本的 `ls-files` 在同一個位置（`watch_directories`）：`watchFolder` 啟動時同步執行（持有資料夾監看的 registry 鎖），之後每次重新掃描資料夾（新增或刪除資料夾這類事件）也在監看的執行緒裡再跑一次。多出 `rev-parse` 與掃描本身的 git 呼叫：20 萬筆 entry 的 index 約 125 ms（git 2.50.1、Apple Silicon 實測，`ls-files -s` 本身約 60 ms）。
   - 和引擎一樣以檢查當下為準：信任是對資料夾，信任之後 repo 設定再多出程式也照樣執行。
   - Spaces 清單：git 拒絕讀的 repo（例如擁有者不符）現在記成「不是 repo」，fallback 時不重問；切換資料夾或指令結束時仍會重問。
 
@@ -410,3 +410,11 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - 修法：不再列舉寫法。`modules/` 底下（同一個 `modules()`，所以巢狀與 linked worktree 的 `modules/` 也一樣）`find -L -type l` 列出的就是 kernel 跟不過去的 link，一律當成讀不到；`.git/modules` 存在但不是 kernel 打得開的資料夾，也當成讀不到。GNU find（Linux）遇到 ENOTDIR、ELOOP 的 link 會報錯結束（exit 1），只有目標不存在的才列成 `-type l`，這時整個 `modules/` 當成讀不到，一樣 fail closed（ubuntu 24.04 的 findutils 4.9.0 實測）。git 沒有指令能對任意路徑做 `real_pathdup`，沒辦法以 git 的解析為準，所以 fail closed。kernel 跟得過去的 link 照舊：kernel 與 git 都打得開時，兩者解析到同一個地方。
   - 連帶效果：只存在 packed-refs 的 symlink HEAD 對 kernel 也是斷掉的 link，第五輪的兩個測試多了一筆 `…/HEAD` 讀不到（git dir 的設定照樣讀到）。見〈已知限制〉。
 - 測試：core 的 `a_link_the_kernel_cant_follow_shuts_the_gate` 每種寫法各建一個 repo，先證明 git 在自己的 process 裡打開了 submodule，再檢查掃描：C1–C5 都是讀不到，指到資料夾、結尾加 `/` 的 link（C7）與 32 層鏈照常讀到 key。Linux 上 C1–C3 記成整個 `.git/modules` 讀不到；Linux kernel 可以跟 40 層，33 層鏈照常讀到 key。修正前 C1–C5 都是 `Ok([])`。
+
+### #211 審查的 follow-up
+
+#211 的 reviewer 提出三項（F1–F3），報告原文已遺失，依交接檔的摘要處理。
+
+- F1：Changes 的 Commit 與單檔 diff、Worktree 對話框的 Enter 用的是 refresh 或對話框開啟時的信任答案。之後 repo 設定若多了程式（例如 `git lfs install --local` 加上 clean／smudge filter），仍會照跑。現在三處在執行 git 前都再問一次 `yuzora:git`。測試先建一個沒有程式的 repo，讀過答案後把答案改成「等信任」，三處都不再執行 git；Worktree 也不會關掉對話框。拿掉任一處重新判斷，測試都會失敗。
+- F2：計數守衛只數 `exec("git", …)`，透過 mod 既有的 `git()` helper 新增的呼叫數不到（reviewer 在 Worktree 的 Escape 加了 `status`，測試照樣通過）。現在連 helper 的呼叫數一起守住，那個 mutant 會讓測試失敗；守不到的範圍寫在上面〈測試〉。
+- F3：git.md 的「判斷方式」與「已知限制」各有一句與實作不符，依實作逐句核對後改正：「已信任的資料夾」改成「沒有待信任的項目時」，並寫明遠端 machine 沒有 watcher；信任掃描除了啟動時，Linux 每次重新掃描資料夾也會再跑，20 萬筆的時間重新實測。
