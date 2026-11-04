@@ -4,12 +4,6 @@
     "close": "關閉 tab",
     "terminal": "終端機"
   },
-  "pane": {
-    "add": "新增 pane",
-    "split_right": "在右側開終端機",
-    "split_down": "在下方開終端機",
-    "no_pane": "先選一個 pane 才能分割"
-  },
   "menu": {
     "where": "放在",
     "right": "右側",

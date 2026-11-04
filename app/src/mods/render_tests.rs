@@ -853,6 +853,21 @@ fn yuzora_tab_bar_lists_only_the_current_space(cx: &mut TestAppContext) {
     assert_eq!(ids, [false; 4], "{tree}");
 }
 
+// yuzora(L1): the tab bar has no new-pane or split buttons (the user asked for them gone,
+// 2026-11-04), with or without a focused pane; "+" and the window's tabs stay.
+#[gpui::test]
+fn yuzora_tab_bar_has_no_new_pane_or_split_buttons(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for populated in [true, false] {
+        let tree = describe(cx, &staged, "mods/yuzora-shell-tabs", populated, json!({}), updates("current", "current"), None).unwrap();
+        for id in ["pane-add", "split-right", "split-down"] {
+            assert!(!tree.contains(&format!("\"{id}\"")), "{id} must not be in the tab bar: {tree}");
+        }
+        assert!(tree.contains("\"tab-new\""), "the + button stays: {tree}");
+    }
+}
+
 // yuzora(L1): a picked row closes the menu and goes where the pills say: beside the focused
 // pane, or a new tab when nothing is focused.
 #[gpui::test]
