@@ -95,3 +95,4 @@ cd app && cargo test --locked -p yuzora-ssh
   - Notepad：`exec("notepad", …)` 不會返回（Server 2022 的 notepad 啟動 35 秒後仍在執行，`exec` 30 秒就殺掉它與未存的內容）。改用 `yuzora:ssh` 的 `openInNotepad(path)`：不經 shell、不等待，只接受 `openRemote` 建立的暫存複本（不能叫它開別的檔案）。不用 `cmd /c start`（檔名含 `&` 會被 cmd 再解析）或預設程式（`.bat` 會執行）；開 L5 編輯器 pane 要另接上傳監看流程，留待後續。Windows 11 的 notepad 若是啟動器會立刻返回，兩種情況新做法都適用，Windows 11 未實測。
   - 本機面板：`list` 用 `yuzora_core::paths::plain` 去掉 `canonicalize` 的 `\\?\`，`~\` 與 `~/` 都展開（測試 `a_windows_listing_shows_plain_paths_and_knows_the_backslash_home`）。
 - Windows：agent 走 `\\.\pipe\openssh-ssh-agent`／Pageant；整合測試只在 Unix 跑，Windows 未實機驗證。
+- Windows 上的 ProxyCommand 必須是非互動的（key 或 agent）：它以 `CREATE_NO_WINDOW` 啟動，跳板機的密碼或 host key 確認沒有地方可以輸入，會一直等到連線逾時才失敗（macOS／Linux 的 GUI app 沒有 controlling tty，同樣不能互動，只是立刻失敗）。

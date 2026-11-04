@@ -267,7 +267,7 @@ L0 PR #187 最後一次成功的執行（run 41480446879）：
 - 建議：
   1. 維持只在 integration push 存快取（現狀）。
   2. 觀察合併後的命中率；若 Tauri 的快取被頻繁擠掉，考慮 app-ci 只快取 `~/.cargo/registry`，不快取 `app/target`（冷建置成本只多幾分鐘）。
-  3. `app-ci.yml` 沒有 Windows。Windows 只在 `app-package.yml` 建置；建議發布前與大型合併後手動跑一次 `app-package.yml`。
+  3. `app-ci.yml` 的 Windows 只有一個 job（`windows-console`），只跑 `cfg(windows)` 的 console 視窗測試（`yuzora-core spawn::`、`yuzora-git exec::`、`yuzora-files fsops::tests::run_starts`），其餘 Windows 只在 `app-package.yml` 建置；建議發布前與大型合併後手動跑一次 `app-package.yml`。
 - `app-package.yml` 刻意**不用快取**：四個平台的 release target 很大，會擠掉其他快取；它只在打包相關變更時跑。
 
 ## 9. 需同步的項目
