@@ -12,6 +12,8 @@ Fixes for beta.2, mostly on Windows, and faster Git and Files on large folders a
 - The Files sidebar and panels no longer reload on macOS and Windows every time a build writes into an ignored folder such as `target/` or `node_modules/`.
 - The status bar's Git look takes one round trip on a remote machine instead of three.
 - On a remote machine, opening a diff takes 2 round trips instead of 5 (unstaged) or 4 (staged), and the Git log reads its refs in 1 instead of 3: reads that don't depend on each other now go out together.
+- Running programs on this computer (Git, search, scripts) no longer waits for polling: a `git --version` call dropped from about 52 ms to 29 ms on Windows and from about 53 ms to 8 ms on macOS.
+- An open Git diff no longer reloads whenever anything in the repository changes, only when its own file (or the one it was renamed from) may have.
 
 ### Fixed
 
@@ -21,6 +23,8 @@ Fixes for beta.2, mostly on Windows, and faster Git and Files on large folders a
 - Git: trusting two folders at the same moment keeps both trusted, and a Git command that runs while a folder is being trusted no longer reads the list half written.
 - Git: if a folder's Git config gains a program after Yuzora last checked it (a Git LFS filter, for example), the Changes panel's diff and Commit and the worktree dialog now check trust again right before they run Git, and the Files panel's Git marks and search never fetch, even with a Git older than 2.44.
 - Windows: the installer's prompt to remove an older all-users Yuzora now notes that connections and settings are not brought over automatically yet.
+- Windows: SFTP "Edit" no longer closes Notepad after 30 seconds, and Settings can move templates to the Recycle Bin and show files in Explorer.
+- Windows: the editor, Markdown and image panes now reload when the file changes on disk, and the SFTP local panel shows `C:\…` paths.
 
 ### Installation notes
 

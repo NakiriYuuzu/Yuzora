@@ -12,6 +12,8 @@
 - macOS 與 Windows 上，build 寫入 `target/`、`node_modules/` 這類被 ignore 的資料夾時，Files 側欄與面板不再每次都重新載入。
 - 狀態列的 Git 資訊在遠端機器上只要一次來回，不再是三次。
 - 遠端機器上，開啟 diff 的來回次數從 5 次（unstaged）或 4 次（staged）降到 2 次，Git log 讀取 refs 也從 3 次降到 1 次：彼此不相依的讀取改成同時發出。
+- 在本機執行程式（Git、搜尋、腳本）時不再多等輪詢：`git --version` 這類呼叫在 Windows 上從約 52 ms 降到 29 ms，在 macOS 上從約 53 ms 降到 8 ms。
+- 開著的 Git diff 不再因為 repo 裡任何變動就重新載入，只有它自己的檔案（或改名前的檔案）可能變動時才會。
 
 ### 修正
 
@@ -21,6 +23,8 @@
 - Git：同時信任兩個資料夾時，兩個都會留在清單裡；正在信任資料夾時執行的 Git 指令，也不會再讀到寫一半的清單。
 - Git：資料夾的 Git 設定在 Yuzora 上次檢查之後才多了會執行的程式（例如 Git LFS 的 filter）時，Changes 面板的 diff 與 Commit、worktree 對話框現在會在執行 Git 前再確認一次信任；Files 面板的 Git 標記與搜尋即使用 2.44 以前的 Git，也不會去抓物件。
 - Windows：安裝程式詢問移除舊版全機安裝時，改為說明舊版資料會保留、但目前尚不會自動帶入連線與設定。
+- Windows：SFTP「編輯」不再於 30 秒後關掉記事本；設定頁可把模板移到資源回收筒、在檔案總管中顯示檔案。
+- Windows：編輯器、Markdown、圖片窗格會在檔案於磁碟上變更時重新載入；SFTP 本機面板顯示 `C:\…` 路徑。
 
 ### 安裝說明
 

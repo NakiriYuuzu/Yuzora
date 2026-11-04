@@ -14,6 +14,10 @@
 - 狀態列：Git 分支資訊在遠端機器上只要一次來回（原本三次），本機則兩項讀取並行。
 - 遠端 Git 讀取：diff 中彼此不相依的讀取（index 項目、blob、種類、HEAD、modes）、log 的 refs 與 repo 的進行中操作狀態改成同時發出，不再循序（unstaged diff 5 → 2 輪、staged 4 → 2 輪、refs 3 → 1 輪）；diff 的 index 側改用該項目的 object id 讀取，內容與檢查過的項目是同一份。
 - Windows：安裝程式詢問移除舊版全機安裝時，改為說明舊版資料會保留、但目前尚不會自動帶入連線與設定。
+- Windows：SFTP「編輯」不再於 30 秒後關掉記事本；設定頁可把模板移到資源回收筒、在檔案總管中顯示檔案。
+- Windows：編輯器、Markdown、圖片窗格會在檔案於磁碟上變更時重新載入；SFTP 本機面板顯示 `C:\…` 路徑。
+- 在本機執行程式（Git、搜尋、腳本）時不再多等輪詢：`git --version` 這類呼叫在 Windows 上從約 52 ms 降到 29 ms，在 macOS 上從約 53 ms 降到 8 ms。
+- Git diff pane：只有變動可能碰到自己的檔案、改名前的檔案、它們的上層資料夾或底下的路徑，或任何 `.gitattributes` 時才重新載入，不再因為 repo 裡任何變動就重讀；無法判斷變動的路徑時（git 寫了 index 或 refs、rescan）照舊重新載入。
 
 ## [0.1.0-beta.2] - 2026-11-04
 

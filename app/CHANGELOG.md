@@ -15,6 +15,10 @@
 - Status bar: the Git branch look takes one round trip on a remote machine instead of three, and two reads run in parallel on a local one.
 - Remote Git reads: a diff's independent reads (index entry, blob, kind, HEAD, modes), the log's refs and the repo's operation state are sent together instead of one after another (unstaged diff 5 → 2 round trips, staged 4 → 2, refs 3 → 1), and the index side of a diff is read by the entry's object id so it matches the entry it was checked against.
 - Windows: the installer's prompt to remove an older all-users Yuzora now notes that connections and settings are not brought over automatically yet.
+- Windows: SFTP "Edit" no longer closes Notepad after 30 seconds, and Settings can move templates to the Recycle Bin and show files in Explorer.
+- Windows: the editor, Markdown and image panes now reload when the file changes on disk, and the SFTP local panel shows `C:\…` paths.
+- Running programs on this computer (Git, search, scripts) no longer waits for polling: a `git --version` call dropped from about 52 ms to 29 ms on Windows and from about 53 ms to 8 ms on macOS.
+- Git diff pane: it loads again only when a change may touch its file, the one it was renamed from, a folder above or a path inside either, or a `.gitattributes`, instead of for any change in the repo; when the changed paths can't be told (the index or refs git wrote, a rescan) it loads again as before.
 
 ## [0.1.0-beta.2] - 2026-11-04
 
