@@ -2,6 +2,33 @@
 
 <samp><a href="CHANGELOG.md">English</a> · 繁體中文</samp>
 
+## [0.1.0-beta.3] - 2026-11-04
+
+修正 beta.2 的問題（以 Windows 為主），並讓大型資料夾與遠端機器上的 Git、Files 更快。
+
+### 改善
+
+- 檢查資料夾是否需要信任，現在只要一次 Git 呼叫（遠端機器少一次來回），Changes 面板每次 refresh 也只檢查一次，不再是兩次。
+- macOS 與 Windows 上，build 寫入 `target/`、`node_modules/` 這類被 ignore 的資料夾時，Files 側欄與面板不再每次都重新載入。
+- 狀態列的 Git 資訊在遠端機器上只要一次來回，不再是三次。
+
+### 修正
+
+- Windows 上執行 Git、檔案與遠端指令時，不再連續跳出 console 視窗。
+- tab 列恢復只列出目前 Space 的 tab（與 Herdr 相同），不再列出所有 Space 的 tab。
+- Git：並排 diff 的左右兩側現在各自依該側最長的一行決定寬度，新增檔案的內容會直接出現，不再被空白的左欄推到畫面外。
+- Git：同時信任兩個資料夾時，兩個都會留在清單裡；正在信任資料夾時執行的 Git 指令，也不會再讀到寫一半的清單。
+- Git：資料夾的 Git 設定在 Yuzora 上次檢查之後才多了會執行的程式（例如 Git LFS 的 filter）時，Changes 面板的 diff 與 Commit、worktree 對話框現在會在執行 Git 前再確認一次信任；Files 面板的 Git 標記與搜尋即使用 2.44 以前的 Git，也不會去抓物件。
+- Windows：安裝程式詢問移除舊版全機安裝時，改為說明舊版資料會保留、但目前尚不會自動帶入連線與設定。
+
+### 安裝說明
+
+- beta.2 不會自動更新到 beta.3（beta 版只會更新到正式版）。請到 GitHub 的 `v0.1.0-beta.3` Pre-release 自行下載，直接覆蓋安裝在 beta.2 上。
+- macOS App 僅支援 Apple Silicon，只有 ad-hoc 簽章，沒有 Apple Developer ID 簽章或公證，所以第一次開啟會被 Gatekeeper 擋下：到「系統設定 › 隱私權與安全性」按「強制打開」（或執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`）。
+- Windows 使用免系統管理員權限的 NSIS 安裝程式 `Yuzora_<version>_x64-setup.exe`。Authenticode 尚未啟用，可能出現 SmartScreen 提示。
+- Linux（實驗性）提供 x86_64 與 aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`，解開後執行 `yuzora/install`。只通過 CI，尚未實機試過。
+- beta.2 的已知限制仍然適用。
+
 ## [0.1.0-beta.2] - 2026-11-04
 
 Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI、libghostty、QuickJS mods）為基底重寫成原生 App。終端機與 agent 改由 herdr-core（`hc`）執行，關掉視窗也會繼續；介面依新設計重做。

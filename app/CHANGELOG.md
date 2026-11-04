@@ -2,6 +2,19 @@
 
 <!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
 <!-- yuzora(L7): each Yuzora entry here has its Traditional Chinese twin in CHANGELOG.zh-TW.md: add a line to both. -->
+## [0.1.0-beta.3] - 2026-11-04
+
+### Fixed
+- Windows no longer pops up a stream of console windows while Yuzora runs Git, file and remote commands.
+- The tab bar lists only the current Space's tabs again, as Herdr does, instead of every Space's tabs.
+- Git diff, side by side: each side is as wide as its own longest line (an added file's empty left side no longer takes the width of its longest line), and a click on a side's line numbers picks that side's line where the row lays it out.
+- Trusted folders: `trusted.json` is changed one writer at a time (threads and processes alike, under `trusted.json.lock`) and replaced whole, so a folder trusted at the same moment as another is no longer lost, and a command that reads the list meanwhile no longer takes the folder for untrusted.
+- Untrusted folders: the Changes panel's diff and Commit and the worktree dialog's Enter ask again whether the folder is trusted right before they run Git (its config may have gained a program since the panel last read it), and the Git the Files panel runs reaches no remote at all, a local one included, so a Git older than 2.44 can't fetch for a partial clone either.
+- Trust check: the repository's config is read in the same shell as the submodule scan, so each check is one git call (one `hc exec` on a machine), and an answer without the config's exit code counts as unreadable; the Changes panel's refresh no longer asks a second time for the diff it opens on its own.
+- Files: on macOS and Windows, changes inside a folder that the root `.gitignore` or `.git/info/exclude` ignores (a build's `target/`, `node_modules/`) no longer wake the Files sidebar and panels.
+- Status bar: the Git branch look takes one round trip on a remote machine instead of three, and two reads run in parallel on a local one.
+- Windows: the installer's prompt to remove an older all-users Yuzora now notes that connections and settings are not brought over automatically yet.
+
 ## [0.1.0-beta.2] - 2026-11-04
 
 ### New

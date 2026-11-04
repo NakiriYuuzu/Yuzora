@@ -1,6 +1,19 @@
 # Yuzora 更新說明
 
 <!-- yuzora(L7): CHANGELOG.md 裡 Yuzora 每一筆的繁體中文版，版本、### New／### Fixed 標題與項目數都要一樣（App 依標題判斷 Fixed）。這裡沒有的版本，App 會改顯示 CHANGELOG.md 的英文。 -->
+## [0.1.0-beta.3] - 2026-11-04
+
+### Fixed
+- Windows 上執行 Git、檔案與遠端指令時，不再連續跳出 console 視窗。
+- tab 列恢復只列出目前 Space 的 tab（與 Herdr 相同），不再列出所有 Space 的 tab。
+- 並排的 Git diff：左右各自依該側最長的一行決定寬度（新增檔案空白的左欄不再佔掉最長一行的寬度），點行號選行時也照實際的欄寬判斷是哪一側。
+- 信任的資料夾：`trusted.json` 一次只讓一個寫入者修改（thread 與 process 都一樣，用 `trusted.json.lock` 上鎖），並整份取代，所以同時信任的資料夾不會再被蓋掉，同一時間讀清單的指令也不會把資料夾當成未信任。
+- 未信任的資料夾：Changes 面板的 diff 與 Commit、worktree 對話框的 Enter，在執行 Git 前會再確認一次資料夾是否信任（面板上次讀取之後，設定可能多了程式）；Files 面板執行的 Git 不連任何 remote（包括本機的），所以 2.44 以前的 Git 也不會替 partial clone 去抓物件。
+- 信任檢查：repo 設定和 submodule 掃描在同一個 shell 裡讀，每次檢查只要一次 git 呼叫（遠端一次 `hc exec`），回答裡沒有設定的 exit code 時當成讀不到；Changes 面板 refresh 自動開啟的 diff 不再多問一次。
+- Files：macOS 與 Windows 上，根目錄 `.gitignore` 或 `.git/info/exclude` 忽略的資料夾（build 的 `target/`、`node_modules/`）裡的變動，不再喚醒 Files 側欄與面板。
+- 狀態列：Git 分支資訊在遠端機器上只要一次來回（原本三次），本機則兩項讀取並行。
+- Windows：安裝程式詢問移除舊版全機安裝時，改為說明舊版資料會保留、但目前尚不會自動帶入連線與設定。
+
 ## [0.1.0-beta.2] - 2026-11-04
 
 ### New

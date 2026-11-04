@@ -2,6 +2,33 @@
 
 <samp>English · <a href="CHANGELOG.zh-TW.md">繁體中文</a></samp>
 
+## [0.1.0-beta.3] - 2026-11-04
+
+Fixes for beta.2, mostly on Windows, and faster Git and Files on large folders and remote machines.
+
+### Improved
+
+- Checking whether a folder needs trust takes one Git call instead of two (one round trip to a remote machine instead of two), and the Changes panel checks once per refresh instead of twice.
+- The Files sidebar and panels no longer reload on macOS and Windows every time a build writes into an ignored folder such as `target/` or `node_modules/`.
+- The status bar's Git look takes one round trip on a remote machine instead of three.
+
+### Fixed
+
+- Windows no longer pops up a stream of console windows while Yuzora runs Git, file and remote commands.
+- The tab bar lists only the current Space's tabs again, as Herdr does, instead of every Space's tabs.
+- Git: in a side-by-side diff, each side is now as wide as its own longest line, so a new file's lines show right away instead of sitting past an empty left column.
+- Git: trusting two folders at the same moment keeps both trusted, and a Git command that runs while a folder is being trusted no longer reads the list half written.
+- Git: if a folder's Git config gains a program after Yuzora last checked it (a Git LFS filter, for example), the Changes panel's diff and Commit and the worktree dialog now check trust again right before they run Git, and the Files panel's Git marks and search never fetch, even with a Git older than 2.44.
+- Windows: the installer's prompt to remove an older all-users Yuzora now notes that connections and settings are not brought over automatically yet.
+
+### Installation notes
+
+- beta.2 does not update itself to beta.3 (a beta build only updates to a stable release). Download beta.3 by hand from the `v0.1.0-beta.3` Pre-release on GitHub and install it over beta.2.
+- The macOS app supports only Apple Silicon and has only an ad-hoc signature, with no Apple Developer ID signature or notarization, so Gatekeeper blocks the first open. Go to "System Settings › Privacy & Security" and click "Open Anyway" (or run `xattr -dr com.apple.quarantine /Applications/Yuzora.app`).
+- Windows uses a per-user NSIS installer that needs no admin rights, `Yuzora_<version>_x64-setup.exe`. Authenticode isn't enabled yet, so SmartScreen may show a warning.
+- Linux (experimental) provides `yuzora-<version>-linux-<arch>.tar.gz` for x86_64 and aarch64. Unpack it and run `yuzora/install`. It has only passed CI and hasn't been tried on a real machine.
+- The known limitations of beta.2 still apply.
+
 ## [0.1.0-beta.2] - 2026-11-04
 
 Yuzora is rewritten as a native app built on [herdr-app](https://github.com/herdrdev/herdr-app) (Rust, GPUI, libghostty, QuickJS mods). Terminals and agents now run in herdr-core (`hc`) and keep running when you close the window. The interface is redesigned.
