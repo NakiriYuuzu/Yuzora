@@ -2,9 +2,19 @@
 
 <samp>English · <a href="CHANGELOG.zh-TW.md">繁體中文</a></samp>
 
-## [0.1.0-beta.3] - 2026-11-04
+## [0.1.0-beta.3] - 2026-11-05
 
 Fixes for beta.2, mostly on Windows, and faster Git and Files on large folders and remote machines.
+
+### Changed
+
+- **The whole app interface is now English only, and the language setting is removed.** A language or locale you saved earlier (Chinese, for example) causes no error; the app just shows English. Docs, `README.zh-TW`, `CHANGELOG.zh-TW` and release notes stay bilingual.
+- The tab bar no longer has the "New pane ▾" menu or the two split buttons, and the sidebar no longer has "Next layout". The `layout.switch` default shortcut (⌘⇧L / Ctrl+Shift+L) is gone and Next layout is hidden from the command palette. The new pane menu now opens only from a shortcut you bind yourself, using `yuzora-shell-tabs.new-pane` (a dot, not a colon). After upgrading, the old default binding in `keys.json` is skipped.
+
+### Added
+
+- When a Space holds more than one repository, the top of the Git sidebar lets you pick which one to show. It follows focus by default or can be pinned, and each Space remembers its own choice. Finding repositories only looks at the file system and runs no Git; the chosen repository goes through the usual trust check. The command is `yuzora-sidebar-git.pick-repo`.
+- The Git Log detail can be scrolled and its top/bottom split dragged to resize; double-click to restore the default.
 
 ### Improved
 
@@ -27,6 +37,8 @@ Fixes for beta.2, mostly on Windows, and faster Git and Files on large folders a
 - Windows: the installer's prompt to remove an older all-users Yuzora now notes that connections and settings are not brought over automatically yet.
 - Windows: SFTP "Edit" no longer closes Notepad after 30 seconds, and Settings can move templates to the Recycle Bin and show files in Explorer.
 - Windows: the editor, Markdown and image panes now reload when the file changes on disk, and the SFTP local panel shows `C:\…` paths.
+- Git sidebar: the +/− counts and the buttons are no longer covered by long file names, and 6-digit line counts are shortened to `150k`.
+- The `herdr.d.ts` written into the app home showed a mod command shortcut with a colon (`mod:command`); following it made the whole `keys.json` invalid. It now shows a dot.
 
 ### Installation notes
 

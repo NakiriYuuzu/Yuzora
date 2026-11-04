@@ -2,9 +2,21 @@
 
 <samp><a href="CHANGELOG.md">English</a> · 繁體中文</samp>
 
-## [0.1.0-beta.3] - 2026-11-04
+## [0.1.0-beta.3] - 2026-11-05
 
 修正 beta.2 的問題（以 Windows 為主），並讓大型資料夾與遠端機器上的 Git、Files 更快。
+
+> **介面只剩英文，語言設定已移除。** 這是 beta.2 的中文使用者最後一次在「新版本」畫面看到中文說明：從 beta.3 起，App 內所有介面文字都只有英文。已存的中文設定或語系不會報錯，只是改成英文。文件、README.zh-TW、CHANGELOG.zh-TW 與 release notes 仍然是中英雙語。
+
+### 變更
+
+- **整個 App 介面只剩英文，語言設定已移除。** 已存的中文設定或語系不會報錯，只是改成英文。文件、`README.zh-TW`、`CHANGELOG.zh-TW`、release notes 仍然是中英雙語。
+- tab 列移除「新增 pane ▾」選單與兩個分割鈕，側欄移除「下一個 layout」；`layout.switch` 的預設快捷鍵（⌘⇧L／Ctrl+Shift+L）取消，指令面板也隱藏 Next layout。新增 pane 選單現在只能用自己綁定的快捷鍵開啟，綁定寫法是 `yuzora-shell-tabs.new-pane`（是點，不是冒號）。升級後，`keys.json` 裡舊的預設綁定會被略過。
+
+### 新增
+
+- 同一個 Space 有多個 repo 時，Git 側欄頂端可以選擇要看哪一個：預設跟隨 focus，也可以釘選，每個 Space 記住各自的選擇。找 repo 只看檔案系統，不執行 Git；選中的 repo 照常經過信任關卡。指令是 `yuzora-sidebar-git.pick-repo`。
+- Git Log 的詳情可以捲動，也可以拖曳調整上下比例，雙擊恢復預設。
 
 ### 改善
 
@@ -27,6 +39,8 @@
 - Windows：安裝程式詢問移除舊版全機安裝時，改為說明舊版資料會保留、但目前尚不會自動帶入連線與設定。
 - Windows：SFTP「編輯」不再於 30 秒後關掉記事本；設定頁可把模板移到資源回收筒、在檔案總管中顯示檔案。
 - Windows：編輯器、Markdown、圖片窗格會在檔案於磁碟上變更時重新載入；SFTP 本機面板顯示 `C:\…` 路徑。
+- Git 側欄：+／− 數字與按鈕不會再被過長的檔名蓋住，6 位數的行數會縮寫成 `150k`。
+- 寫進 app home 的 `herdr.d.ts` 原本把 mod 指令快捷鍵示範成冒號寫法（`mod:command`），照著寫會讓整份 `keys.json` 失效，現在改成點。
 
 ### 安裝說明
 

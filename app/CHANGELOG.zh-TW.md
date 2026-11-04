@@ -1,7 +1,13 @@
 # Yuzora 更新說明
 
 <!-- yuzora(L7): CHANGELOG.md 裡 Yuzora 每一筆的繁體中文版，版本、### New／### Fixed 標題與項目數都要一樣（App 依標題判斷 Fixed）。這裡沒有的版本，App 會改顯示 CHANGELOG.md 的英文。 -->
-## [0.1.0-beta.3] - 2026-11-04
+## [0.1.0-beta.3] - 2026-11-05
+
+### New
+- **整個 App 介面只剩英文，語言設定已移除。** 已存的中文設定或語系不會報錯，只是改成英文。（這是 beta.2 的中文使用者最後一次在這個畫面看到中文說明。）
+- **Git 側欄 repo 選擇器。** 一個 Space 有多個 repo 時，可以選要看哪一個（預設跟隨 focus，也可釘選；每個 Space 記住各自的選擇）。找 repo 不執行 Git，選中的 repo 照常經過信任關卡。指令：`yuzora-sidebar-git.pick-repo`。
+- **Git Log 詳情可調整大小。** 詳情可以捲動，上下比例可以拖曳調整，雙擊恢復預設。
+- **更簡潔的 tab 列與側欄。** 移除「新增 pane ▾」選單、兩個分割鈕與「下一個 layout」，並取消 `layout.switch` 的預設快捷鍵（⌘⇧L／Ctrl+Shift+L）。要開新增 pane 選單，請自行綁定 `yuzora-shell-tabs.new-pane`（是點，不是冒號）；`keys.json` 裡舊的預設綁定會被略過。
 
 ### Fixed
 - Windows 上執行 Git、檔案與遠端指令時，不再連續跳出 console 視窗。
@@ -20,6 +26,8 @@
 - 在本機執行程式（Git、搜尋、腳本）時不再多等輪詢：`git --version` 這類呼叫在 Windows 上從約 52 ms 降到 29 ms，在 macOS 上從約 53 ms 降到 8 ms。
 - Git diff pane：只有變動可能碰到自己的檔案、改名前的檔案、它們的上層資料夾或底下的路徑，或任何 `.gitattributes` 時才重新載入，不再因為 repo 裡任何變動就重讀；無法判斷變動的路徑時（git 寫了 index 或 refs、rescan）照舊重新載入。
 - 信任檢查（本機，macOS 與 Linux）：單純 repo 的答案會保留，條件是 `HEAD`、`index`、`config`、`config.worktree`、`objects/`、`refs/`、`remotes/`、`branches/` 都沒變，`.git` 與 `commondir` 也仍指向同一組 dir；index 裡有 gitlink、有 `modules/` 資料夾、設定含 `include`、index 是 split 或 sparse（是否讀 shared index 由 git 自己回答）、檔案系統的 kernel 不自己維護 change time（只在 APFS、HFS+、ext2/3/4、XFS、Btrfs、tmpfs、ZFS、F2FS 上保留；FAT、exFAT 與網路檔案系統不保留），或檔案在掃描前 3 秒內或掃描當中變動過，就每次都掃描。未信任資料夾開 diff 從 74 ms 降到 32 ms；Files reload 的檢查原本 47 ms、8 個行程，現在都是 0。
+- Git 側欄：+／− 數字與按鈕不會再被過長的檔名蓋住，6 位數的行數會縮寫成 `150k`。
+- app home 的 `herdr.d.ts` 原本把 mod 指令快捷鍵示範成冒號寫法，照著寫會讓整份 `keys.json` 失效，現在改成點。
 
 ## [0.1.0-beta.2] - 2026-11-04
 
