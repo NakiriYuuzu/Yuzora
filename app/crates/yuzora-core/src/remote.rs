@@ -238,21 +238,16 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     let mut child = cmd.spawn().map_err(|e| ExecError::Spawn(format!("cannot run {}: {e}", req.program)))?;
     let out = Drain::start(child.stdout.take().expect("piped stdout"), req.max_output);
     let err = Drain::start(child.stderr.take().expect("piped stderr"), req.max_output);
-    // yuzora(perf): a thread waits for the exit (no 10 ms polling: the answer comes the moment it exits).
-    let pid = child.id();
-    let (exited, status) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = exited.send(child.wait());
-    });
-    let status = match status.recv_timeout(req.timeout) {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => return Err(ExecError::Spawn(e.to_string())),
-        Err(_) => {
-            kill_tree(pid);
-            // The waiting thread reaps it now.
-            let _ = status.recv_timeout(Duration::from_secs(5));
+    // yuzora(perf): no 10 ms polling: the answer comes the moment it exits. The `Child` stays here
+    // the whole time (see `kill_tree` for why).
+    let status = match wait_for_exit(&mut child, req.timeout) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            kill_tree(&mut child);
+            let _ = child.wait();
             return Err(ExecError::TimedOut { seconds: req.timeout.as_secs_f64(), machine: None });
         }
+        Err(e) => return Err(ExecError::Spawn(e.to_string())),
     };
     // What the program wrote is already in the pipes; whatever it left running
     // in the background may hold them open, so don't wait for that (the
@@ -261,53 +256,85 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     Ok(ExecOutput { code: status.code().unwrap_or(-1), stdout: out.finish(until), stderr: err.finish(until) })
 }
 
+/// Waits for the program to end, up to `timeout` (None: still running). The program is not
+/// reaped until the caller says so, so its id cannot be handed to another process meanwhile.
+#[cfg(windows)]
+fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::io::Result<Option<std::process::ExitStatus>> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn WaitForSingleObject(handle: *mut std::ffi::c_void, ms: u32) -> u32;
+    }
+    const WAIT_OBJECT_0: u32 = 0;
+    const WAIT_TIMEOUT: u32 = 0x102;
+    // Just under INFINITE (u32::MAX), in the pieces a `u32` of milliseconds allows.
+    let end = Instant::now().checked_add(timeout);
+    loop {
+        let left = end.map_or(Duration::from_millis(u64::from(u32::MAX - 1)), |e| e.saturating_duration_since(Instant::now()));
+        let ms = u32::try_from(left.as_millis().min(u128::from(u32::MAX - 1))).unwrap_or(u32::MAX - 1);
+        // SAFETY: the process handle `child` owns, open for the whole call.
+        match unsafe { WaitForSingleObject(std::os::windows::io::AsRawHandle::as_raw_handle(child), ms) } {
+            WAIT_OBJECT_0 => return child.wait().map(Some),
+            WAIT_TIMEOUT if end.is_some_and(|e| Instant::now() >= e) => return Ok(None),
+            WAIT_TIMEOUT => {}
+            _ => return Err(std::io::Error::last_os_error()),
+        }
+    }
+}
+
+/// Same, on Unix: a thread watches for the exit with `waitid(WNOWAIT)` (it does not reap),
+/// so `child` stays here, unreaped, until this thread has what it needs.
+#[cfg(unix)]
+fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::io::Result<Option<std::process::ExitStatus>> {
+    let pid = child.id() as libc::id_t;
+    let (seen, exited) = mpsc::channel();
+    std::thread::spawn(move || {
+        loop {
+            // SAFETY: an all-zero siginfo is the "nothing yet" value waitid fills in.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: waits for one child of this process without reaping it.
+            let r = unsafe { libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT) };
+            if r == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                let _ = seen.send(r == 0);
+                return;
+            }
+        }
+    });
+    match exited.recv_timeout(timeout) {
+        Ok(true) => child.wait().map(Some),
+        // waitid could not watch it: ask the plain way (it ends or the timeout does).
+        Ok(false) => child.wait().map(Some),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Ends the program and everything it started: its process group on Unix
 /// (`process_group(0)` above), its process tree on Windows.
-fn kill_tree(pid: u32) {
+///
+/// It takes the `Child`, not a process id, on purpose. A process id is free to be handed to
+/// another process once the program is reaped (Windows: once the last handle is closed), and a
+/// kill by a bare id then lands on whatever got it, possibly another git of this app. While
+/// `child` is alive here its id is ours: `taskkill /PID` and `child.kill()` (TerminateProcess on
+/// the handle) cannot hit anything else.
+fn kill_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
-    if let Ok(group) = libc::pid_t::try_from(pid) {
+    if let Ok(group) = libc::pid_t::try_from(child.id()) {
         // SAFETY: a plain syscall on the group this call created for the child.
-        unsafe {
-            libc::killpg(group, libc::SIGKILL);
-            libc::kill(group, libc::SIGKILL);
-        }
+        unsafe { libc::killpg(group, libc::SIGKILL) };
     }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let killed = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
+        let _ = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
-            .status()
-            .is_ok_and(|s| s.success());
-        if !killed {
-            terminate(pid);
-        }
+            .status();
     }
-}
-
-/// Ends one process (`taskkill` not there, or it could not).
-#[cfg(windows)]
-fn terminate(pid: u32) {
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
-        fn TerminateProcess(process: *mut std::ffi::c_void, code: u32) -> i32;
-        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
-    }
-    const PROCESS_TERMINATE: u32 = 0x0001;
-    // SAFETY: a handle opened here for this one call and closed in it.
-    unsafe {
-        let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if !h.is_null() {
-            TerminateProcess(h, 1);
-            CloseHandle(h);
-        }
-    }
+    // The program itself, by its handle.
+    let _ = child.kill();
 }
 
 /// A pipe its reader can wait on without blocking on it for good.
@@ -629,6 +656,47 @@ mod tests {
         let out = run(&ExecRequest::new("cmd", ["/c", "start /b ping -n 6 127.0.0.78 > nul & echo done"]).timeout(Duration::from_secs(30))).unwrap();
         assert_eq!((out.code, out.stdout_text().trim()), (0, "done"));
         assert!(started.elapsed() < Duration::from_secs(3), "waited {:?}", started.elapsed());
+    }
+
+    /// A program is ended through the `Child` it was started as, never by a bare process id (which
+    /// may belong to another process by then): no `OpenProcess(pid)`, no `kill(pid)` by number.
+    #[test]
+    fn a_program_is_ended_by_its_child_not_by_a_process_id() {
+        let src = include_str!("remote.rs");
+        let code = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        for bare in [concat!("Open", "Process("), concat!("fn kill_tree(", "pid"), concat!("libc::", "kill(")] {
+            assert!(!code.contains(bare), "{bare} is back: a process id can be someone else's by now");
+        }
+        assert!(code.contains("fn kill_tree(child: &mut std::process::Child)"));
+    }
+
+    /// The real path of a letting-go: a program's own stdout (what `run` reads) held open by a
+    /// program that is still running and says nothing.
+    #[cfg(windows)]
+    #[test]
+    fn windows_a_reader_of_a_childs_stdout_lets_go_while_the_child_still_runs() {
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", "Start-Sleep 20"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        crate::spawn::no_window(&mut cmd);
+        let mut child = cmd.spawn().unwrap();
+        let drain = Drain::start(child.stdout.take().unwrap(), 64);
+        let cancel = drain.cancel.clone();
+        assert!(cancel.is_open());
+        let started = Instant::now();
+        assert!(drain.finish(Instant::now() + Duration::from_millis(300)).is_empty());
+        // finish gave up waiting and dropped the Drain: the blocked read is cancelled, the pipe closed.
+        let let_go = (0..100).any(|_| {
+            let closed = !cancel.is_open();
+            if !closed {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            closed
+        });
+        let took = started.elapsed();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(let_go, "the reader still holds the child's stdout");
+        assert!(took < Duration::from_secs(5), "{took:?}");
     }
 
     #[test]
