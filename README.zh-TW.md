@@ -146,8 +146,8 @@ beta.2 分成多條 lane 並行開發，每條 lane 擁有自己的目錄與下�
 ### L1 · 外殼與工作區
 
 工作區側欄（機器 → Space → worktree → agent、「需要注意」區、每台機器的 scope chip）、帶各模式徽章的模式列、
-可用新增 pane 選單（指令 `yuzora-shell-tabs.new-pane`）把工具 pane、終端機與 agent 混合分割進同一個 tab 的 tab 列、pane 標頭（agent 需要回覆時轉為
-琥珀色）與狀態列。新增 Space 時先選資料夾；遠端機器改成輸入路徑，並在那台機器上確認。`yuzora:shell`
+tab 列、pane 標頭（agent 需要回覆時轉為
+琥珀色）與狀態列；新增 pane 選單（指令 `yuzora-shell-tabs.new-pane`）可把工具 pane、終端機與 agent 混合分割進同一個 tab。新增 Space 時先選資料夾；遠端機器改成輸入路徑，並在那台機器上確認。`yuzora:shell`
 （`app/crates/yuzora-shell`）提供側欄的模型、Space 徽章與簡單的 Git 摘要。細節見
 [docs/beta2/shell.md](docs/beta2/shell.md)。
 

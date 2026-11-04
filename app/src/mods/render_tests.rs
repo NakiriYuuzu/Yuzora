@@ -60,7 +60,7 @@ struct Calls {
     unexpected: Vec<String>,
     effects: Vec<(String, Vec<Value>)>,
     shared: BTreeMap<String, Value>,
-    // Commands nextCommand() hands out, in order; with none left it never returns.
+    // yuzora(L1): the commands nextCommand() hands out, in order; with none left it never returns.
     commands: Vec<String>,
 }
 
@@ -154,6 +154,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     module = module.async_function("knownAgents", |_| Ok(async { Ok(HostValue::Array(vec![])) }));
     module = module.async_function("pickFolder", |_| Ok(async { Ok(HostValue::Null) }));
     module = module.async_function("watchFolder", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
+    // yuzora(L1): nextCommand() hands out Calls.commands (upstream: it never returned).
     let queued = calls.clone();
     module = module.async_function("nextCommand", move |_| {
         let next = {
@@ -810,11 +811,11 @@ fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
     assert!(!tree.contains("Shift P"), "unbound hint must not invent a key: {tree}");
 }
 
-// yuzora(L1): Yuzora's new-pane menu opens as a popup, which is as tall as its content. Its
-// list must not wait for a height to fill: with flex_1 and overflow_y_scrollbar (a scroll area
+// yuzora(L1): Yuzora's new-pane menu opens as an overlay without a height of its own (a dialog
+// from the command), so it is as tall as its content. Its list must not wait for a height to fill: with flex_1 and overflow_y_scrollbar (a scroll area
 // that fills its parent) it drew nothing under the place pills.
 #[gpui::test]
-fn yuzora_new_pane_menu_shows_its_list_in_a_popup(cx: &mut TestAppContext) {
+fn yuzora_new_pane_menu_shows_its_list_in_an_overlay(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let menu = json!({"menu":"pane","overlay":"o1"});

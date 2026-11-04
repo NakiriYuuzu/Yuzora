@@ -26,6 +26,13 @@ const OLD_NEXT_LAYOUT_KEY: &str = "cmd-shift-l";
 #[cfg(not(target_os = "macos"))]
 const OLD_NEXT_LAYOUT_KEY: &str = "ctrl-shift-l";
 
+/// yuzora(L1): the binding the shipped keys used to have for next layout, in a keys.json written
+/// before it was removed. `parse` and `listing` both leave it out; a named `layout.switch:<name>`,
+/// another key, or another section stays.
+fn retired_default(section: &str, keys: &str, action: &str) -> bool {
+    section == "global" && action == "layout.switch" && keys == OLD_NEXT_LAYOUT_KEY
+}
+
 /// The reserved shortcut that restores the default layout and keys.
 pub const ESCAPE_HATCH: &str = "ctrl-alt-shift-escape";
 
@@ -43,13 +50,16 @@ fn defaults() -> BTreeMap<String, BTreeMap<String, String>> {
 
 /// Every binding as `(section, keys, action)`, for the keybind help.
 pub fn listing() -> Vec<(String, String, String)> {
-    let text = std::fs::read_to_string(path()).unwrap_or_default();
-    let sections: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_str(&text).unwrap_or_else(|_| defaults());
+    listing_of(&std::fs::read_to_string(path()).unwrap_or_default())
+}
+
+fn listing_of(text: &str) -> Vec<(String, String, String)> {
+    let sections: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_str(text).unwrap_or_else(|_| defaults());
     let mut out = Vec::new();
     for (s, keys) in sections {
         for (k, a) in keys {
             let a = current(&a);
-            if !gone_mod(&a) {
+            if !gone_mod(&a) && !retired_default(&s, &k, &a) {
                 out.push((s.clone(), k, a));
             }
         }
@@ -142,7 +152,7 @@ pub fn parse(text: &str) -> Result<Vec<KeyBinding>, String> {
             }
             // yuzora(L1): the old default "next layout" key is dropped from keys.json files written
             // before it was removed (keys.json is only written once); another key for it stays.
-            if section == "global" && action == "layout.switch" && keys == OLD_NEXT_LAYOUT_KEY {
+            if retired_default(section, keys, action) {
                 continue;
             }
             if !valid_action(action) {
@@ -273,6 +283,37 @@ mod tests {
         assert_eq!(count(with(serde_json::json!({ old: "layout.switch" }))), 0, "the old default is dropped");
         assert_eq!(count(with(serde_json::json!({ "ctrl-alt-l": "layout.switch" }))), 1, "another key stays");
         assert_eq!(count(with(serde_json::json!({ old: "layout.switch:main" }))), 1, "a named layout stays");
+        let in_layout = serde_json::json!({ "layout:x": { old: "layout.switch" } }).to_string();
+        assert_eq!(count(in_layout.clone()), 1, "only the global section is dropped");
+        // The help page, the palette's key hints and the welcome list the same bindings.
+        let listed = |text: &str| super::listing_of(text).into_iter().filter(|(_, _, a)| a == "layout.switch").count();
+        assert_eq!(listed(&with(serde_json::json!({ old: "layout.switch" }))), 0, "not listed either");
+        assert_eq!(listed(&in_layout), 1);
+    }
+
+    // yuzora(L1): the keys.json examples in the docs and in the guide users' agents read must load:
+    // one wrong action (a `:` where the mod's command has a `.`) makes the whole file fail.
+    #[test]
+    fn keys_examples_in_the_docs_load() {
+        let docs = [
+            ("defaults/AGENTS.md", include_str!("../defaults/AGENTS.md")),
+            ("docs/beta2/shell.md", include_str!("../../docs/beta2/shell.md")),
+        ];
+        let mut found = 0;
+        for (name, text) in docs {
+            // `"key": "action"` pairs whose key starts with a modifier.
+            let parts: Vec<&str> = text.split('"').collect();
+            for i in (1..parts.len().saturating_sub(2)).step_by(2) {
+                let key = parts[i];
+                let is_key = ["ctrl-", "alt-", "cmd-", "shift-"].iter().any(|m| key.starts_with(m));
+                if is_key && parts[i + 1] == ": " {
+                    let one = serde_json::json!({ "global": { key: parts[i + 2].replace("\\u001b", "\u{1b}") } });
+                    assert_eq!(super::parse(&one.to_string()).err(), None, "{name}: {key} -> {}", parts[i + 2]);
+                    found += 1;
+                }
+            }
+        }
+        assert!(found >= 6, "the scan found only {found} examples");
     }
 
     #[test]
