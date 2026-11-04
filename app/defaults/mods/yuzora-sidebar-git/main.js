@@ -32,7 +32,7 @@ function place() {
 const key = () => JSON.stringify(place());
 const baseName = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 
-const ROW = 24, HEAD = 26, ACTION = 22, ACTION_ALL = 84, LIST_PAD = 6, PICK_ROW = 26;
+const ROW = 24, HEAD = 26, ACTION = 22, ACTION_ALL = 84, LIST_PAD = 6, PICK_ROW = 26, PICK_MAX = 360;
 // Line counts of six digits would not fit the narrowest sidebar next to the buttons: 150000 reads 150k.
 const count = (n) => (n < 100000 ? String(n) : n < 1000000 ? `${Math.round(n / 1000)}k` : "999k+");
 const SECTIONS = ["conflicts", "staged", "unstaged"];
@@ -216,11 +216,14 @@ export default class SidebarGit extends View {
       .child(div().flex_none().max_w(150).truncate().child(title))
       .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(th.dim).child(detail ?? ""))
       .when(Boolean(extra), (el) => el.child(div().flex_none().text_size(10.5).text_color(th.muted).child(extra)));
-    return v_flex().id("picker").track_focus(this.handle).size_full().p(4).bg(th.popover ?? th.raised).text_color(th.foreground).text_size(12)
+    // As a popup the overlay is as tall as its content: the column takes its rows' height (PICK_MAX at most) and only
+    // then does the list shrink and scroll. Nothing here waits for a height to fill: not size_full or flex_1, and not
+    // overflow_y_scrollbar, whose scroll area fills its parent (the list was 0 high).
+    return v_flex().id("picker").track_focus(this.handle).w_full().max_h(PICK_MAX).min_h(0).p(4).bg(th.popover ?? th.raised).text_color(th.foreground).text_size(12)
       .on_key_down((e, cx) => this.pickKey(e, cx, list))
       .child(row("pick-follow", t("repo.follow"), !p.pinned && p.current ? baseName(p.current) : null, !p.pinned, null, () => this.pick(null), 0))
       .child(div().h(1).mx(4).my(2).flex_none().bg(th.divider ?? th.border))
-      .child(v_flex().id("pick-list").flex_1().min_h(0).overflow_y_scrollbar()
+      .child(v_flex().id("pick-list").min_h(0).overflow_y_scroll()
         .children(list.map((r, i) => row(`pick-${i}`, r.name, r.rel === "." ? t("repo.here") : r.rel, p.pinned && r.root === p.current, r.trusted ? t("repo.trusted") : null, () => this.pick(r.root), i + 1)))
         .when(!found, (el) => el.child(div().px(8).py(4).text_size(11).text_color(th.dim).child(t("repo.loading"))))
         .when(Boolean(found) && !list.length, (el) => el.child(div().px(8).py(4).text_size(11).text_color(found.error ? th.ansi1 : th.dim).child(found.error ?? t("repo.empty"))))

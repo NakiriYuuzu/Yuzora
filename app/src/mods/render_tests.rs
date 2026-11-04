@@ -1276,6 +1276,28 @@ fn git_log_commit_message_is_shown_whole_up_to_a_cap(cx: &mut TestAppContext) {
     }
 }
 
+// yuzora(L2): the repo picker opens as a popup (or a dialog) without a height of its own, so it is as
+// tall as its rows. Its list must not wait for a height to fill: with flex_1 and overflow_y_scrollbar
+// (a scroll area that fills its parent) it was 0 high and only "follow the focus" showed.
+#[gpui::test]
+fn yuzora_git_repo_picker_shows_its_list_in_a_popup(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let line = |tree: &str, id: &str| tree.lines().find(|l| l.contains(&format!("\"{id}\""))).unwrap_or_else(|| panic!("{id} missing: {tree}")).to_owned();
+    let picker = json!({"overlay":"o1","picker":{"space":"s1","folder":"/sp","on":null,"cwds":[],"current":"/sp/a","pinned":false}});
+    let found = "this.found = {repos: [{root:'/sp/a', name:'alpha', rel:'.', trusted:false}, {root:'/sp/g', name:'gamma', rel:'g', trusted:true}], truncated:false}; this.findRepos = () => {};";
+    let tree = describe(cx, &staged, "mods/yuzora-sidebar-git", true, picker, updates("current", "current"), Some(found)).unwrap();
+    let root = line(&tree, "picker");
+    assert!(!root.contains(".size_full") && !root.contains(".h_full") && !root.contains(".flex_1"), "the picker takes its rows' height: {root}");
+    assert!(root.contains(".max_h[Number(360.0)]") && root.contains(".min_h[Number(0.0)]"), "{root}");
+    let list = line(&tree, "pick-list");
+    assert!(!list.contains(".flex_1") && !list.contains(".size_full") && !list.contains("overflow_y_scrollbar"), "a list that waits to fill is empty in a popup: {list}");
+    assert!(list.contains(".min_h[Number(0.0)]") && list.contains("overflow_y_scroll"), "a long list scrolls: {list}");
+    for id in ["pick-follow", "pick-0", "pick-1"] {
+        assert!(line(&tree, id).contains(".flex_none"), "rows keep their height: {tree}");
+    }
+}
+
 /// A sidebar file row in a list of `width` (padded and measured like the real list): its parts report
 /// their size (`name`, `dir`, `add`, `del`, `action:<label>`) and, under the pointer, where they sit
 /// (`at:<part>`, x and width). A click goes through the real `clickRow` and says what it did (`result`).
