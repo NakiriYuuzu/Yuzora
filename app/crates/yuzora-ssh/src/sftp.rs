@@ -338,4 +338,20 @@ mod tests {
         assert_eq!(list_local("~", &dir).unwrap().path, l.path);
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    // A Windows person sees `C:\…`, not the `\\?\C:\…` `canonicalize` gives, and `~\` is home too.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_listing_shows_plain_paths_and_knows_the_backslash_home() {
+        let dir = std::env::temp_dir().join(format!("yuzora-ssh-win-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub dir")).unwrap();
+        let top = list_local(dir.to_str().unwrap(), &dir).unwrap();
+        assert!(!top.path.starts_with(r"\\?\"), "{}", top.path);
+        assert!(top.parent.as_deref().is_some_and(|p| !p.starts_with(r"\\?\")), "{:?}", top.parent);
+        let sub = list_local(r"~\sub dir", &dir).unwrap();
+        assert_eq!(sub.path, format!(r"{}\sub dir", top.path));
+        assert_eq!(list_local("~/sub dir", &dir).unwrap().path, sub.path);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

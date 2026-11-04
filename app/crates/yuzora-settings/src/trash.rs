@@ -224,4 +224,16 @@ mod tests {
         assert!(!trash.join("info/missing.md.trashinfo").exists(), "no record for a failed move");
         std::fs::remove_dir_all(&d).unwrap();
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_recycle_bin_takes_a_file_whose_folder_has_a_space() {
+        let dir = std::env::temp_dir().join(format!("yuzora trash {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a template.md");
+        std::fs::write(&file, "x").unwrap();
+        trash(&file).unwrap();
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

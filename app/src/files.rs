@@ -626,4 +626,28 @@ mod tests {
         folders().remove(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    // yuzora(L5): on Windows `canonicalize` gives `\\?\C:\…`; the paths a mod gets
+    // back must be the plain ones it knows the file by, and arrive within a second.
+    #[cfg(windows)]
+    #[test]
+    fn a_watched_windows_folder_reports_plain_paths_within_a_second() {
+        let dir = std::env::temp_dir().join(format!("yuzora watch win {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a b.txt");
+        std::fs::write(&file, "one").unwrap();
+        let real = file.canonicalize().unwrap().to_string_lossy().into_owned();
+        let want = real.strip_prefix(r"\\?\").unwrap_or(&real).to_owned();
+        install_watch(&dir);
+        std::fs::write(&file, "two").unwrap();
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(1);
+        let changes = block_on_until(next_change(dir.to_string_lossy().into_owned()), deadline).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(changes.iter().any(|c| *c == want), "wanted {want} in {changes:?}");
+        assert!(changes.iter().all(|c| !c.starts_with(r"\\?\")), "{changes:?}");
+        folders().remove(&dir.canonicalize().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

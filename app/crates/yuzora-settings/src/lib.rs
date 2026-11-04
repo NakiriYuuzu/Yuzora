@@ -518,4 +518,13 @@ mod tests {
     fn reveal_refuses_a_missing_path() {
         assert!(call("reveal", vec![json!("/definitely/not/here/yuzora")]).is_err());
     }
+
+    /// Needs a desktop: `YUZORA_REVEAL_PATH` is shown in Explorer, then a script reads what is selected.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs an interactive desktop"]
+    fn reveal_selects_the_file_in_explorer() {
+        let path = std::env::var("YUZORA_REVEAL_PATH").expect("YUZORA_REVEAL_PATH");
+        call("reveal", vec![json!(path)]).unwrap();
+    }
 }
