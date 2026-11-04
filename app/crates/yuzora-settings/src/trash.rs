@@ -47,10 +47,13 @@ fn platform(path: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 fn platform(path: &Path) -> std::io::Result<()> {
     // The path goes through the environment, never into the script text.
-    ran(Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command"])
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command"])
         .arg("Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($env:YUZORA_TRASH_PATH, 'OnlyErrorDialogs', 'SendToRecycleBin')")
-        .env("YUZORA_TRASH_PATH", path))
+        .env("YUZORA_TRASH_PATH", path);
+    // No console on Windows: without this powershell opens a window.
+    yuzora_core::spawn::no_window(&mut cmd);
+    ran(&mut cmd)
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]

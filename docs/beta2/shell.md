@@ -63,7 +63,7 @@ L1 讀的 key：
 
 ## 設計決策
 
-- **tab 列列出所有 Space 的 tab**：設計稿 p1 的 tab 列同時有不同 Space 的 tab（以徽章區分），所以 tab 列依 Space 順序列出每個 Space 的 tab，Space 之間留一點間距；點別的 Space 的 tab 會一併切換 Space（`tab.select` 本來就如此）。一個 tab 仍只屬於一個 Space，不做跨 Space 的組合 tab。已收起（settled）的 tab 不顯示，除非正在看它。
+- **tab 列只列出目前 Space 的 tab**（使用者回報，2026-11-04）：沿用上游 Herdr tab 列的做法，只列 active Space 的 tab，以 Space 區分；沒有 active Space 時列表是空的。切換 Space 時列表跟著換（側欄的 Space 清單、`tab.select` 跨 Space 切換不受影響）。徽章仍顯示目前 Space 的色塊與縮寫，tooltip 仍帶 Space 名稱。設計稿 p1 把不同 Space 的 tab 並列在同一條 tab 列，與這個決定不一致，以此條為準。已收起（settled）的 tab 不顯示，除非正在看它。拖曳排序只在同一個 Space 內（列表本來就只有一個 Space）。測試：`render_tests.rs` 的 `yuzora_tab_bar_lists_only_the_current_space`。
 - **右側面板（Files／Changes）**：沿用上游 tab 列的切換鈕與「每個 Space 記住自己的面板」：切換 Space 時恢復該 Space 上次的選擇（沒選過就關閉）。`shared("workspace.panels")` 決定顯示哪幾顆。tab 列的分割鈕只在有 focus 的 model pane 時可用（layout 的終端機區塊有 focus 時停用）。
 - **「＋」與「＋ 新增 pane ▾」**：「＋」開上游的 `new-menu`（新 tab：終端機、agent、新 Space、worktree）。「新增 pane」在目前的 tab 內混合分割：工具 pane（`yuzora:core` 的 `panes()`）用 `pane.split {direction, pane, mod, props}`、終端機用 `pane.split {direction, pane}`、agent 用 `terminal.open {argv, place}`；位置（右側／下方）在選單頂端切換。沒有 focus 的 pane（還沒有 Space，或 focus 在 layout 的終端機 block）時改開新 tab。
 - **blocked 外框**：上游的 pane frame 只有 `border` 與 `focus`。L1 在 `PaneFrame` 加了 `blocked`（`{width, color}`），agent 需要回覆時優先使用（即使該 pane 有 focus，因為那裡需要人）。標頭底色 `#1d1a14` 由 `yuzora-shell-pane` 自己畫。工具 pane 沒有 agent，不會變色。
@@ -169,3 +169,11 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 - **L2、L5**：#194、#192 在淺色主題下的對比問題（git graph 色盤、ref chip、編輯器與 Markdown 的 One Dark 語法色、警告橫幅等）已列給總指揮轉交。原則同上：顏色從 theme 名稱或 `tokens()` 取，不寫死。
 - **L8**：狀態列最右端（指令面板快捷鍵右邊）保留給 L8 的 `yuzora-perf`，由 L8 把 layout 的 `status` 節點改成 row。L1 維持 `status` 的 id 與 26px 高度，不在快捷鍵右邊加東西；`yuzora-statusbar` 根元素的背景（`theme().chrome`）或上緣分隔線（1px，`theme().divider ?? theme().border`）若要改，要在 PR 註明讓 L8 對齊。
 - **總指揮**：lanes.md 的同步檢查用 `git grep -n 'yuzora:'`，抓不到 lane 用的 `yuzora(L1):` 註記，建議改成 `git grep -n 'yuzora[:(]'`。
+
+## 狀態列 Git 的呼叫次數（beta.3 效能）
+
+`yuzora-shell/src/git.rs` 的 `status()` 原本循序跑 3 個 `git`（`symbolic-ref`、`config --get-regexp`、`for-each-ref`），每個在 Windows 都付 `remote::run` 約 52 ms 的輪詢下限，遠端則各是一次 `hc exec` 往返。現在：
+
+- **遠端（`machine` 有值）**：三步合成一個 `sh -c` 在那台機器上依序跑（選項、順序、停止條件與 `--no-lazy-fetch` 都和逐步版相同：不是 repo 或 detached 就停、promisor 才加 `--no-lazy-fetch`），一次往返。script 的每個 `git` 都直接寫出 `--no-optional-locks -c core.fsmonitor=false`（不經過未加引號的變數，所以 zsh 原生模式之類不拆字的 shell 也不會走偏）。只有 `rc=0`（分支）、`1`（detached）、`128`（不是 repo）算答案；輸出被截斷、格式不完整、或其他 rc（沒有 git、shell 沒照寫法執行）都退回逐步版。那台機器沒有 `sh`（或沒回應）同樣退回；逾時照樣當逾時，不重試。
+- **本機與退回路徑**：`symbolic-ref` 與 `config` 互不相依，改成並行（3 輪變 2 輪）。代價：detached 或資料夾不是 repo 時，本機現在會多跑 1 個 `config`（只讀，不執行程式；等待時間沒有增加）。
+- 安全條件不變（L1 #197）：只讀 refs 與 config，不讀 index 或 work tree，不執行 filter、fsmonitor；測試守著（`a_machines_repo_filter_never_runs`、`a_machines_partial_clone_is_not_fetched_either`）。

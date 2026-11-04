@@ -135,7 +135,10 @@ export default class GitDiff extends View {
       if (this.layout === "unified") {
         if (x >= 0 && x < GUTTER * 2) return this.toggleLine(r.h, r.k === "-" ? "l" : "r", r.k === "-" ? r.li : r.ri, cx);
       } else {
-        const half = ((this.rowsWidth ?? 0) - 1) / 2;
+        // Where the left side ends, as the row lays it out: half the row, but never less than
+        // its own lines need, nor so much that the right side gets less than its own.
+        const c = sides(this.view.rows), w = this.rowsWidth ?? 0;
+        const half = Math.min(Math.max((w - 1) / 2, c.l), w - 1 - c.r);
         if (x >= 0 && x < GUTTER && r.l !== undefined) return this.toggleLine(r.h, "l", r.li, cx);
         if (x > half && x < half + 1 + GUTTER && r.r !== undefined) return this.toggleLine(r.h, "r", r.ri, cx);
       }
@@ -172,8 +175,8 @@ export default class GitDiff extends View {
       .children(segs.map((s, i) => div().id(`s${i}`).when(s.h, (el) => el.bg(strong).rounded(2)).child(s.t || "")));
   }
 
-  // One side's cell: number (click picks the line), then the text.
-  cell(r, side, th, d, width) {
+  // One side's cell: number (click picks the line), then the text; at least `min` wide.
+  cell(r, side, th, d, min) {
     const n = r[side], text = side === "l" ? r.lt ?? r.t : r.rt ?? r.t;
     const changedRow = r.k === "~" || r.k === "-" || r.k === "+";
     const present = n !== undefined;
@@ -183,7 +186,7 @@ export default class GitDiff extends View {
     const index = del ? r.li : r.ri;
     const picked = changedRow && present && this.sel[r.h]?.[del ? "del" : "add"]?.has(index);
     const canPick = changedRow && present && this.view.stageable;
-    return h_flex().flex_1().min_w(width).h_full().when(Boolean(bg), (el) => el.bg(bg)).when(changedRow && !present, (el) => el.bg(th.raised))
+    return h_flex().flex_1().min_w(min).h_full().when(Boolean(bg), (el) => el.bg(bg)).when(changedRow && !present, (el) => el.bg(th.raised))
       .child(div().w(GUTTER).flex_none().h_full().pr(6).text_right().text_color(picked ? th.foreground : th.dim)
         .when(picked, (el) => el.bg(del ? d.removed ?? th.ansi1 : d.added ?? th.ansi2).text_color(th.background))
         .when(canPick, (el) => el.cursor_pointer().hover((s) => s.text_color(th.foreground)))
@@ -191,7 +194,7 @@ export default class GitDiff extends View {
       .child(div().pl(6).flex_1().child(present ? this.segments(r[`${side}s`], text, th.foreground, strong) : ""));
   }
 
-  row(r, i, th, d, width) {
+  row(r, i, th, d, width, cols) {
     if (r.k === "fold") {
       return h_flex().id(`r${i}`).h(ROW).px(10).items_center().bg(th.raised).text_color(th.dim).cursor_pointer()
         .hover((s) => s.text_color(th.foreground)).child(t("fold", { count: r.n }));
@@ -214,7 +217,7 @@ export default class GitDiff extends View {
         .child(div().w(14).flex_none().text_color(del ? d.removed : add ? d.added : th.dim).child(del ? "−" : add ? "+" : ""))
         .child(div().flex_1().min_w(width).child(this.segments(r.s, r.t, th.foreground, del ? `${d.removed}55` : `${d.added}55`)));
     }
-    return base.child(this.cell(r, "l", th, d, width)).child(div().w(1).h_full().bg(th.border)).child(this.cell(r, "r", th, d, width));
+    return base.child(this.cell(r, "l", th, d, cols.l)).child(div().w(1).h_full().bg(th.border)).child(this.cell(r, "r", th, d, cols.r));
   }
 
   pill(id, label, on, th, action) {
@@ -284,14 +287,15 @@ export default class GitDiff extends View {
     else {
       const longest = Math.min(2000, v.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0));
       const width = longest * CHAR + 24;
-      const total = this.layout === "unified" ? GUTTER * 2 + 14 + width : 2 * (GUTTER + width) + 1;
+      const cols = this.layout === "unified" ? null : sides(v.rows);
+      const total = cols ? cols.l + 1 + cols.r : GUTTER * 2 + 14 + width;
       body = div().flex_1().min_h(0).relative().font_family(mono).text_size(11.5)
         .child(div().id("diff-x").size_full().overflow_x_scrollbar()
           .child(div().id("diff-rows-box").w_full().min_w(total).h_full()
             .on_size_change((size) => { this.rowsWidth = size.width; })
             .on_mouse_down("left", (e) => { this.downX = e.local_position?.x ?? null; })
             .child(v_virtual_list("diff-rows", v.rows.length, ROW, (i) => String(i),
-              (range) => v.rows.slice(range.start, range.end).map((r, k) => this.row(r, range.start + k, th, d, width)))
+              (range) => v.rows.slice(range.start, range.end).map((r, k) => this.row(r, range.start + k, th, d, width, cols)))
               .on_item_click((key, cx) => this.clickRow(Number(key), cx))
               .track_scroll(this.scroll).size_full())))
         .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().inset_0());
@@ -309,6 +313,13 @@ export default class GitDiff extends View {
       .when(Boolean(v) && !v.stageable && (spec.mode === "unstaged" || spec.mode === "staged") && this.whitespace !== "none", (el) => el.child(div().px(10).py(3).text_size(11).text_color(th.dim).child(t("wsNoStage"))))
       .child(body);
   }
+}
+
+// Side by side, how wide each side's cells are at least: its numbers and its own longest line,
+// so an added file's empty left side doesn't push the new lines out of view.
+function sides(rows) {
+  const longest = (text) => Math.min(2000, rows.reduce((m, r) => Math.max(m, (text(r) ?? "").length), 0));
+  return { l: GUTTER + longest((r) => r.lt ?? r.t) * CHAR + 24, r: GUTTER + longest((r) => r.rt ?? r.t) * CHAR + 24 };
 }
 
 // A diff pane beside the focused pane, or in a tab of its own (Git settings).

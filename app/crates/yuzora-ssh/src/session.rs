@@ -537,6 +537,8 @@ fn spawn_proxy(command: &str) -> std::io::Result<(impl AsyncRead + AsyncWrite + 
         c
     };
     cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+    // No console on Windows: without this the ProxyCommand opens a window.
+    yuzora_core::spawn::no_window(cmd.as_std_mut());
     let mut child = cmd.spawn()?;
     let out = child.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?;
     let input = child.stdin.take().ok_or_else(|| std::io::Error::other("no stdin"))?;

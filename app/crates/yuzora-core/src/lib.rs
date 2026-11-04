@@ -6,6 +6,7 @@
 //! - [`i18n`]: en / zh-TW strings per mod or crate, the language setting.
 //! - [`settings`]: Yuzora's `settings.json`, one section per lane.
 //! - [`discovery`]: tool panes and settings pages declared in `mod.json`.
+//! - [`spawn`]: starting console programs without a console window on Windows.
 //! - [`tokens`]: design tokens a theme has no name for.
 //! - [`host`]: helpers for a lane's `host_module()`.
 //! - [`js`]: the `yuzora:core` module itself.
@@ -22,6 +23,7 @@ pub mod paths;
 pub mod remote;
 pub mod secrets;
 pub mod settings;
+pub mod spawn;
 pub mod tokens;
 
 pub use gpui_shell::{HostArguments, HostError, HostModule, HostObject, HostValue};
