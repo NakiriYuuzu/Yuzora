@@ -1047,6 +1047,15 @@ impl Scenario {
         self.settle();
     }
 
+    fn hover(&mut self, x: f64, y: f64) {
+        self.visual.simulate_event(gpui::MouseMoveEvent { position: gpui::point(gpui::px(x as f32), gpui::px(y as f32)), modifiers: gpui::Modifiers::default(), pressed_button: None });
+    }
+
+    fn click(&mut self, x: f64, y: f64) {
+        self.mouse("down", x, y, 1);
+        self.mouse("up", x, y, 1);
+    }
+
     /// The last `note(name, …)`.
     fn last(&self, name: &str) -> Option<Vec<Value>> {
         self.notes.borrow().iter().rev().find(|n| n.first() == Some(&json!(name))).cloned()
@@ -1136,6 +1145,20 @@ fn git_log_detail_divider_drags_and_keeps_minimums(cx: &mut TestAppContext) {
     }
 }
 
+// yuzora(L2): a pane too short for the default height still shows the divider and 72px of files.
+#[gpui::test]
+fn git_log_detail_default_height_leaves_room_for_the_files(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for (side, width, height) in [(true, 340.0, 300.0), (true, 340.0, 200.0), (false, 700.0, 200.0)] {
+        let s = Scenario::mount(cx, &staged, &detail_scenario(300, side, width, height, 40), width, height);
+        let (set, visible, body) = state(&s);
+        assert_eq!(set, None);
+        assert!(visible + 7.0 + 24.0 + 72.0 <= body.max(48.0 + 7.0 + 24.0 + 72.0) + 0.5, "{side}/{height}: info {visible} in a body of {body}");
+        assert!(28.0 + visible + 7.0 <= height as f64, "{side}/{height}: the divider is on screen");
+    }
+}
+
 // yuzora(L2): leaving the pane with the button down ends the drag (its release would not be seen).
 #[gpui::test]
 fn git_log_detail_divider_drag_ends_when_the_pointer_leaves_the_pane(cx: &mut TestAppContext) {
@@ -1170,43 +1193,125 @@ fn git_log_commit_message_is_shown_whole_up_to_a_cap(cx: &mut TestAppContext) {
     }
 }
 
-// yuzora(L2): in a narrow sidebar the name gives way before +N −M and the buttons.
-#[gpui::test]
-fn sidebar_git_row_keeps_counts_and_buttons_clear_of_the_name(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
-    let staged = Staged::new();
-    let source = |section: &str, path: &str, add: u32, del: u32, width: f32| {
-        format!(
-            r#"
+/// A sidebar file row in a list of `width` (padded and measured like the real list): its parts report
+/// their size (`name`, `dir`, `add`, `del`, `action:<label>`) and, under the pointer, where they sit
+/// (`at:<part>`, x and width). A click goes through the real `clickRow` and says what it did (`result`).
+fn row_scenario(section: &str, path: &str, add: u64, del: u64, width: f32) -> String {
+    format!(
+        r#"
 import Real from "./mods/yuzora-sidebar-git/main.js";
 import {{ div }} from "gpui-kit";
 import {{ theme }} from "herdr";
 import {{ note }} from "probe";
+const file = {{ path: "{path}", kind: "M", add: {add}, del: {del} }};
 export default class Scenario extends Real {{
-  init(p, cx) {{ super.init(p, cx); }}
+  init(p, cx) {{
+    super.init(p, cx);
+    this.st = {{ conflicts: [], staged: [], unstaged: [], untracked: [], counts: {{ total: 1 }} }};
+    this.st["{section}" === "unstaged" ? "unstaged" : "{section}"].push(file);
+  }}
+  act() {{ this.acted = true; }}
+  openDiff() {{ this.diffed = true; }}
   render(cx) {{
-    const probe = (slot) => (size) => note(slot, size.width);
-    return div().id("box").w({width}).child(this.fileRow({{ section: "{section}", f: {{ path: "{path}", kind: "M", add: {add}, del: {del} }} }}, theme(), probe));
+    const probe = (slot, kind) => (kind ? (e) => note("at:" + slot, e.bounds.x, e.bounds.width) : (size) => note(slot, size.width));
+    const key = "{section}:{path}";
+    return div().id("list").w({width}).px(6)
+      .on_size_change((size) => {{ this.listWidth = size.width; }})
+      .on_mouse_down("left", (e) => {{ this.downX = e.local_position.x; }})
+      .on_click((_e, cx) => {{
+        this.acted = false; this.diffed = false; this.confirmDiscard = null;
+        this.clickRow(key, cx);
+        note("result", this.confirmDiscard ? "discard" : this.acted ? "act" : this.diffed ? "diff" : "none");
+      }})
+      .child(this.fileRow({{ section: "{section}", f: file }}, theme(), probe));
   }}
 }}
 "#
-        )
-    };
+    )
+}
+
+fn number(n: &Value) -> f64 {
+    n.as_f64().unwrap()
+}
+
+// yuzora(L2): in a narrow sidebar the name gives way before +N −M and the buttons, and +N −M before
+// the buttons: they stay at the right edge, wherever clickRow counts from.
+#[gpui::test]
+fn sidebar_git_row_keeps_counts_and_buttons_clear_of_the_name(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
     let long = format!("deep/er/{}/{}.rs", "folder".repeat(10), "a-very-long-file-name".repeat(4));
-    for (section, buttons) in [("unstaged", 2.0), ("staged", 1.0), ("conflicts", 1.0)] {
-        for width in [180.0, 248.0] {
-            let list = width - 12.0; // the list's own padding
-            let s = Scenario::mount(cx, &staged, &source(section, &long, 123, 45, list), list, 40.0);
-            let w = |slot: &str| s.last(slot).unwrap_or_else(|| panic!("{slot}")) [1].as_f64().unwrap();
-            let (row, text, name, dir, add, del) = (w("row"), w("text"), w("name"), w("dir"), w("add"), w("del"));
-            let actions: Vec<f64> = s.notes.borrow().iter().filter(|n| n[0] == json!("action")).map(|n| n[1].as_f64().unwrap()).collect();
-            let who = format!("{section}/{width}: row {row} text {text} name {name} dir {dir} +{add} -{del} {actions:?}");
-            assert_eq!(row, list as f64, "{who}");
-            assert!(name + 0.5 >= 1.0 && name <= text + 0.5, "the name stays inside its box: {who}");
-            assert!(name + dir + 4.0 <= text + 0.5, "the folder and the name share the box: {who}");
-            assert!(add > 0.0 && del > 0.0 && actions.iter().all(|a| *a == 22.0) && actions.len() as f64 == buttons, "the numbers and buttons keep their size: {who}");
-            // Everything in the row, left to right, fits it: 6 + 12 + 6 + text + 6 + +N + 6 + -M + 6 + buttons.
-            assert!(6.0 + 12.0 + 6.0 + text + 6.0 + add + 6.0 + del + 6.0 + 22.0 * buttons <= row + 0.5, "nothing sticks out of the row: {who}");
+    for (section, buttons) in [("unstaged", 2usize), ("staged", 1), ("conflicts", 1)] {
+        for (add, del) in [(123, 45), (150000, 150000)] {
+            for width in [100.0, 140.0, 180.0, 248.0] {
+                let s = Scenario::mount(cx, &staged, &row_scenario(section, &long, add, del, width), width, 40.0);
+                let w = |slot: &str| s.last(slot).unwrap_or_else(|| panic!("{slot}"))[1].as_f64().unwrap();
+                let (row, text, name, dir) = (w("row"), w("text"), w("name"), w("dir"));
+                let (a, d) = (w("add"), w("del"));
+                let who = format!("{section}/{width}/{add}: row {row} text {text} name {name} dir {dir} +{a} -{d}");
+                assert_eq!(row, width as f64 - 12.0, "{who}");
+                assert!(name <= text + 0.5 && name + dir <= text + 0.5, "the name and folder stay in their box: {who}");
+                let labels: Vec<String> = s.notes.borrow().iter().filter_map(|n| n[0].as_str().filter(|k| k.starts_with("action:")).map(String::from)).collect();
+                assert_eq!(labels.len(), buttons, "{who}");
+                // Left to right: 6 + 12 + 6 + text + 6 + +N + 6 + -M + 6 + buttons; no part sticks out of the row.
+                let fixed = 6.0 + 12.0 + 6.0 + 6.0 + 6.0 + 6.0 + 22.0 * buttons as f64;
+                assert!(fixed + text + a + d <= row + 0.5, "nothing sticks out of the row: {who}");
+                if width >= 180.0 {
+                    assert!(a > 0.0 && d > 0.0, "{who}");
+                    if add == 123 {
+                        assert!(a > 20.0 && d > 15.0, "short numbers are written out: {who}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+// yuzora(L2): what is drawn under the pointer is what a click does. The row is the real `fileRow` in a list padded
+// and measured like the real one, clicks go through the real `clickRow` (the virtual list is not laid out in a test window).
+#[gpui::test]
+fn sidebar_git_row_buttons_are_where_clickrow_counts_them(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let long = format!("deep/{}.rs", "a-long-file-name".repeat(3));
+    for (section, expect) in [("unstaged", vec![("action:↺", "discard"), ("action:+", "act")]), ("staged", vec![("action:−", "act")])] {
+        for (add, del) in [(123, 45), (150000, 150000)] {
+            for width in [140.0, 180.0, 248.0] {
+                let mut s = Scenario::mount(cx, &staged, &row_scenario(section, &long, add, del, width), width, 40.0);
+                // Hover along the row to learn where each part is drawn.
+                for x in 0..width as i32 {
+                    s.hover(x as f64 + 0.5, 12.0);
+                }
+                let pos: BTreeMap<String, (f64, f64)> = s.notes.borrow().iter()
+                    .filter_map(|n| n[0].as_str()?.strip_prefix("at:").map(|k| (k.to_string(), (number(&n[1]), number(&n[2]))))).collect();
+                let at = |_: &Scenario, part: &str| *pos.get(part).unwrap_or_else(|| panic!("{section}/{width}: {part} never under the pointer: {pos:?}"));
+                let who = format!("{section}/{width}/{add}");
+                // Left to right, in the order they are drawn.
+                let labels: Vec<&str> = expect.iter().map(|e| e.0).collect();
+                let xs: Vec<f64> = labels.iter().map(|l| at(&s, l).0).collect();
+                assert!(xs.windows(2).all(|p| p[0] < p[1]), "{who}: the buttons are in the order {labels:?}: {xs:?}");
+                let (row_x, row_w) = at(&s, "row");
+                for (label, result) in &expect {
+                    let (x, w) = at(&s, label);
+                    for click in [x + w / 2.0, x + 2.0, x + w - 2.0] {
+                        s.notes.borrow_mut().clear();
+                        s.click(click, 12.0);
+                        assert_eq!(s.last("result").map(|n| n[1].clone()), Some(json!(result)), "{who}: {label} at {click} (button {x}..{})", x + w);
+                    }
+                }
+                // The buttons end at the row's right edge.
+                let (lx, lw) = at(&s, expect.last().unwrap().0);
+                assert!((lx + lw - (row_x + row_w)).abs() < 0.6, "{who}: the last button ends at the row's edge ({} vs {})", lx + lw, row_x + row_w);
+                for part in ["add", "del", "name"] {
+                    if part == "name" && width < 248.0 {
+                        continue; // a name this narrow can be under no pointer at all
+                    }
+                    let (x, w) = at(&s, part);
+                    s.notes.borrow_mut().clear();
+                    s.click(x + w / 2.0, 12.0);
+                    assert_eq!(s.last("result").map(|n| n[1].clone()), Some(json!("diff")), "{who}: {part} opens the diff");
+                }
+            }
         }
     }
 }
