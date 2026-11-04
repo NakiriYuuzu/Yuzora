@@ -663,7 +663,8 @@ mod tests {
     #[test]
     fn a_program_is_ended_by_its_child_not_by_a_process_id() {
         let src = include_str!("remote.rs");
-        let code = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        // (Line ends differ between checkouts: cut at the module, not at a line.)
+        let code = src.split("mod tests {").next().unwrap();
         for bare in [concat!("Open", "Process("), concat!("fn kill_tree(", "pid"), concat!("libc::", "kill(")] {
             assert!(!code.contains(bare), "{bare} is back: a process id can be someone else's by now");
         }
