@@ -229,7 +229,10 @@ const SCAN: &str = "yuzora-trust-scan";
 /// the file's own folder; both count. One git won't take, and a path whose
 /// real one can't be had (no `readlink`, links 40 deep), count as
 /// unreadable. They're read last, and one the scan already read as a
-/// checked-out submodule keeps that name. A path
+/// checked-out submodule keeps that name. A link there the kernel can't
+/// follow (so neither can `find -L`), and a `modules` that isn't a folder it
+/// can, count as unreadable too: the real path git takes may still get
+/// through one (`x/..` past a file, a trailing slash, more links). A path
 /// there `find` gives that can't be read back (a line feed in it) and a
 /// `find` that fails count as unreadable.
 const SCAN_SCRIPT: &str = r#"unset CDPATH GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
@@ -304,12 +307,19 @@ gitdir() {
 }
 modules() {
   case "$3" in "$2") n=.git ;; "$2"/*) n=.git/${3#"$2/"} ;; *) n=$3 ;; esac
-  [ -d "$3/modules" ] || return
+  [ -d "$3/modules" ] || { has "$3/modules" && printf 'sub\0%s%s/modules\0err\0modules\0' "$1" "$n"; return; }
   dirs=$(find -L "$3/modules" -type d && echo .) || dirs=
   gfs=$(find -L "$3/modules" -type f -size -4097 -exec sh -c 'grep -l "^gitdir: " "$@"; [ $? -le 1 ]' sh {} + && echo .) || gfs=
+  lns=$(find -L "$3/modules" -type l && echo .) || lns=
   case "$dirs" in .|*"$nl.") ;; *) dirs= ;; esac
   case "$gfs" in .|*"$nl.") ;; *) gfs= ;; esac
-  [ -n "$dirs" ] && [ -n "$gfs" ] || { printf 'sub\0%s%s/modules\0err\0modules\0' "$1" "$n"; return; }
+  case "$lns" in .|*"$nl.") ;; *) lns= ;; esac
+  [ -n "$dirs" ] && [ -n "$gfs" ] && [ -n "$lns" ] || { printf 'sub\0%s%s/modules\0err\0modules\0' "$1" "$n"; return; }
+  for m in $lns; do
+    [ "$m" != . ] || continue
+    case "$m" in "$3/modules/"*) [ -L "$m" ] ;; *) false ;; esac || { printf 'sub\0%s%s/modules\0err\0name\0' "$1" "$n"; continue; }
+    printf 'sub\0%s%s\0err\0gitdir\0' "$1" "$n/${m#"$3/"}"
+  done
   for m in $dirs; do
     [ "$m" != . ] || continue
     case "$m" in "$3/modules"|"$3/modules/"*) [ -d "$m" ] ;; *) false ;; esac || { printf 'sub\0%s%s/modules\0err\0name\0' "$1" "$n"; continue; }
@@ -1091,7 +1101,9 @@ mod tests {
         assert_eq!(git_dir(".git/modules/lower"), ignores_case);
         let got = programs_within(None, &top, Duration::from_secs(30));
         assert!(!git_dir(".git/modules/gone"), "git doesn't stop at the missing work tree, so this proves nothing");
-        let mut want = vec![".git/modules/common: core.sshcommand".to_string(), ".git/modules/gone: filter.evil.clean".into(), ".git/modules/link: core.gitproxy".into()];
+        // `link/HEAD`, to a ref that's only packed, leads the kernel nowhere,
+        // and the scan can't tell where git's real path would lead.
+        let mut want = vec![".git/modules/common: core.sshcommand".to_string(), ".git/modules/gone: filter.evil.clean".into(), format!(".git/modules/link/HEAD: {UNREADABLE}"), ".git/modules/link: core.gitproxy".into()];
         if ignores_case {
             want.push(".git/modules/lower: filter.evil.smudge".into());
         }
@@ -1156,6 +1168,83 @@ mod tests {
         want.insert(0, format!(".git/modules/bad: {UNREADABLE}"));
         want.push("submodule.x.gitdir".into());
         assert_eq!(got, Ok(want));
+    }
+
+    // A link under `modules/` (or `modules/` itself) the kernel can't follow,
+    // so neither `find -L` nor `[ -d ]`, git may: the real path it takes
+    // before it opens a submodule in its own process reads `x/..` and a
+    // trailing slash as written, whatever `x` is, and follows more links than
+    // macOS does (32). The scan can't read where git would go, so one shuts
+    // the gate; one the kernel follows is read as before.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_the_kernel_cant_follow_shuts_the_gate() {
+        let (mut got, mut want) = (vec![], vec![]);
+        for case in ["slash", "file-dotdot", "file-dotdot-dir", "modules", "chain-33", "dir-slash", "chain-32"] {
+            let name = format!("kernel-{case}");
+            let (dir, root, git) = scratch_dir(&name);
+            let at = |p: &str| Path::new(&root).join(p);
+            git("lib", &["init", "-q", "-b", "main"]);
+            for n in ["one", "two"] {
+                std::fs::write(at("lib/f"), n).unwrap();
+                git("lib", &["add", "f"]);
+                git("lib", &["commit", "-q", "-m", n]);
+            }
+            let one = git("lib", &["rev-parse", "HEAD~1"]);
+            git("top", &["init", "-q", "-b", "main"]);
+            git("top", &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &at("lib").display().to_string(), "s"]);
+            git("top/s", &["checkout", "-q", &one]);
+            git("top", &["commit", "-q", "-am", "one"]);
+            git("top/s", &["checkout", "-q", "main"]);
+            git("top", &["commit", "-q", "-am", "two"]);
+            git("top", &["submodule", "deinit", "-q", "-f", "s"]);
+            // The submodule's git dir moved out of `modules/`, a gitfile to it.
+            let g = |p: &str| at(&format!("top/.git/{p}"));
+            std::fs::create_dir_all(g("deep/a")).unwrap();
+            std::fs::rename(g("modules/s"), g("deep/evil.git")).unwrap();
+            git("top", &["config", "--file", ".git/deep/evil.git/config", "core.sshCommand", "hit"]);
+            std::fs::write(g("deep/a/f"), "gitdir: ../evil.git\n").unwrap();
+            let link = |to: &str, from: &str| std::os::unix::fs::symlink(to, g(from)).unwrap();
+            let chain = |n: usize| {
+                std::fs::create_dir_all(g("l")).unwrap();
+                (1..n - 1).for_each(|i| link(&(i + 1).to_string(), &format!("l/{i}")));
+                link("../deep/evil.git", &format!("l/{}", n - 1));
+                link("../l/1", "modules/s");
+            };
+            match case {
+                "slash" => link("../deep/a/f/", "modules/s"),
+                "file-dotdot" | "file-dotdot-dir" => {
+                    std::fs::write(g("modules/x"), "").unwrap();
+                    link(if case == "file-dotdot" { "x/../../deep/a/f" } else { "x/../../deep/evil.git" }, "modules/s");
+                }
+                "modules" => {
+                    std::fs::remove_dir(g("modules")).unwrap();
+                    std::fs::create_dir(g("store")).unwrap();
+                    std::fs::rename(g("deep/evil.git"), g("store/s")).unwrap();
+                    std::fs::write(g("x"), "").unwrap();
+                    link("x/../store", "modules");
+                }
+                "chain-33" => chain(33),
+                "chain-32" => chain(32),
+                _ => link("../deep/evil.git/", "modules/s"),
+            }
+            let follows = std::fs::metadata(g("modules/s")).is_ok();
+            let opens = git("top", &["diff", "--submodule=log", "HEAD~1", "HEAD"]).contains("> two");
+            got.push((case, follows, opens, programs_within(None, &at("top").display().to_string(), Duration::from_secs(30))));
+            std::fs::remove_dir_all(&dir).unwrap();
+            // Linux follows 40 links, so 33 too.
+            let kernel = matches!(case, "dir-slash" | "chain-32") || (case == "chain-33" && !cfg!(target_os = "macos"));
+            // GNU find stops at a link it can't follow but for a missing
+            // target, so there all of `modules/` can't be read.
+            let scan = match (kernel, case) {
+                (true, _) => ".git/modules/s: core.sshcommand".to_owned(),
+                (false, "modules") => format!(".git/modules: {UNREADABLE}"),
+                (false, _) if cfg!(target_os = "linux") => format!(".git/modules: {UNREADABLE}"),
+                (false, _) => format!(".git/modules/s: {UNREADABLE}"),
+            };
+            want.push((case, kernel, true, Ok(vec![scan])));
+        }
+        assert_eq!(got, want, "(case, the kernel follows, git opens it in its own process, the scan)");
     }
 
     // A partial clone, by the keys git reads: its promisor remote is

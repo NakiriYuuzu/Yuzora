@@ -454,7 +454,13 @@ mod tests {
             let opens = gd.join("HEAD").exists() || gd.join("HEAD").is_symlink();
             let pending = pending(&s.repo).unwrap();
             if opens {
-                assert_eq!(pending, [".git/modules/s: filter.evil.smudge"], "{variant}");
+                // A link to a ref that's only packed leads the kernel nowhere,
+                // and the scan can't tell where git's real path would lead.
+                let mut want = vec![".git/modules/s: filter.evil.smudge".to_owned()];
+                if variant == "symhead" {
+                    want.insert(0, format!(".git/modules/s/HEAD: {UNREADABLE}"));
+                }
+                assert_eq!(pending, want, "{variant}");
                 assert!(check(&s.repo).is_err(), "{variant}");
             } else {
                 assert_eq!(pending, Vec::<String>::new(), "{variant}");
