@@ -101,17 +101,18 @@ fn git_path(path: &Path) -> String {
 /// then the folders one and two below `folder` with a `.git` (the first
 /// [`FOLDERS`] looked at), in path order (bytes). Links to folders are
 /// followed (two levels at most, so a link back up ends there); [`SKIP`]
-/// folders aren't looked into. A `folder` that can't be looked into is none
-/// if it's [`gone`], else an error.
+/// folders and names with a line feed in them aren't looked into, and a
+/// folder counts only by its [`real`] path. A `folder` that can't be looked
+/// into is none if it's [`gone`], else an error.
 pub fn here(folder: &Path, cwds: &[String]) -> Result<Listing, String> {
-    let base = match std::fs::canonicalize(folder) {
-        Ok(base) if can_enter(&base) => base,
-        _ if gone(folder) => return Ok(Listing::default()),
-        _ => return Err(format!("{} can't be looked into now", folder.display())),
+    let base = match real(folder) {
+        Some(base) => base,
+        None if gone(folder) => return Ok(Listing::default()),
+        None => return Err(format!("{} can't be looked into now", folder.display())),
     };
     let mut found = Collect { base: base.clone(), out: Listing::default() };
     for dir in std::iter::once(folder).chain(cwds.iter().map(Path::new)) {
-        if let Ok(real) = std::fs::canonicalize(dir)
+        if let Some(real) = real(dir)
             && let Some(top) = real.ancestors().find(|a| has_git(a))
             && !found.add(top)
         {
@@ -138,13 +139,20 @@ pub fn here(folder: &Path, cwds: &[String]) -> Result<Listing, String> {
     below.sort_by(|a, b| a.as_os_str().as_encoded_bytes().cmp(b.as_os_str().as_encoded_bytes()));
     for dir in below {
         if has_git(&dir)
-            && let Ok(top) = std::fs::canonicalize(&dir)
+            && let Some(top) = real(&dir)
             && !found.add(&top)
         {
             break;
         }
     }
     Ok(found.out)
+}
+
+/// `dir`'s real path, as [`SCRIPT`]'s `real` takes it: a folder that can be
+/// looked into (`cd -P`), with no line feed in the path (the script reads
+/// paths a line each).
+fn real(dir: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(dir).ok().filter(|p| can_enter(p) && !p.as_os_str().as_encoded_bytes().contains(&b'\n'))
 }
 
 /// Whether `dir` is a folder that can be looked into, as `cd` takes it: on
@@ -170,15 +178,23 @@ fn gone(folder: &Path) -> bool {
     false
 }
 
-/// The folders in `dir` (links to folders too), but [`SKIP`]'s, as the file
-/// system lists them; each looked at only when it's asked for.
+/// The folders in `dir` (links to folders too), but [`SKIP`]'s and those
+/// with a line feed in their name (as [`SCRIPT`]'s `find` prunes them), as
+/// the file system lists them; each looked at only when it's asked for. Only
+/// a link is looked up: the listing tells a folder from a file.
 fn folders_in(dir: &Path) -> impl Iterator<Item = PathBuf> {
     let entries = std::fs::read_dir(dir).into_iter().flatten().flatten();
-    entries.filter(|e| !SKIP.iter().any(|s| e.file_name() == *s)).map(|e| e.path()).filter(|p| {
-        #[cfg(test)]
-        LOOKED.with(|n| n.set(n.get() + 1));
-        p.is_dir()
-    })
+    entries
+        .filter(|e| {
+            let name = e.file_name();
+            !SKIP.iter().any(|s| name == *s) && !name.as_encoded_bytes().contains(&b'\n')
+        })
+        .filter_map(|e| {
+            #[cfg(test)]
+            LOOKED.with(|n| n.set(n.get() + 1));
+            let kind = e.file_type().ok()?;
+            (kind.is_dir() || (kind.is_symlink() && e.path().is_dir())).then(|| e.path())
+        })
 }
 
 #[cfg(test)]
@@ -225,9 +241,12 @@ fn listing(out: &[u8]) -> Option<Listing> {
 /// were more, and `end\0\0` last; `gone\0\0` instead of `base` when the
 /// folder is gone (as [`gone`]), and nothing (exit 1) when it can't be looked
 /// into now. `find -L` follows links to folders as [`here`] does
-/// (two levels, so a link back up ends there); its names come back a line
-/// each, so one with a line feed in it can't be read and is passed over
-/// (`real` refuses it; a part of one is no folder). The first 5000 as `find`
+/// (two levels, so a link back up ends there). Its names come back a line
+/// each, so a name with a line feed in it is pruned (`-name "*$nl*"`), as
+/// [`folders_in`] passes it over: neither lists it nor looks into it, and
+/// none of its parts is read as a path (a relative one would be the
+/// machine's home's, where `hc exec` runs this). `real` refuses a real path
+/// with one, as [`real`] does. The first 5000 as `find`
 /// walks (the file system's order, as [`here`] reads them), then sorted as
 /// bytes (`LC_ALL=C`), as [`here`] sorts.
 const SCRIPT: &str = r#"nl='
@@ -278,7 +297,7 @@ fi
 base=$r
 printf 'base\0%s\0' "$base"
 for c in "$@"; do up "$c"; done
-all=$(find -L "$base" -mindepth 1 -maxdepth 2 \( -name .git -o -name node_modules -o -name target \) -prune -o -type d -print 2>/dev/null | head -n 5001)
+all=$(find -L "$base" -mindepth 1 -maxdepth 2 \( -name .git -o -name node_modules -o -name target -o -name "*$nl*" \) -prune -o -type d -print 2>/dev/null | head -n 5001)
 IFS=$nl
 set -- $all
 if [ "$#" -gt 5000 ]; then printf 'more\0\0'; all=$(printf '%s\n' "$all" | head -n 5000); fi
@@ -310,18 +329,76 @@ mod tests {
         l.repos.iter().map(|r| r.rel.as_str()).collect()
     }
 
-    /// [`SCRIPT`] run here with sh, read as a machine's answer is.
-    fn by_script(folder: &Path, cwds: &[String]) -> Option<Listing> {
-        let out = std::process::Command::new("sh").args(["-c", SCRIPT, "sh"]).arg(folder).args(cwds).output().unwrap();
-        listing(&out.stdout)
+    /// [`SCRIPT`] run here with sh (in `cwd`: a machine runs it in its home),
+    /// read as a machine's answer is.
+    fn by_script(folder: &Path, cwds: &[String], cwd: Option<&Path>) -> Option<Listing> {
+        let mut sh = std::process::Command::new("sh");
+        sh.args(["-c", SCRIPT, "sh"]).arg(folder).args(cwds);
+        if let Some(cwd) = cwd {
+            sh.current_dir(cwd);
+        }
+        listing(&sh.output().unwrap().stdout)
     }
 
-    /// [`here`], checked against [`SCRIPT`]: both must answer the same (or
-    /// both have no answer).
-    fn answer(folder: &Path, cwds: &[String]) -> Result<Listing, String> {
+    /// [`here`], checked against [`SCRIPT`] run in `cwd`: both must answer
+    /// the same (or both have no answer).
+    fn answer_in(folder: &Path, cwds: &[String], cwd: Option<&Path>) -> Result<Listing, String> {
         let got = here(folder, cwds);
-        assert_eq!(by_script(folder, cwds), got.clone().ok(), "the script and here differ");
+        assert_eq!(by_script(folder, cwds, cwd), got.clone().ok(), "the script and here differ");
         got
+    }
+
+    fn answer(folder: &Path, cwds: &[String]) -> Result<Listing, String> {
+        answer_in(folder, cwds, None)
+    }
+
+    // A name with a line feed in it is passed over, here and by the script. `find` prints a name
+    // a line, so the script would read its parts as paths: relative ones in the machine's home
+    // (where `hc exec` runs it), listing repos there, outside the space. Neither lists those, nor
+    // a repo named so; a pane's folder or a link whose real path has one counts for nothing, and
+    // a space folder with one can't be looked into.
+    #[test]
+    fn line_feed_names_are_passed_over() {
+        let base = scratch("line-feed");
+        let home = scratch("line-feed-home");
+        mkdirs(&home, &[".dotfiles/.git", "src/proj/.git", "c/.git"]);
+        mkdirs(&base, &["real/.git", "x\n.dotfiles", "a\nsrc/proj", "b\nc", "two\nlines/.git"]);
+        std::os::unix::fs::symlink(base.join("two\nlines"), base.join("link")).unwrap();
+        // Not looked into at all: not even a link in one, to a repo elsewhere.
+        let elsewhere = scratch("line-feed-elsewhere");
+        mkdirs(&elsewhere, &[".git"]);
+        std::os::unix::fs::symlink(&elsewhere, base.join("a\nsrc/there")).unwrap();
+        let cwds = [base.join("two\nlines").to_string_lossy().into_owned()];
+        assert_eq!(rels(&answer_in(&base, &cwds, Some(&home)).unwrap()), ["real"]);
+        mkdirs(&base, &["sp\nace/r/.git"]);
+        assert!(answer_in(&base.join("sp\nace"), &[], Some(&home)).is_err(), "a space folder with a line feed");
+    }
+
+    // Names the script must take as names, never as code, options or patterns: quotes, `$(…)`,
+    // backquotes, a backslash, a leading `-`, glob characters, `;`, printf directives, a tab.
+    // Each is a repo in a space folder whose own name has a space; panes' folders are among them,
+    // with `-` and `--` themselves. Here and the script (run in the space folder) list the same,
+    // and nothing runs.
+    #[test]
+    fn special_names_are_names() {
+        const NAMES: [&str; 16] = [
+            "sp ace", "q'uote", "dq\"uote", "$(touch PWNED1)", "`touch PWNED2`", "back\\slash", "-dash", "--", "-L", "*", "[ab]",
+            "a;touch PWNED3", "%s%n%d", "tab\there", "\\0nul", "é-ü",
+        ];
+        let base = scratch("special names");
+        for name in NAMES {
+            mkdirs(&base, &[&format!("{name}/.git")]);
+        }
+        let cwds: Vec<String> = ["sp ace", "-dash", "--", "*"].iter().map(|n| base.join(n).to_string_lossy().into_owned()).chain(["-".into(), "--".into()]).collect();
+        let got = answer_in(&base, &cwds, Some(&base)).unwrap();
+        assert_eq!(rels(&got)[..4], ["sp ace", "-dash", "--", "*"], "the panes' first");
+        let mut listed = rels(&got);
+        listed.sort();
+        let mut want = NAMES.to_vec();
+        want.sort();
+        assert_eq!(listed, want);
+        let ran: Vec<_> = std::fs::read_dir(&base).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("PWNED")).collect();
+        assert!(ran.is_empty(), "{ran:?}");
     }
 
     fn both(folder: &Path, cwds: &[String]) -> Listing {

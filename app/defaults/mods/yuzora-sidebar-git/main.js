@@ -3,7 +3,7 @@
 // Publishes yuzora.badge.git (changed files) and yuzora.status.git.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, InputState, Input, v_virtual_list, Scrollbar } from "gpui-base";
-import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, shared, setShared, props } from "herdr";
+import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, shared, setShared, props, nextCommand } from "herdr";
 import { t, tokens } from "yuzora:core";
 import { open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, pushPreview, sequencer, fetch, trust, repos, settings as gitSettings } from "yuzora:git";
 
@@ -55,6 +55,8 @@ export default class SidebarGit extends View {
     this.text = "";
     this.attach(cx);
     cx.timer.every(1000, (cx) => { if (key() !== this.ctx) this.attach(cx); });
+    // "yuzora-sidebar-git.pick-repo" (a key in keys.json, or herdr-app do) opens the repo picker.
+    cx.spawn(async () => { for (;;) if ((await nextCommand()) === "pick-repo") this.openPicker("dialog"); });
     this.fetchedAt = Date.now();
     cx.timer.every(60000, (cx) => this.autoFetch(cx));
   }
@@ -80,16 +82,19 @@ export default class SidebarGit extends View {
       try {
         const repo = await open(cwd, on);
         if (this.ctx !== ctx) return;
-        // A pinned repo opens as itself. Without its `.git` git opens the repo
-        // above it instead: unpinned. With one git won't take now (it can't be
-        // read, say), the pin stays, and so does the error: not the repo above.
-        if (here.pin && repo.root !== cwd) {
+        // A pinned repo opens as itself (git may spell it another way: a subst
+        // drive on Windows, say; the file system tells). Without its `.git`
+        // git opens the repo above it instead: unpinned. With one git won't
+        // take now (it can't be read, say), the pin stays, and so does the
+        // error: not the repo above.
+        if (here.pin && repo.root !== cwd && !(await this.sameFolder(repo.root, here))) {
           if (await this.unpinIfGone(here)) { if (this.ctx === ctx) this.attach(cx); return; }
           if (this.ctx !== ctx) return;
           this.error = t("repo.opensAbove", { root: repo.root });
           this.publish(); cx.notify();
           return;
         }
+        if (this.ctx !== ctx) return;
         this.repo = repo;
         await this.reload(cx);
         this.loadMessages(cx);
@@ -138,6 +143,13 @@ export default class SidebarGit extends View {
     return this.unpin(here);
   }
 
+  // Whether `root` (as git names it) is `here`'s pinned folder: their real
+  // paths, as `repos` gives them, are the same.
+  async sameFolder(root, here) {
+    try { return (await repos(root, here.on, [])).repos.some((r) => r.rel === "." && r.root === here.cwd); }
+    catch { return false; }
+  }
+
   // Unpins `here`, with a note (unless it was pinned again meanwhile).
   unpin(here) {
     if (shared(pinKey(here.pin))?.root !== here.cwd) return false;
@@ -148,7 +160,8 @@ export default class SidebarGit extends View {
 
   // The repo picker: follow the focus, or pin one of the space's repos (the
   // space's folder, its panes' folders: no git runs to list them).
-  openPicker() {
+  // At the pointer (a click on the header), or centered (the command).
+  openPicker(kind = "popup") {
     const space = spaces().find((s) => s.active);
     if (!space) return;
     const tabs = new Set((space.tabs ?? []).map((tab) => tab.id));
@@ -156,7 +169,7 @@ export default class SidebarGit extends View {
     const folder = space.folder || cwds[0];
     if (!folder) return;
     const pin = pinned();
-    openOverlay({ mod: "yuzora-sidebar-git", kind: "popup", at: "pointer", width: 340, height: 360,
+    openOverlay({ mod: "yuzora-sidebar-git", kind, ...(kind === "popup" ? { at: "pointer" } : {}), width: 340, height: 360,
       props: { picker: { space: space.id, folder, on: space.machine ?? null, cwds, current: pin?.root ?? this.repo?.root ?? null, pinned: Boolean(pin) } } });
   }
 
@@ -178,20 +191,37 @@ export default class SidebarGit extends View {
     closeOverlay(props()?.overlay);
   }
 
+  // The picker's row the keys are on: 0 "follow the focus", then the repos;
+  // at first the one picked now.
+  pickAt(list) {
+    const p = this.picker;
+    return this.hi ?? (p.pinned ? list.findIndex((r) => r.root === p.current) + 1 : 0);
+  }
+
+  pickKey(e, cx, list) {
+    const n = list.length + 1, at = this.pickAt(list);
+    if (e.key === "escape") closeOverlay(props()?.overlay);
+    else if (e.key === "down") this.hi = (at + 1) % n;
+    else if (e.key === "up") this.hi = (at - 1 + n) % n;
+    else if (e.key === "enter") this.pick(at ? list[at - 1].root : null);
+    else return;
+    cx.stop_propagation(); cx.notify();
+  }
+
   renderPicker() {
-    const th = theme(), p = this.picker, found = this.found, list = found?.repos ?? [];
-    const row = (id, title, detail, on, extra, action) => h_flex().id(id).h(PICK_ROW).px(8).gap(6).flex_none().items_center().rounded(5).cursor_pointer()
-      .when(on, (el) => el.bg(th.selected)).hover((s) => s.bg(th.hover)).on_click(() => action())
+    const th = theme(), p = this.picker, found = this.found, list = found?.repos ?? [], at = this.pickAt(list);
+    const row = (id, title, detail, on, extra, action, i) => h_flex().id(id).h(PICK_ROW).px(8).gap(6).flex_none().items_center().rounded(5).cursor_pointer()
+      .when(on, (el) => el.bg(th.selected)).when(!on && i === at, (el) => el.bg(th.hover)).hover((s) => s.bg(th.hover)).on_click(() => action())
       .child(div().w(10).flex_none().text_size(10).text_color(th.accent).child(on ? "✓" : ""))
       .child(div().flex_none().max_w(150).truncate().child(title))
       .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(th.dim).child(detail ?? ""))
       .when(Boolean(extra), (el) => el.child(div().flex_none().text_size(10.5).text_color(th.muted).child(extra)));
     return v_flex().id("picker").track_focus(this.handle).size_full().p(4).bg(th.popover ?? th.raised).text_color(th.foreground).text_size(12)
-      .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(props()?.overlay); cx.stop_propagation(); } })
-      .child(row("pick-follow", t("repo.follow"), !p.pinned && p.current ? baseName(p.current) : null, !p.pinned, null, () => this.pick(null)))
+      .on_key_down((e, cx) => this.pickKey(e, cx, list))
+      .child(row("pick-follow", t("repo.follow"), !p.pinned && p.current ? baseName(p.current) : null, !p.pinned, null, () => this.pick(null), 0))
       .child(div().h(1).mx(4).my(2).flex_none().bg(th.divider ?? th.border))
       .child(v_flex().id("pick-list").flex_1().min_h(0).overflow_y_scrollbar()
-        .children(list.map((r, i) => row(`pick-${i}`, r.name, r.rel === "." ? t("repo.here") : r.rel, p.pinned && r.root === p.current, r.trusted ? t("repo.trusted") : null, () => this.pick(r.root))))
+        .children(list.map((r, i) => row(`pick-${i}`, r.name, r.rel === "." ? t("repo.here") : r.rel, p.pinned && r.root === p.current, r.trusted ? t("repo.trusted") : null, () => this.pick(r.root), i + 1)))
         .when(!found, (el) => el.child(div().px(8).py(4).text_size(11).text_color(th.dim).child(t("repo.loading"))))
         .when(Boolean(found) && !list.length, (el) => el.child(div().px(8).py(4).text_size(11).text_color(found.error ? th.ansi1 : th.dim).child(found.error ?? t("repo.empty"))))
         .when(Boolean(found?.truncated), (el) => el.child(div().px(8).py(4).text_size(10.5).text_color(th.dim).child(t("repo.truncated", { count: list.length })))));
