@@ -114,7 +114,7 @@ v0.0.9 發布政策依使用者明確授權：macOS App 僅 Apple Silicon，不�
 
 Stable 與新發布的 Beta 都使用一般 `bun tauri build --ci`，保留 Tauri updater signing secrets 與 updater artifacts；macOS 使用 ad-hoc `signingIdentity: "-"`，不使用 Apple Developer identity。**發布 build 不可使用 `--no-sign`**：它會一併略過 updater signatures，導致 metadata／publish gate 失敗。PR 候選版停用 updater artifacts／endpoints；Windows 候選仍使用 `--no-sign`，macOS 候選保留 ad-hoc bundle signing 以便驗收安裝。
 
-README 與當版 release notes 必須說明 macOS 未經 Apple Developer ID 簽章／公證，Gatekeeper 仍可能警告或阻擋首次開啟；使用者從官方 Release 下載、確認來源後，依 macOS「隱私權與安全性」提供的「仍要打開」流程操作。若出現「App 已損毀」訊息，先確認使用的是含完整 bundle seal 的最新版本；Release gate 應先以 `codesign --verify --deep --strict` 擋下這類 artifact。不得宣稱已取得 Apple 信任。正式發布仍須通過 ARM 架構、runtime payload、完整 artifacts、updater signatures 與 metadata gates。
+README 與當版 release notes 必須說明 macOS 未經 Apple Developer ID 簽章／公證，Gatekeeper 仍可能警告或阻擋首次開啟；使用者從官方 Release 下載、確認來源後，依 macOS「隱私權與安全性」提供的「強制打開」流程操作。若出現「App 已損毀」訊息，先確認使用的是含完整 bundle seal 的最新版本；Release gate 應先以 `codesign --verify --deep --strict` 擋下這類 artifact。不得宣稱已取得 Apple 信任。正式發布仍須通過 ARM 架構、runtime payload、完整 artifacts、updater signatures 與 metadata gates。
 
 ### 已啟用：Tauri updater artifact signing
 

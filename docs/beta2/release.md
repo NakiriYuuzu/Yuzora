@@ -198,7 +198,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 
 1. 觸發 `app-package.yml`（workflow_dispatch）取得四個平台的 artifacts 與未簽章 manifest。
 2. 在 protected environment（required reviewer）下載 artifacts，加入 `changelog.md`（`app/CHANGELOG.md`）與 `changelog.zh-TW.md`（`app/CHANGELOG.zh-TW.md`；`app-package.yml` 的 artifact 已帶兩份），重產並簽 `yuzora-update.json` → `.sig`。
-3. beta.2 不附 `latest.json`（§5 末段的既定決定），這一步略過。日後若決定帶 beta.1 升級，才簽 macOS archive 與 NSIS 安裝程式、產生 `latest.json`（§5）。
+3. beta.2 不附 `latest.json`（§5 末段的既定決定），這一步略過。0.1.0 Stable 才簽 macOS archive 與 NSIS 安裝程式、產生 `latest.json`（§5）。
 4. 建 draft release `v<version>`（beta：`prerelease=true`、不設 Latest），上傳：
 
    | 檔案 | beta | stable |
