@@ -24,7 +24,7 @@ L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行�
 ## 各 lane 可用的掛點
 
 1. **JS 模組**：在自己 crate 的 `host_module()` 加函式（`.function`／`.async_function`）或原生元件（`.component`），並在 `DECLARATIONS` 加對應的 `export function …` 宣告（必須完全一致，否則 `validate` 失敗）。mod 端 `import { … } from "yuzora:<name>"`。
-2. **共用層 `yuzora:core`**（JS）／`yuzora_core`（Rust）：`t`／`translate`、`locale`／`setLocale`、`tokens`、`panes`／`settingsPages`、`getSetting`／`setSetting`、`exec`（可帶 `on`、`timeoutMs`、`maxBytes`）、`appHome`、`version`。Rust 端另有 `secrets`（keyring）、`remote::ExecRequest`、`settings::section`、`paths`。完整宣告在 app home 的 `yuzora.d.ts`。
+2. **共用層 `yuzora:core`**（JS）／`yuzora_core`（Rust）：`t`／`translate`、`locale`（永遠 `"en"`）／`setLocale`（不做事，留給舊 mod）、`tokens`、`panes`／`settingsPages`、`getSetting`／`setSetting`、`exec`（可帶 `on`、`timeoutMs`、`maxBytes`）、`appHome`、`version`。Rust 端另有 `secrets`（keyring）、`remote::ExecRequest`、`settings::section`、`paths`。完整宣告在 app home 的 `yuzora.d.ts`。
 3. **tool pane**：在 mod 的 `mod.json` 宣告 `"yuzora": { "pane": {…} }`，L1 的「＋ 新增 pane」選單會列出它。
 4. **設定頁**：在 mod 的 `mod.json` 宣告 `"yuzora": { "settings": {…} }`，L6 的設定框架會列出它。設定值存在 Yuzora `settings.json` 自己的 section，只讀寫自己的 section。
 5. **側欄模式**：L2–L5 直接把佔位的 `yuzora-sidebar-<mode>` mod 換成真正的內容，不需要改 layout。
@@ -112,7 +112,7 @@ scripts/yuzora/check-mods yuzora-git-log  # 指定 mod
 
 ```bash
 RUN=/tmp/yz-<lane>-run
-env -i HOME="$HOME" USER="$USER" TMPDIR="$TMPDIR" TERM=xterm-256color LANG=zh_TW.UTF-8 \
+env -i HOME="$HOME" USER="$USER" TMPDIR="$TMPDIR" TERM=xterm-256color LANG=en_US.UTF-8 \
   PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
   YUZORA_APP_HOME=$RUN/home HC_SESSION=yuzora-<lane>-test \
   XDG_STATE_HOME=$RUN/state XDG_CONFIG_HOME=$RUN/config XDG_RUNTIME_DIR=$RUN/runtime \

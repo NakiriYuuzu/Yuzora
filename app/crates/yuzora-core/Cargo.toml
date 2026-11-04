@@ -13,7 +13,6 @@ base64 = "0.22"
 keyring = "4.1.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sys-locale = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 # killpg: a timed-out exec ends everything it started.

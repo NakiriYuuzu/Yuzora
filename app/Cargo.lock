@@ -11248,7 +11248,6 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
- "sys-locale",
 ]
 
 [[package]]

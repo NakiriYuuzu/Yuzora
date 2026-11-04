@@ -54,7 +54,6 @@ Var Ours
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
-!insertmacro MUI_LANGUAGE "TradChinese"
 
 VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductName" "${APP}"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "ProductVersion" "${VERSION}"
@@ -63,11 +62,8 @@ VIAddVersionKey /LANG=${LANG_ENGLISH} "FileDescription" "${APP} installer"
 VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalCopyright" "Apache-2.0"
 
 LangString OldApp ${LANG_ENGLISH} "An older Yuzora (0.1.0-beta.1 or before, installed for all users) is still on this PC. Remove it now? Removing it does not delete your old data, but the new Yuzora does not bring connections and settings over automatically yet, so you will need to set them up again."
-LangString OldApp ${LANG_TRADCHINESE} "這台電腦還裝著舊版 Yuzora（0.1.0-beta.1 以前，為所有使用者安裝）。要現在移除嗎？移除不會刪掉舊版資料，但新版 Yuzora 目前還不會自動帶入連線與設定，需要重新設定。"
 LangString NotOurs ${LANG_ENGLISH} "This doesn't look like a Yuzora folder, so nothing in it was removed:"
-LangString NotOurs ${LANG_TRADCHINESE} "這看起來不是 Yuzora 的資料夾，所以裡面的檔案都沒有移除："
 LangString NotEmpty ${LANG_ENGLISH} "Yuzora needs a folder of its own: updates replace the whole folder, and uninstalling removes it. This folder already has other files in it:"
-LangString NotEmpty ${LANG_TRADCHINESE} "Yuzora 需要自己專用的資料夾：更新會替換整個資料夾，解除安裝也會把它刪掉。這個資料夾裡已經有其他檔案："
 
 ; Removes what the app made beside its folder (src/update.rs): only beside
 ; the folder its uninstall entry names (nothing of Yuzora's ran beside any

@@ -86,12 +86,10 @@ describe("latest.json for the Tauri app", () => {
   test("the Windows installer's old-app prompt matches the current migration status", () => {
     const nsi = readFileSync(join(import.meta.dir, "../../distribution/yuzora/windows/yuzora.nsi"), "utf8");
     const en = nsi.match(/^LangString OldApp \$\{LANG_ENGLISH\} "(.*)"$/m)?.[1] ?? "";
-    const zh = nsi.match(/^LangString OldApp \$\{LANG_TRADCHINESE\} "(.*)"$/m)?.[1] ?? "";
     expect(en).toContain("does not delete your old data");
     expect(en).toContain("does not bring connections and settings over automatically yet");
     expect(en).not.toContain("can bring it over");
-    expect(zh).toContain("不會刪掉舊版資料");
-    expect(zh).toContain("目前還不會自動帶入連線與設定");
-    expect(zh).not.toContain("可以把它帶過來");
+    // English only: the installer carries no other language.
+    expect(nsi).not.toMatch(/TRADCHINESE|TradChinese/i);
   });
 });

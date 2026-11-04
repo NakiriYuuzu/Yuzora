@@ -149,21 +149,11 @@ export const ImageView: { new: (id: string, props: { path: string; on?: string |
 "##;
 
 static EN: LazyLock<Catalog> =
-    LazyLock::new(|| Catalog::from_json(include_str!("../i18n/en.json"), None));
-static ZH_TW: LazyLock<Catalog> = LazyLock::new(|| {
-    Catalog::from_json(
-        include_str!("../i18n/en.json"),
-        Some(include_str!("../i18n/zh-TW.json")),
-    )
-});
+    LazyLock::new(|| Catalog::from_json(include_str!("../i18n/en.json")));
 
-/// This crate's own strings in the shown language.
+/// This crate's own strings.
 pub(crate) fn strings() -> &'static Catalog {
-    if yuzora_core::i18n::current() == yuzora_core::i18n::ZH_TW {
-        &ZH_TW
-    } else {
-        &EN
-    }
+    &EN
 }
 
 fn on(a: &HostArguments, i: usize) -> Option<String> {
@@ -1284,75 +1274,5 @@ return JSON.stringify([a, b, c, d]); }})()"#
             include_str!("../../../defaults/mods/yuzora-markdown/doc-pane.js"),
             "copy defaults/mods/yuzora-editor/doc-pane.js to yuzora-markdown"
         );
-    }
-
-    #[test]
-    fn every_l5_mod_names_each_string_in_both_languages() {
-        for (name, en, zh) in [
-            (
-                "yuzora-sidebar-files",
-                include_str!("../../../defaults/mods/yuzora-sidebar-files/i18n/en.json"),
-                include_str!("../../../defaults/mods/yuzora-sidebar-files/i18n/zh-TW.json"),
-            ),
-            (
-                "yuzora-editor",
-                include_str!("../../../defaults/mods/yuzora-editor/i18n/en.json"),
-                include_str!("../../../defaults/mods/yuzora-editor/i18n/zh-TW.json"),
-            ),
-            (
-                "yuzora-markdown",
-                include_str!("../../../defaults/mods/yuzora-markdown/i18n/en.json"),
-                include_str!("../../../defaults/mods/yuzora-markdown/i18n/zh-TW.json"),
-            ),
-            (
-                "yuzora-files-image",
-                include_str!("../../../defaults/mods/yuzora-files-image/i18n/en.json"),
-                include_str!("../../../defaults/mods/yuzora-files-image/i18n/zh-TW.json"),
-            ),
-        ] {
-            assert_eq!(
-                key_set(en),
-                key_set(zh),
-                "{name}: en and zh-TW name different strings"
-            );
-        }
-    }
-
-    fn key_set(text: &str) -> Vec<String> {
-        fn keys(v: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
-            if let Some(m) = v.as_object() {
-                for (k, v) in m {
-                    keys(v, &format!("{prefix}{k}."), out);
-                }
-            } else {
-                out.push(prefix.trim_end_matches('.').to_owned());
-            }
-        }
-        let mut out = Vec::new();
-        keys(&serde_json::from_str(text).unwrap(), "", &mut out);
-        out.sort();
-        out
-    }
-
-    #[test]
-    fn both_catalogs_name_every_string() {
-        let en: serde_json::Value = serde_json::from_str(include_str!("../i18n/en.json")).unwrap();
-        let zh: serde_json::Value =
-            serde_json::from_str(include_str!("../i18n/zh-TW.json")).unwrap();
-        fn keys(v: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
-            if let Some(m) = v.as_object() {
-                for (k, v) in m {
-                    keys(v, &format!("{prefix}{k}."), out);
-                }
-            } else {
-                out.push(prefix.trim_end_matches('.').to_owned());
-            }
-        }
-        let (mut a, mut b) = (Vec::new(), Vec::new());
-        keys(&en, "", &mut a);
-        keys(&zh, "", &mut b);
-        a.sort();
-        b.sort();
-        assert_eq!(a, b);
     }
 }

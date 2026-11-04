@@ -122,15 +122,15 @@
 
 ### 更新說明（notes）
 
-「新功能」與「重新啟動」畫面的更新說明依目前語系（`yuzora_core::i18n::current()`，跟著 `general.locale`）顯示：zh-TW 顯示繁中，其他語系顯示英文。
+「新功能」與「重新啟動」畫面的更新說明只顯示英文（beta.3 起介面只有英文）。繁中的 changelog 仍隨 repo 與 release 出貨，給讀中文的人，App 不顯示。
 
-- **manifest**：英文是 `notes`（`changelog.md`），繁中是 `localized_notes["zh-TW"]`（`changelog.zh-TW.md`）；`manifest.ts` 看到 dist 裡有哪份就寫哪份。`localized_notes` 是新增欄位，`schema` 維持 1：沒有這個欄位的舊 manifest 照樣能讀，繁中退回英文；舊版 app 讀到新 manifest 會略過這個欄位，只用 `notes`。
-- **下載**：找到新版時，每個語系各下載一份：繁中用 `localized_notes["zh-TW"]`，沒有就用英文 `notes`。每份都比對 manifest 裡的 sha256，不符就丟掉並記 log，**不會改用另一份**；更新說明是選用的，失敗不影響更新本身。
-- **快取**：app home 裡一個語系一份，`update-notes-cache.md`（英文，上游原本的檔名）與 `update-notes-cache.zh-TW.md`，所以切換語系後馬上顯示另一份，不必重新下載。
+- **manifest**：英文是 `notes`（`changelog.md`），繁中是 `localized_notes["zh-TW"]`（`changelog.zh-TW.md`）；`manifest.ts` 看到 dist 裡有哪份就寫哪份。`localized_notes` 是新增欄位，`schema` 維持 1：沒有這個欄位的舊 manifest 照樣能讀；App 只用 `notes`，`localized_notes` 仍照樣檢查網址與 sha256 格式，但不下載。
+- **下載**：找到新版時下載英文 `notes`。比對 manifest 裡的 sha256，不符就丟掉並記 log，**不會改用另一份**；更新說明是選用的，失敗不影響更新本身。
+- **快取**：app home 裡的 `update-notes-cache.md`（上游原本的檔名）。舊版留下的 `update-notes-cache.zh-TW.md` 不再讀取。
 - **兩份 changelog**：
   - `app/CHANGELOG.md`（上游檔）是英文，Yuzora 的段落在 Herdr 的上面。上游的解析器、`scripts/yuzora/sync-check` 與 justfile 都照舊可用。
   - `app/CHANGELOG.zh-TW.md`（Yuzora 自有）只放 Yuzora 的段落，是同一批版本的繁中版。標題仍用英文的 `### New`／`### Fixed`，因為 App 靠這個標題判斷 Fixed。
-  - 兩份都內嵌進 build（`release::notes::bundled`）。zh-TW 先取中文，中文檔沒有的版本（例如 Herdr 的版本）逐版改用英文；其他語系一律英文。
+  - 只有英文的 `CHANGELOG.md` 內嵌進 build（`release::notes::bundled`）；繁中檔由測試守著與英文一致，但不進 App 的畫面。
   - 發布時 `app-package.yml` 把兩份複製成 `dist/changelog.md`、`dist/changelog.zh-TW.md`，manifest 帶兩份的 sha256。
 - **新增條目**：每筆都要兩份各加一行，英文進 `app/CHANGELOG.md`，繁中進 `app/CHANGELOG.zh-TW.md`。測試會擋下這些情況：
   - 任一份的第一段不是 `CARGO_PKG_VERSION`；
@@ -226,7 +226,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
   | DB 連線 | `<data>/database-profiles-v1.json`（`version: 1`） | `db_profiles()` |
   | DB 密碼 | credential store，service `io.yuzora.database`，account `v1:18:io.yuzora.database:<len>:<descriptorId>:<len>:<generation>` | `db_password()` |
   | SSH host key | `~/.yuzora/known_hosts.json` | `known_hosts()` |
-  | SSH 主機（`yuzora.hosts.ssh.v2`）、語系（`yuzora:language`）、外觀、終端機、編輯器、按鍵 | WebView localStorage | `local_storage(key)` |
+  | SSH 主機（`yuzora.hosts.ssh.v2`）、語系（`yuzora:language`，beta.3 起不匯入）、外觀、終端機、編輯器、按鍵 | WebView localStorage | `local_storage(key)` |
 
   `<data>` 是 Tauri 的 app data（macOS `~/Library/Application Support/dev.yuuzu.yuzora`、Windows `%APPDATA%\dev.yuuzu.yuzora`）。localStorage 在 macOS 是 WebKit 的 SQLite（`~/Library/WebKit/dev.yuuzu.yuzora/WebsiteData/Default/<hash>/<hash>/LocalStorage/localstorage.sqlite3`，值為 UTF-16LE），以系統內建的 `/usr/bin/sqlite3 -readonly` 讀，**只讀 top 與 frame origin 都正好是 `tauri://localhost` 的那份**：beta.1 的預覽窗格用同一個資料區開外部網頁，任何網站都能在自己的 origin 留下同名的 key（例如假的 `yuzora.hosts.ssh.v2`）。**Windows 是 WebView2 的 LevelDB，目前讀不到**：SSH 主機與 localStorage 裡的設定在 Windows 要使用者重新設定。beta.1 本來就不存 SSH 密碼與 passphrase。
 - **`Importer`**：每條 lane 實作一個，`section()` 是它在 Yuzora `settings.json` 的 section，也是 `yuzora_core::secrets` 的 namespace。`import(from, into)` 讀 `Beta1`、合併進 `into.value()`（不要覆蓋使用者已在 beta.2 設好的內容）、用 `into.set_secret()` 存密碼，回傳 `Imported { items, left }`（`left` 是沒帶過來的項目，給使用者看）。
@@ -239,7 +239,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 | --- | --- | --- | --- |
 | `db` | L3 | `db_profiles()`＋`db_password()`（profiles 已依 beta.1 的 journal 收尾：沒做完的刪除與移除密碼直接套用；沒存完的新增或修改放在 `unfinished`，importer 要匯入或在 `left` 說明，不可默默略過） | `target`（sqlite／postgres／mssql 欄位、`viaHost` 對到 L4 的主機 id、`transportMode`／`trustCert`）對到 L3 的連線格式 |
 | `ssh` | L4 | `local_storage("yuzora.hosts.ssh.v2")`、`known_hosts()` | 主機欄位（`id`、`name`、`host`、`port`、`user`、`authKind`、`keyPath`）；known_hosts 格式 |
-| `general` | L6 | `local_storage("yuzora:language")`（`system`／`en`／`zh-TW`） | 外觀、終端機、編輯器設定要不要帶 |
+| `general` | L6 | `local_storage("yuzora:language")`（beta.3 起不匯入：介面只有英文） | 外觀、終端機、編輯器設定要不要帶 |
 
 接線（總指揮）：在啟動流程的 worker thread 呼叫 `migrate::run(&[…各 lane importer], Beta1::locate().as_ref(), &paths::yuzora_dir(), &KeyringStore)`，把結果（`Imported.left`）用 toast 或設定頁顯示。`KeyringLegacy` 讀 beta.1 的 credential 時，macOS 會跳 Keychain 存取確認（不同 app 簽章），要在 UI 說明。
 

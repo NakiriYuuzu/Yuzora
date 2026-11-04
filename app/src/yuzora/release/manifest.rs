@@ -44,18 +44,12 @@ pub struct Manifest {
     /// The release's CHANGELOG.md, for the "what's new" notes.
     #[serde(default)]
     pub notes: Option<Asset>,
-    /// The same notes in another language, by i18n locale (`zh-TW`). Older
-    /// manifests have none; an older app skips them and keeps `notes`.
+    /// The same notes in another language, by locale (`zh-TW`). The release
+    /// still lists them for people who read them outside the app; this app is
+    /// English only, checks them like the rest and shows `notes`.
     #[serde(default)]
     pub localized_notes: BTreeMap<String, Asset>,
     pub targets: BTreeMap<String, Asset>,
-}
-
-impl Manifest {
-    /// The notes in `locale`, or the English ones when the release has none in it.
-    pub fn notes_in(&self, locale: &str) -> Option<&Asset> {
-        self.localized_notes.get(locale).or(self.notes.as_ref())
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -155,27 +149,25 @@ mod tests {
         assert_eq!((m.name.as_str(), m.version.as_str(), m.channel.as_str()), ("yuzora", "0.1.0-beta.3", "beta"));
         assert!(m.targets.contains_key("macos-aarch64") && m.targets.contains_key("windows-x86_64"));
         assert!(m.notes.is_some());
-        // Written before notes came in more languages: Chinese falls back to English.
+        // Written before notes came in more languages.
         assert!(m.localized_notes.is_empty());
-        assert_eq!(m.notes_in(yuzora_core::i18n::ZH_TW), m.notes.as_ref());
     }
 
     #[test]
-    fn notes_in_the_shown_language_or_english() {
+    fn notes_in_other_languages_are_still_checked() {
         let good: serde_json::Value = serde_json::from_slice(MANIFEST_FIXTURE).unwrap();
         let url = |name: &str| format!("{DOWNLOADS}/v0.1.0-beta.3/{name}");
         let mut m = good.clone();
         m["localized_notes"] = serde_json::json!({ "zh-TW": { "url": url("changelog.zh-TW.md"), "sha256": "5".repeat(64) } });
         let m: Manifest = serde_json::from_value(m).unwrap();
         assert!(checks(&m, "0.1.0-beta.3", DOWNLOADS).is_ok());
-        assert_eq!(m.notes_in(yuzora_core::i18n::ZH_TW).unwrap().url, url("changelog.zh-TW.md"));
-        assert_eq!(m.notes_in(yuzora_core::i18n::EN).unwrap().url, url("changelog.md"));
-        // Notes only in a language this app doesn't show: still checked, and Chinese gets English.
+        assert_eq!(m.localized_notes["zh-TW"].url, url("changelog.zh-TW.md"));
+        assert_eq!(m.notes.as_ref().unwrap().url, url("changelog.md"));
+        // Notes in a language nothing here knows: checked the same.
         let mut m = good;
         m["localized_notes"] = serde_json::json!({ "ja": { "url": url("changelog.ja.md"), "sha256": "6".repeat(64) } });
         let m: Manifest = serde_json::from_value(m).unwrap();
         assert!(checks(&m, "0.1.0-beta.3", DOWNLOADS).is_ok());
-        assert_eq!(m.notes_in(yuzora_core::i18n::ZH_TW).unwrap().url, url("changelog.md"));
     }
 
     #[test]

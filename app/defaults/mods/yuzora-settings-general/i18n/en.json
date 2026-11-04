@@ -1,14 +1,7 @@
 {
   "page": {
     "title": "General",
-    "about": "Language, the look, and what Yuzora does when it opens."
-  },
-  "language": {
-    "heading": "Language",
-    "title": "Language",
-    "about": "Shown now: {current}. System follows your computer's language; any Chinese shows Traditional Chinese.",
-    "system": "System",
-    "names": { "en": "English", "zh-TW": "Traditional Chinese" }
+    "about": "The look, and what Yuzora does when it opens."
   },
   "look": {
     "heading": "Look",

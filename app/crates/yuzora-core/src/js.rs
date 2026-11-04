@@ -9,7 +9,7 @@
 
 use crate::host::{arg, error, from_host, opt_str, to_host, vars};
 use gpui_shell::{HostModule, HostObject, HostValue};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -23,10 +23,10 @@ export interface ExecResult { code: number; stdout: string; stderr: string }
 export function version(): string;
 /** Yuzora's app home: ~/.config/yuzora, or $YUZORA_APP_HOME. */
 export function appHome(): string;
-/** The language shown: "en" or "zh-TW" (general.locale, "system" by default). */
-export function locale(): "en" | "zh-TW";
-/** Sets general.locale and redraws every mod. */
-export function setLocale(choice: "system" | "en" | "zh-TW"): void;
+/** The language shown: always "en". */
+export function locale(): "en";
+/** Does nothing: the interface is English only. Kept so older mods keep working. */
+export function setLocale(choice: string): void;
 /** This mod's text for key (mods/<mod>/i18n/<locale>.json, English beneath), {name} filled from vars. */
 export function t(key: string, vars?: Record<string, string | number>): string;
 /** Another mod's text for key. */
@@ -58,32 +58,29 @@ pub fn request_refresh() {
     }
 }
 
-/// One scan of the installed mods, and the language its labels are in.
+/// One scan of the installed mods.
 struct Scan {
     at: Instant,
-    locale: &'static str,
     panes: Value,
     settings: Value,
 }
 
-/// Scans are cheap but renders are many: one scan serves them for a moment,
-/// unless the language changed since (the labels are translated).
-fn reuse_or_scan(last: &mut Option<Scan>, locale: &'static str, scan: impl FnOnce() -> (Value, Value)) -> (Value, Value) {
+/// Scans are cheap but renders are many: one scan serves them for a moment.
+fn reuse_or_scan(last: &mut Option<Scan>, scan: impl FnOnce() -> (Value, Value)) -> (Value, Value) {
     if let Some(s) = last.as_ref()
-        && s.locale == locale
         && s.at.elapsed() < Duration::from_secs(2)
     {
         return (s.panes.clone(), s.settings.clone());
     }
     let (panes, settings) = scan();
-    *last = Some(Scan { at: Instant::now(), locale, panes: panes.clone(), settings: settings.clone() });
+    *last = Some(Scan { at: Instant::now(), panes: panes.clone(), settings: settings.clone() });
     (panes, settings)
 }
 
 fn discovered() -> (Value, Value) {
     static LAST: Mutex<Option<Scan>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    reuse_or_scan(&mut last, crate::i18n::current(), || {
+    reuse_or_scan(&mut last, || {
         let found = crate::discovery::scan_installed();
         (Value::Array(found.panes), Value::Array(found.settings))
     })
@@ -102,21 +99,8 @@ pub fn module(mod_name: &str) -> HostModule {
         .function("version", |_| Ok(crate::VERSION.into()))
         .function("appHome", |_| Ok(crate::paths::app_home().to_string_lossy().into_owned().into()))
         .function("locale", |_| Ok(crate::i18n::current().into()))
-        .function("setLocale", |a| {
-            let choice = a.string(0)?;
-            if !matches!(choice, "system" | "en" | "zh-TW") {
-                return Err(error(format!("setLocale: {choice:?} is not system, en or zh-TW")));
-            }
-            let mut general = crate::settings::section(crate::settings::GENERAL);
-            if !general.is_object() {
-                general = json!({});
-            }
-            general["locale"] = json!(choice);
-            crate::settings::set_section(crate::settings::GENERAL, general).map_err(error)?;
-            crate::i18n::refresh();
-            request_refresh();
-            Ok(HostValue::Null)
-        })
+        // English only: older mods may still call this, and it must not fail.
+        .function("setLocale", |_| Ok(HostValue::Null))
         .function("t", move |a| Ok(crate::i18n::translate(&own, a.string(0)?, &pairs(&vars(a, 1))).into()))
         .function("translate", |a| Ok(crate::i18n::translate(a.string(0)?, a.string(1)?, &pairs(&vars(a, 2))).into()))
         .function("tokens", |_| Ok(to_host(&crate::tokens::tokens())))
@@ -126,10 +110,6 @@ pub fn module(mod_name: &str) -> HostModule {
         .function("setSetting", |a| {
             let section = a.string(0)?;
             crate::settings::set_section(section, arg(a, 1)).map_err(error)?;
-            // general.locale may have changed, as with setLocale.
-            if section == crate::settings::GENERAL {
-                crate::i18n::refresh();
-            }
             request_refresh();
             Ok(HostValue::Null)
         })
@@ -165,6 +145,7 @@ pub fn module(mod_name: &str) -> HostModule {
 mod tests {
     use super::*;
     use gpui_shell::HostArguments;
+    use serde_json::json;
 
     #[test]
     fn the_module_validates_and_answers() {
@@ -175,25 +156,13 @@ mod tests {
         // No strings for this mod: a key shows as itself, with its variables filled.
         let t = m.call("t", &HostArguments::new([HostValue::Str("hello {who}".into()), to_host(&json!({ "who": "Yuzora" }))])).unwrap();
         assert_eq!(t, HostValue::Str("hello Yuzora".into()));
-        assert!(m.call("setLocale", &HostArguments::new([HostValue::Str("fr".into())])).is_err());
+        // English only: setLocale takes any old argument, changes nothing and does not fail.
+        for choice in ["system", "en", "zh-TW", "fr"] {
+            assert_eq!(m.call("setLocale", &HostArguments::new([HostValue::Str(choice.into())])).unwrap(), HostValue::Null, "{choice}");
+            assert_eq!(m.call("locale", &HostArguments::new([])).unwrap(), HostValue::Str("en".into()), "after {choice}");
+        }
         assert!(m.is_async("exec"));
         let tokens = from_host(&m.call("tokens", &HostArguments::new([])).unwrap());
         assert_eq!(tokens["agents"]["claude"], "#c96a4b");
-    }
-
-    #[test]
-    fn discovered_labels_are_scanned_again_in_a_new_language() {
-        let mut last = None;
-        let mut scans = 0;
-        let mut scan = |locale: &'static str| {
-            reuse_or_scan(&mut last, locale, || {
-                scans += 1;
-                (json!([locale]), json!([]))
-            })
-        };
-        assert_eq!(scan("en").0, json!(["en"]));
-        assert_eq!(scan("en").0, json!(["en"]));
-        assert_eq!(scan("zh-TW").0, json!(["zh-TW"]));
-        assert_eq!(scans, 2);
     }
 }

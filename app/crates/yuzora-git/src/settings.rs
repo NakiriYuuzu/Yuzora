@@ -135,11 +135,11 @@ mod tests {
     }
 
     // The settings page (yuzora-git-settings) lists keys this file must
-    // have a default for, with their strings in both languages.
+    // have a default for, with their strings.
     #[test]
     fn every_setting_on_the_page_has_a_default_and_its_strings() {
         const PAGE: &str = include_str!("../../../defaults/mods/yuzora-git-settings/main.js");
-        let langs = [include_str!("../../../defaults/mods/yuzora-git-settings/i18n/en.json"), include_str!("../../../defaults/mods/yuzora-git-settings/i18n/zh-TW.json")]
+        let langs = [include_str!("../../../defaults/mods/yuzora-git-settings/i18n/en.json")]
             .map(|s| serde_json::from_str::<Value>(s).unwrap());
         let d = defaults();
         let items: Vec<&str> = PAGE.lines().filter_map(|l| l.trim().strip_prefix("{ key: \"")).collect();

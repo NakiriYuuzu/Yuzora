@@ -1,7 +1,7 @@
-// Settings > Yuzora > General: language, look, what happens when Yuzora
+// Settings > Yuzora > General: look, what happens when Yuzora
 // opens, Herdr's panels (L1's), the terminal clipboard. Owned by lane L6.
 //
-// Language and startup live in Yuzora's settings (yuzora/settings.json,
+// Startup lives in Yuzora's settings (yuzora/settings.json,
 // section "general"); look and clipboard are Herdr's settings.json, written
 // the way the settings frame writes it (read, change, write if unchanged).
 // Themes and fonts themselves are L1's; this page only picks among them.
@@ -9,7 +9,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { run, theme, themes, fonts, settings, layouts, layout, shared, setShared, appHome, readTextFile, writeTextFile } from "herdr";
-import { t, locale, setLocale, getSetting, setSetting } from "yuzora:core";
+import { t, getSetting, setSetting } from "yuzora:core";
 import { page, title, heading, row, button, toggle, segmented, note, item } from "./ui.js";
 
 // What the app uses when settings.json names no font (settings.rs).
@@ -82,23 +82,6 @@ export default class General extends View {
     const next = JSON.parse(JSON.stringify(this.general()));
     edit(next);
     setSetting("general", next);
-  }
-
-  // Language ------------------------------------------------------------
-
-  language(th) {
-    const choice = this.general().locale ?? "system";
-    const shown = locale();
-    return v_flex()
-      .child(heading(th, t("language.heading")))
-      .child(
-        row(
-          th,
-          t("language.title"),
-          t("language.about", { current: t(`language.names.${shown}`) }),
-          segmented(th, "gn-lang", [["system", t("language.system")], ["en", "English"], ["zh-TW", "繁體中文"]], choice, (v) => setLocale(v)),
-        ),
-      );
   }
 
   // Look ----------------------------------------------------------------
@@ -297,7 +280,6 @@ export default class General extends View {
       v_flex()
         .w_full()
         .child(title(th, t("page.title"), t("page.about")))
-        .child(this.language(th))
         .child(this.look(th))
         // Only once something opens the window on it (the mode bar sets this flag).
         .when(Boolean(shared("yuzora.startup.honored")), (el) => el.child(this.startup(th)))

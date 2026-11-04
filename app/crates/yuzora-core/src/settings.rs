@@ -2,7 +2,7 @@
 //! per section. Herdr's `settings.json` (look, keys, sounds) stays Herdr's.
 //!
 //! ```json
-//! { "general": { "locale": "system" }, "git": { … }, "db": { … } }
+//! { "general": { … }, "git": { … }, "db": { … } }
 //! ```
 //!
 //! A section belongs to one lane (`general` to settings, L6); a lane reads and
@@ -63,11 +63,6 @@ pub fn set_section(name: &str, value: Value) -> std::io::Result<()> {
     set_section_at(&path(), name, value)
 }
 
-/// `general.locale`: `"system"` (the default), `"en"` or `"zh-TW"`.
-pub fn locale_choice() -> Option<String> {
-    section(GENERAL).get("locale").and_then(Value::as_str).map(str::to_owned)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +75,7 @@ mod tests {
         let file = dir.join("yuzora/settings.json");
         assert_eq!(section_from(&file, "git"), Value::Null);
         set_section_at(&file, "git", json!({ "fetch": "auto" })).unwrap();
+        // A `locale` saved by an older version is only data now: it is kept and read back.
         set_section_at(&file, GENERAL, json!({ "locale": "zh-TW" })).unwrap();
         assert_eq!(section_from(&file, "git"), json!({ "fetch": "auto" }));
         assert_eq!(section_from(&file, GENERAL)["locale"], "zh-TW");

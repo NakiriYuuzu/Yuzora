@@ -1020,15 +1020,17 @@ with these differences.
   has no name for (diff colors, agent brand colors, Space badge colors, the
   agent states' shapes, sizes) come from `tokens()`, which gives a light theme
   its own text, diff and status colors.
-- Mods can import Yuzora's modules: `yuzora:core` (`t`, `locale`, `tokens`,
+- Mods can import Yuzora's modules: `yuzora:core` (`t`, `tokens`,
   `panes`, `settingsPages`, `getSetting`, `setSetting`, `exec` with its own
   timeout and `on` machine) and `yuzora:shell`, `yuzora:git`, `yuzora:db`,
   `yuzora:ssh`, `yuzora:files`, `yuzora:settings`, `yuzora:perf`. Their
   types are in `yuzora.d.ts` beside `herdr.d.ts` (rewritten on every start).
 - Text: a Yuzora mod keeps its strings in `mods/<mod>/i18n/en.json` and
-  `zh-TW.json` and shows them with `t("key", {name: value})`. The language is
-  `general.locale` in `yuzora/settings.json`: `"system"` (the default), `"en"`
-  or `"zh-TW"`. A mod you write for Yuzora fills both files.
+  shows them with `t("key", {name: value})`. Yuzora's interface is English
+  only: there is no language setting and no other language file. `locale()`
+  always returns `"en"` and `setLocale()` does nothing (both stay so older
+  mods keep working); an old `general.locale` in `yuzora/settings.json` is
+  ignored.
 - A mod offers itself as a tool pane (the new-pane menu) or a settings page
   in its own `mod.json`: `"yuzora": {"pane": {"title": "pane.title"}}`,
   `"yuzora": {"settings": {"title": "settings.title", "section": "git"}}`.
@@ -1185,11 +1187,10 @@ with these differences.
   follows stable; `"update": {"channel": "beta"}` in
   `yuzora/settings.json` makes it take pre-releases too. An update waiting
   shows in Settings and goes in when Yuzora restarts.
-- What's new follows the language shown (`general.locale`): Chinese
-  (zh-TW) from the bundled `CHANGELOG.zh-TW.md`, English from
-  `CHANGELOG.md`; a version without Chinese notes shows in English. A newer
-  release's notes are kept per language, `update-notes-cache.md` (English)
-  and `update-notes-cache.zh-TW.md`.
+- What's new is English, from the bundled `CHANGELOG.md`. A newer release's
+  notes are kept in `update-notes-cache.md`. (`CHANGELOG.zh-TW.md` ships in
+  the repo and the release for people who read Chinese; the app does not
+  show it.)
 <!-- yuzora:lane:L7:end -->
 
 <!-- yuzora:lane:L8:start -->
