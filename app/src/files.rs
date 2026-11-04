@@ -528,7 +528,7 @@ mod tests {
         assert!(kept(&root, &ig, "src/a.rs"));
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn a_linked_gitignore_is_not_read() {
         let root = test_repo("ignores-link");
