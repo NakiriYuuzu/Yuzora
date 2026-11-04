@@ -1029,6 +1029,11 @@ with these differences.
   `zh-TW.json` and shows them with `t("key", {name: value})`. The language is
   `general.locale` in `yuzora/settings.json`: `"system"` (the default), `"en"`
   or `"zh-TW"`. A mod you write for Yuzora fills both files.
+- The tab bar has no new-pane or split buttons. The new-pane menu opens with
+  the command `yuzora-shell-tabs.new-pane` (bind it in `keys.json`, or
+  `herdr-app do yuzora-shell-tabs.new-pane`); a pane splits from the buttons
+  in its header or with `pane.split`. The sidebar's tools menu has no "next
+  layout" row: switch layouts in Settings > Mods > Layouts.
 - A mod offers itself as a tool pane (the new-pane menu) or a settings page
   in its own `mod.json`: `"yuzora": {"pane": {"title": "pane.title"}}`,
   `"yuzora": {"settings": {"title": "settings.title", "section": "git"}}`.

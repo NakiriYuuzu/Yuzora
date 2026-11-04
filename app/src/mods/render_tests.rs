@@ -853,6 +853,17 @@ fn yuzora_tab_bar_lists_only_the_current_space(cx: &mut TestAppContext) {
     assert_eq!(ids, [false; 4], "{tree}");
 }
 
+// yuzora(L1): the sidebar's Herdr tools menu has no "next layout" row: pressed in the yuzora
+// layout it lands in Herdr's own `main`, where none of Yuzora's features exist (2026-11-04).
+#[gpui::test]
+fn yuzora_tools_menu_has_no_next_layout_row(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let tree = describe(cx, &staged, "mods/yuzora-sidebar-workspace", true, json!({"menu":"tools","overlay":"o1"}), updates("current", "current"), None).unwrap();
+    assert!(tree.contains("\"m-palette\"") && tree.contains("\"m-help\""), "the other rows stay: {tree}");
+    assert!(!tree.contains("\"m-layout\""), "no row switches layout: {tree}");
+}
+
 // yuzora(L1): the tab bar has no new-pane or split buttons (the user asked for them gone,
 // 2026-11-04), with or without a focused pane; "+" and the window's tabs stay.
 #[gpui::test]
