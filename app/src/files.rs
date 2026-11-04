@@ -236,9 +236,13 @@ impl Ignores {
             return Self(None);
         }
         let mut b = ignore::gitignore::GitignoreBuilder::new(root);
+        // Git's own defaults on these platforms (core.ignorecase is not read).
+        let _ = b.case_insensitive(true);
         let mut any = false;
-        for file in [root.join(".gitignore"), root.join(".git").join("info").join("exclude")] {
-            if file.is_file() {
+        // The later file wins: .gitignore over info/exclude, as in git. A link is not
+        // followed (git 2.32 and later doesn't read one in the work tree).
+        for file in [root.join(".git").join("info").join("exclude"), root.join(".gitignore")] {
+            if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
                 any |= b.add(file).is_none();
             }
         }
@@ -484,6 +488,78 @@ mod tests {
         assert!(none.keep(ev(&["target/debug/app"])).is_some());
         let lost = notify::Event::new(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan);
         assert!(ig.keep(lost).is_some());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn kept(root: &Path, ig: &Ignores, rel: &str) -> bool {
+        ig.keep(notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Any)).add_path(root.join(rel))).is_some()
+    }
+
+    /// yuzora(perf): rules that would hide too much are read the way git reads them.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn ignore_rules_hide_only_what_git_would_hide() {
+        let root = test_repo("ignores-rules");
+        for d in ["src", "gen", ".venv/lib"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        // `*` (a venv's own .gitignore): the folder's direct files still count.
+        std::fs::write(root.join(".gitignore"), "*\n").unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, "pyvenv.cfg"));
+        assert!(!kept(&root, &ig, ".venv/lib/x.py"));
+        // An ignored file below the root is a file, not a folder: reported.
+        std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, "src/debug.log"));
+        // `.*` names .git too, but what git writes there is what panels read.
+        std::fs::write(root.join(".gitignore"), ".*\n").unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, ".git/index"));
+        assert!(!kept(&root, &ig, ".venv/lib/x.py"));
+        // .gitignore wins over info/exclude, as in git.
+        std::fs::write(root.join(".git/info/exclude"), "gen/\n").unwrap();
+        std::fs::write(root.join(".gitignore"), "!gen/\n").unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, "gen/a.txt"));
+        // Case follows the platform's default for core.ignorecase.
+        std::fs::write(root.join(".gitignore"), "/*\n!/Src/\n").unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, "src/a.rs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_gitignore_is_not_read() {
+        let root = test_repo("ignores-link");
+        std::fs::create_dir_all(root.join("gen")).unwrap();
+        let rules = root.join("rules-elsewhere");
+        std::fs::write(&rules, "gen/\n").unwrap();
+        std::os::unix::fs::symlink(&rules, root.join(".gitignore")).unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, "gen/a.txt"));
+    }
+
+    /// Editing .gitignore changes what is skipped from the next batch on.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn new_rules_apply_once_gitignore_is_edited() {
+        let root = test_repo("ignores-reread");
+        std::fs::create_dir_all(root.join("gen")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        install_watch(&root);
+        std::thread::sleep(BATCH * 3);
+        std::fs::write(root.join(".gitignore"), "gen/\n").unwrap();
+        wait_for_change(&root, &root.join(".gitignore"));
+        std::thread::sleep(BATCH * 3);
+        std::fs::write(root.join("gen/a.txt"), "x").unwrap();
+        std::fs::write(root.join("src/a.rs"), "x").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut seen = Vec::new();
+        while !invalidates(&seen, &root.join("src/a.rs")) {
+            seen.extend(block_on_until(next_change(root.to_string_lossy().into_owned()), deadline).unwrap());
+        }
+        assert!(!seen.iter().any(|p| p.contains("gen")), "{seen:?}");
     }
 
     /// yuzora(perf): through the real watcher, a burst into an ignored folder
