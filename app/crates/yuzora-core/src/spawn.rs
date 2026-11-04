@@ -40,7 +40,7 @@ mod tests {
     }
 
     /// Run by the tests below as a child of this test binary (`--ignored`
-    /// keeps it out of a normal run): says whether it has a console window.
+    /// keeps it out of a normal run): says whether it is attached to a console.
     #[test]
     #[ignore = "a child process of the Windows console tests"]
     fn console_probe() {
@@ -51,13 +51,16 @@ mod tests {
     #[cfg(windows)]
     pub(crate) mod probe {
         unsafe extern "system" {
-            fn GetConsoleWindow() -> *mut std::ffi::c_void;
+            fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
             fn AllocConsole() -> i32;
         }
 
+        /// Attached to a console (the window of one may be hidden, as on CI,
+        /// where `GetConsoleWindow` says nothing).
         pub fn console_window() -> bool {
-            // SAFETY: plain Win32 queries without arguments.
-            !unsafe { GetConsoleWindow() }.is_null()
+            let mut list = [0u32; 4];
+            // SAFETY: a buffer of the length it is given.
+            unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) != 0 }
         }
 
         /// The test runner may have no console (CI starts it without one),

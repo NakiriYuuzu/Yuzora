@@ -889,16 +889,20 @@ mod tests {
     #[test]
     fn run_hc_starts_its_program_without_a_console_window() {
         unsafe extern "system" {
-            fn GetConsoleWindow() -> *mut std::ffi::c_void;
+            fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
             fn AllocConsole() -> i32;
         }
-        // SAFETY: plain Win32 calls without arguments.
-        unsafe {
-            if GetConsoleWindow().is_null() {
-                AllocConsole();
-            }
-            assert!(!GetConsoleWindow().is_null(), "this process has no console to hand on");
+        // The runner may have no console (CI): give it one, to hand on.
+        let attached = || {
+            let mut list = [0u32; 4];
+            // SAFETY: a buffer of the length it is given.
+            unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) != 0 }
+        };
+        if !attached() {
+            // SAFETY: no arguments.
+            unsafe { AllocConsole() };
         }
+        assert!(attached(), "this process has no console to hand on");
         let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
         let args = ["--ignored", "--exact", "exec::tests::console_probe", "--nocapture", "--test-threads=1"];
         let by_hand = Command::new(&exe).args(args).output().unwrap();
@@ -916,10 +920,12 @@ mod tests {
         #[cfg(windows)]
         {
             unsafe extern "system" {
-                fn GetConsoleWindow() -> *mut std::ffi::c_void;
+                fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
             }
-            // SAFETY: a plain Win32 query.
-            println!("CONSOLE={}", if unsafe { GetConsoleWindow() }.is_null() { "none" } else { "some" });
+            let mut list = [0u32; 4];
+            // SAFETY: a buffer of the length it is given.
+            let attached = unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) } != 0;
+            println!("CONSOLE={}", if attached { "some" } else { "none" });
         }
     }
 
