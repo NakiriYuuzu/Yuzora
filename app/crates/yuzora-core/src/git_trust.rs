@@ -310,20 +310,41 @@ fn read_from(git_dir: &str, common: &str) -> Option<Read> {
         return None;
     }
     for config in [common.join("config"), git_dir.join("config.worktree")] {
-        match std::fs::read(&config) {
-            Ok(bytes) if bytes.windows(7).any(|w| w.eq_ignore_ascii_case(b"include")) => return None,
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return None,
+        if read_plain(&config, ANSWER_CAP as u64)?.is_some_and(|bytes| bytes.windows(7).any(|w| w.eq_ignore_ascii_case(b"include"))) {
+            return None;
         }
     }
-    match std::fs::read(git_dir.join("index")) {
-        Ok(bytes) if !index_stands_alone(&bytes)? => return None,
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return None,
+    if let Some(bytes) = read_plain(&git_dir.join("index"), INDEX_CAP)?
+        && !index_stands_alone(&bytes)?
+    {
+        return None;
     }
     Some(read)
+}
+
+/// The largest index [`read_from`] reads (a bigger one isn't kept).
+const INDEX_CAP: u64 = 256 << 20;
+
+/// The bytes of `path` when it is a regular file (or a link to one) of at
+/// most `cap` bytes; `Some(None)` when it isn't there. None for anything
+/// else: a FIFO would wait for a writer, a device might never end. Opened
+/// without waiting, then checked.
+fn read_plain(path: &Path, cap: u64) -> Option<Option<Vec<u8>>> {
+    let mut options = std::fs::File::options();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(None),
+        Err(_) => return None,
+    };
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, cap + 1), &mut bytes).ok()?;
+    (bytes.len() as u64 <= cap).then_some(Some(bytes))
 }
 
 /// The fingerprint files of a git dir and common dir ([`read_from`] says
@@ -356,9 +377,15 @@ fn stamps_of(dirs: &(PathBuf, PathBuf)) -> Option<Read> {
 /// directories (`sdir`; git expands them from trees). Either reads other
 /// files, which may change while the index doesn't (git doesn't check them
 /// against their names). None when it doesn't read as an index (with SHA-1
-/// or SHA-256 ids, version 2 to 4).
+/// or SHA-256 ids, version 2 to 4), or reads as one either way: which one
+/// git takes is the repository's, and the two may differ in extensions.
 fn index_stands_alone(bytes: &[u8]) -> Option<bool> {
-    [20, 32].into_iter().find_map(|id_len| index_extensions(bytes, id_len)).map(|ext| !ext.iter().any(|e| e == b"link" || e == b"sdir"))
+    let mut reads = [20, 32].into_iter().filter_map(|id_len| index_extensions(bytes, id_len));
+    let ext = reads.next()?;
+    if reads.next().is_some() {
+        return None;
+    }
+    Some(!ext.iter().any(|e| e == b"link" || e == b"sdir"))
 }
 
 /// The extensions of an index whose ids are `id_len` bytes long, when it
@@ -434,7 +461,8 @@ fn found_dirs(top: &Path) -> Option<(PathBuf, PathBuf)> {
 
 /// The real path named in `file` after `prefix`, from `from` unless absolute.
 fn named_in(file: &Path, prefix: &[u8], from: &Path) -> Option<PathBuf> {
-    let text = std::fs::read(file).ok()?;
+    // git reads no gitfile past 1 MiB.
+    let text = read_plain(file, 1 << 20)??;
     let named = text.strip_prefix(prefix)?;
     let end = named.iter().rposition(|b| *b != b'\n' && *b != b'\r')? + 1;
     let named = Path::new(std::str::from_utf8(&named[..end]).ok()?);
@@ -516,21 +544,10 @@ fn since_1970(s: i64, ns: i64) -> Option<SystemTime> {
     if s >= 0 { SystemTime::UNIX_EPOCH.checked_add(secs)?.checked_add(ns) } else { SystemTime::UNIX_EPOCH.checked_sub(secs)?.checked_add(ns) }
 }
 
-/// Windows has no inode or change time in std: the attributes and creation
-/// time say which file it is; the size and last write time, what's in it.
-#[cfg(windows)]
-fn metadata_facts(meta: &std::fs::Metadata, look: Look) -> Option<(Vec<i128>, Option<SystemTime>)> {
-    use std::os::windows::fs::MetadataExt;
-    let mut facts = vec![i128::from(meta.file_attributes()), i128::from(meta.creation_time())];
-    if look == Look::Kind && meta.is_dir() {
-        return Some((facts, None));
-    }
-    facts.extend([i128::from(meta.file_size()), i128::from(meta.last_write_time())]);
-    Some((facts, Some(meta.modified().ok()?)))
-}
-
-/// Elsewhere nothing is kept.
-#[cfg(not(any(unix, windows)))]
+/// Elsewhere nothing is kept. On Windows a file rewritten in place, its
+/// size kept and its times set back, looks as it was: every time it has
+/// (its change time too) is one a program may set.
+#[cfg(not(unix))]
 fn metadata_facts(_: &std::fs::Metadata, _: Look) -> Option<(Vec<i128>, Option<SystemTime>)> {
     None
 }
@@ -2552,8 +2569,51 @@ mod tests {
         let entry = |len: u8| [b"DIRC\0\0\0\x02\0\0\0\x01".as_slice(), &[0; 60], &[0, len], b"a\0", &[0; 20]].concat();
         assert_eq!(index_stands_alone(&entry(1)), Some(true));
         assert_eq!(index_stands_alone(&entry(2)), None, "flags that don't hold the path's length");
+        // No entries, then TREE (empty) and link (4 bytes): with 32-byte ids the
+        // checksum begins after TREE, with 20-byte ones after link.
+        let both = [b"DIRC\0\0\0\x02\0\0\0\0TREE\0\0\0\0link\0\0\0\x04xxxx".as_slice(), &[0; 20]].concat();
+        assert_eq!((index_extensions(&both, 20).map(|e| e.len()), index_extensions(&both, 32).map(|e| e.len())), (Some(2), Some(1)));
+        assert_eq!(index_stands_alone(&both), None, "read as an index either way");
         let past = [b"DIRC\0\0\0\x02\0\0\0\0TREE\0\0\0\x64x".as_slice(), &[0; 20]].concat();
         assert_eq!(index_stands_alone(&past), None, "an extension past the checksum");
         assert_eq!(index_stands_alone(&[b"DIRC\0\0\0\x05\0\0\0\0".as_slice(), &[0; 20]].concat()), None, "version 5");
+    }
+
+    // What git passes over may be anything: a FIFO there would wait for a
+    // writer for ever, so only regular files are read, within a size.
+    #[cfg(unix)]
+    #[test]
+    fn what_isnt_a_regular_file_is_never_read() {
+        let k = "kept-fifo";
+        let (dir, top, git) = kept_repo(k);
+        let mkfifo = |path: &Path| assert!(std::process::Command::new("mkfifo").arg(path).status().unwrap().success());
+        // Read only with extensions.worktreeConfig: git passes it over here.
+        mkfifo(&Path::new(&top).join(".git/config.worktree"));
+        let (done, answers) = std::sync::mpsc::channel();
+        let there = top.clone();
+        std::thread::spawn(move || {
+            let mut got = vec![kept_scan(k, &there, later()), kept_scan(k, &there, later())];
+            // A `.git` that is a FIFO: neither a folder nor a gitfile.
+            std::fs::rename(Path::new(&there).join(".git"), Path::new(&there).join("away.git")).unwrap();
+            mkfifo(&Path::new(&there).join(".git"));
+            got.push(kept_scan(k, &there, later()));
+            let _ = done.send(got);
+        });
+        let got = answers.recv_timeout(Duration::from_secs(60)).expect("a FIFO was read: the check waits for ever");
+        assert_eq!((got[0].1, got[1].1), (1, 1), "kept with a FIFO for config.worktree");
+        assert_eq!(got[2].1, 1);
+        std::fs::remove_file(Path::new(&top).join(".git")).unwrap();
+        std::fs::rename(Path::new(&top).join("away.git"), Path::new(&top).join(".git")).unwrap();
+        std::fs::remove_file(Path::new(&top).join(".git/config.worktree")).unwrap();
+        assert_eq!(kept_scan(k, &top, later()).1, 1);
+        assert_eq!(kept_scan(k, &top, later()).1, 0, "kept");
+        // A config past what is read.
+        let config = Path::new(&top).join(".git/config");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(&config, format!("{text}# {}\n", "x".repeat(ANSWER_CAP))).unwrap();
+        assert_eq!(kept_scan(k, &top, later()).1, 1);
+        assert_eq!(kept_scan(k, &top, later()).1, 1, "kept with a config past the cap");
+        drop(git);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
