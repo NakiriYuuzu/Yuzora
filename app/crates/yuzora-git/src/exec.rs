@@ -77,35 +77,12 @@ pub struct Place {
     /// The program to run; empty: the `git.executable` setting (else `git`)
     /// at each call, so a change applies to the repos already open.
     pub git: String,
-    /// `root` is a work tree's top level (an open repo): git looks for the
-    /// repository there only, never in a folder above ([`Place::confine`]).
-    /// With the work tree's `.git` gone, git then fails rather than reading
-    /// and writing the repo around it under this one's name. Off where a repo
-    /// is looked for from a folder in it (`open`).
-    pub top: bool,
     pub write_lock: Arc<Mutex<()>>,
 }
 
 impl Place {
     pub fn local(root: impl Into<String>) -> Self {
-        Self { root: root.into(), on: None, git: "git".into(), top: false, write_lock: Arc::default() }
-    }
-
-    /// What keeps git in this place's repo, for a [`top`](Self::top) one: the
-    /// folder above `root` as `GIT_CEILING_DIRECTORIES` (none above `/`). That
-    /// is a list, split at `:` (`;` for git on Windows), so a folder above with
-    /// one in its path can't be in it: git is told the repository outright
-    /// then, `GIT_DIR` the `.git` at `root` (a gitfile is followed) and
-    /// `GIT_WORK_TREE` `root`. Either way a `.git` that's gone fails.
-    fn confine(&self) -> Vec<(String, String)> {
-        let Some(above) = std::path::Path::new(&self.root).parent().filter(|_| self.top) else { return Vec::new() };
-        let above = above.to_string_lossy();
-        let split = if self.on.is_none() && cfg!(windows) { ';' } else { ':' };
-        if above.contains(split) {
-            vec![("GIT_DIR".into(), format!("{}/.git", self.root)), ("GIT_WORK_TREE".into(), self.root.clone())]
-        } else {
-            vec![("GIT_CEILING_DIRECTORIES".into(), above.into_owned())]
-        }
+        Self { root: root.into(), on: None, git: "git".into(), write_lock: Arc::default() }
     }
 
     pub fn program(&self) -> String {
@@ -406,7 +383,7 @@ fn run_local(place: &Place, cmd: &Git, mut sink: Option<&mut dyn FnMut(&[u8]) ->
     let git = place.program();
     let mut c = Command::new(&git);
     c.args(base_args(cmd.kind)).args(&cmd.args).current_dir(&place.root);
-    for (k, v) in environment(cmd.kind, false, &cmd.env).into_iter().chain(place.confine()) {
+    for (k, v) in environment(cmd.kind, false, &cmd.env) {
         c.env(k, v);
     }
     c.stdin(if cmd.stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -693,7 +670,7 @@ impl Stream {
 pub fn hc_args(place: &Place, cmd: &Git) -> Vec<String> {
     let secs = cmd.timeout.min(REMOTE_MAX_TIMEOUT).as_secs_f64().ceil().max(1.0) as u64;
     let mut a: Vec<String> = vec!["exec".into(), "--json".into(), "--on".into(), place.on.clone().unwrap_or_default(), "--timeout".into(), secs.to_string(), "--cwd".into(), place.root.clone()];
-    for (k, v) in environment(cmd.kind, true, &cmd.env).into_iter().chain(place.confine()) {
+    for (k, v) in environment(cmd.kind, true, &cmd.env) {
         a.push("--env".into());
         a.push(format!("{k}={v}"));
     }
@@ -711,7 +688,7 @@ fn run_remote(place: &Place, cmd: &Git, sink: Option<&mut dyn FnMut(&[u8]) -> bo
     let hc = hc_program().to_string_lossy().into_owned();
     // hc answers with both streams base64'd (4/3 the size), whole.
     let answer = cmd.max_output.saturating_mul(3).saturating_add(64 << 10);
-    let local = Place { root: yuzora_core::paths::home_dir().to_string_lossy().into_owned(), on: None, git: hc, top: false, write_lock: Arc::default() };
+    let local = Place { root: yuzora_core::paths::home_dir().to_string_lossy().into_owned(), on: None, git: hc, write_lock: Arc::default() };
     let call = Git {
         args: hc_args(place, cmd),
         stdin: cmd.stdin.clone(),
@@ -836,20 +813,10 @@ mod tests {
 
     #[test]
     fn remote_commands_go_through_hc_exec() {
-        let place = Place { root: "/srv/repo".into(), on: Some("lab-01".into()), git: "git".into(), top: false, write_lock: Arc::default() };
+        let place = Place { root: "/srv/repo".into(), on: Some("lab-01".into()), git: "git".into(), write_lock: Arc::default() };
         let a = hc_args(&place, &Git::read(["status", "-z"]).stdin(b"x".to_vec()).timeout(Duration::from_secs(9000)));
         assert_eq!(&a[..8], ["exec", "--json", "--on", "lab-01", "--timeout", "600", "--cwd", "/srv/repo"]);
         assert!(a.windows(2).any(|w| w == ["--env", "GIT_OPTIONAL_LOCKS=0"]));
-        // Looking for a repo from a folder: up as far as git goes. In an open one: its top only.
-        assert!(!a.iter().any(|x| x.starts_with("GIT_CEILING_DIRECTORIES=")));
-        let top = hc_args(&Place { top: true, ..place.clone() }, &Git::read(["status"]));
-        assert!(top.windows(2).any(|w| w == ["--env", "GIT_CEILING_DIRECTORIES=/srv"]), "{top:?}");
-        let root = Place { root: "/".into(), top: true, ..place.clone() };
-        assert!(!hc_args(&root, &Git::read(["status"])).iter().any(|x| x.starts_with("GIT_CEILING_DIRECTORIES=")), "nothing above /");
-        // A `:` above: no ceiling git would split there, the repository outright.
-        let colon = hc_args(&Place { root: "/srv/a:b/repo".into(), top: true, ..place.clone() }, &Git::read(["status"]));
-        assert!(!colon.iter().any(|x| x.starts_with("GIT_CEILING_DIRECTORIES=")), "{colon:?}");
-        assert!(colon.windows(2).any(|w| w == ["--env", "GIT_DIR=/srv/a:b/repo/.git"]) && colon.windows(2).any(|w| w == ["--env", "GIT_WORK_TREE=/srv/a:b/repo"]), "{colon:?}");
         let dashes = a.iter().position(|x| x == "--").unwrap();
         assert_eq!(a[dashes - 1], "--stdin");
         assert_eq!(a[dashes + 1], "git");
