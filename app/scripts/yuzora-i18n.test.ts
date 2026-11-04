@@ -1,7 +1,7 @@
 // The interface is English only: no zh-TW strings ship, no language setting
 // is offered, and every string a mod asks for with t("…") is in its en.json.
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const app = join(import.meta.dir, "..");
@@ -23,29 +23,36 @@ const flat = (value: unknown, prefix = "", out = new Set<string>()): Set<string>
   return out;
 };
 
-test("no zh-TW.json ships in defaults, src or any crate", () => {
-  const found = ["defaults", "src", "crates"].flatMap((d) => walk(join(app, d))).filter((f) => f.endsWith("zh-TW.json"));
+test("an i18n/ folder holds en.json and nothing else", () => {
+  const found = ["defaults", "src", "crates"]
+    .flatMap((d) => walk(join(app, d)))
+    .filter((f) => /\/i18n\/[^/]+$/.test(f) && !f.endsWith("/i18n/en.json"));
   expect(found).toEqual([]);
+  expect(["defaults", "src", "crates"].flatMap((d) => walk(join(app, d))).filter((f) => f.endsWith("zh-TW.json"))).toEqual([]);
 });
 
-test("the settings offer no language", () => {
-  const dir = join(app, "defaults/mods/yuzora-settings-general");
-  const main = readFileSync(join(dir, "main.js"), "utf8");
-  expect(main).not.toMatch(/setLocale|locale\(\)|zh-TW/);
-  expect(Object.keys(JSON.parse(readFileSync(join(dir, "i18n/en.json"), "utf8")))).not.toContain("language");
+test("no Yuzora mod offers or reads a language", () => {
+  const mods = join(app, "defaults/mods");
+  const yuzora = readdirSync(mods).filter((m) => m.startsWith("yuzora-"));
+  expect(yuzora.length).toBeGreaterThan(30);
+  for (const mod of yuzora) {
+    for (const file of walk(join(mods, mod)).filter((f) => f.endsWith(".js"))) {
+      expect(readFileSync(file, "utf8"), file).not.toMatch(/setLocale|\blocale\(\)|zh-TW/);
+    }
+  }
+  const en = JSON.parse(readFileSync(join(mods, "yuzora-settings-general/i18n/en.json"), "utf8"));
+  expect(Object.keys(en)).not.toContain("language");
 });
 
+// Only literal keys, t("a.b"): a key built at run time (t(`x.${y}`)) is not checked.
 test("every static t() key of a mod is in its en.json", () => {
   const mods = join(app, "defaults");
   const dirs = readdirSync(join(mods, "mods")).map((m) => join(mods, "mods", m)).concat(join(mods, "frame/settings"));
   let checked = 0;
   for (const dir of dirs) {
-    let en: Set<string>;
-    try {
-      en = flat(JSON.parse(readFileSync(join(dir, "i18n/en.json"), "utf8")));
-    } catch {
-      continue; // a mod without strings
-    }
+    const strings = join(dir, "i18n/en.json");
+    if (!existsSync(strings)) continue; // a mod without strings
+    const en = flat(JSON.parse(readFileSync(strings, "utf8"))); // a broken en.json fails the test
     for (const file of walk(dir).filter((f) => f.endsWith(".js") && !f.includes("/i18n/"))) {
       const src = readFileSync(file, "utf8");
       for (const [, key] of src.matchAll(/(?<![\w.$])t\(\s*"([\w.-]+)"/g)) {

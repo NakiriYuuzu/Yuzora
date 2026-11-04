@@ -27,7 +27,7 @@ export function appHome(): string;
 export function locale(): "en";
 /** Does nothing: the interface is English only. Kept so older mods keep working. */
 export function setLocale(choice: string): void;
-/** This mod's text for key (mods/<mod>/i18n/<locale>.json, English beneath), {name} filled from vars. */
+/** This mod's text for key (mods/<mod>/i18n/en.json), {name} filled from vars. */
 export function t(key: string, vars?: Record<string, string | number>): string;
 /** Another mod's text for key. */
 export function translate(mod: string, key: string, vars?: Record<string, string | number>): string;

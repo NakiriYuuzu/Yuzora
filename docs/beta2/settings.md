@@ -8,7 +8,7 @@
 | 項目 | 位置 | 狀態 |
 | --- | --- | --- |
 | 設定框架接上 Yuzora（品牌、隱私、「Yuzora」分組） | `app/defaults/frame/settings/yuzora.js`（新檔）＋ `main.js` 帶 `// yuzora(L6):` 的改動 | 完成 |
-| `general` 設定頁：語系、外觀（主題、字型、字級、縮放）、啟動行為、終端機剪貼簿 | `yuzora-settings-general` | 完成；「啟動」區塊要等 L1 套用並設 `yuzora.startup.honored` 才顯示（見後續整合） |
+| `general` 設定頁：外觀（主題、字型、字級、縮放）、啟動行為、終端機剪貼簿 | `yuzora-settings-general` | 完成；「啟動」區塊要等 L1 套用並設 `yuzora.startup.honored` 才顯示（見後續整合） |
 | Template 管理：各 machine 列出、表單＋body 編輯、存前驗證、移到垃圾桶 | `yuzora-settings-templates`、`yuzora-settings` 的 `templates`／`trash` | 完成 |
 | 以模板啟動 agent（選 Space／tab、輸入任務、`hc run` 帶 label） | `yuzora-settings-launch`、`yuzora-settings` 的 `launch` | 完成；「＋」選單入口由 L1 串接 |
 | MOD 管理：mods／layouts 清單、clone、開資料夾、check、還原內建、切換 layout、從資料夾安裝（含信任警告） | `yuzora-settings-mods`、`yuzora-settings` 的 `mods` | 完成；「以編輯器開啟」與 mod 立即還原需整合（見後續整合） |

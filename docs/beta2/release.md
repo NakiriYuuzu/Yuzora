@@ -136,7 +136,7 @@
   - 任一份的第一段不是 `CARGO_PKG_VERSION`；
   - 中文有、英文沒有的版本；
   - 同一版本兩份的日期、spotlight，或各標題下的項目數不同。
-- **上游的接點**：`update_notes.rs` 只改了標 `yuzora(L7)` 的幾行，把快取與內建說明改成依語系取得。
+- **上游的接點**：`update_notes.rs` 只改了標 `yuzora(L7)` 的幾行，把快取與內建說明改成取自 `release::notes`（只有英文）。
 
 ## 4. 金鑰管理
 
