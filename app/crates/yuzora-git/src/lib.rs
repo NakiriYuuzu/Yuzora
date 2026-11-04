@@ -72,6 +72,8 @@ export function status(repo: string, options?: { force?: boolean }): Promise<Sta
 export function trust(repo: string): Promise<Outcome>;
 /** Resolves with the repo's generation once it is past `since` (at most ~25 s). */
 export function changed(repo: string, since: number): Promise<number>;
+/** As `changed`, with the work tree paths changed since (`git add` by Yuzora names its paths too); null when that can't be told (the index or refs git wrote, a rescan, more than is kept). */
+export function changes(repo: string, since: number): Promise<{ generation: number; paths: string[] | null }>;
 /** git add -A of paths (all when empty). */
 export function stage(repo: string, paths: string[]): Promise<Outcome>;
 /** Paths back out of the index (all when empty). */
@@ -301,6 +303,15 @@ pub fn host_module() -> HostModule {
             let since = a.number(1).unwrap_or(0.0) as u64;
             let wait = repo.wait(since);
             Ok(async move { Ok(HostValue::Number(wait.await as f64)) })
+        })
+        .async_function("changes", |a| {
+            let repo = repo::get(a.string(0)?).map_err(err)?;
+            let since = a.number(1).unwrap_or(0.0) as u64;
+            let wait = repo.wait(since);
+            Ok(async move {
+                let generation = wait.await;
+                Ok(to_host(&json!({ "generation": generation, "paths": repo.changed_paths(since, generation) })))
+            })
         })
         .function("cancel", |a| {
             if let Some(c) = cancels().lock().unwrap_or_else(|e| e.into_inner()).get(a.string(0)?) {

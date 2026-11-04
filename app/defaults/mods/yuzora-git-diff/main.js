@@ -5,7 +5,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, Scrollbar, VirtualListScrollHandle } from "gpui-base";
 import { theme, props, shared, settings, run, panes, focused, closeOverlay } from "herdr";
 import { t, tokens } from "yuzora:core";
-import { open, changed, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from "yuzora:git";
+import { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from "yuzora:git";
 
 const ROW = 20, CHAR = 7, GUTTER = 44;
 
@@ -47,14 +47,15 @@ export default class GitDiff extends View {
         if (this.loop !== loop) return;
         this.repo = repo;
         await this.load(cx, loop);
-        // Work tree and index diffs follow the repo; commits never change.
+        // Work tree and index diffs follow the repo, when a change may touch
+        // the file ([`touches`]); commits never change.
         if (spec.mode !== "unstaged" && spec.mode !== "staged") return;
         let gen = 0;
         while (this.loop === loop) {
-          const next = await changed(repo.id, gen);
+          const next = await changes(repo.id, gen);
           if (this.loop !== loop) break;
-          if (gen && next > gen && !this.busy) await this.load(cx, loop);
-          gen = next;
+          if (gen && next.generation > gen && !this.busy && touches(next.paths, spec)) await this.load(cx, loop);
+          gen = next.generation;
         }
       } catch (e) { if (this.loop === loop) { this.error = String(e); cx.notify(); } }
     });
@@ -137,13 +138,20 @@ export default class GitDiff extends View {
       } else {
         // Where the left side ends, as the row lays it out: half the row, but never less than
         // its own lines need, nor so much that the right side gets less than its own.
-        const c = sides(this.view.rows), w = this.rowsWidth ?? 0;
+        const c = this.widths(), w = this.rowsWidth ?? 0;
         const half = Math.min(Math.max((w - 1) / 2, c.l), w - 1 - c.r);
         if (x >= 0 && x < GUTTER && r.l !== undefined) return this.toggleLine(r.h, "l", r.li, cx);
         if (x > half && x < half + 1 + GUTTER && r.r !== undefined) return this.toggleLine(r.h, "r", r.ri, cx);
       }
     }
     this.hunk = r.h; cx.notify();
+  }
+
+  // Each side's width ([`sides`]), worked out once per view: every frame and
+  // every click need it.
+  widths() {
+    if (this.widthsOf !== this.view) { this.widthsOf = this.view; this.widthsWere = sides(this.view.rows); }
+    return this.widthsWere;
   }
 
   // The row each hunk starts on, for ↑ ↓.
@@ -287,7 +295,7 @@ export default class GitDiff extends View {
     else {
       const longest = Math.min(2000, v.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0));
       const width = longest * CHAR + 24;
-      const cols = this.layout === "unified" ? null : sides(v.rows);
+      const cols = this.layout === "unified" ? null : this.widths();
       const total = cols ? cols.l + 1 + cols.r : GUTTER * 2 + 14 + width;
       body = div().flex_1().min_h(0).relative().font_family(mono).text_size(11.5)
         .child(div().id("diff-x").size_full().overflow_x_scrollbar()
@@ -320,6 +328,19 @@ export default class GitDiff extends View {
 function sides(rows) {
   const longest = (text) => Math.min(2000, rows.reduce((m, r) => Math.max(m, (text(r) ?? "").length), 0));
   return { l: GUTTER + longest((r) => r.lt ?? r.t) * CHAR + 24, r: GUTTER + longest((r) => r.rt ?? r.t) * CHAR + 24 };
+}
+
+// Whether changed paths may touch the diff's file: the file, the one it was renamed from, a
+// folder above either, anything inside one (a submodule), or attributes (how git diffs it).
+// Without case: a file system that ignores it may name the file otherwise. Paths null (the
+// index or refs git wrote, a rescan): it can't be told, so they may.
+function touches(paths, spec) {
+  if (!paths) return true;
+  const mine = [spec.path, spec.orig].filter(Boolean).map((p) => p.toLowerCase());
+  return paths.some((p) => {
+    const q = p.toLowerCase();
+    return q === ".gitattributes" || q.endsWith("/.gitattributes") || mine.some((m) => m === q || m.startsWith(`${q}/`) || q.startsWith(`${m}/`));
+  });
 }
 
 // A diff pane beside the focused pane, or in a tab of its own (Git settings).
