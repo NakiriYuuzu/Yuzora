@@ -467,30 +467,56 @@ pub fn trusted_from(file: &Path) -> BTreeSet<String> {
 }
 
 /// Adds a folder id to `file` (the Git sidebar's "Trust"). One at a time,
-/// threads and processes alike, under a lock on [`lock_file`], so no folder
-/// trusted at the same moment is lost; and the new list is written beside
-/// the old one and takes its place whole, so a reader (every git command
-/// reads it) never meets one cut short. A file system without locks
-/// changes it without one.
+/// threads and processes alike (in this process first, then under a lock on
+/// [`lock_file`]), so no folder trusted at the same moment is lost; and the
+/// new list takes the old one's place whole ([`replace`]), so a reader (every
+/// git command reads it) never meets one cut short. A file system without
+/// locks changes it with this process's lock only. A list there that can't
+/// be read whole (unreadable, or not a list) is left as it is and the trust
+/// fails: writing would drop every folder in it.
 pub fn trust_at(file: &Path, id: &str) -> std::io::Result<()> {
+    add_to_list(file, id, std::fs::File::lock)
+}
+
+/// [`trust_at`], with `lock` taking the lock file's lock.
+fn add_to_list(file: &Path, id: &str, lock: impl FnOnce(&std::fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
+    static HERE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _here = HERE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let lock = std::fs::File::options().create(true).write(true).truncate(false).open(lock_file(file))?;
-    if let Err(e) = lock.lock()
+    let held = std::fs::File::options().create(true).write(true).truncate(false).open(lock_file(file))?;
+    if let Err(e) = lock(&held)
         && e.kind() != std::io::ErrorKind::Unsupported
     {
         return Err(e);
     }
-    let mut all = trusted_from(file);
+    // No list only when there's no file yet ([`trusted_from`] takes any
+    // trouble for none, the gate shut: right for a reader, not for this).
+    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", file.display());
+    let mut all: BTreeSet<String> = match std::fs::read_to_string(file) {
+        Ok(text) => serde_json::from_str::<Vec<String>>(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, at(&e)))?.into_iter().collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
+        Err(e) => return Err(std::io::Error::new(e.kind(), at(&e))),
+    };
     all.insert(id.to_owned());
     let list: Vec<&String> = all.iter().collect();
+    replace(file, &serde_json::to_string_pretty(&list).unwrap_or_default())
+}
+
+/// Writes `text` beside `file` (`<file>.<pid>.tmp`, on disk before it moves),
+/// then puts it in `file`'s place whole. A step that fails leaves nothing
+/// beside it.
+fn replace(file: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
     let mut next = file.as_os_str().to_owned();
     next.push(format!(".{}.tmp", std::process::id()));
-    std::fs::write(&next, serde_json::to_string_pretty(&list).unwrap_or_default())?;
-    std::fs::rename(&next, file).inspect_err(|_| {
+    let next = PathBuf::from(next);
+    let done = std::fs::File::create(&next).and_then(|mut f| f.write_all(text.as_bytes()).and_then(|()| f.sync_all())).and_then(|()| std::fs::rename(&next, file));
+    if done.is_err() {
         let _ = std::fs::remove_file(&next);
-    })
+    }
+    done
 }
 
 /// What [`trust_at`] locks while it changes `file`: `<file>.lock` beside it.
@@ -652,6 +678,84 @@ mod tests {
         assert_eq!(serde_json::from_str::<Vec<String>>(&text).ok(), Some(vec![":/a".to_string()]), "{text:?}");
         assert_eq!(trusted_from(&file).into_iter().collect::<Vec<_>>(), [":/a", ":/b"]);
         drop(reading);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Without locks in the file system, threads of one process still take
+    // turns: none of them is lost, nor do two write the same file beside it.
+    #[test]
+    fn folders_trusted_at_once_without_file_locks_all_stay_trusted() {
+        let dir = std::env::temp_dir().join(format!("yuzora-git-trust-nolock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("git/trusted.json");
+        let no_locks = |_: &std::fs::File| Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        for round in 0..20 {
+            let start = std::sync::Barrier::new(8);
+            std::thread::scope(|s| {
+                for i in 0..8 {
+                    let (file, start) = (&file, &start);
+                    s.spawn(move || {
+                        start.wait();
+                        add_to_list(file, &format!(":/r{round}-{i}"), no_locks).unwrap();
+                    });
+                }
+            });
+            let all = trusted_from(&file);
+            let lost: Vec<String> = (0..8).map(|i| format!(":/r{round}-{i}")).filter(|id| !all.contains(id)).collect();
+            assert!(lost.is_empty(), "round {round}: lost {lost:?}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // A list there that can't be read whole stays as it is, and so the trust
+    // fails: written again with only the new folder, every one trusted
+    // before would be gone. No list yet is the one case that starts empty.
+    #[test]
+    fn a_list_that_cant_be_read_is_never_written_over() {
+        let dir = std::env::temp_dir().join(format!("yuzora-git-trust-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("git/trusted.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "not json").unwrap();
+        assert_eq!(trust_at(&file, ":/new").map_err(|e| e.kind()), Err(std::io::ErrorKind::InvalidData));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "not json");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::remove_file(&file).unwrap();
+            trust_at(&file, ":/keep-1").unwrap();
+            trust_at(&file, ":/keep-2").unwrap();
+            let kept = std::fs::read_to_string(&file).unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // Root reads it anyway: nothing to see then.
+            if std::fs::read_to_string(&file).is_err() {
+                assert_eq!(trust_at(&file, ":/new").map_err(|e| e.kind()), Err(std::io::ErrorKind::PermissionDenied));
+                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+                assert_eq!(std::fs::read_to_string(&file).unwrap(), kept);
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // A step of the write that fails leaves nothing beside the list: the
+    // file beside it can't be made (a link there leads nowhere), or it can't
+    // take the list's place (a folder stands there).
+    #[test]
+    fn a_write_that_fails_leaves_nothing_beside_the_list() {
+        let dir = std::env::temp_dir().join(format!("yuzora-git-trust-left-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("trusted.json");
+        let left = || -> Vec<String> { std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect() };
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::os::unix::fs::symlink(dir.join("no/such/folder"), dir.join(format!("trusted.json.{}.tmp", std::process::id()))).unwrap();
+            assert!(replace(&file, "[]").is_err());
+            assert_eq!(left(), Vec::<String>::new(), "the write failed");
+        }
+        std::fs::create_dir_all(file.join("in-the-way")).unwrap();
+        assert!(replace(&file, "[]").is_err());
+        assert_eq!(left(), ["trusted.json"], "the move failed");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
