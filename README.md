@@ -24,7 +24,7 @@
 > **v0.1.0-beta.3 is a preview.** Yuzora is now a native app built on
 > [herdr-app](https://github.com/herdrdev/herdr-app) (Rust · GPUI · libghostty · QuickJS mods), in [`app/`](app/).
 > v0.1.0-beta.1 and older are the Tauri app in `src-tauri/` and `src/`, kept in the repository as a porting
-> source until beta.2 ships. Architecture: [docs/beta2/architecture.md](docs/beta2/architecture.md).
+> source. Architecture: [docs/beta2/architecture.md](docs/beta2/architecture.md).
 
 Yuzora runs your CLI coding agents (Claude Code, Codex, Pi and the other agents herdr recognizes) in herdr-core
 terminals that keep running when the window closes, and puts Git, files, databases and SSH / SFTP next to them in
@@ -46,7 +46,7 @@ the same window.
   and annotate. Folders whose own Git config runs programs ask for your trust first.
 - **Files and editor.** A file tree with Git marks and file-name and content search, a code editor with tree-sitter
   highlighting, a Markdown preview, and an image and SVG viewer (a repo's SVG is drawn in a separate process, with
-  time and memory limits). Files on a remote machine open read-only in beta.2. There is no language server (LSP).
+  time and memory limits). Files on a remote machine open read-only since beta.2. There is no language server (LSP).
 - **Databases**: PostgreSQL, SQL Server and SQLite, with a schema tree, a data grid that writes edited cells back in
   one transaction, the table structure and a SQL pane.
 - **SSH / SFTP**: hosts from `~/.ssh/config`, Yuzora's own hosts and herdr machines; host keys checked by
@@ -66,7 +66,7 @@ the same window.
   <img src="docs/readme/files-en.png" width="880" alt="Yuzora's Files mode: the repo's tree with Git marks in the sidebar, and the agent's terminal split with the code editor and a Markdown preview" />
 </p>
 
-Not in beta.2: the Browser, Companion and AgentZone.
+Not in beta.2 or beta.3: the Browser, Companion and AgentZone.
 
 ## Download and install
 
@@ -190,7 +190,7 @@ The SSH / SFTP sidebar mode lists hosts from `~/.ssh/config`, Yuzora's own hosts
 - **Files** mode in the sidebar: the focused pane's repo as a tree with git marks (M/A/D/U/?), new file and folder, rename, move to Trash, copy path, reveal in Finder; fuzzy file-name search and content search (ripgrep when installed, a built-in search otherwise).
 - **Editor** pane: tree-sitter highlighting for 14 languages, save with a conflict check (⌘S), find and replace (⌘F / ⌘H). It follows changes made on disk and shows when an agent is editing the same file.
 - **Markdown** pane: a GFM preview that follows the editor as you type, with a source / preview toggle. An image and SVG viewer.
-- Files on another machine (remote spaces) can be browsed and opened read-only in beta.2.
+- Files on another machine (remote spaces) can be browsed and opened read-only since beta.2.
 
 Details: [docs/beta2/files.md](docs/beta2/files.md).
 <!-- yuzora:lane:L5:end -->

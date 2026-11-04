@@ -6,17 +6,17 @@
 
 修正 beta.2 的問題（以 Windows 為主），並讓大型資料夾與遠端機器上的 Git、Files 更快。
 
-> **介面只剩英文，語言設定已移除。** 這是 beta.2 的中文使用者最後一次在「新版本」畫面看到中文說明：從 beta.3 起，App 內所有介面文字都只有英文。已存的中文設定或語系不會報錯，只是改成英文。文件、README.zh-TW、CHANGELOG.zh-TW 與 release notes 仍然是中英雙語。
+> **介面只剩英文，語言設定已移除。** beta.2 是最後一個有中文介面的版本：從 beta.3 起，App 內所有文字（包括 What's new 裡的更新說明）都只有英文。已存的中文設定或語系不會報錯，只是改成英文。README、CHANGELOG 與 release notes 仍有中英兩種版本。
 
 ### 變更
 
-- **整個 App 介面只剩英文，語言設定已移除。** 已存的中文設定或語系不會報錯，只是改成英文。文件、`README.zh-TW`、`CHANGELOG.zh-TW`、release notes 仍然是中英雙語。
-- tab 列移除「新增 pane ▾」選單與兩個分割鈕，側欄移除「下一個 layout」；`layout.switch` 的預設快捷鍵（⌘⇧L／Ctrl+Shift+L）取消，指令面板也隱藏 Next layout。新增 pane 選單現在只能用自己綁定的快捷鍵開啟，綁定寫法是 `yuzora-shell-tabs.new-pane`（是點，不是冒號）。升級後，`keys.json` 裡舊的預設綁定會被略過。
+- **整個 App 介面只剩英文，語言設定已移除。** 已存的中文設定或語系不會報錯，只是改成英文。README、CHANGELOG 與 release notes 仍有中英兩種版本。
+- tab 列移除「新增 pane ▾」選單與兩個分割鈕，側欄移除「下一個 layout」；`layout.switch` 的預設快捷鍵（⌘⇧L／Ctrl+Shift+L）取消，指令面板也隱藏 Next layout。新增 pane 選單現在要用自己綁定的快捷鍵或 `yuzora do yuzora-shell-tabs.new-pane` 開啟，綁定寫法是 `yuzora-shell-tabs.new-pane`（是點，不是冒號）。升級後，`keys.json` 裡舊的預設綁定會被略過。
 
 ### 新增
 
 - 同一個 Space 有多個 repo 時，Git 側欄頂端可以選擇要看哪一個：預設跟隨 focus，也可以釘選，每個 Space 記住各自的選擇。找 repo 只看檔案系統，不執行 Git；選中的 repo 照常經過信任關卡。指令是 `yuzora-sidebar-git.pick-repo`。
-- Git Log 的詳情可以捲動，也可以拖曳調整上下比例，雙擊恢復預設。
+- Git Log 的詳情可以捲動，也可以拖曳調整上下比例，雙擊恢復預設。詳情現在顯示完整的 commit 訊息（上限 2000 行）。
 
 ### 改善
 
@@ -27,7 +27,7 @@
 - 遠端機器上，開啟 diff 的來回次數從 5 次（unstaged）或 4 次（staged）降到 2 次，Git log 讀取 refs 也從 3 次降到 1 次：彼此不相依的讀取改成同時發出。
 - 在本機執行程式（Git、搜尋、腳本）時不再多等輪詢：`git --version` 這類呼叫在 Windows 上從約 52 ms 降到 29 ms，在 macOS 上從約 53 ms 降到 8 ms。
 - 開著的 Git diff 不再因為 repo 裡任何變動就重新載入，只有它自己的檔案（或改名前的檔案）可能變動時才會。
-- Git：尚未信任的資料夾裡，開 diff 與 Files 重新整理不再每次都重新掃描 repo；只要答案來源的檔案沒變就沿用上次結果（有 submodule 的 repo、Windows 上的 repo，以及放在 FAT、exFAT 或網路磁碟上的 repo，仍每次掃描）。
+- Git：本機（macOS 與 Linux）尚未信任的資料夾裡，開 diff 與 Files 重新整理不再每次都重新掃描 repo；只要答案來源的檔案沒變就沿用上次結果。遠端機器與 Windows 上的資料夾、有 submodule、設定含 `include` 或 index 是 split／sparse 的 repo，以及放在 FAT、exFAT 或網路磁碟上的 repo，仍每次掃描。
 
 ### 修正
 

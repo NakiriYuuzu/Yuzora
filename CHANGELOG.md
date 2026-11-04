@@ -8,13 +8,13 @@ Fixes for beta.2, mostly on Windows, and faster Git and Files on large folders a
 
 ### Changed
 
-- **The whole app interface is now English only, and the language setting is removed.** A language or locale you saved earlier (Chinese, for example) causes no error; the app just shows English. Docs, `README.zh-TW`, `CHANGELOG.zh-TW` and release notes stay bilingual.
-- The tab bar no longer has the "New pane ▾" menu or the two split buttons, and the sidebar no longer has "Next layout". The `layout.switch` default shortcut (⌘⇧L / Ctrl+Shift+L) is gone and Next layout is hidden from the command palette. The new pane menu now opens only from a shortcut you bind yourself, using `yuzora-shell-tabs.new-pane` (a dot, not a colon). After upgrading, the old default binding in `keys.json` is skipped.
+- **The whole app interface is now English only, and the language setting is removed.** A language or locale you saved earlier (Chinese, for example) causes no error; the app just shows English. The README, the changelog and the release notes still come in both English and Traditional Chinese. beta.2 was the last version with a Chinese interface: from beta.3 on, all text in the app, including the update notes in What's new, is English only.
+- The tab bar no longer has the "New pane ▾" menu or the two split buttons, and the sidebar no longer has "Next layout". The `layout.switch` default shortcut (⌘⇧L / Ctrl+Shift+L) is gone and Next layout is hidden from the command palette. The new pane menu now opens from a shortcut you bind yourself, using `yuzora-shell-tabs.new-pane` (a dot, not a colon), or with `yuzora do yuzora-shell-tabs.new-pane`. After upgrading, the old default binding in `keys.json` is skipped.
 
 ### Added
 
 - When a Space holds more than one repository, the top of the Git sidebar lets you pick which one to show. It follows focus by default or can be pinned, and each Space remembers its own choice. Finding repositories only looks at the file system and runs no Git; the chosen repository goes through the usual trust check. The command is `yuzora-sidebar-git.pick-repo`.
-- The Git Log detail can be scrolled and its top/bottom split dragged to resize; double-click to restore the default.
+- The Git Log detail can be scrolled and its top/bottom split dragged to resize; double-click to restore the default. The detail now shows the full commit message (up to 2000 lines).
 
 ### Improved
 
@@ -25,7 +25,7 @@ Fixes for beta.2, mostly on Windows, and faster Git and Files on large folders a
 - On a remote machine, opening a diff takes 2 round trips instead of 5 (unstaged) or 4 (staged), and the Git log reads its refs in 1 instead of 3: reads that don't depend on each other now go out together.
 - Running programs on this computer (Git, search, scripts) no longer waits for polling: a `git --version` call dropped from about 52 ms to 29 ms on Windows and from about 53 ms to 8 ms on macOS.
 - An open Git diff no longer reloads whenever anything in the repository changes, only when its own file (or the one it was renamed from) may have.
-- Git: in a folder not trusted yet, opening a diff and reloading Files no longer scan the repository again each time; the answer is reused until a file it came from changes (repositories with submodules, any on Windows, and any on a FAT, exFAT or network drive are still scanned each time).
+- Git: on this computer (macOS and Linux), in a folder not trusted yet, opening a diff and reloading Files no longer scan the repository again each time; the answer is reused until a file it came from changes. Folders on a remote machine or on Windows, repositories with submodules, an `include` in their config or a split or sparse index, and any on a FAT, exFAT or network drive are still scanned each time.
 
 ### Fixed
 
@@ -34,7 +34,7 @@ Fixes for beta.2, mostly on Windows, and faster Git and Files on large folders a
 - Git: in a side-by-side diff, each side is now as wide as its own longest line, so a new file's lines show right away instead of sitting past an empty left column.
 - Git: trusting two folders at the same moment keeps both trusted, and a Git command that runs while a folder is being trusted no longer reads the list half written.
 - Git: if a folder's Git config gains a program after Yuzora last checked it (a Git LFS filter, for example), the Changes panel's diff and Commit and the worktree dialog now check trust again right before they run Git, and the Files panel's Git marks and search never fetch, even with a Git older than 2.44.
-- Windows: the installer's prompt to remove an older all-users Yuzora now notes that connections and settings are not brought over automatically yet.
+- Windows: the installer's prompt to remove an older all-users Yuzora now notes that your old data stays, but connections and settings are not brought over automatically yet.
 - Windows: SFTP "Edit" no longer closes Notepad after 30 seconds, and Settings can move templates to the Recycle Bin and show files in Explorer.
 - Windows: the editor, Markdown and image panes now reload when the file changes on disk, and the SFTP local panel shows `C:\…` paths.
 - Git sidebar: the +/− counts and the buttons are no longer covered by long file names, and 6-digit line counts are shortened to `150k`.
