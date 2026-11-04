@@ -110,7 +110,7 @@ SVG 裡的 `<image>` 一律不跟：usvg 預設會把它指的任何本機路徑
 - Linux 的 `RLIMIT_AS` 限制的是位址空間：執行檔、shared library、thread stack 的 mapping 都算在 512 MiB 裡，實際能用的 heap 比 macOS、Windows 少。App 本體在 Linux 上的基本用量尚未量測。
 - macOS 的記憶體上限靠輪詢：兩次輪詢之間（10 ms）子行程可能多配置一些才被殺。
 - 每個子行程第一次畫文字時都要載入系統字型。
-- Windows 的 Job Object 實作只做過交叉編譯檢查，沒有實際執行（`app-ci.yml` 沒有 Windows job）。
+- Windows 的 Job Object 實作只做過交叉編譯檢查，沒有實際執行（`app-ci.yml` 的 Windows job 只跑 console 視窗測試，不跑這裡的）。
 
 ### 側欄（`yuzora-sidebar-files`）
 

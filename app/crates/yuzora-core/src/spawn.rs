@@ -213,16 +213,70 @@ mod tests {
         c.len() - 1
     }
 
-    /// Where the item that starts at `at` ends: after its `{…}` block, or at
-    /// the first `;` outside parentheses and brackets.
+    /// Where the thing that starts at `at` ends. An item (`fn`, `impl`,
+    /// `mod`, `struct`, `use`, a macro call…) ends after its `{…}` block, or
+    /// at the first `;` outside parentheses and brackets. Anything else (a
+    /// struct field, an enum variant, a match arm, a statement) ends at the
+    /// first `,` or `;` outside brackets, braces and generics, or just before
+    /// the `}` that closes what it is in.
     fn item_end(c: &[char], at: usize) -> usize {
-        let mut depth = 0;
+        const ITEMS: &[&str] = &["fn", "impl", "mod", "struct", "enum", "trait", "union", "use", "type", "const", "static", "extern", "unsafe", "async", "macro_rules", "pub"];
+        let word = |mut k: usize| -> (String, usize) {
+            while c.get(k).is_some_and(|x| x.is_whitespace()) {
+                k += 1;
+            }
+            let w: String = c[k..].iter().take_while(|x| x.is_alphanumeric() || **x == '_').collect();
+            let n = w.chars().count();
+            (w, k + n)
+        };
+        let (first, mut after) = word(at);
+        // `pub x: T,` is a field, `pub fn` an item: look past `pub` and `pub(…)`.
+        let mut is_item = ITEMS.contains(&first.as_str()) && first != "pub";
+        if first == "pub" {
+            while c.get(after).is_some_and(|x| x.is_whitespace()) {
+                after += 1;
+            }
+            if c.get(after) == Some(&'(') {
+                after = paren_close(c, after) + 1;
+            }
+            let (next, _) = word(after);
+            is_item = ITEMS.contains(&next.as_str());
+        }
+        // `name! { … }`, `name!(…);`
+        if !is_item {
+            let mut k = at;
+            while c.get(k).is_some_and(|x| x.is_whitespace()) {
+                k += 1;
+            }
+            let (w, e) = word(k);
+            is_item = !w.is_empty() && c.get(e) == Some(&'!');
+        }
+        let mut depth = 0i32;
+        let mut angle = 0i32;
         for k in at..c.len() {
             match c[k] {
                 '(' | '[' => depth += 1,
                 ')' | ']' => depth -= 1,
-                '{' if depth == 0 => return close_of(c, k) + 1,
+                '<' if !is_item && k > 0 && c[k - 1] != '<' => angle += 1,
+                '>' if !is_item && angle > 0 && k > 0 && c[k - 1] != '-' && c[k - 1] != '=' => angle -= 1,
+                '{' if depth == 0 => {
+                    let end = close_of(c, k) + 1;
+                    if is_item {
+                        return end;
+                    }
+                    // A variant or a struct literal: it goes on to its `,`.
+                    let mut j = end;
+                    while c.get(j).is_some_and(|x| x.is_whitespace()) {
+                        j += 1;
+                    }
+                    if c.get(j) == Some(&',') {
+                        return j + 1;
+                    }
+                    return end;
+                }
+                '}' if depth == 0 => return k,
                 ';' if depth == 0 => return k + 1,
+                ',' if depth == 0 && angle == 0 && !is_item => return k + 1,
                 _ => {}
             }
         }
@@ -267,8 +321,9 @@ mod tests {
     }
 
     /// Every place `words` (identifiers joined by `::`, whitespace allowed
-    /// around them) is followed by `(`: the offset of the `(`.
-    fn calls(c: &[char], words: &[&str]) -> Vec<usize> {
+    /// around them) stands, and with `paren` is followed by `(`: the offset
+    /// just past it (of the `(`).
+    fn calls(c: &[char], words: &[&str], paren: bool) -> Vec<usize> {
         let ident = |ch: char| ch.is_alphanumeric() || ch == '_';
         let mut out = Vec::new();
         'at: for i in 0..c.len() {
@@ -295,6 +350,10 @@ mod tests {
                 k += w.chars().count();
             }
             if c.get(k).is_some_and(|&x| ident(x)) {
+                continue;
+            }
+            if !paren {
+                out.push(k);
                 continue;
             }
             while c.get(k).is_some_and(|x| x.is_whitespace()) {
@@ -375,16 +434,16 @@ mod tests {
             out.push((n, Spawns { func, starts: Vec::new(), quiet: 0 }));
             out.len() - 1
         };
-        for at in calls(&c, &["Command", "new"]) {
+        for at in calls(&c, &["Command", "new"], false) {
             let p = slot(innermost(at), &mut out);
             out[p].1.starts.push(line(at));
         }
-        for at in calls(&c, &["no_window"]) {
+        for at in calls(&c, &["no_window"], true) {
             let p = slot(innermost(at), &mut out);
             out[p].1.quiet += 1;
         }
         // A hand-set `creation_flags(… CREATE_NO_WINDOW …)` counts the same.
-        for at in calls(&c, &["creation_flags"]) {
+        for at in calls(&c, &["creation_flags"], true) {
             if c[at..paren_close(&c, at)].iter().collect::<String>().contains("CREATE_NO_WINDOW") {
                 let p = slot(innermost(at), &mut out);
                 out[p].1.quiet += 1;
@@ -461,30 +520,39 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn every_spawn_is_quiet() {
-        let files = app_sources();
-        assert!(files.len() > 60, "no sources found: {}", files.len());
+    /// What is wrong with `files` (`(path, text)`) against `allowed`: the
+    /// spawns without the flag that are not listed with their exact count,
+    /// and the listed ones that are gone. Returns the problems and how many
+    /// spawns it saw.
+    fn audit(files: &[(String, String)], allowed: &[(&str, &str, usize, &str)]) -> (Vec<String>, usize) {
         let (mut seen, mut loud) = (0, Vec::new());
-        let mut listed = vec![0; ALLOWED.len()];
-        for (path, text) in &files {
+        let mut listed = vec![false; allowed.len()];
+        for (path, text) in files {
             seen += spawns(text).unwrap_or_else(|e| panic!("{path}: {e}")).iter().map(|s| s.starts.len()).sum::<usize>();
             for (func, n) in uncovered(text).unwrap() {
-                match ALLOWED.iter().position(|(file, f, _, _)| path.ends_with(file) && *f == func) {
-                    Some(a) if ALLOWED[a].2 == n => listed[a] += 1,
+                match allowed.iter().position(|(file, f, _, _)| path.ends_with(file) && *f == func) {
+                    Some(a) if allowed[a].2 == n => listed[a] = true,
                     Some(a) => {
-                        listed[a] += 1;
-                        loud.push(format!("{path}: fn {func} starts {n} programs without the flag, ALLOWED says {}", ALLOWED[a].2));
+                        listed[a] = true;
+                        loud.push(format!("{path}: fn {func} starts {n} programs without the flag, ALLOWED says {}", allowed[a].2));
                     }
                     None => loud.push(format!("{path}: fn {func} starts {n} program(s) without the flag")),
                 }
             }
         }
-        for (a, hits) in listed.iter().enumerate() {
-            if *hits == 0 {
-                loud.push(format!("ALLOWED lists {} fn {}, which starts nothing unflagged any more: remove it", ALLOWED[a].0, ALLOWED[a].1));
+        for (a, hit) in listed.iter().enumerate() {
+            if !hit {
+                loud.push(format!("ALLOWED lists {} fn {}, which starts nothing unflagged any more: remove it", allowed[a].0, allowed[a].1));
             }
         }
+        (loud, seen)
+    }
+
+    #[test]
+    fn every_spawn_is_quiet() {
+        let files = app_sources();
+        assert!(files.len() > 60, "no sources found: {}", files.len());
+        let (loud, seen) = audit(&files, ALLOWED);
         assert!(seen >= 12, "the scan found only {seen} spawns, it is looking at the wrong place");
         assert!(loud.is_empty(), "these start a program that opens a console window on Windows (call yuzora_core::spawn::no_window on it, or list it in ALLOWED with the reason):\n{}", loud.join("\n"));
     }
@@ -519,10 +587,54 @@ mod tests {
 
     #[test]
     fn a_second_spawn_in_an_allowed_function_is_found() {
-        // B4: ALLOWED says how many.
-        let text = "fn reveal() {\n    Command::new(\"open\");\n    Command::new(\"git\");\n}\n";
-        assert_eq!(loud(text), vec![("reveal".to_owned(), 2)]);
-        assert_ne!(2, ALLOWED.iter().find(|a| a.1 == "reveal").unwrap().2);
+        // B4: ALLOWED says how many, whatever the first entry is today.
+        let (file, func, count, _) = ALLOWED[0];
+        let body = |n: usize| format!("fn {func}() {{\n{}}}\n", "    Command::new(\"x\");\n".repeat(n));
+        let files = |n: usize| vec![(format!("a/{file}"), body(n))];
+        let (loud, _) = audit(&files(count), &ALLOWED[..1]);
+        assert!(loud.is_empty(), "{loud:?}");
+        let (more, _) = audit(&files(count + 1), &ALLOWED[..1]);
+        assert_eq!(more.len(), 1, "{more:?}");
+        // Fewer than listed fails too (and none at all: the entry is stale).
+        let (fewer, _) = audit(&files(count - 1), &ALLOWED[..1]);
+        assert_eq!(fewer.len(), 1, "{fewer:?}");
+        let (gone, _) = audit(&files(0), &ALLOWED[..1]);
+        assert!(gone[0].contains("remove it"), "{gone:?}");
+    }
+
+    #[test]
+    fn a_spawn_goes_to_the_innermost_function() {
+        let text = "fn outer() {\n    fn inner() { Command::new(\"git\"); }\n    no_window(&mut c);\n}\n";
+        assert_eq!(loud(text), vec![("inner".to_owned(), 1)]);
+    }
+
+    #[test]
+    fn cfg_test_on_a_field_or_a_variant_hides_only_that() {
+        // T1: what follows is still scanned.
+        let field = "struct S {\n    #[cfg(test)]\n    hook: Option<Box<dyn Fn(u8, u8)>>,\n    live: u8,\n}\nimpl S {\n    fn go(&self) { Command::new(\"git\"); }\n}\n";
+        assert_eq!(loud(field), vec![("go".to_owned(), 1)]);
+        let generic = "struct S {\n    #[cfg(test)]\n    seen: HashMap<String, Vec<u8>>,\n}\nfn go() { Command::new(\"git\"); }\n";
+        assert_eq!(loud(generic), vec![("go".to_owned(), 1)]);
+        let variant = "enum E {\n    A,\n    #[cfg(test)]\n    B { x: u8 },\n    #[cfg(test)]\n    C(u8),\n}\nfn go() { Command::new(\"git\"); }\n";
+        assert_eq!(loud(variant), vec![("go".to_owned(), 1)]);
+        // The last field has no comma: it ends at the brace that closes the struct.
+        let last = "struct S {\n    a: u8,\n    #[cfg(test)]\n    hook: u8\n}\nfn go() { Command::new(\"git\"); }\n";
+        assert_eq!(loud(last), vec![("go".to_owned(), 1)]);
+        // A `pub` field is a field, a `pub fn` an item.
+        let public = "struct S {\n    #[cfg(test)]\n    pub hook: u8,\n}\nfn go() { Command::new(\"git\"); }\n";
+        assert_eq!(loud(public), vec![("go".to_owned(), 1)]);
+        let item = "#[cfg(test)]\npub fn helper() { Command::new(\"x\"); }\nfn go() { Command::new(\"git\"); }\n";
+        assert_eq!(loud(item), vec![("go".to_owned(), 1)]);
+        // A match arm.
+        let arm = "fn f(x: u8) {\n    match x {\n        #[cfg(test)]\n        1 => { Command::new(\"t\"); }\n        _ => { Command::new(\"git\"); }\n    }\n}\n";
+        assert_eq!(loud(arm), vec![("f".to_owned(), 1)]);
+    }
+
+    #[test]
+    fn command_new_as_a_value_is_a_spawn() {
+        // n1
+        assert_eq!(loud("fn f() { [\"git\"].iter().map(std::process::Command::new); }"), vec![("f".to_owned(), 1)]);
+        assert_eq!(loud("fn f() { let mk = Command::new; }"), vec![("f".to_owned(), 1)]);
     }
 
     #[test]
