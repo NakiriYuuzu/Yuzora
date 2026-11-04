@@ -24,7 +24,7 @@ yuzora-git-settings ┘
 
 | mod | 種類 | 內容 |
 | --- | --- | --- |
-| `yuzora-sidebar-git` | 側欄模式 | 分支按鈕（↑↓，開分支 popup）、操作中橫幅（繼續／中止／略過）、衝突／已暫存／變更三段清單（數量、全部暫存／取消、列尾 +／−／↺）、右鍵選單、commit 訊息（歷史、範本、amend、sign-off、略過 hooks、作者）、Commit／Commit 並 Push／Push ↑N、「分支圖」。寫 `yuzora.badge.git`、`yuzora.status.git` |
+| `yuzora-sidebar-git` | 側欄模式 | 分支按鈕（↑↓，開分支 popup）、操作中橫幅（繼續／中止／略過）、衝突／已暫存／變更三段清單（數量、全部暫存／取消、列尾 +／−／↺）、右鍵選單、commit 訊息（歷史、範本、amend、sign-off、略過 hooks、作者）、Commit／Commit 並 Push／Push ↑N、「分支圖」；頂端的 repo 選擇器（跟隨焦點，或替這個 Space 釘選一個 repo，見〈同一個 Space 的多個 repo〉）。寫 `yuzora.badge.git`、`yuzora.status.git` |
 | `yuzora-git-branches` | popup | 搜尋、更新專案、Fetch、Push…、新分支、checkout revision、stash；最近／本地／遠端／tags；每個 ref 的動作（checkout、smart／強制 checkout、從此建分支、比較、merge／rebase 進目前分支、改名、upstream、刪除、tag push／刪除） |
 | `yuzora-git-push` | 對話框 | 目標 remote／分支、要送出的 commits、force（lease／force，受保護分支禁止）、tags（none／follow／all）、略過 hooks、新分支自動 set-upstream、被拒時依設定自動更新 |
 | `yuzora-git-diff` | modal 或 tool pane | 預設開成 modal（dialog overlay），「保留」把它移到 pane（預設分割在目前 pane 右側，可改成新分頁）；並排／合併、字詞高亮、空白（精確／忽略頭尾／全部忽略）、context（3 行／整檔）、hunk 導覽、暫存／取消暫存／捨棄 hunk 或選取的行、Annotate、歷史；即時更新 |
@@ -46,7 +46,32 @@ yuzora-git-settings ┘
   - 「保留」：依 `diffKeepIn`，`split`（預設）在焦點 pane 右側 `pane.split {direction: "right", mod, props}`，沒有焦點 pane 或設成 `tab` 時 `tab.new`；新 pane 帶著 modal 裡的檢視（並排／合併、空白、context），然後關閉 modal。`run()` 只把指令排進佇列、不回傳錯誤，所以 split 或 `tab.new` 失敗時 modal 照樣關閉，pane 也不會出現。
 - 即時更新：`changed(repo, since)` 在 repo 的 generation 變了（watcher 或我們自己的寫入）時 resolve；遠端 repo 沒有 watcher，約 25 秒逾時一次，呼叫端藉此輪詢。本機 repo 的 watcher 啟動失敗時（例如系統的監看數用完），等待逾時就把整個 repo 與 refs 視為已變更，generation 前進，各 pane 照常重讀。逾時由一條共用的計時執行緒負責，不靠 watcher 的 tick（只在有人等待時存在）。
 - `changes(repo, since)`：同 `changed`，另外回傳這段期間變動的路徑（`{generation, paths}`）。路徑來自 watcher 看到的工作樹，以及我們自己的 stage／unstage／discard 指定的路徑；無法判斷時 `paths` 是 `null`，包括 git 自己寫的 index 或 refs、rescan、整個 status 失效，以及一次超過 1000 個路徑，或已經超出保留範圍（repo 保留最近 256 個 generation；每個 generation 的路徑去重）。diff pane 只在變動可能碰到它的檔案時重讀：檔案本身、改名前的檔案、上層資料夾（`.` 是頂層）、檔案底下的路徑（submodule）、任何 `.gitattributes`。watcher、git 與 pathspec 對同一個檔案的寫法可能不同，所以兩邊都先換成同一種寫法再比對：`\` 當成 `/`（watcher 在每個系統上都這樣寫）、不分大小寫、轉成 NFC（macOS 交出的是磁碟上的名稱，常是 NFD；git 存的是 NFC）、去掉開頭的 `./` 與結尾的 `/`。含 `~` 加數字的路徑可能是 Windows 的 8.3 短檔名（watcher 可能回報長或短的名稱），和 `paths` 是 `null` 一樣一律重讀。staged diff 也會因為同一個檔案的工作樹變動重讀：watcher 回報的路徑分不出是工作樹還是 index。commit 的 diff 不跟隨。
-- 跨 lane：`yuzora.badge.git`＝變更檔案數（乾淨時 `null`），`yuzora.status.git`＝`{text: "⎇ main ↑2 · 4 變更", tone}`，tone：衝突 `blocked`、操作中或執行中 `working`、有變更 `accent`、乾淨 `muted`。
+- 跨 lane：`yuzora.badge.git`＝變更檔案數（乾淨時 `null`），`yuzora.status.git`＝`{text: "⎇ main ↑2 · 4 變更", tone}`，tone：衝突 `blocked`、操作中或執行中 `working`、有變更 `accent`、乾淨 `muted`。兩者都是側欄目前選中的 repo 的值（跟隨焦點時就是焦點所在的 repo）。
+- `yuzora.git.repo.<space id>`＝這個 Space 釘選的 repo（`{root, on}`），沒有就是跟隨焦點；見下一節。
+
+### 同一個 Space 的多個 repo（beta.3）
+
+情境：同一個 Space 裡有好幾個 repo，例如外層資料夾放了好幾個專案，或 monorepo 裡的子 repo。不跨 Space，也不做 submodule／worktree 的切換。
+
+- 側欄頂端的 repo 選擇器：預設「跟隨焦點」，和以前一樣看焦點 pane 的資料夾（否則 Space 的資料夾，`location()`）；也可以替這個 Space 釘選一個 repo，之後焦點怎麼換都看那個 repo。每個 Space 各自記住選擇：存在 shared 的 `yuzora.git.repo.<space id>`（`{root, on}`），shared 會存檔，所以重啟後仍然有效；選「跟隨焦點」就清掉。選擇器標示目前的 repo，釘選時名稱前有一個點。
+- 鍵盤：指令 `yuzora-sidebar-git.pick-repo`（和其他 mod 指令一樣用點號寫進 `keys.json`，或 `herdr-app do`）把選擇器置中打開。選擇器裡 ↑↓ 在「跟隨焦點」與各 repo 之間移動（頭尾相接，一開始停在目前選的那一列），Enter 選定，Esc 關閉。和分支 popup 一樣，選到的列不會自動捲進畫面。
+- 跟著選中的 repo：側欄本身、`yuzora.badge.git`、`yuzora.status.git`，以及從側欄開的 Git Log、diff、分支 popup、Push 對話框、merge（都用側欄的 `repo`）。狀態列底部的 git 摘要不在範圍內，仍跟著焦點的終端機。
+- 列出 repo：`repos(folder, on, cwds)`（`repos.rs`），只讀檔案系統，不跑 git，所以不論信任與否都不會執行 repo 設定的程式。列出的順序：
+  1. Space 資料夾所在的 repo：資料夾本身，或往上最近一個有 `.git` 的資料夾（照真實路徑，和 git 往上找的方式相同；Space 資料夾是某個 repo 的子資料夾時就是那個 repo）。
+  2. Space 內各 pane 的資料夾所在的 repo（同樣往上找，可以在 Space 資料夾外面）。
+  3. Space 資料夾往下一層、兩層、含 `.git` 的資料夾（`.git` 是資料夾或 gitfile，指向它們的 symlink 也算；FIFO 之類的不算），依路徑的位元組排序。
+  - 不進入 `.git`、`node_modules`、`target`。指向資料夾的 symlink 會跟著走：最多兩層，所以指回上層的 symlink 自然停住；同一個 repo 照真實路徑只列一次。
+  - 名稱含換行的資料夾不列，也不進入。資料夾只看真實路徑，真實路徑裡有換行的（pane 的資料夾、經過這種資料夾的 symlink）也不算，Space 資料夾本身有換行就是問不到。原因是遠端的 `find` 一行印一個名稱：名稱一切開，後半段會被當成路徑，相對路徑落在遠端 home（`hc exec --on` 在那裡執行），就會列出 Space 外的 repo。所以 `find` 以 `-name "*<LF>*"` prune 掉這些名稱，Rust 照樣略過，兩邊連計數都相同。
+  - 最多 50 個，超過時 `truncated`，選擇器顯示「只列出前 N 個」。往下看的資料夾最多 5000 個：依檔案系統列出的順序走（每個資料夾之後緊接著它底下的，和 `find` 走訪的順序相同），看滿就不再讀後面的資料夾，同樣 `truncated`；看過的這些才依位元組排序。所以超過 5000 個時，列出哪些取決於檔案系統的順序，不一定是路徑排序的前 5000 個。
+  - 每一筆有 `root`（真實路徑，git 的寫法；Windows 去掉 `\\?\`、用 `/`）、`name`、`rel`（`.`、Space 資料夾底下的路徑，否則就是 `root`）、`trusted`（已經在信任清單裡；不跑 git 就只知道這麼多，所以「不在清單」只代表還沒信任過，不代表需要信任，選擇器只標「已信任」）。
+  - 遠端 Space：同樣的規則寫成 POSIX sh（`repos::SCRIPT`），經 `hc exec --on` 一次呼叫完成，不會每個資料夾來回一次。`repos::tests` 在本機用 sh 跑這個腳本，每個情境都要和 Rust 的走訪結果完全相同；換行名稱的情境讓腳本在一個底下有對應 repo 的資料夾裡執行（模擬遠端 home），特殊名稱（空白、引號、`$(…)`、反引號、反斜線、`-` 開頭、`*`、`[ab]`、`;`、printf 格式、tab，以及 pane 的資料夾是 `-`、`--`）都要列成名稱本身，不能執行任何東西。
+- 信任：每個 repo 各自過原本的信任關卡。只有選中的 repo 會跑 status（以及信任掃描）；列出 repo 不會對任何一個跑 git。
+- 釘選的 repo 消失：打開它失敗、之後 status 失敗，或打開的不是它（見下一點）時，再問一次檔案系統（`repos(root, on, [])`）。確定不見才取消釘選，跳出提示，改回跟隨焦點。確定不見是指：那個資料夾還在、可以進入，但已經沒有 `.git`；或資料夾本身（或路上某一層）不存在而它的上一層可以進入；或那一層不是資料夾。問不到時保留釘選並顯示錯誤，例如遠端機器離線、沒有權限進入那個資料夾或它的上層、路上有解析不了的 symlink（可能指向沒有權限的資料夾）。這些情況下 `repos` 回傳錯誤，不回空清單，遠端的 sh 也一樣（以 `exit 1` 回報，不印 `gone`）。`.git` 還在（錯誤是別的原因）時也保留釘選。
+- 打開成功也要是同一個 repo：資料夾的 `.git` 沒了，git 會往上打開外層的 repo，`open` 照樣成功。所以釘選時 `open` 回傳的 `root` 不是釘選的 `root`，就照上一點問檔案系統：確定沒有 `.git` 就取消釘選。`.git` 還在但 git 不接受（例如讀不到），或問不到時，保留釘選並顯示「git 在這裡打開的是 …」，不改用外層的 repo。git 的寫法和釘選的不同、其實是同一個資料夾時（例如 Windows 的 subst 磁碟機：`canonicalize` 解析成實際位置，git 可能保留磁碟機代號），先問 `repos(git 的 root, on, [])`：它的頂層真實路徑就是釘選的 `root`，就照常打開。Windows 上這一點沒有實測。
+- 和總指揮提案不同的地方：
+  - 多列了 Space 資料夾所在的 repo（往上找）：Space 資料夾是 repo 的子資料夾時，跟隨焦點本來就會打開它，選擇器裡沒有它就切不回去。
+  - symlink 不跳過而是跟著走兩層：指向別處的專案資料夾也列得出來；兩層的限制就足以擋住迴圈。
+  - 另外限制往下看的資料夾數（5000）：走訪時就停，子資料夾上萬的 Space 資料夾不會讓列表變慢（遠端的 `find` 也接在 `head -n 5001` 後面：`head` 讀滿就結束，`find` 下一次寫出時跟著停）。
 
 ### virtual list 的限制
 
@@ -205,7 +230,7 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 
 - ⏳ Clone（含 shallow／unshallow）、init：beta.2 由 Workspace（L1）開資料夾，Git 側欄不提供 clone／init。
 - 🟡 Git 執行檔：設定頁可指定路徑（`executable`），每次呼叫時讀取，已開啟的 repo 也立刻換用；版本顯示在 repo pane 的「身分與簽章」；沒有自動下載。
-- ✅ Repo 偵測：側欄依焦點 pane 的資料夾（否則 space 的資料夾）找所在的 repo，跟著焦點切換；本機與遠端 space（`hc exec --on`）都可以。
+- ✅ Repo 偵測：側欄依焦點 pane 的資料夾（否則 space 的資料夾）找所在的 repo，跟著焦點切換；本機與遠端 space（`hc exec --on`）都可以。同一個 Space 有多個 repo 時，可以從側欄頂端的選擇器替這個 Space 釘選其中一個（beta.3，見〈同一個 Space 的多個 repo〉）。
 - ⛔ Multi-root 同步分支操作：一次看一個 repo。
 - 🟡 Submodules：列出狀態（路徑照原樣，含空白）、`submodule update`；子模組本身當成另一個 repo 開啟。
 - 🟡 Safe mode（未受信任專案）：Git 有自己的信任資料夾（見〈執行器〉）：repo 本地設定會自動執行程式時，Git 的所有操作先等使用者信任；自動執行的讀取另外關掉 `core.fsmonitor`，簽章檢查不用 repo 本地指定的程式，blame 不跑 textconv。⏳ 整個 app 共用的信任模型（終端機、其他模式）屬於殼層。
