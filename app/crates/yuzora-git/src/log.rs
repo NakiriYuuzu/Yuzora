@@ -272,10 +272,19 @@ fn is_main(name: &str) -> bool {
 
 /// Branches, remotes and tags with the commits they point at.
 pub fn read_refs(repo: &Repo) -> GitResult<Refs> {
-    let out = repo.run(Git::read(["for-each-ref", "--format=%(objectname)%00%(*objectname)%00%(refname)", "refs/heads", "refs/remotes", "refs/tags"]))?.into_result()?;
-    let branch = repo.run(Git::read(["symbolic-ref", "-q", "--short", "HEAD"]))?;
+    // yuzora(perf): three reads that don't depend on each other: together, one round trip on a machine.
+    let (out, branch, head) = std::thread::scope(|s| {
+        let all = crate::exec::spawn_scoped(s, || repo.run(Git::read(["for-each-ref", "--format=%(objectname)%00%(*objectname)%00%(refname)", "refs/heads", "refs/remotes", "refs/tags"])));
+        let branch = crate::exec::spawn_scoped(s, || repo.run(Git::read(["symbolic-ref", "-q", "--short", "HEAD"])));
+        let head = repo.run(Git::read(["rev-parse", "-q", "--verify", "HEAD^{commit}"]));
+        let join = |h: std::thread::ScopedJoinHandle<'_, GitResult<crate::exec::Output>>| h.join().unwrap_or_else(|_| Err(GitError::Other("a ref read panicked".into())));
+        (join(all), join(branch), head)
+    });
+    // Judged in the order they used to run: the listing first.
+    let out = out?.into_result()?;
+    let branch = branch?;
     let branch = branch.ok().then(|| branch.stdout_text().trim().to_owned()).filter(|b| !b.is_empty());
-    let head = repo.run(Git::read(["rev-parse", "-q", "--verify", "HEAD^{commit}"]))?;
+    let head = head?;
     let head = head.ok().then(|| hex(head.stdout_text().trim()));
     let mut refs = Refs { head: head.clone(), branch: branch.clone(), ..Default::default() };
     for line in String::from_utf8_lossy(&out).lines() {
@@ -1255,5 +1264,23 @@ mod tests {
         assert!(present(), "the log didn't fetch, so this test proves nothing: {}", log.info());
         assert_eq!(log.info()["rows"], 2, "{}", log.info());
         close(log.id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_refs_are_read_together_and_a_failed_read_is_not_an_answer() {
+        use crate::repo::testing::{most_at_once, timed_git};
+        let s = crate::repo::testing::scratch();
+        s.commit("f.txt", "a\n", "base");
+        let (repo, log) = timed_git(&s, None);
+        let refs = read_refs(&repo).unwrap();
+        assert_eq!(refs.branch.as_deref(), Some("main"));
+        assert!(refs.head.is_some());
+        assert_eq!(most_at_once(&log), 3, "the reads ran one after the other");
+        let (repo, _) = timed_git(&s, Some("for-each-ref"));
+        assert!(read_refs(&repo).is_err(), "the listing failed and the refs were shown anyway");
+        // An unborn branch says no to the other two, as it always did: that is not an error.
+        let (repo, _) = timed_git(&s, Some("rev-parse"));
+        assert_eq!(read_refs(&repo).unwrap().head, None);
     }
 }

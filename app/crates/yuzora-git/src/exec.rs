@@ -302,6 +302,18 @@ thread_local! {
     pub static TEST_ENV: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// A scoped thread that starts its commands the way the calling thread would
+/// (tests: with that thread's [`TEST_ENV`]).
+pub fn spawn_scoped<'scope, 'env, T: Send + 'scope>(s: &'scope std::thread::Scope<'scope, 'env>, f: impl FnOnce() -> T + Send + 'scope) -> std::thread::ScopedJoinHandle<'scope, T> {
+    #[cfg(test)]
+    let env = TEST_ENV.with(|t| t.borrow().clone());
+    s.spawn(move || {
+        #[cfg(test)]
+        TEST_ENV.with(|t| *t.borrow_mut() = env);
+        f()
+    })
+}
+
 /// The environment every call carries; the command's own entries win.
 pub fn environment(kind: Kind, remote: bool, own: &[(String, String)]) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = vec![
