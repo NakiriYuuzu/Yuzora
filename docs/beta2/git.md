@@ -306,6 +306,7 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - **擋下 helper 之後才問**：tracked `.gitmodules`、使用者自己的 `insteadOf` 指到 helper 時，掃描事先看不到。第一次 submodule update 或 fetch 會失敗（git 的 `transport '…' not allowed`），之後側欄才出現信任提示。這筆記錄只留在記憶體，重開 app 後要再失敗一次才會再問。
 - **pull 帶 submodule 時的 `file`**：repo 設了 `submodule.recurse` 時，pull 會接著跑 submodule update。這一步的 `file` 照 fetch 的規則（URL 由使用者給）放行；git 自己的預設對 submodule 不放行。
 - **branch 很多時掃描讀不到**：信任掃描列出所有 `branch.*.remote` 與 `remote.*` 設定，tracked branch 約 20 萬個以上時，回答超過 `ANSWER_CAP`（8 MiB），當成讀不到（fail closed），資料夾要先信任。
+- **斷掉的 link 也要先信任**：`.git/modules` 底下（包括 submodule 的 git dir 裡面）只要有 kernel 跟不過去的 symlink，信任掃描就當成讀不到（fail closed）。shell 拿不到 errno，分不出「目標不存在」和 git 自己解得開的寫法，所以舊式 symlink HEAD、指到不存在路徑的 hook 這類無害的 link 也會讓資料夾要先信任。
 - 列出的 ⏳ 項目。
 
 ### #194 合併後的 follow-up（已處理）
@@ -402,3 +403,10 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
   - (a) 掃描先取實際路徑（`real`：逐層 `readlink` 解開最後一段的 symlink，最多 40 層，再以 `cd -P`／`pwd -P` 取所在資料夾），用實際路徑交給 git，基準和 `repo_init` 一致。路徑經過 symlink 時，link 基準也照舊讀一次，兩個 git dir 都算（以 git 回報的實際 git dir 去重）。取不到實際路徑（沒有 `readlink`、超過 40 層）當成讀不到。資料夾候選不必取：資料夾裡沒有相對路徑要解讀（`commondir` 也照實際路徑解析），兩種基準是同一個資料夾。
   - (b) `ops.rs` 每個 push 都改用 `push_args`，未信任時加 `--recurse-submodules=no`。共 5 處：`push`、`tag_push`（單一 tag 與 `--tags`）、刪除遠端 branch（`branchDelete`）、刪除遠端 tag（`tagDelete`）。只刪除的 push 沒有要推的 commit，git 不檢查 submodule（實測 `push.recurseSubmodules=check` 擋下 branch push，刪除照常成功），所以後兩處沒有行為差別，只是寫法一致。
 - 測試：core 新增「symlink 指向更深一層的 gitfile」，兩種基準各放一個 key，兩個都要列出，link 基準那個 git dir 自己的 `modules/` 也要列出。yuzora-git 端到端照 reviewer 的重現：`.git/modules/s` 是 symlink，link 基準是乾淨的 bare repo，實際基準是缺 commit 的 partial clone；用舊版 git 模擬，未信任時 branch push、單一 tag push、push 全部 tag 都不執行 `uploadpack`，信任後三種都會執行，證明測試有效。每次 push 前把 remote 退回，並刪掉 partial clone 抓進來的 pack，否則只有第一次會 lazy fetch，信任後的對照組會失效。
+
+第八輪（reviewer 複審 `59fc4849`）：
+
+- blocker：kernel 跟不過去、git 卻打得開的 symlink，掃描既不讀也不記成讀不到（fail open）。git 打開 submodule 前用自己的 `strbuf_realpath` 取實際路徑：`x/..` 不管 `x` 是不是資料夾都在字面上去掉，結尾多一個 `/` 的檔案照樣接受，跟 symlink 的層數也比 macOS kernel（32）多。kernel 在這些地方回 ENOTDIR 或 ELOOP，`find -L` 不把它當資料夾也不當檔案，`[ -d "$3/modules" ]` 也直接略過。reviewer 的 C1–C5（link 指向檔案結尾加 `/`、`x/../` 經過一般檔案、指到資料夾也一樣、`.git/modules` 本身這樣寫、33 層 link 鏈）都讓 git 在自己的 process 裡打開了 submodule（`diff --submodule=log` 印出 `> two`）。
+- 修法：不再列舉寫法。`modules/` 底下（同一個 `modules()`，所以巢狀與 linked worktree 的 `modules/` 也一樣）`find -L -type l` 列出的就是 kernel 跟不過去的 link，一律當成讀不到；`.git/modules` 存在但不是 kernel 打得開的資料夾，也當成讀不到。GNU find（Linux）遇到 ENOTDIR、ELOOP 的 link 會報錯結束（exit 1），只有目標不存在的才列成 `-type l`，這時整個 `modules/` 當成讀不到，一樣 fail closed（ubuntu 24.04 的 findutils 4.9.0 實測）。git 沒有指令能對任意路徑做 `real_pathdup`，沒辦法以 git 的解析為準，所以 fail closed。kernel 跟得過去的 link 照舊：kernel 與 git 都打得開時，兩者解析到同一個地方。
+  - 連帶效果：只存在 packed-refs 的 symlink HEAD 對 kernel 也是斷掉的 link，第五輪的兩個測試多了一筆 `…/HEAD` 讀不到（git dir 的設定照樣讀到）。見〈已知限制〉。
+- 測試：core 的 `a_link_the_kernel_cant_follow_shuts_the_gate` 每種寫法各建一個 repo，先證明 git 在自己的 process 裡打開了 submodule，再檢查掃描：C1–C5 都是讀不到，指到資料夾、結尾加 `/` 的 link（C7）與 32 層鏈照常讀到 key。Linux 上 C1–C3 記成整個 `.git/modules` 讀不到；Linux kernel 可以跟 40 層，33 層鏈照常讀到 key。修正前 C1–C5 都是 `Ok([])`。
