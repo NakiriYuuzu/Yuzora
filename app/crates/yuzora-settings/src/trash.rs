@@ -9,7 +9,9 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn trash(path: &Path) -> std::io::Result<()> {
-    platform(&absolute(path)?)
+    // Windows: `canonicalize` gives `\\?\C:\…`, which the shell's recycle API (behind
+    // PowerShell's `DeleteFile`) doesn't take; the usual `C:\…` it does.
+    platform(&yuzora_core::paths::plain(&absolute(path)?))
 }
 
 /// `path` with its folder resolved but not the file itself: a link goes to the
@@ -207,6 +209,8 @@ mod tests {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
+    // The freedesktop trash is Unix's; its record holds a `/` path (Windows paths use `\`).
+    #[cfg(unix)]
     #[test]
     fn freedesktop_trash_keeps_both_of_two_same_names() {
         let d = std::env::temp_dir().join(format!("yuzora-trash-{}", std::process::id()));
@@ -226,5 +230,17 @@ mod tests {
         assert!(freedesktop(&d.join("a/missing.md"), &trash).is_err());
         assert!(!trash.join("info/missing.md.trashinfo").exists(), "no record for a failed move");
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_recycle_bin_takes_a_file_whose_folder_has_a_space() {
+        let dir = std::env::temp_dir().join(format!("yuzora trash {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a template.md");
+        std::fs::write(&file, "x").unwrap();
+        trash(&file).unwrap();
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

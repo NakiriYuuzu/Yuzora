@@ -184,7 +184,8 @@ mod tests {
     /// by `(file suffix, function)`.
     const ALLOWED: &[(&str, &str, &str)] = &[
         // GUI programs: they open their own window, not a console.
-        ("yuzora-settings/src/lib.rs", "reveal", "explorer / open / xdg-open are GUI file managers"),
+        ("yuzora-settings/src/lib.rs", "file_manager", "explorer / open / xdg-open are GUI file managers"),
+        ("yuzora-ssh/src/js.rs", "spawn_notepad", "Notepad is a GUI program"),
         ("yuzora-files/src/fsops.rs", "reveal_impl", "explorer / open / xdg-open / dbus-send reveal in a file manager"),
         // Never run on Windows.
         ("yuzora-files/src/svg/process.rs", "start", "`prepare` sets CREATE_NO_WINDOW on Windows before the spawn"),

@@ -20,7 +20,34 @@ const OPEN_WINDOW = 10 * 1000;
 const WENT = "yuzora.files.went";
 const WENT_KEEP = 7 * 24 * 60 * 60 * 1000;
 
-const parent = path => path.slice(0, Math.max(0, path.lastIndexOf("/")));
+// Paths: a Windows one (`C:\…`, `\\server\…`) takes either slash and ignores case;
+// anywhere else only "/" separates and case counts. (A test runs these on their own:
+// they use nothing else from this file.)
+function isWin(path) {
+  return /^([A-Za-z]:[\\/]|\\\\)/.test(path);
+}
+
+// The folder holding `path`: "" for a file at the top, `C:\` for one at a drive's top.
+function parent(path) {
+  const at = isWin(path) ? Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) : path.lastIndexOf("/");
+  if (at < 0) return "";
+  return at === 2 && path[1] === ":" ? path.slice(0, 3) : path.slice(0, at);
+}
+
+function isRoot(dir) {
+  return dir === "/" || /^[A-Za-z]:[\\/]?$/.test(dir);
+}
+
+function baseName(path) {
+  return path.split(isWin(path) ? /[\\/]/ : "/").pop();
+}
+
+// The same file or folder: what a watch reports against what this pane opened.
+function samePath(a, b) {
+  if (!isWin(a) && !isWin(b)) return a === b;
+  const plain = p => p.replace(/\\/g, "/").toLowerCase().replace(/(?<=.)\/$/, "");
+  return plain(a) === plain(b);
+}
 
 // Code colors by theme color name, so code reads on light and dark themes
 // alike. A name not listed takes its prefix's (`keyword.control` is a keyword).
@@ -154,14 +181,14 @@ export class DocPane extends View {
   watch(cx) {
     if (this.on) return;
     const dir = parent(this.path) || "/";
-    if (dir === "/" || dir === home()) return;
+    if (isRoot(dir) || samePath(dir, home())) return;
     cx.spawn(async () => {
       try {
         for (;;) {
           const changed = await watchFolder(dir);
           // The document's path, which follows a rename made in the sidebar.
           const path = this.state?.path ?? this.path;
-          if (changed.some(p => p === path || p === dir)) await checkDisk(this.doc).catch(() => {});
+          if (changed.some(p => samePath(p, path) || samePath(p, dir))) await checkDisk(this.doc).catch(() => {});
         }
       } catch {}
     });
@@ -282,7 +309,7 @@ export class DocPane extends View {
       .text_color(th.dim).hover(st => st.bg(th.hover).text_color(th.foreground)).tooltip(label).on_click(onClick).child(glyph);
     return h_flex().h(28).flex_none().gap(7).pl(8).pr(6).items_center().text_size(12).border_b(1).border_color(th.border)
       .when(Boolean(s?.badge), el => el.child(div().flex_none().text_size(10).font_bold().text_color(th[s.badgeColor] ?? th.muted).child(s.badge)))
-      .child(div().flex_none().max_w(260).truncate().font_semibold().child(s?.name ?? this.path.split("/").pop()))
+      .child(div().flex_none().max_w(260).truncate().font_semibold().child(s?.name ?? baseName(this.path)))
       .when(Boolean(s?.dirty), el => el.child(div().w(6).h(6).flex_none().rounded_full().bg(th.foreground).tooltip(t("header.unsaved"))))
       .when(this.kind() === "markdown", el => el.child(div().flex_none().text_color(th.dim).child(this.view === "preview" ? t("header.preview") : t("header.source"))))
       .when(this.kind() !== "markdown", el => el.child(div().flex_1().min_w(0).truncate().text_color(th.dim).child(s?.dir ?? "")))

@@ -87,7 +87,8 @@ fn folders() -> std::sync::MutexGuard<'static, std::collections::HashMap<PathBuf
 /// The next changes under `path` (recursive), as absolute paths: at once if
 /// some came since the last call, else when the next batch lands.
 pub async fn next_change(path: String) -> Result<Vec<String>, String> {
-    let root = Path::new(&path).canonicalize().map_err(|e| format!("{path}: {e}"))?;
+    // yuzora(L5): no `\\?\` on Windows, or the paths below never equal the ones a mod knows.
+    let root = yuzora_core::paths::plain(&Path::new(&path).canonicalize().map_err(|e| format!("{path}: {e}"))?);
     let rx = {
         let mut all = folders();
         if !all.contains_key(&root) {
@@ -448,7 +449,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         assert!(std::process::Command::new("git").arg("init").arg("-q").arg(&root).status().unwrap().success());
-        root.canonicalize().unwrap()
+        // yuzora(L5): the key `next_change` files a folder under has no `\\?\`.
+        yuzora_core::paths::plain(&root.canonicalize().unwrap())
     }
 
     // Backends may invalidate a parent rather than name every changed child.
@@ -831,5 +833,29 @@ mod tests {
         wait_for_change(&dir, &dir.join("b.md"));
         folders().remove(&dir);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // yuzora(L5): on Windows `canonicalize` gives `\\?\C:\…`; the paths a mod gets
+    // back must be the plain ones it knows the file by, and arrive within a second.
+    #[cfg(windows)]
+    #[test]
+    fn a_watched_windows_folder_reports_plain_paths_within_a_second() {
+        let dir = std::env::temp_dir().join(format!("yuzora watch win {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a b.txt");
+        std::fs::write(&file, "one").unwrap();
+        let real = file.canonicalize().unwrap().to_string_lossy().into_owned();
+        let want = real.strip_prefix(r"\\?\").unwrap_or(&real).to_owned();
+        install_watch(&dir);
+        std::fs::write(&file, "two").unwrap();
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(1);
+        let changes = block_on_until(next_change(dir.to_string_lossy().into_owned()), deadline).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(changes.iter().any(|c| *c == want), "wanted {want} in {changes:?}");
+        assert!(changes.iter().all(|c| !c.starts_with(r"\\?\")), "{changes:?}");
+        folders().remove(&yuzora_core::paths::plain(&dir.canonicalize().unwrap()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

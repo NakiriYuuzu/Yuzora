@@ -80,6 +80,8 @@ export function forgetPassword(host: string): null;
 export function sshArgv(host: string): string[];
 /** This computer's home folder. */
 export function localHome(): string;
+/** Windows: opens a local copy `openRemote` made in Notepad and returns at once (Notepad keeps running; `exec` would wait for it and stop it after 30 s). */
+export function openInNotepad(path: string): null;
 /** A folder's entries; side null is this computer, else a host. "~" or "" is the home folder. */
 export function list(side: string | null, path: string): Promise<SftpListing>;
 export function mkdir(side: string | null, dir: string, name: string): Promise<string>;
@@ -249,6 +251,15 @@ pub fn host_module() -> HostModule {
         })
         .function("sshArgv", |a| Ok(json(&manager().lookup(a.string(0)?).map_err(fail)?.ssh_argv())))
         .function("localHome", |_| Ok(HostValue::Str(manager().ctx.config.home.to_string_lossy().into_owned())))
+        .function("openInNotepad", |a| {
+            let path = a.string(0)?;
+            // Only the copies `openRemote` made: never a program or file a script names.
+            if !manager().edits.list().iter().any(|e| e.local == path) {
+                return Err(fail(SshError::text(crate::ErrorKind::Invalid, "not-an-edit-copy", &[])));
+            }
+            open_in_notepad(path).map_err(|e| fail(SshError::io(e)))?;
+            Ok(HostValue::Null)
+        })
         .async_function("list", |a| {
             let (side, path) = (side(a, 0), a.string(1)?.to_owned());
             Ok(on_runtime(async move { Ok(json(&manager().list(&side, &path).await?)) }))
@@ -316,9 +327,54 @@ pub fn host_module() -> HostModule {
         .function("closeTunnel", |a| Ok(HostValue::Bool(manager().tunnels.close(id(a, 0)?))))
 }
 
+/// Notepad on `path`: no shell is involved (the name is a file name, not command text),
+/// and nothing runs the file.
+fn spawn_notepad(path: &str) -> std::io::Result<std::process::Child> {
+    if !cfg!(windows) {
+        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Notepad is for Windows"));
+    }
+    std::process::Command::new("notepad.exe").arg(path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()
+}
+
+/// Notepad on `path`, not waited for: a thread reaps it when the person closes it.
+fn open_in_notepad(path: &str) -> std::io::Result<()> {
+    let mut child = spawn_notepad(path)?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notepad_opens_only_the_copies_an_edit_made() {
+        let m = host_module();
+        let err = m.call("openInNotepad", &HostArguments::new([HostValue::Str("C:\\Windows\\System32\\cmd.exe".into())])).unwrap_err();
+        assert!(err.to_string().contains("not-an-edit-copy"), "{err}");
+    }
+
+    // Returns at once with Notepad still running, past `exec`'s 30 s, and kills nothing.
+    #[cfg(windows)]
+    #[test]
+    fn notepad_opens_without_being_waited_for() {
+        let file = std::env::temp_dir().join(format!("yuzora notepad {}.txt", std::process::id()));
+        std::fs::write(&file, "x").unwrap();
+        let started = std::time::Instant::now();
+        let mut child = spawn_notepad(file.to_str().unwrap()).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(33));
+        // Only the one this test started.
+        let alive = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
+        assert!(alive, "Notepad should still be open after 33 s");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn notepad_is_windows_only() {
+        assert!(open_in_notepad("/tmp/x").is_err());
+    }
 
     #[test]
     fn module_validates_and_reports_its_version() {

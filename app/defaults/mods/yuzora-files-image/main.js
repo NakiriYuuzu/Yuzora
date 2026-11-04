@@ -6,7 +6,34 @@ import { theme, watchFolder, home, props } from "herdr";
 import { t } from "yuzora:core";
 import { stat, ImageView } from "yuzora:files";
 
-const parent = path => path.slice(0, Math.max(0, path.lastIndexOf("/"))) || "/";
+// Paths: a Windows one (`C:\…`, `\\server\…`) takes either slash and ignores case;
+// anywhere else only "/" separates and case counts. (A test runs these on their own:
+// they use nothing else from this file.)
+function isWin(path) {
+  return /^([A-Za-z]:[\\/]|\\\\)/.test(path);
+}
+
+// The folder holding `path`: "" for a file at the top, `C:\` for one at a drive's top.
+function parent(path) {
+  const at = isWin(path) ? Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) : path.lastIndexOf("/");
+  if (at < 0) return "";
+  return at === 2 && path[1] === ":" ? path.slice(0, 3) : path.slice(0, at);
+}
+
+function isRoot(dir) {
+  return dir === "/" || /^[A-Za-z]:[\\/]?$/.test(dir);
+}
+
+function baseName(path) {
+  return path.split(isWin(path) ? /[\\/]/ : "/").pop();
+}
+
+// The same file or folder: what a watch reports against what this pane opened.
+function samePath(a, b) {
+  if (!isWin(a) && !isWin(b)) return a === b;
+  const plain = p => p.replace(/\\/g, "/").toLowerCase().replace(/(?<=.)\/$/, "");
+  return plain(a) === plain(b);
+}
 
 export default class ImagePane extends View {
   init(_p, cx) {
@@ -20,15 +47,15 @@ export default class ImagePane extends View {
     if (!this.path) return;
     this.probe(cx);
     // Watches are recursive on macOS: an image right in the home folder (or /) is polled only.
-    const dir = parent(this.path);
-    if (!this.on && dir !== "/" && dir !== home()) {
+    const dir = parent(this.path) || "/";
+    if (!this.on && !isRoot(dir) && !samePath(dir, home())) {
       cx.spawn(async cx => {
         try {
           for (;;) {
             const changed = await watchFolder(dir);
             // The file itself changed: shown again even if its size and time did not.
-            if (changed.includes(this.path)) { this.rev++; this.probe(cx); }
-            else if (changed.includes(dir)) this.probe(cx);
+            if (changed.some(p => samePath(p, this.path))) { this.rev++; this.probe(cx); }
+            else if (changed.some(p => samePath(p, dir))) this.probe(cx);
           }
         } catch {}
       });
@@ -55,7 +82,7 @@ export default class ImagePane extends View {
 
   render(cx) {
     const th = theme();
-    const name = this.path ? this.path.split("/").pop() : "";
+    const name = this.path ? baseName(this.path) : "";
     const toggle = (id, label, on, onClick) => div().id(id).h(18).px(6).rounded(3).flex().items_center().text_size(11).cursor_pointer()
       .bg(on ? th.input : "#00000000").text_color(on ? th.foreground : th.muted).on_click(onClick).child(label);
     const size = this.size == null ? "" : this.size < 1024 ? `${this.size} B` : this.size < 1048576 ? `${(this.size / 1024).toFixed(1)} KB` : `${(this.size / 1048576).toFixed(1)} MB`;
