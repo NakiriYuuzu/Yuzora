@@ -543,3 +543,247 @@ fn yuzora_diff_sides_are_as_wide_as_their_own_lines(cx: &mut TestAppContext) {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+// yuzora(L2): the Git sidebar's main.js with its herdr, yuzora:core and yuzora:git imports
+// from `fixture`; `extra` replaces more of it.
+fn git_sidebar_source(extra: &[(&str, &str)]) -> String {
+    let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-sidebar-git/main.js")).unwrap();
+    let imports = (
+        "import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, shared, setShared, props } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, pushPreview, sequencer, fetch, trust, repos, settings as gitSettings } from \"yuzora:git\";",
+        "import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, shared, setShared, props, t, tokens, open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, pushPreview, sequencer, fetch, trust, repos, gitSettings, note } from \"fixture\";",
+    );
+    for (from, to) in std::iter::once(imports).chain(extra.iter().copied()) {
+        assert_eq!(source.matches(from).count(), 1, "the Git sidebar no longer has: {from}");
+        source = source.replacen(from, to, 1);
+    }
+    source
+}
+
+/// What the stubbed Git sidebar was told and did.
+#[derive(Default)]
+struct GitSidebar {
+    focused: RefCell<Value>,
+    shared: RefCell<std::collections::BTreeMap<String, Value>>,
+    opened: RefCell<Vec<String>>,
+    listed: RefCell<Vec<Value>>,
+    effects: RefCell<Vec<(String, Value)>>,
+    notes: RefCell<Vec<Value>>,
+}
+
+/// A space `s1` (folder `/sp`, panes `p1` in `/sp/a` and `p2` in `/sp/b/c`; `p3` is another
+/// space's), and yuzora:git: `open` takes any folder but `fails` names (with that error), `status`
+/// has as many changes as the repo's name says (`/sp/a` 1, `/sp/b/c` 2, `/sp/r` 3) and fails for
+/// `/sp/vanish`, `repos` answers with `found`.
+fn git_sidebar_module(state: Rc<GitSidebar>, props: Value, fails: &'static [(&'static str, &'static str)], found: fn(&str) -> Result<Value, String>) -> HostModule {
+    let mut module = HostModule::new("fixture");
+    for (name, value) in [
+        ("theme", json!({"background": "#101010", "foreground": "#e0e0e0", "border": "#303030", "raised": "#202020", "dim": "#808080", "muted": "#a0a0a0", "accent": "#4080ff", "selected": "#304050", "hover": "#282828", "chrome": "#181818", "ansi1": "#f08a8a", "ansi2": "#86d17a"})),
+        ("props", props),
+        ("spaces", json!([{"id": "s1", "active": true, "folder": "/sp", "machine": null, "tabs": [{"id": "tab1"}]}, {"id": "s2", "active": false, "folder": "/other", "machine": null, "tabs": [{"id": "tab2"}]}])),
+        ("panes", json!([{"pane": "p1", "tab": "tab1", "cwd": "/sp/a"}, {"pane": "p2", "tab": "tab1", "cwd": "/sp/b/c"}, {"pane": "p3", "tab": "tab2", "cwd": "/other"}])),
+        ("tokens", json!({})),
+        ("gitSettings", json!({})),
+    ] {
+        module = module.function(name, move |_| Ok(to_host(&value)));
+    }
+    module = module.function("t", |a| Ok(a.string(0)?.into()));
+    module = module.function("run", |_| Ok(HostValue::Null));
+    let s = state.clone();
+    module = module.function("focused", move |_| Ok(to_host(&s.focused.borrow())));
+    let s = state.clone();
+    module = module.function("shared", move |a| Ok(s.shared.borrow().get(a.string(0)?).map(to_host).unwrap_or(HostValue::Null)));
+    let s = state.clone();
+    module = module.function("setShared", move |a| {
+        let (key, value) = (a.string(0)?.to_owned(), a.get(1).map(from_host).unwrap_or(Value::Null));
+        s.effects.borrow_mut().push(("setShared".into(), json!([key, value])));
+        s.shared.borrow_mut().insert(key, value);
+        Ok(HostValue::Null)
+    });
+    for name in ["notify", "openOverlay", "closeOverlay"] {
+        let s = state.clone();
+        module = module.function(name, move |a| {
+            s.effects.borrow_mut().push((name.into(), a.get(0).map(from_host).unwrap_or(Value::Null)));
+            Ok(HostValue::Str("o9".into()))
+        });
+    }
+    let s = state.clone();
+    module = module.function("note", move |a| {
+        s.notes.borrow_mut().push(Value::Array((0..3).filter_map(|i| a.get(i).map(from_host)).collect()));
+        Ok(HostValue::Null)
+    });
+    type Answer = std::pin::Pin<Box<dyn std::future::Future<Output = gpui_shell::HostResult> + Send>>;
+    let answer = |r: Result<Value, String>| -> Answer { Box::pin(std::future::ready(r.map(|v| to_host(&v)).map_err(HostError::new))) };
+    let s = state.clone();
+    module = module.async_function("open", move |a| {
+        let cwd = a.string(0)?.to_owned();
+        s.opened.borrow_mut().push(cwd.clone());
+        Ok(answer(match fails.iter().find(|(root, _)| *root == cwd) {
+            Some((_, e)) => Err(e.to_string()),
+            None => Ok(json!({"id": cwd, "root": cwd, "machine": null, "gitDir": format!("{cwd}/.git"), "commonDir": format!("{cwd}/.git")})),
+        }))
+    });
+    module = module.async_function("status", move |a| {
+        let root = a.string(0)?.to_owned();
+        let n = match root.as_str() { "/sp/a" => 1, "/sp/b/c" => 2, "/sp/r" => 3, _ => 0 };
+        let unstaged: Vec<Value> = (0..n).map(|i| json!({"path": format!("f{i}"), "kind": "M", "add": 1, "del": 0, "binary": false})).collect();
+        Ok(answer(if root == "/sp/vanish" { Err("fatal: cannot change to '/sp/vanish': No such file or directory".into()) } else { Ok(json!({
+            "repo": root, "root": root, "machine": null, "generation": 1,
+            "branch": {"head": "main", "oid": "abc", "upstream": null, "ahead": 0, "behind": 0, "detached": false, "initial": false},
+            "operation": {"kind": "none", "step": null, "onto": null, "head": null, "interactive": false},
+            "staged": [], "unstaged": unstaged, "untracked": [], "conflicts": [],
+            "counts": {"staged": 0, "unstaged": n, "untracked": 0, "conflicts": 0, "total": n},
+            "stash": 0, "truncated": false, "numstatSkipped": false
+        })) }))
+    });
+    module = module.async_function("messages", move |_| Ok(answer(Ok(json!({"history": [], "template": null, "last": null, "authors": []})))));
+    module = module.async_function("changed", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
+    let s = state.clone();
+    module = module.async_function("repos", move |a| {
+        let args: Vec<Value> = (0..3).map(|i| a.get(i).map(from_host).unwrap_or(Value::Null)).collect();
+        let folder = args[0].as_str().unwrap_or_default().to_owned();
+        s.listed.borrow_mut().push(Value::Array(args));
+        Ok(answer(found(&folder)))
+    });
+    for name in ["stage", "unstage", "discard", "commitChecks", "commit", "push", "pushPreview", "sequencer", "fetch", "trust"] {
+        module = module.async_function(name, move |_| Ok(answer(Err(format!("unexpected {name}")))));
+    }
+    module
+}
+
+/// The sidebar loaded with `module`, drawn and settled.
+fn git_sidebar_mount(cx: &mut TestAppContext, source: &str, module: HostModule) -> (Fixture, VisualTestContext) {
+    let fixture = Fixture::new(source);
+    gpui_shell::policy::set_default(Policy::new().with_host_module(module).unwrap());
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
+    let mut visual = VisualTestContext::from_window(*window.deref(), cx);
+    git_sidebar_settle(&mut visual);
+    (fixture, visual)
+}
+
+fn git_sidebar_settle(visual: &mut VisualTestContext) {
+    for _ in 0..3 {
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        visual.run_until_parked();
+    }
+}
+
+/// Past the sidebar's once-a-second look at where it should be.
+fn git_sidebar_tick(visual: &mut VisualTestContext) {
+    visual.executor().advance_clock(std::time::Duration::from_millis(1100));
+    git_sidebar_settle(visual);
+}
+
+// yuzora(L2): the Git sidebar's repo, with several in a space: the focused pane's (as before),
+// or the one pinned for the active space (`yuzora.git.repo.<space id>` in shared state; another
+// space's pin doesn't count); pinned, the focus doesn't move it, and the badge is the pinned
+// repo's. Unpinned, it follows the focus again.
+#[gpui::test]
+fn yuzora_git_repo_follows_the_focus_or_the_pin_of_its_space(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, point, px};
+    let state = Rc::new(GitSidebar::default());
+    *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
+    let module = git_sidebar_module(state.clone(), Value::Null, &[], |_| Ok(json!({"repos": [], "truncated": false})));
+    let (_fixture, mut visual) = git_sidebar_mount(cx, &git_sidebar_source(&[]), module);
+    let last = |state: &GitSidebar| (state.opened.borrow().len(), state.opened.borrow().last().cloned().unwrap_or_default(), state.shared.borrow().get("yuzora.badge.git").cloned().unwrap_or(Value::Null));
+    assert_eq!(last(&state), (1, "/sp/a".into(), json!(1)), "the focused pane's repo");
+    // The picker (a click on the repo in the header) gets the active space's folder and its
+    // panes' folders, not another space's.
+    let picker = |state: &GitSidebar, visual: &mut VisualTestContext| {
+        visual.simulate_click(point(px(120.), px(16.)), Modifiers::none());
+        git_sidebar_settle(visual);
+        state.effects.borrow().iter().rev().find(|(name, _)| name == "openOverlay").map(|(_, v)| v["props"]["picker"].clone())
+    };
+    assert_eq!(picker(&state, &mut visual), Some(json!({"space": "s1", "folder": "/sp", "on": null, "cwds": ["/sp/a", "/sp/b/c"], "current": "/sp/a", "pinned": false})));
+    *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p2"});
+    git_sidebar_tick(&mut visual);
+    assert_eq!(last(&state), (2, "/sp/b/c".into(), json!(2)), "the focus moved");
+    state.shared.borrow_mut().insert("yuzora.git.repo.s2".into(), json!({"root": "/other", "on": null}));
+    git_sidebar_tick(&mut visual);
+    assert_eq!(last(&state).0, 2, "another space's pin");
+    state.shared.borrow_mut().insert("yuzora.git.repo.s1".into(), json!({"root": "/sp/r", "on": null}));
+    git_sidebar_tick(&mut visual);
+    assert_eq!(last(&state), (3, "/sp/r".into(), json!(3)), "pinned");
+    assert_eq!(picker(&state, &mut visual).map(|p| (p["current"].clone(), p["pinned"].clone())), Some((json!("/sp/r"), json!(true))));
+    *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
+    git_sidebar_tick(&mut visual);
+    assert_eq!(last(&state).0, 3, "the focus moved a pinned sidebar");
+    state.shared.borrow_mut().remove("yuzora.git.repo.s1");
+    git_sidebar_tick(&mut visual);
+    assert_eq!(last(&state), (4, "/sp/a".into(), json!(1)), "unpinned");
+    visual.update(|window, _| window.remove_window());
+}
+
+// yuzora(L2): a pinned repo that's gone (no `.git` left in its folder, or no folder: `repos`
+// reads the file system, no git runs) is unpinned with a note, and the sidebar follows the focus
+// again; found gone when it opens, or later, when status fails. One that can't be looked at (a
+// machine away) or still has its `.git` stays pinned.
+#[gpui::test]
+fn yuzora_git_repo_pinned_and_gone_follows_the_focus_again(cx: &mut TestAppContext) {
+    const FAILS: &[(&str, &str)] = &[("/sp/gone", "fatal: not a git repository"), ("/sp/moved", "fatal: not a git repository"), ("/sp/away", "machine lab is not connected"), ("/sp/still", "fatal: bad config line 1")];
+    fn found(folder: &str) -> Result<Value, String> {
+        match folder {
+            "/sp/away" => Err("machine lab is not connected".into()),
+            "/sp/still" => Ok(json!({"repos": [{"root": "/sp/still", "name": "still", "rel": ".", "trusted": false}], "truncated": false})),
+            // Its `.git` gone: the repo it is in now is the one above.
+            "/sp/moved" => Ok(json!({"repos": [{"root": "/sp", "name": "sp", "rel": "/sp", "trusted": false}], "truncated": false})),
+            _ => Ok(json!({"repos": [], "truncated": false})),
+        }
+    }
+    let mut failures = Vec::new();
+    for (root, gone) in [("/sp/gone", true), ("/sp/moved", true), ("/sp/vanish", true), ("/sp/away", false), ("/sp/still", false)] {
+        let state = Rc::new(GitSidebar::default());
+        *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
+        state.shared.borrow_mut().insert("yuzora.git.repo.s1".into(), json!({"root": root, "on": null}));
+        let module = git_sidebar_module(state.clone(), Value::Null, FAILS, found);
+        let (_fixture, mut visual) = git_sidebar_mount(cx, &git_sidebar_source(&[]), module);
+        git_sidebar_tick(&mut visual);
+        let pin = state.shared.borrow().get("yuzora.git.repo.s1").cloned().unwrap_or(Value::Null);
+        let notes: Vec<Value> = state.effects.borrow().iter().filter(|(name, _)| name == "notify").map(|(_, v)| v.clone()).collect();
+        let opened = state.opened.borrow().clone();
+        let listed = state.listed.borrow().clone();
+        if listed.first() != Some(&json!([root, null, []])) {
+            failures.push(format!("{root}: asked the file system {listed:?}"));
+        }
+        let want_opened: Vec<String> = if gone { vec![root.into(), "/sp/a".into()] } else { vec![root.into()] };
+        if gone && (pin != Value::Null || notes.len() != 1 || notes[0]["title"] != "repo.gone" || notes[0]["level"] != "warning" || opened != want_opened) {
+            failures.push(format!("{root}: gone, but pin {pin}, notes {notes:?}, opened {opened:?}"));
+        }
+        if !gone && (pin["root"] != root || !notes.is_empty() || opened != want_opened) {
+            failures.push(format!("{root}: still there, but pin {pin}, notes {notes:?}, opened {opened:?}"));
+        }
+        visual.update(|window, _| window.remove_window());
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(L2): the repo picker (the sidebar as a popup) lists the space's repos from `repos` (its
+// folder, machine and panes' folders), marks the trusted ones and a list cut short, and pins the
+// one clicked for its space, or unpins (follow the focus).
+#[gpui::test]
+fn yuzora_git_repo_picker_lists_the_spaces_repos_and_pins_one(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, point, px};
+    let source = git_sidebar_source(&[
+        ("r.trusted ? t(\"repo.trusted\") : null", "r.trusted ? (note(\"trusted\", r.name), t(\"repo.trusted\")) : null"),
+        (".child(t(\"repo.truncated\", { count: list.length }))", ".child((note(\"truncated\", list.length), t(\"repo.truncated\", { count: list.length })))"),
+    ]);
+    fn found(_: &str) -> Result<Value, String> {
+        Ok(json!({"repos": [{"root": "/sp/a", "name": "a", "rel": "a", "trusted": true}, {"root": "/sp/b", "name": "b", "rel": "b", "trusted": false}], "truncated": true}))
+    }
+    let props = json!({"overlay": "o1", "picker": {"space": "s1", "folder": "/sp", "on": null, "cwds": ["/sp/a"], "current": "/sp/a", "pinned": false}});
+    // Rows of 26 px: the follow row under 4 px of padding, a 1 px line with 2 px around it, then the repos.
+    for (y, want) in [(74., json!({"root": "/sp/b", "on": null})), (17., Value::Null)] {
+        let state = Rc::new(GitSidebar::default());
+        let module = git_sidebar_module(state.clone(), props.clone(), &[], found);
+        let (_fixture, mut visual) = git_sidebar_mount(cx, &source, module);
+        assert_eq!(state.listed.borrow().clone(), [json!(["/sp", null, ["/sp/a"]])]);
+        assert!(state.notes.borrow().contains(&json!(["trusted", "a"])) && !state.notes.borrow().contains(&json!(["trusted", "b"])), "{:?}", state.notes.borrow());
+        assert!(state.notes.borrow().contains(&json!(["truncated", 2])), "{:?}", state.notes.borrow());
+        assert!(state.opened.borrow().is_empty(), "the picker opened a repo");
+        visual.simulate_click(point(px(60.), px(y)), Modifiers::none());
+        git_sidebar_settle(&mut visual);
+        let effects = state.effects.borrow().clone();
+        assert_eq!(effects, [("setShared".to_string(), json!(["yuzora.git.repo.s1", want])), ("closeOverlay".to_string(), json!("o1"))], "a click at y {y}");
+        visual.update(|window, _| window.remove_window());
+    }
+}
