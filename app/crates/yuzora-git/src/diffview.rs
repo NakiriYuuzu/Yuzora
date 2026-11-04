@@ -197,14 +197,17 @@ impl DiffSession {
                 Mine::HeadMode(o) => crate::exec::spawn_scoped(s, move || head_mode(repo, &o).map(|m| m.map(|m| (m, String::new())))),
             });
             let entry = joined(entry);
-            // Nothing in the index (or no look at it): there is no index side to read.
-            if let Ok(Some((entry_mode, oid))) = &entry {
+            // Nothing in the index (or no look at it): there is no index side to read. A commit
+            // or a comparison has none either: nothing is started for it.
+            if matches!(mode, Mode::Unstaged | Mode::Staged)
+                && let Ok(Some((entry_mode, oid))) = &entry
+            {
                 let (entry_mode, oid) = (entry_mode.clone(), oid.clone());
                 let from_index = Some(crate::exec::spawn_scoped(s, move || blob_by_id(repo, path, &entry_mode, &oid)));
-                match &mode {
-                    Mode::Unstaged => left = from_index,
-                    Mode::Staged => right = from_index,
-                    _ => {}
+                if matches!(mode, Mode::Unstaged) {
+                    left = from_index;
+                } else {
+                    right = from_index;
                 }
             }
             let side = |h: Option<std::thread::ScopedJoinHandle<'_, GitResult<Option<Vec<u8>>>>>| h.map_or(Ok(None), joined);
@@ -1010,6 +1013,38 @@ exec 'REAL' "$@"
         assert!(d.right.is_some());
         assert_eq!(d.right, blob(&s.repo, ":sub").unwrap());
         assert!(d.index_entry.as_ref().is_some_and(|e| e.0 == "160000"));
+    }
+
+    /// A commit or a comparison reads nothing from the index (an extra round trip, and a
+    /// smudge filter to wait for, for a side it never shows).
+    #[cfg(unix)]
+    #[test]
+    fn a_commit_or_a_comparison_does_not_read_the_index_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = scratch();
+        let one = s.commit("f.txt", "one\n", "one");
+        let two = s.commit("f.txt", "two\n", "two");
+        let dir = s.dir.path().join("count");
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls.log");
+        let real = String::from_utf8(std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap().stdout).unwrap().trim().to_owned();
+        let body = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> 'LOG'\nexec 'REAL' \"$@\"\n".replace("LOG", &log.display().to_string()).replace("REAL", &real);
+        let shim = dir.join("git");
+        std::fs::write(&shim, body).unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let place = crate::exec::Place { git: shim.to_string_lossy().into_owned(), ..s.repo.place.clone() };
+        let git_dir = s.repo.git_dir.clone();
+        let repo = Arc::new(Repo::new(s.repo.id.clone(), place, git_dir.clone(), git_dir));
+        // `--path=` is how the index text is read by id (the sides of a commit are read by name).
+        let by_id = |mode: Mode| {
+            let _ = std::fs::remove_file(&log);
+            DiffSession::load(repo.clone(), "f.txt".into(), None, mode).unwrap();
+            std::fs::read_to_string(&log).unwrap().lines().filter(|l| l.contains("--path=")).count()
+        };
+        assert_eq!(by_id(Mode::Commit(two.clone())), 0);
+        assert_eq!(by_id(Mode::Compare(one, Some(two))), 0);
+        assert_eq!(by_id(Mode::Unstaged), 1);
+        assert_eq!(by_id(Mode::Staged), 1);
     }
 
     #[cfg(unix)]
