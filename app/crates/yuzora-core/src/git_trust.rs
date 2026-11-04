@@ -466,15 +466,38 @@ pub fn trusted_from(file: &Path) -> BTreeSet<String> {
     std::fs::read_to_string(file).ok().and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).map(|v| v.into_iter().collect()).unwrap_or_default()
 }
 
-/// Adds a folder id to `file` (the Git sidebar's "Trust").
+/// Adds a folder id to `file` (the Git sidebar's "Trust"). One at a time,
+/// threads and processes alike, under a lock on [`lock_file`], so no folder
+/// trusted at the same moment is lost; and the new list is written beside
+/// the old one and takes its place whole, so a reader (every git command
+/// reads it) never meets one cut short. A file system without locks
+/// changes it without one.
 pub fn trust_at(file: &Path, id: &str) -> std::io::Result<()> {
-    let mut all = trusted_from(file);
-    all.insert(id.to_owned());
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    let lock = std::fs::File::options().create(true).write(true).truncate(false).open(lock_file(file))?;
+    if let Err(e) = lock.lock()
+        && e.kind() != std::io::ErrorKind::Unsupported
+    {
+        return Err(e);
+    }
+    let mut all = trusted_from(file);
+    all.insert(id.to_owned());
     let list: Vec<&String> = all.iter().collect();
-    std::fs::write(file, serde_json::to_string_pretty(&list).unwrap_or_default())
+    let mut next = file.as_os_str().to_owned();
+    next.push(format!(".{}.tmp", std::process::id()));
+    std::fs::write(&next, serde_json::to_string_pretty(&list).unwrap_or_default())?;
+    std::fs::rename(&next, file).inspect_err(|_| {
+        let _ = std::fs::remove_file(&next);
+    })
+}
+
+/// What [`trust_at`] locks while it changes `file`: `<file>.lock` beside it.
+fn lock_file(file: &Path) -> PathBuf {
+    let mut lock = file.as_os_str().to_owned();
+    lock.push(".lock");
+    PathBuf::from(lock)
 }
 
 /// Whether the person trusted the folder at `top` (here or on `machine`).
@@ -582,6 +605,79 @@ mod tests {
         assert_eq!(trusted_from(&file).into_iter().collect::<Vec<_>>(), [":/r", "lab-01:/srv/r"]);
         std::fs::write(&file, "not json").unwrap();
         assert!(trusted_from(&file).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Folders trusted at the same moment (two panes, or the tests of one
+    // process, which share the file) all stay trusted: each adds to the list
+    // the one before it wrote.
+    #[test]
+    fn folders_trusted_at_once_all_stay_trusted() {
+        let dir = std::env::temp_dir().join(format!("yuzora-git-trust-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("git/trusted.json");
+        for round in 0..20 {
+            let start = std::sync::Barrier::new(8);
+            std::thread::scope(|s| {
+                for i in 0..8 {
+                    let (file, start) = (&file, &start);
+                    s.spawn(move || {
+                        start.wait();
+                        trust_at(file, &format!(":/r{round}-{i}")).unwrap();
+                    });
+                }
+            });
+            let all = trusted_from(&file);
+            let lost: Vec<String> = (0..8).map(|i| format!(":/r{round}-{i}")).filter(|id| !all.contains(id)).collect();
+            assert!(lost.is_empty(), "round {round}: lost {lost:?}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Every git command reads the list, so one may read it while a folder is
+    // being trusted: it gets the old list or the new one, never part of one.
+    // The new list takes the old one's place whole, so a reader that had the
+    // old one open still reads all of it.
+    #[test]
+    fn a_reader_never_meets_a_list_half_written() {
+        use std::io::Read;
+        let dir = std::env::temp_dir().join(format!("yuzora-git-trust-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("git/trusted.json");
+        trust_at(&file, ":/a").unwrap();
+        let mut reading = std::fs::File::open(&file).unwrap();
+        trust_at(&file, ":/b").unwrap();
+        let mut text = String::new();
+        reading.read_to_string(&mut text).unwrap();
+        assert_eq!(serde_json::from_str::<Vec<String>>(&text).ok(), Some(vec![":/a".to_string()]), "{text:?}");
+        assert_eq!(trusted_from(&file).into_iter().collect::<Vec<_>>(), [":/a", ":/b"]);
+        drop(reading);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Another process trusting a folder in the same file (a second Yuzora)
+    // waits its turn too: the list changes under a lock on its lock file,
+    // which this test holds a while as that process would.
+    #[test]
+    fn trusting_waits_while_another_process_holds_the_list() {
+        let dir = std::env::temp_dir().join(format!("yuzora-git-trust-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("git/trusted.json");
+        trust_at(&file, ":/a").unwrap();
+        let held = std::fs::File::options().create(true).write(true).truncate(false).open(lock_file(&file)).unwrap();
+        held.lock().unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            let file = &file;
+            s.spawn(move || {
+                trust_at(file, ":/b").unwrap();
+                done.send(()).unwrap();
+            });
+            assert!(finished.recv_timeout(Duration::from_millis(300)).is_err(), "trusted while another process held the list");
+            held.unlock().unwrap();
+            finished.recv_timeout(Duration::from_secs(10)).expect("still waiting once the list was let go");
+        });
+        assert_eq!(trusted_from(&file).into_iter().collect::<Vec<_>>(), [":/a", ":/b"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
