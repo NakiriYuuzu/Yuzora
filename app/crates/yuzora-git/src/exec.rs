@@ -704,6 +704,8 @@ fn run_remote(place: &Place, cmd: &Git, sink: Option<&mut dyn FnMut(&[u8]) -> bo
 fn run_hc(local: &Place, call: &Git) -> GitResult<Output> {
     let mut c = Command::new(&local.git);
     c.args(&call.args).current_dir(&local.root);
+    // No console on Windows: without this every call opens a window.
+    yuzora_core::spawn::no_window(&mut c);
     c.stdin(if call.stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = c.spawn().map_err(|e| GitError::Spawn(format!("cannot run {}: {e}", local.git)))?;
     if let Some(input) = call.stdin.clone() {
@@ -878,6 +880,47 @@ mod tests {
         assert_eq!(stopped, Err(GitError::Cancelled));
         std::thread::sleep(Duration::from_millis(3500));
         assert!(!dir.path().join("late.txt").exists(), "what git started outlived the cancel");
+    }
+
+    /// `run_hc` (a remote repository's git, through `hc`) starts its program
+    /// without a console window: here the program is this test binary asking
+    /// whether it has one. The control starts it by hand and must see ours.
+    #[cfg(windows)]
+    #[test]
+    fn run_hc_starts_its_program_without_a_console_window() {
+        unsafe extern "system" {
+            fn GetConsoleWindow() -> *mut std::ffi::c_void;
+            fn AllocConsole() -> i32;
+        }
+        // SAFETY: plain Win32 calls without arguments.
+        unsafe {
+            if GetConsoleWindow().is_null() {
+                AllocConsole();
+            }
+            assert!(!GetConsoleWindow().is_null(), "this process has no console to hand on");
+        }
+        let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        let args = ["--ignored", "--exact", "exec::tests::console_probe", "--nocapture", "--test-threads=1"];
+        let by_hand = Command::new(&exe).args(args).output().unwrap();
+        assert!(String::from_utf8_lossy(&by_hand.stdout).contains("CONSOLE=some"), "control: {by_hand:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let local = Place { git: exe, ..Place::local(dir.path().to_string_lossy()) };
+        let out = run_hc(&local, &Git::read(args)).unwrap();
+        assert!(String::from_utf8_lossy(&out.stdout).contains("CONSOLE=none"), "{:?}", String::from_utf8_lossy(&out.stdout));
+    }
+
+    /// The child of the test above.
+    #[test]
+    #[ignore = "a child process of run_hc_starts_its_program_without_a_console_window"]
+    fn console_probe() {
+        #[cfg(windows)]
+        {
+            unsafe extern "system" {
+                fn GetConsoleWindow() -> *mut std::ffi::c_void;
+            }
+            // SAFETY: a plain Win32 query.
+            println!("CONSOLE={}", if unsafe { GetConsoleWindow() }.is_null() { "none" } else { "some" });
+        }
     }
 
     #[cfg(windows)]

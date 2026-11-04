@@ -1409,6 +1409,46 @@ mod tests {
         );
     }
 
+    /// The folder listing, the tree's git status, the search and the trust
+    /// scan all start their programs through [`run`]: that start opens no
+    /// console window on Windows. The program here is this test binary
+    /// asking whether it has one; the control starts it by hand and must see ours.
+    #[cfg(windows)]
+    #[test]
+    fn run_starts_its_program_without_a_console_window() {
+        unsafe extern "system" {
+            fn GetConsoleWindow() -> *mut std::ffi::c_void;
+            fn AllocConsole() -> i32;
+        }
+        // SAFETY: plain Win32 calls without arguments.
+        unsafe {
+            if GetConsoleWindow().is_null() {
+                AllocConsole();
+            }
+            assert!(!GetConsoleWindow().is_null(), "this process has no console to hand on");
+        }
+        let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        let args = ["--ignored", "--exact", "fsops::tests::console_probe", "--nocapture", "--test-threads=1"];
+        let by_hand = std::process::Command::new(&exe).args(args).output().unwrap();
+        assert!(String::from_utf8_lossy(&by_hand.stdout).contains("CONSOLE=some"), "control: {by_hand:?}");
+        let out = run(ExecRequest::new(exe, args)).unwrap();
+        assert!(out.stdout_text().contains("CONSOLE=none"), "{}", out.stdout_text());
+    }
+
+    /// The child of the test above.
+    #[test]
+    #[ignore = "a child process of run_starts_its_program_without_a_console_window"]
+    fn console_probe() {
+        #[cfg(windows)]
+        {
+            unsafe extern "system" {
+                fn GetConsoleWindow() -> *mut std::ffi::c_void;
+            }
+            // SAFETY: a plain Win32 query.
+            println!("CONSOLE={}", if unsafe { GetConsoleWindow() }.is_null() { "none" } else { "some" });
+        }
+    }
+
     fn p(dir: &tempfile::TempDir, rel: &str) -> String {
         dir.path().join(rel).to_string_lossy().into_owned()
     }
