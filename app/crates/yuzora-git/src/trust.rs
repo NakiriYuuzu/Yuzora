@@ -244,6 +244,9 @@ mod tests {
         s.git(&["config", "filter.evil.clean", "cat"]);
         assert_eq!(repo_programs(&counted).unwrap(), ["filter.evil.clean"]);
         assert_eq!(scans(), 2);
+        // The config changed just before that scan: not kept on.
+        assert_eq!(repo_programs(&counted).unwrap(), ["filter.evil.clean"]);
+        assert_eq!(scans(), 3, "kept though its config changed a moment before the scan");
         std::thread::sleep(std::time::Duration::from_millis(3200));
         let there = crate::repo::testing::on_machine(&s);
         let before = crate::repo::testing::hc_calls_in(s.root());

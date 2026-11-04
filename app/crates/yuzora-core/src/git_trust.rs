@@ -161,7 +161,7 @@ pub fn repo_programs<E>(run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -
 /// [`repo_programs`], and the repository's git dir and common dir when the
 /// scan found it plain ([`plain_layout`]): what [`programs_here_at`] needs
 /// to keep the answer.
-fn scan_answer<E>(mut run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<(Vec<String>, Option<Dirs>), E> {
+fn scan_answer<E>(mut run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<(Vec<String>, Option<Layout>), E> {
     let alias = format!("alias.{SCAN}=!{}", SCAN_SCRIPT.replace("@PROGRAMS@", PROGRAMS).replace("@SCAN@", SCAN));
     let (code, out) = run(&["-c", &alias, SCAN])?;
     // The config's answer, then the submodules', whatever the config said.
@@ -183,30 +183,40 @@ fn scan_answer<E>(mut run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> 
     Ok((keys.into_iter().collect(), layout))
 }
 
-/// The top's git dir and common dir from the scan's `dirs` record, when its
-/// records say the repository is plain: the top's own records only (its
-/// `sub`, its remote files, `dirs`) and the end. A submodule, a git dir under
-/// `modules/`, a gitlink in the index (`links`, checked out or not: one may
-/// be checked out later) or anything git couldn't read isn't.
-fn plain_layout(subs: &[u8]) -> Option<Dirs> {
+/// The top's git dir and common dir from the scan's `dirs` record, and the
+/// length of its object ids, when its records say the repository is plain:
+/// the top's own records only (its `sub`, its remote files, `dirs`, `index`)
+/// and the end. A submodule, a git dir under `modules/`, a gitlink in the
+/// index (`links`, checked out or not: one may be checked out later), an
+/// index git reads with a shared index (its path in `index`), or anything
+/// git couldn't read isn't.
+fn plain_layout(subs: &[u8]) -> Option<Layout> {
     let text = std::str::from_utf8(subs).ok()?;
     let parts: Vec<&str> = text.split('\0').collect();
     let mut top = false;
     let mut dirs = None;
+    let mut id_len = None;
     for c in parts.chunks(2).filter(|c| c.len() == 2) {
         match (c[0], c[1]) {
             ("sub", "") if !top => top = true,
             ("legacy", _) if top => {}
             ("dirs", d) if top && dirs.is_none() => dirs = Some(d.split_once('\n')?),
+            // The object format alone: no shared index path after it.
+            ("index", "sha1\n.") if top && id_len.is_none() => id_len = Some(20),
+            ("index", "sha256\n.") if top && id_len.is_none() => id_len = Some(32),
             ("end", SCAN) => {}
             _ => return None,
         }
     }
-    dirs.map(|(git_dir, common)| (git_dir.to_owned(), common.to_owned()))
+    let (git_dir, common) = dirs?;
+    Some(((git_dir.to_owned(), common.to_owned()), id_len?))
 }
 
 /// A git dir and its common dir.
 type Dirs = (String, String);
+
+/// A plain repository's [`Dirs`], and the length of its object ids.
+type Layout = (Dirs, usize);
 
 /// [`repo_programs`] for a repository on this computer at `top`, kept while
 /// nothing it was read from changes: a later call looks at those files'
@@ -215,13 +225,19 @@ type Dirs = (String, String);
 /// git they run. Kept only for a plain repository ([`plain_layout`],
 /// [`read_from`]), and only when none of those files changed within
 /// [`RACY`] before the scan began: a coarse file system clock could give a
-/// later change the same time.
+/// later change the same time. Never on Windows ([`metadata_facts`]): there
+/// it doesn't look at the files either.
 pub fn repo_programs_here<E>(key: &str, top: &str, run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<Vec<String>, E> {
-    programs_here_at(key, top, run, SystemTime::now())
+    if cfg!(not(unix)) {
+        return repo_programs(run);
+    }
+    programs_here_at(key, top, run, SystemTime::now(), &kernel_keeps_ctime)
 }
 
-/// [`repo_programs_here`] with the scan beginning at `began`.
-fn programs_here_at<E>(key: &str, top: &str, run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>, began: SystemTime) -> Result<Vec<String>, E> {
+/// [`repo_programs_here`] with the scan beginning at `began`, and
+/// `keeps_ctime` saying which file systems keep change times
+/// ([`kernel_keeps_ctime`]).
+fn programs_here_at<E>(key: &str, top: &str, run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>, began: SystemTime, keeps_ctime: &dyn Fn(&Path) -> bool) -> Result<Vec<String>, E> {
     let id = format!("{key}\0{top}");
     if let Some(keys) = kept_answer(&id, top) {
         return Ok(keys);
@@ -231,9 +247,9 @@ fn programs_here_at<E>(key: &str, top: &str, run: impl FnMut(&[&str]) -> Result<
     // times as old as they were, would otherwise pass for the one read.
     let before = found_dirs(Path::new(top)).and_then(|dirs| stamps_of(&dirs));
     let (keys, layout) = scan_answer(run)?;
-    if let Some((git_dir, common)) = layout
+    if let Some(((git_dir, common), id_len)) = layout
         && let Some(before) = before
-        && let Some(read) = read_from(&git_dir, &common)
+        && let Some(read) = read_from(&git_dir, &common, id_len, keeps_ctime)
         && (&read.dirs, &read.stamps) == (&before.dirs, &before.stamps)
         && read.latest.is_none_or(|t| began.duration_since(t).is_ok_and(|d| d >= RACY))
     {
@@ -255,6 +271,7 @@ const KEEP_AT_MOST: usize = 64;
 
 /// A folder's kept answer: the git dir and common dir git found from the
 /// top, and the files it was read from, as they were.
+#[derive(Clone)]
 struct Kept {
     dirs: (PathBuf, PathBuf),
     stamps: Vec<(PathBuf, Look, Stamp)>,
@@ -268,14 +285,15 @@ fn kept() -> &'static Mutex<HashMap<String, Kept>> {
 
 /// The kept answer for `id` if the top still leads to the same git dir and
 /// common dir, and every file it was read from is as it was; else none,
-/// and it's dropped.
+/// and it's dropped. The files are looked at without the lock: a file
+/// system that doesn't answer (a hard NFS mount gone away) holds up only
+/// this folder's check.
 fn kept_answer(id: &str, top: &str) -> Option<Vec<String>> {
-    let mut all = kept().lock().unwrap_or_else(|e| e.into_inner());
-    let entry = all.get(id)?;
+    let entry = kept().lock().unwrap_or_else(|e| e.into_inner()).get(id)?.clone();
     if found_dirs(Path::new(top)).as_ref() == Some(&entry.dirs) && entry.stamps.iter().all(|(path, look, was)| stamp(path, *look).as_ref() == Some(was)) {
-        return Some(entry.keys.clone());
+        return Some(entry.keys);
     }
-    all.remove(id);
+    kept().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     None
 }
 
@@ -293,18 +311,25 @@ fn kept_answer(id: &str, top: &str) -> Option<Vec<String>> {
 ///   `include` in them, as bytes, whatever case): an included file could be
 ///   anywhere and change unseen.
 /// - The index (`ls-files -s`; a gitlink in it already isn't plain), which
-///   must hold all its entries itself ([`index_stands_alone`]), the
-///   common dir's `remotes/` and `branches/` (their listing too), and no
-///   `modules/` in either dir.
+///   must hold all its entries itself (git says it reads no shared index,
+///   [`plain_layout`], and [`index_stands_alone`]), the common dir's
+///   `remotes/` and `branches/` (their listing too), and no `modules/` in
+///   either dir.
+/// - All on file systems whose kernel keeps the change time
+///   ([`kernel_keeps_ctime`]): the dirs (a link there is on theirs) and
+///   each file there (and what a link leads to).
 ///
 /// The person's own config (global, system, from the environment) isn't
 /// here: the gate counts only the repository's scopes, which those can't
 /// add to; at most they make git fail to read the repository, and then
 /// every git command there fails too.
-fn read_from(git_dir: &str, common: &str) -> Option<Read> {
+fn read_from(git_dir: &str, common: &str, id_len: usize, keeps_ctime: &dyn Fn(&Path) -> bool) -> Option<Read> {
     let dirs = (std::fs::canonicalize(git_dir).ok()?, std::fs::canonicalize(common).ok()?);
     let read = stamps_of(&dirs)?;
     let (git_dir, common) = (dirs.0.as_path(), dirs.1.as_path());
+    if !keeps_ctime(git_dir) || !keeps_ctime(common) || read.stamps.iter().any(|(path, _, stamp)| *stamp != Stamp::Missing && !keeps_ctime(path)) {
+        return None;
+    }
     let missing = |path: PathBuf| read.stamps.iter().any(|(p, _, s)| *p == path && *s == Stamp::Missing);
     if !missing(git_dir.join("modules")) || !missing(common.join("modules")) {
         return None;
@@ -315,7 +340,7 @@ fn read_from(git_dir: &str, common: &str) -> Option<Read> {
         }
     }
     if let Some(bytes) = read_plain(&git_dir.join("index"), INDEX_CAP)?
-        && !index_stands_alone(&bytes)?
+        && !index_stands_alone(&bytes, id_len)?
     {
         return None;
     }
@@ -372,24 +397,27 @@ fn stamps_of(dirs: &(PathBuf, PathBuf)) -> Option<Read> {
     Some(read)
 }
 
-/// Whether an index file holds all its entries itself: no split index (a
-/// `link` extension; entries in a `sharedindex.*` file) and no sparse
-/// directories (`sdir`; git expands them from trees). Either reads other
-/// files, which may change while the index doesn't (git doesn't check them
-/// against their names). None when it doesn't read as an index (with SHA-1
-/// or SHA-256 ids, version 2 to 4), or reads as one either way: which one
-/// git takes is the repository's, and the two may differ in extensions.
-fn index_stands_alone(bytes: &[u8]) -> Option<bool> {
-    let mut reads = [20, 32].into_iter().filter_map(|id_len| index_extensions(bytes, id_len));
-    let ext = reads.next()?;
-    if reads.next().is_some() {
+/// Whether an index file with ids `id_len` bytes long (the repository's
+/// object format) holds all its entries itself: no split index (a `link`
+/// extension; entries in a `sharedindex.*` file) and no sparse directories
+/// (`sdir`; git expands them from trees). Either reads other files, which
+/// may change while the index doesn't (git doesn't check them against
+/// their names). None when it doesn't read as an index of version 2 to 4,
+/// or ends in `EOIE`: git reading with threads (`index.threads`) takes the
+/// extensions from where that says, which may not be where the entries end.
+fn index_stands_alone(bytes: &[u8], id_len: usize) -> Option<bool> {
+    // Where git looks for it, its ids of either length: before the checksum,
+    // the 8-byte header and 24 bytes.
+    if bytes.len().checked_sub(id_len + 32).and_then(|at| bytes.get(at..at + 4)) == Some(b"EOIE") {
         return None;
     }
+    let ext = index_extensions(bytes, id_len)?;
     Some(!ext.iter().any(|e| e == b"link" || e == b"sdir"))
 }
 
 /// The extensions of an index whose ids are `id_len` bytes long, when it
-/// reads as one to its trailing checksum.
+/// reads as one to its trailing checksum, each entry read as git reads it
+/// (`create_from_disk`) without threads.
 fn index_extensions(bytes: &[u8], id_len: usize) -> Option<Vec<[u8; 4]>> {
     let be32 = |at: usize| bytes.get(at..at.checked_add(4)?).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
     if bytes.get(..4)? != b"DIRC" {
@@ -407,31 +435,35 @@ fn index_extensions(bytes: &[u8], id_len: usize) -> Option<Vec<[u8; 4]>> {
         let flags_at = at.checked_add(40 + id_len)?;
         let flags = u16::from_be_bytes(bytes.get(flags_at..flags_at + 2)?.try_into().ok()?);
         let mut path = flags_at + 2;
-        if version >= 3 && flags & 0x4000 != 0 {
+        // Extended flags (in any version, as git reads them).
+        if flags & 0x4000 != 0 {
             path += 2;
         }
-        let mut drop = 0usize;
+        // Version 4: how much of the last path this one keeps (it drops the
+        // rest, a number in 7-bit groups as git writes it).
+        let mut from_last = 0usize;
         if version == 4 {
-            // How much of the last path to drop, in 7-bit groups as git writes it.
             let mut byte = *bytes.get(path)?;
-            drop = usize::from(byte & 127);
+            let mut drop = usize::from(byte & 127);
             while byte & 128 != 0 {
                 path += 1;
                 byte = *bytes.get(path)?;
                 drop = drop.checked_add(1)?.checked_mul(128)?.checked_add(usize::from(byte & 127))?;
             }
             path += 1;
+            from_last = last.checked_sub(drop)?;
         }
-        let end = path + bytes.get(path..)?.iter().position(|b| *b == 0)?;
-        let len = if version == 4 { last.checked_sub(drop)? + (end - path) } else { end - path };
-        // The flags hold the path's length (up to 0xfff): an entry read from
-        // the wrong place doesn't match it.
-        if usize::from(flags & 0xfff) != len.min(0xfff) {
-            return None;
-        }
+        // The path's length is in the flags, whatever follows it; only
+        // 0xfff means "up to the NUL".
+        let len = match usize::from(flags & 0xfff) {
+            0xfff => from_last + bytes.get(path..)?.iter().position(|b| *b == 0)?,
+            len => len,
+        };
+        // Where what this entry holds of it ends (a NUL as git writes it).
+        let end = path.checked_add(len.checked_sub(from_last)?)?;
         last = len;
         // Versions 2 and 3 pad each entry with 1 to 8 NULs to a multiple of 8.
-        at = if version == 4 { end + 1 } else { at + ((end - at + 8) & !7) };
+        at = if version == 4 { end + 1 } else { at + ((path - at + len + 8) & !7) };
     }
     let checksum = bytes.len().checked_sub(id_len)?;
     let mut ext = Vec::new();
@@ -552,6 +584,41 @@ fn metadata_facts(_: &std::fs::Metadata, _: Look) -> Option<(Vec<i128>, Option<S
     None
 }
 
+/// Whether the file system `path` is on keeps change times of its own: the
+/// kernel sets one on every change, and no program can set it back. Only
+/// those named here: FAT and exFAT keep none apart from the modified time
+/// (a file written over in place, as long and as old, looks as it was); a
+/// network file system's may come from the other side.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn kernel_keeps_ctime(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` ends in a NUL, and `fs` is read only once statfs filled it.
+    let Some(fs) = (unsafe {
+        let mut fs: libc::statfs = std::mem::zeroed();
+        (libc::statfs(path.as_ptr(), &mut fs) == 0).then_some(fs)
+    }) else {
+        return false;
+    };
+    #[cfg(target_os = "macos")]
+    let keeps = {
+        let name: Vec<u8> = fs.f_fstypename.iter().take_while(|c| **c != 0).map(|c| *c as u8).collect();
+        matches!(name.as_slice(), b"apfs" | b"hfs")
+    };
+    // ext2/3/4, XFS, Btrfs, tmpfs, ZFS, F2FS (their magic numbers).
+    #[cfg(target_os = "linux")]
+    let keeps = matches!(fs.f_type as u32, 0xEF53 | 0x5846_5342 | 0x9123_683E | 0x0102_1994 | 0x2FC1_2FC1 | 0xF2F5_2010);
+    keeps
+}
+
+/// Elsewhere none is known to.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn kernel_keeps_ctime(_: &Path) -> bool {
+    false
+}
+
 /// The scan's answer cut where its record of the config's exit code
 /// (`config\0<code>\0`) starts a pair: what `git config` printed before it
 /// (its records start with a scope, never `config`), the code, and the
@@ -588,7 +655,10 @@ const SCAN: &str = "yuzora-trust-scan";
 /// program keys: `sub\0path\0` then the records, `err\0what\0` when it can't
 /// be read, and `end\0<SCAN>\0` last. The top's own records also say
 /// where its repository is, `dirs\0<git dir>\n<common dir>\0`, and
-/// `links\0\0` when its index has a gitlink ([`plain_layout`]). git sets
+/// `links\0\0` when its index has a gitlink, else `index\0<format>\n.\0`:
+/// its object format, with the shared index's path before the `.` when git
+/// reads one (`rev-parse --shared-index-path`, git reading the index as
+/// status does; [`plain_layout`]). git sets
 /// `GIT_DIR` for the alias when the top's `.git` is a gitfile (a linked
 /// worktree, a submodule as the top): the config is read through it, the
 /// repository git found; past the top the script unsets it. It follows git: a gitlink is checked
@@ -672,7 +742,14 @@ scan() {
     *) links= ;;
   esac
   [ -n "$links" ] || { printf 'sub\0%s\0err\0index\0' "${1:-.}"; return; }
-  [ "$2" -gt 0 ] || [ "$links" = '160000 #end' ] || printf 'links\0\0'
+  if [ "$2" -eq 0 ]; then
+    if [ "$links" = '160000 #end' ]; then
+      ix=$(GIT_DIR=$3 GIT_WORK_TREE=$4 git -C "$4" rev-parse --show-object-format --shared-index-path && echo .) || ix=
+      printf 'index\0%s\0' "$ix"
+    else
+      printf 'links\0\0'
+    fi
+  fi
   for line in $links; do
     [ "$line" = '160000 #end' ] || enter "$1" "$2" "${4%/}" "${line#*"$tab"}" "$5"
   done
@@ -2139,6 +2216,7 @@ mod tests {
                 Ok::<_, std::io::Error>(whole(out.status.code().unwrap_or(-1), out.stdout))
             },
             began,
+            &kernel_keeps_ctime,
         )
         .unwrap();
         (keys, runs)
@@ -2291,6 +2369,12 @@ mod tests {
             std::fs::rename(g.join(d), g.join("away")).unwrap();
             assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1), "no {d}");
             std::fs::rename(g.join("away"), g.join(d)).unwrap();
+            // No search permission: git's `access(X_OK)` fails (as anyone but root).
+            assert_eq!(kept_scan(k, &top, later()).1, 1);
+            assert_eq!(kept_scan(k, &top, later()).1, 0);
+            std::fs::set_permissions(g.join(d), std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+            assert_eq!(kept_scan(k, &top, later()).1, 1, "{d} that can't be searched");
+            std::fs::set_permissions(g.join(d), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2397,6 +2481,7 @@ mod tests {
                     Ok::<_, std::io::Error>((1, out.stdout))
                 },
                 later(),
+                &kernel_keeps_ctime,
             );
             assert_eq!((got.unwrap(), runs), (keys(&[UNREADABLE]), 1));
         }
@@ -2412,6 +2497,50 @@ mod tests {
         git("", &["init", "-q"]);
         assert_eq!(kept_scan(k, &top, SystemTime::now()), (keys(&[]), 1));
         assert_eq!(kept_scan(k, &top, SystemTime::now()), (keys(&[]), 1), "kept though its files changed a moment ago");
+        // Their modified times set back: only the change times tell.
+        for f in ["HEAD", "config"] {
+            std::fs::File::options().write(true).open(Path::new(&top).join(".git").join(f)).unwrap().set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(946_684_800)).unwrap();
+        }
+        assert_eq!(kept_scan(k, &top, SystemTime::now()), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, SystemTime::now()), (keys(&[]), 1), "kept: modified long ago, changed a moment ago");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Only where the kernel keeps change times: the git dir, the common dir
+    // and each file looked at must be on such a file system.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_system_that_keeps_no_change_time_is_never_kept() {
+        let k = "kept-fs";
+        let (dir, top, _git) = kept_repo(k);
+        let scans = |key: &str, keeps_ctime: &dyn Fn(&Path) -> bool| {
+            (0..2)
+                .map(|_| {
+                    let mut runs = 0;
+                    programs_here_at(
+                        key,
+                        &top,
+                        |args| {
+                            runs += 1;
+                            let out = std::process::Command::new("git").args(READ_FLAGS).args(args).current_dir(&top).output()?;
+                            Ok::<_, std::io::Error>(whole(out.status.code().unwrap_or(-1), out.stdout))
+                        },
+                        later(),
+                        keeps_ctime,
+                    )
+                    .unwrap();
+                    runs
+                })
+                .sum::<usize>()
+        };
+        assert_eq!(scans("kept-fs-all", &|_| true), 1, "kept");
+        assert_eq!(scans("kept-fs-none", &|_| false), 2, "kept with no file system keeping change times");
+        assert_eq!(scans("kept-fs-dir", &|p| !p.ends_with(".git")), 2, "kept with the git dir's not keeping them");
+        assert_eq!(scans("kept-fs-config", &|p| !p.ends_with(".git/config")), 2, "kept with its config's not keeping them");
+        assert!(kernel_keeps_ctime(&dir));
+        // devfs on macOS, procfs on Linux.
+        assert!(!kernel_keeps_ctime(Path::new(if cfg!(target_os = "linux") { "/proc" } else { "/dev" })));
+        assert!(!kernel_keeps_ctime(&dir.join("nothing-here")), "a path statfs can't look at");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2421,23 +2550,33 @@ mod tests {
     fn a_repo_here_is_kept_and_one_on_a_machine_never() {
         let (dir, top, git) = scratch_dir("kept-wired");
         git("", &["init", "-q"]);
+        let id = format!("yuzora-core:git\0{top}");
+        assert_eq!(programs_within(None, &top, TIMEOUT), Ok(Vec::new()));
+        assert!(!kept().lock().unwrap().contains_key(&id), "kept though its files changed a moment ago");
         std::thread::sleep(RACY + Duration::from_millis(200));
         assert_eq!(programs_within(None, &top, TIMEOUT), Ok(Vec::new()));
-        assert!(kept().lock().unwrap().contains_key(&format!("yuzora-core:git\0{top}")));
+        assert!(kept().lock().unwrap().contains_key(&id));
         assert_ne!(programs_within(Some("yuzora-test-no-such-machine"), &top, Duration::from_secs(5)), Ok(Vec::new()), "a machine's answer from what's kept here");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn only_the_tops_own_records_make_a_plain_layout() {
-        let plain = |extra: &str| plain_layout(format!("sub\0\0legacy\0.git/remotes\0dirs\0/g\n/c\0{extra}end\0{SCAN}\0").as_bytes());
-        assert_eq!(plain(""), Some(("/g".into(), "/c".into())));
-        for extra in ["links\0\0", "sub\0x\0", "sub\0.\0err\0index\0", "err\0commondir\0", "dirs\0/g\n/c\0", "local\0core.x\0"] {
+        let with = |index: &str, extra: &str| plain_layout(format!("sub\0\0legacy\0.git/remotes\0dirs\0/g\n/c\0{index}{extra}end\0{SCAN}\0").as_bytes());
+        let plain = |extra: &str| with("index\0sha1\n.\0", extra);
+        assert_eq!(plain(""), Some((("/g".into(), "/c".into()), 20)));
+        assert_eq!(with("index\0sha256\n.\0", ""), Some((("/g".into(), "/c".into()), 32)));
+        for extra in ["links\0\0", "sub\0x\0", "sub\0.\0err\0index\0", "err\0commondir\0", "dirs\0/g\n/c\0", "local\0core.x\0", "index\0sha1\n.\0"] {
             assert_eq!(plain(extra), None, "{extra:?}");
         }
-        assert_eq!(plain_layout(b"sub\0\0end\0yuzora-trust-scan\0"), None, "no dirs");
-        assert_eq!(plain_layout(b"legacy\0x\0dirs\0/g\n/c\0end\0yuzora-trust-scan\0"), None, "not the top's");
-        assert_eq!(plain_layout(b"sub\0\0dirs\0/g\0end\0yuzora-trust-scan\0"), None, "one dir");
+        // git reads a shared index; rev-parse failed; a git that doesn't know
+        // `--show-object-format` (it says it back); an object format unknown.
+        for index in ["index\0sha1\n/g/sharedindex.ab\n.\0", "index\0\0", "index\0--show-object-format\n.\0", "index\0sha3\n.\0", ""] {
+            assert_eq!(with(index, ""), None, "{index:?}");
+        }
+        assert_eq!(plain_layout(b"sub\0\0index\0sha1\n.\0end\0yuzora-trust-scan\0"), None, "no dirs");
+        assert_eq!(plain_layout(b"legacy\0x\0dirs\0/g\n/c\0index\0sha1\n.\0end\0yuzora-trust-scan\0"), None, "not the top's");
+        assert_eq!(plain_layout(b"sub\0\0dirs\0/g\0index\0sha1\n.\0end\0yuzora-trust-scan\0"), None, "one dir");
     }
 
     // A `.git` swapped for one made earlier while the scan ran: its files'
@@ -2463,6 +2602,7 @@ mod tests {
                 Ok::<_, std::io::Error>(whole(out.status.code().unwrap_or(-1), out.stdout))
             },
             later(),
+            &kernel_keeps_ctime,
         );
         assert_eq!((got.unwrap(), runs), (keys(&[]), 1));
         assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1), "kept for the git dir swapped in");
@@ -2490,6 +2630,7 @@ mod tests {
                 Ok::<_, std::io::Error>(whole(out.status.code().unwrap_or(-1), out.stdout))
             },
             later(),
+            &kernel_keeps_ctime,
         );
         assert_eq!((got.unwrap(), runs), (keys(&[]), 1));
         assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1), "kept with nothing to look at before the scan");
@@ -2505,9 +2646,13 @@ mod tests {
         let (dir, top, git) = kept_repo(k);
         git("", &["update-index", "--split-index"]);
         assert!(std::fs::read_dir(Path::new(&top).join(".git")).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("sharedindex.")));
+        // git says so itself.
+        let layout = |top: &str| scan_answer(|args| Ok::<_, std::io::Error>(whole(0, std::process::Command::new("git").args(READ_FLAGS).args(args).current_dir(top).output()?.stdout))).unwrap().1;
+        assert_eq!(layout(&top), None, "a plain layout for a split index");
         assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
         assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1), "kept with a split index");
         git("", &["update-index", "--no-split-index"]);
+        assert!(layout(&top).is_some_and(|(_, id_len)| id_len == 20));
         assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
         assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "kept");
         for d in ["in", "out"] {
@@ -2557,26 +2702,43 @@ mod tests {
 
     #[test]
     fn only_an_index_that_reads_to_its_end_stands_alone() {
-        assert_eq!(index_stands_alone(b""), None);
-        assert_eq!(index_stands_alone(b"DIRC\0\0\0\x02\0\0\0\0"), None, "no checksum");
+        assert_eq!(index_stands_alone(b"", 20), None);
+        assert_eq!(index_stands_alone(b"DIRC\0\0\0\x02\0\0\0\0", 20), None, "no checksum");
         let empty = [b"DIRC\0\0\0\x02\0\0\0\0".as_slice(), &[0; 20]].concat();
-        assert_eq!(index_stands_alone(&empty), Some(true));
+        assert_eq!(index_stands_alone(&empty, 20), Some(true));
         let with = |ext: &[u8]| [b"DIRC\0\0\0\x02\0\0\0\0".as_slice(), ext, b"\0\0\0\x01x", &[0; 20]].concat();
-        assert_eq!(index_stands_alone(&with(b"link")), Some(false));
-        assert_eq!(index_stands_alone(&with(b"sdir")), Some(false));
-        assert_eq!(index_stands_alone(&with(b"TREE")), Some(true));
-        // One entry, `a`: 62 bytes before its path, 1 NUL after it.
-        let entry = |len: u8| [b"DIRC\0\0\0\x02\0\0\0\x01".as_slice(), &[0; 60], &[0, len], b"a\0", &[0; 20]].concat();
-        assert_eq!(index_stands_alone(&entry(1)), Some(true));
-        assert_eq!(index_stands_alone(&entry(2)), None, "flags that don't hold the path's length");
+        assert_eq!(index_stands_alone(&with(b"link"), 20), Some(false));
+        assert_eq!(index_stands_alone(&with(b"sdir"), 20), Some(false));
+        assert_eq!(index_stands_alone(&with(b"TREE"), 20), Some(true));
+        // One entry, `a`, then link: 62 bytes before its path, then the byte
+        // after it, which git doesn't look at (a NUL as it writes it).
+        let entry = |flags: &[u8], name: &[u8]| [b"DIRC\0\0\0\x02\0\0\0\x01".as_slice(), &[0; 60], flags, name, b"link\0\0\0\x01x", &[0; 20]].concat();
+        assert_eq!(index_stands_alone(&entry(&[0, 1], b"a\0"), 20), Some(false));
+        assert_eq!(index_stands_alone(&entry(&[0, 1], b"aQ"), 20), Some(false), "the length from the flags");
+        assert_eq!(index_stands_alone(&entry(&[0x0f, 0xff], b"a\0"), 20), Some(false), "0xfff: up to the NUL");
+        assert_eq!(index_stands_alone(&entry(&[0, 2], b"a\0"), 20), None, "flags longer than the entry");
+        // Extended flags in version 2 too: the path (`Z`) is 2 bytes later. Read
+        // 2 bytes early, the entry would end before `ZZZZ`, an extension up to
+        // the checksum.
+        assert_eq!(index_stands_alone(&entry(&[0x40, 1], b"\0\0ZZZZ\0\0\0\x09"), 20), Some(false), "extended flags");
+        // Version 4: `ab` after `a` keeps the `a` (drops 0), one NUL after each.
+        let v4 = [b"DIRC\0\0\0\x04\0\0\0\x02".as_slice(), &[0; 60], &[0, 1, 0], b"a\0", &[0; 60], &[0, 2, 0], b"b\0", b"link\0\0\0\x01x", &[0; 20]].concat();
+        assert_eq!(index_stands_alone(&v4, 20), Some(false));
         // No entries, then TREE (empty) and link (4 bytes): with 32-byte ids the
-        // checksum begins after TREE, with 20-byte ones after link.
+        // checksum begins after TREE, with 20-byte ones after link. Which one
+        // git reads is the repository's.
         let both = [b"DIRC\0\0\0\x02\0\0\0\0TREE\0\0\0\0link\0\0\0\x04xxxx".as_slice(), &[0; 20]].concat();
-        assert_eq!((index_extensions(&both, 20).map(|e| e.len()), index_extensions(&both, 32).map(|e| e.len())), (Some(2), Some(1)));
-        assert_eq!(index_stands_alone(&both), None, "read as an index either way");
+        assert_eq!((index_stands_alone(&both, 20), index_stands_alone(&both, 32)), (Some(false), Some(true)));
         let past = [b"DIRC\0\0\0\x02\0\0\0\0TREE\0\0\0\x64x".as_slice(), &[0; 20]].concat();
-        assert_eq!(index_stands_alone(&past), None, "an extension past the checksum");
-        assert_eq!(index_stands_alone(&[b"DIRC\0\0\0\x05\0\0\0\0".as_slice(), &[0; 20]].concat()), None, "version 5");
+        assert_eq!(index_stands_alone(&past, 20), None, "an extension past the checksum");
+        assert_eq!(index_stands_alone(&[b"DIRC\0\0\0\x05\0\0\0\0".as_slice(), &[0; 20]].concat(), 20), None, "version 5");
+        // EOIE where git looks for it: whatever a read from the entries' end
+        // finds (here `ZZZZ` holding it), git with threads reads from where it says.
+        for id_len in [20, 32] {
+            let eoie = [b"DIRC\0\0\0\x02\0\0\0\0ZZZZ\0\0\0\x20EOIE\0\0\0\x18".as_slice(), &[0; 24], &vec![0; id_len]].concat();
+            assert_eq!(index_extensions(&eoie, id_len).map(|e| e.len()), Some(1));
+            assert_eq!(index_stands_alone(&eoie, id_len), None, "EOIE with {id_len}-byte ids");
+        }
     }
 
     // What git passes over may be anything: a FIFO there would wait for a
@@ -2614,6 +2776,171 @@ mod tests {
         assert_eq!(kept_scan(k, &top, later()).1, 1);
         assert_eq!(kept_scan(k, &top, later()).1, 1, "kept with a config past the cap");
         drop(git);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An index extension: its signature and its data.
+    #[cfg(unix)]
+    type Extension = ([u8; 4], Vec<u8>);
+
+    /// A version 2 index git wrote: where its entries end, and its extensions.
+    #[cfg(unix)]
+    fn index_parts(bytes: &[u8]) -> (usize, Vec<Extension>) {
+        let be32 = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        assert_eq!((&bytes[..4], be32(4)), (b"DIRC".as_slice(), 2));
+        let mut at = 12;
+        for _ in 0..be32(8) {
+            let end = at + 62 + bytes[at + 62..].iter().position(|b| *b == 0).unwrap();
+            at += (end - at + 8) & !7;
+        }
+        let entries = at;
+        let mut ext = Vec::new();
+        while at < bytes.len() - 20 {
+            ext.push((bytes[at..at + 4].try_into().unwrap(), bytes[at + 8..at + 8 + be32(at + 4)].to_vec()));
+            at += 8 + be32(at + 4);
+        }
+        (entries, ext)
+    }
+
+    /// A split index that reads its `link` only as git does, made from the
+    /// one git wrote at `git_dir` (SHA-1); the shared index's name.
+    ///
+    /// - `eoie`: `link` inside an optional extension a reader from the
+    ///   entries' end passes over; `EOIE` at the end leads to it, which git
+    ///   follows when it reads with threads (`index.threads`, set here).
+    /// - `dual`: git takes a name's length from the flags, not from a NUL
+    ///   after it: `QQ` after the replacing entry's empty name (the other
+    ///   extensions dropped). Read with
+    ///   32-byte ids, the flags fall on the shared index's id, named so it
+    ///   reads as an entry `a`, then an extension `ZZZZ` up to a 32-byte
+    ///   checksum, and no `link`.
+    #[cfg(unix)]
+    fn index_git_reads_its_own_way(git_dir: &Path, variant: &str) -> String {
+        let index = git_dir.join("index");
+        let bytes = std::fs::read(&index).unwrap();
+        let (entries, ext) = index_parts(&bytes);
+        let link = ext.iter().find(|(s, _)| s == b"link").expect("not a split index").1.clone();
+        let be = |n: usize| (n as u32).to_be_bytes();
+        let shared = |id: &[u8]| git_dir.join(format!("sharedindex.{}", id.iter().map(|b| format!("{b:02x}")).collect::<String>()));
+        if variant == "eoie" {
+            let inner = [b"link".as_slice(), &be(link.len()), &link].concat();
+            let header_sum = sha1(&[b"link".as_slice(), &be(link.len())].concat());
+            let body = [&bytes[..entries], b"ZZZZ", &be(inner.len()), &inner, b"EOIE", &be(24), &be(entries + 8), &header_sum].concat();
+            std::fs::write(&index, [&body[..], &sha1(&body)].concat()).unwrap();
+            return shared(&link[..20]).file_name().unwrap().to_string_lossy()["sharedindex.".len()..].to_owned();
+        }
+        assert_eq!(entries, 76, "one replacing entry");
+        assert_eq!(u16::from_be_bytes(bytes[72..74].try_into().unwrap()) & 0xfff, 0, "the replacing entry's empty name");
+        let total = 84 + link.len() + 20;
+        let id = [&[0, 1, b'a', 0, 0, 0, 0, 0][..], b"ZZZZ", &be(total - 32 - 100), &[0; 4]].concat();
+        let mut entry = bytes[12..76].to_vec();
+        entry[62..64].copy_from_slice(b"QQ");
+        let out = [&bytes[..12], &entry, b"link", &be(link.len()), &id, &link[20..], &[0; 20]].concat();
+        assert_eq!(out.len(), total);
+        std::fs::write(&index, out).unwrap();
+        let old = std::fs::read(shared(&link[..20])).unwrap();
+        std::fs::write(shared(&id), [&old[..old.len() - 20], &id].concat()).unwrap();
+        std::fs::remove_file(shared(&link[..20])).unwrap();
+        shared(&id).file_name().unwrap().to_string_lossy()["sharedindex.".len()..].to_owned()
+    }
+
+    // A split index whose `link` only git's own way of reading finds: the
+    // shared index swapped for one with a gitlink (its name kept, the index
+    // as it was) brings in a submodule whose clean filter status runs.
+    #[cfg(unix)]
+    #[test]
+    fn an_index_whose_link_only_git_finds_is_never_kept() {
+        for variant in ["eoie", "dual"] {
+            let k = format!("kept-hidden-link-{variant}");
+            let (dir, top, git) = scratch_dir(&k);
+            git("", &["init", "-q"]);
+            std::fs::write(Path::new(&top).join("a.txt"), "x\n").unwrap();
+            git("", &["add", "a.txt"]);
+            git("", &["commit", "-qm", "one"]);
+            if variant == "eoie" {
+                git("", &["config", "index.threads", "4"]);
+            }
+            git("", &["update-index", "--split-index"]);
+            // a.txt changed: the index replaces the shared index's entry.
+            std::fs::write(Path::new(&top).join("a.txt"), "y\n").unwrap();
+            git("", &["add", "a.txt"]);
+            let name = index_git_reads_its_own_way(&Path::new(&top).join(".git"), variant);
+            assert_eq!(git("", &["ls-files"]), "a.txt", "{variant}: git doesn't read the shared index, so this test proves nothing");
+            let sub = evil_repo(&git, &top, "sub", &dir.join("MARK"));
+            assert_eq!(kept_scan(&k, &top, later()), (keys(&[]), 1));
+            assert_eq!(kept_scan(&k, &top, later()), (keys(&[]), 1), "{variant}: kept");
+            let evil = dir.join("evil.idx");
+            let with = |args: &[&str]| assert!(std::process::Command::new("git").args(args).env("GIT_INDEX_FILE", &evil).current_dir(&top).status().unwrap().success());
+            with(&["read-tree", "HEAD"]);
+            with(&["update-index", "--add", "--cacheinfo", &format!("160000,{sub},sub")]);
+            let bytes = std::fs::read(&evil).unwrap();
+            let id: Vec<u8> = (0..name.len()).step_by(2).map(|i| u8::from_str_radix(&name[i..i + 2], 16).unwrap()).collect();
+            std::fs::write(Path::new(&top).join(".git").join(format!("sharedindex.{name}")), [&bytes[..bytes.len() - 20], &id].concat()).unwrap();
+            assert!(git("", &["ls-files", "-s"]).lines().any(|l| l.starts_with("160000 ") && l.ends_with("\tsub")), "{variant}: git doesn't read the gitlink");
+            assert_eq!(kept_scan(&k, &top, later()), (keys(&["sub: filter.evil.clean"]), 1), "{variant}: the answer from before the swap");
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    // FAT and exFAT keep no change time of their own (it is the modified
+    // time, which a program sets): a file written over in place, as long and
+    // as old, looks as it was.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "attaches a FAT disk image (hdiutil)"]
+    fn on_fat_nothing_is_kept() {
+        let k = "kept-fat";
+        let (dir, base, git) = scratch_dir(k);
+        let (image, mnt) = (dir.join("fat.dmg"), dir.join("mnt"));
+        let hdiutil = |args: &[&str]| assert!(std::process::Command::new("hdiutil").args(args).stdout(std::process::Stdio::null()).status().unwrap().success(), "hdiutil {args:?}");
+        hdiutil(&["create", "-size", "20m", "-fs", "MS-DOS", "-volname", "YZFAT", &image.to_string_lossy()]);
+        std::fs::create_dir(&mnt).unwrap();
+        hdiutil(&["attach", "-nobrowse", "-mountpoint", &mnt.to_string_lossy(), &image.to_string_lossy()]);
+        struct Detach(PathBuf);
+        impl Drop for Detach {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("hdiutil").args(["detach", "-force"]).arg(&self.0).stdout(std::process::Stdio::null()).status();
+            }
+        }
+        let detach = Detach(mnt.clone());
+        let top = format!("{base}/mnt/r");
+        git("mnt/r", &["init", "-q"]);
+        std::fs::write(Path::new(&top).join("a.txt"), "x\n").unwrap();
+        git("mnt/r", &["add", "a.txt"]);
+        git("mnt/r", &["commit", "-qm", "one"]);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1), "kept on FAT");
+        // So by the path the app takes too (past RACY: FAT's times are coarse).
+        std::thread::sleep(RACY + Duration::from_millis(200));
+        for _ in 0..2 {
+            let mut runs = 0;
+            repo_programs_here("kept-fat-here", &top, |args| {
+                runs += 1;
+                let out = std::process::Command::new("git").args(READ_FLAGS).args(args).current_dir(&top).output()?;
+                Ok::<_, std::io::Error>(whole(out.status.code().unwrap_or(-1), out.stdout))
+            })
+            .unwrap();
+            assert_eq!(runs, 1, "kept on FAT by repo_programs_here");
+        }
+        // Only its file system keeps it from being kept.
+        assert!(!kernel_keeps_ctime(&mnt));
+        for runs in [1, 0] {
+            let mut got = 0;
+            programs_here_at(
+                "kept-fat-any",
+                &top,
+                |args| {
+                    got += 1;
+                    let out = std::process::Command::new("git").args(READ_FLAGS).args(args).current_dir(&top).output()?;
+                    Ok::<_, std::io::Error>(whole(out.status.code().unwrap_or(-1), out.stdout))
+                },
+                later(),
+                &|_| true,
+            )
+            .unwrap();
+            assert_eq!(got, runs);
+        }
+        drop(detach);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
