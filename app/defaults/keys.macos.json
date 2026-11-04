@@ -13,7 +13,6 @@
     "cmd-alt-[": "space.prev",
     "cmd-]": "agent.next",
     "cmd-[": "agent.prev",
-    "cmd-shift-l": "layout.switch",
     "cmd-n": "space.new",
     "cmd-p": "mod.open:picker",
     "cmd-shift-p": "app.palette",

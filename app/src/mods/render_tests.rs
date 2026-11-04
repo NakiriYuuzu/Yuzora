@@ -60,6 +60,8 @@ struct Calls {
     unexpected: Vec<String>,
     effects: Vec<(String, Vec<Value>)>,
     shared: BTreeMap<String, Value>,
+    // yuzora(L1): the commands nextCommand() hands out, in order; with none left it never returns.
+    commands: Vec<String>,
 }
 
 fn updates(app: &str, core: &str) -> Value {
@@ -151,9 +153,21 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     module = module.async_function("feedbackPickImages", |_| Ok(async { Ok(HostValue::Array(vec![])) }));
     module = module.async_function("knownAgents", |_| Ok(async { Ok(HostValue::Array(vec![])) }));
     module = module.async_function("pickFolder", |_| Ok(async { Ok(HostValue::Null) }));
-    for name in ["nextCommand", "watchFolder"] {
-        module = module.async_function(name, |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
-    }
+    module = module.async_function("watchFolder", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
+    // yuzora(L1): nextCommand() hands out Calls.commands (upstream: it never returned).
+    let queued = calls.clone();
+    module = module.async_function("nextCommand", move |_| {
+        let next = {
+            let mut calls = queued.borrow_mut();
+            (!calls.commands.is_empty()).then(|| calls.commands.remove(0))
+        };
+        Ok(async move {
+            match next {
+                Some(command) => Ok(HostValue::from(command)),
+                None => std::future::pending::<gpui_shell::HostResult>().await,
+            }
+        })
+    });
     for name in ["exec", "hc", "readTextFile", "writeTextFile", "sendFeedback"] {
         let calls = calls.clone();
         module = module.async_function(name, move |a| {
@@ -642,6 +656,12 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
         let expected = if query == "settings" { "Settings" } else { "Nothing matches" };
         assert!(tree.contains(expected), "palette query {query}: {tree}");
     }
+    // yuzora(L1): the palette has no "Next layout" or any other entry for a bare layout.switch
+    // (it lands in Herdr's own layout from the yuzora one); "Layout: <name>" for a named one stays.
+    for (query, listed) in [("next layout", false), ("switch layout", false), ("layout: herdr", true)] {
+        let tree = describe(cx, &staged, "frame/palette", true, props(), updates("current", "current"), Some(&format!("this.query = {query:?};"))).unwrap();
+        assert_eq!(!tree.contains("Nothing matches"), listed, "palette query {query}: {tree}");
+    }
     // Reviewed overlay contract table, not extracted from arbitrary JS call sites.
     let scenarios = [
         ("mods/menu", json!({"tab":"pane","target":{"pane":"p1","terminal":"t1"}})),
@@ -791,11 +811,11 @@ fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
     assert!(!tree.contains("Shift P"), "unbound hint must not invent a key: {tree}");
 }
 
-// yuzora(L1): Yuzora's new-pane menu opens as a popup, which is as tall as its content. Its
-// list must not wait for a height to fill: with flex_1 and overflow_y_scrollbar (a scroll area
+// yuzora(L1): Yuzora's new-pane menu opens as an overlay without a height of its own (a dialog
+// from the command), so it is as tall as its content. Its list must not wait for a height to fill: with flex_1 and overflow_y_scrollbar (a scroll area
 // that fills its parent) it drew nothing under the place pills.
 #[gpui::test]
-fn yuzora_new_pane_menu_shows_its_list_in_a_popup(cx: &mut TestAppContext) {
+fn yuzora_new_pane_menu_shows_its_list_in_an_overlay(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let menu = json!({"menu":"pane","overlay":"o1"});
@@ -851,6 +871,69 @@ fn yuzora_tab_bar_lists_only_the_current_space(cx: &mut TestAppContext) {
     assert_eq!(ids, [false, false, false, true], "{tree}");
     let (ids, tree) = shown(cx, None);
     assert_eq!(ids, [false; 4], "{tree}");
+}
+
+// yuzora(L1): the sidebar's Herdr tools menu has no "next layout" row: pressed in the yuzora
+// layout it lands in Herdr's own `main`, where none of Yuzora's features exist (2026-11-04).
+#[gpui::test]
+fn yuzora_tools_menu_has_no_next_layout_row(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let tree = describe(cx, &staged, "mods/yuzora-sidebar-workspace", true, json!({"menu":"tools","overlay":"o1"}), updates("current", "current"), None).unwrap();
+    assert!(tree.contains("\"m-palette\"") && tree.contains("\"m-help\""), "the other rows stay: {tree}");
+    assert!(!tree.contains("\"m-layout\""), "no row switches layout: {tree}");
+}
+
+// yuzora(L1): the tab bar has no new-pane or split buttons (the user asked for them gone,
+// 2026-11-04), with or without a focused pane; "+" and the window's tabs stay.
+#[gpui::test]
+fn yuzora_tab_bar_has_no_new_pane_or_split_buttons(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for populated in [true, false] {
+        let tree = describe(cx, &staged, "mods/yuzora-shell-tabs", populated, json!({}), updates("current", "current"), None).unwrap();
+        for id in ["pane-add", "split-right", "split-down"] {
+            assert!(!tree.contains(&format!("\"{id}\"")), "{id} must not be in the tab bar: {tree}");
+        }
+        assert!(tree.contains("\"tab-new\""), "the + button stays: {tree}");
+    }
+}
+
+// yuzora(L1): with the buttons gone the command is the only way to the new-pane menu: it opens
+// the menu as a centered dialog of this mod.
+#[gpui::test]
+fn yuzora_new_pane_command_opens_the_menu(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let open = |cx: &mut TestAppContext, command: &str| {
+        let calls = Rc::new(RefCell::new(Calls::default()));
+        calls.borrow_mut().commands.push(command.into());
+        let values = fixture(true, json!({}), updates("current", "current"));
+        let policy = Policy::new()
+            .with_storage_path(staged.0.join("store-command.json"))
+            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+            .with_host_module(module(values, calls.clone()))
+            .unwrap();
+        let policy = crate::yuzora::with_modules(policy, "");
+        let root = staged.0.join("mods/yuzora-shell-tabs");
+        let window = cx.add_window(|_, _| Empty);
+        let session = window.update(cx, |_, window, cx| {
+            let mut session = DescriptionSession::load(ShellRuntime::new_isolated().unwrap(), root, policy, window, cx).unwrap();
+            session.describe(window, cx).unwrap();
+            session
+        }).unwrap();
+        cx.run_until_parked();
+        drop(session);
+        window.update(cx, |_, window, _| window.remove_window()).unwrap();
+        let calls = calls.borrow();
+        assert!(calls.unexpected.is_empty(), "{:?}", calls.unexpected);
+        calls.effects.iter().filter(|(n, _)| n == "openOverlay").map(|(_, a)| json!(a)).collect::<Vec<Value>>()
+    };
+    assert_eq!(
+        open(cx, "new-pane"),
+        [json!([{"mod": "yuzora-shell-tabs", "kind": "dialog", "width": 280, "props": {"menu": "pane"}}])]
+    );
+    assert!(open(cx, "something-else").is_empty(), "other commands open nothing");
 }
 
 // yuzora(L1): a picked row closes the menu and goes where the pills say: beside the focused
@@ -968,4 +1051,245 @@ fn yuzora_herdr_panels_start_off(cx: &mut TestAppContext) {
     show(&mut open);
     let (_, kept, runs) = session("mods/yuzora-settings-general", &open, Some(json!(["files", "changes"])), Some("this.setPanel('files', false);"));
     assert_eq!((kept, runs), (Some(json!(["changes"])), vec![json!(["layout.hide", {"id": "panel"}])]));
+}
+
+// yuzora(L2): Git UI layout. The description tree has no sizes, so these mount a scenario in a
+// window, lay it out and send it real mouse events. A scenario lays out one of the L2 mods' own
+// pieces (a row, the commit detail panel) in a box of a known size and reports through `probe`.
+struct Mounted(gpui::Entity<gpui_shell::ShellRoot>);
+impl gpui::Render for Mounted {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+        self.0.clone()
+    }
+}
+
+struct Scenario {
+    visual: gpui::VisualTestContext,
+    notes: Rc<RefCell<Vec<Vec<Value>>>>,
+    _calls: Rc<RefCell<Calls>>,
+}
+
+impl Scenario {
+    /// `source` replaces the staged main.js; it may `import { note } from "probe"`.
+    fn mount(cx: &mut TestAppContext, staged: &Staged, source: &str, width: f32, height: f32) -> Self {
+        use std::ops::Deref;
+        let calls = Rc::new(RefCell::new(Calls::default()));
+        let notes: Rc<RefCell<Vec<Vec<Value>>>> = Rc::default();
+        let sink = notes.clone();
+        let policy = Policy::new()
+            .with_storage_path(staged.0.join("store-scenario.json"))
+            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+            .with_host_module(module(fixture(false, props(), updates("current", "current")), calls.clone()))
+            .unwrap();
+        let policy = crate::yuzora::with_modules(policy, "")
+            .with_host_module(HostModule::new("probe").function("note", move |a| {
+                sink.borrow_mut().push((0..8).map_while(|i| a.get(i)).map(from_host).collect());
+                Ok(HostValue::Null)
+            }))
+            .unwrap();
+        gpui_shell::policy::set_default(policy);
+        std::fs::write(staged.0.join("main.js"), source).unwrap();
+        let runtime = ShellRuntime::new_isolated().unwrap();
+        let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&staged.0, window, cx).unwrap()));
+        let visual = gpui::VisualTestContext::from_window(*window.deref(), cx);
+        visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+        let mut scenario = Self { visual, notes, _calls: calls };
+        scenario.settle();
+        scenario
+    }
+
+    fn settle(&mut self) {
+        for _ in 0..3 {
+            self.visual.update(|window, cx| window.draw(cx).clear(cx));
+            self.visual.run_until_parked();
+        }
+    }
+
+    fn wheel(&mut self, x: f64, y: f64, dy: f64) {
+        self.visual.simulate_event(gpui::MouseMoveEvent { position: gpui::point(gpui::px(x as f32), gpui::px(y as f32)), modifiers: gpui::Modifiers::default(), pressed_button: None });
+        self.settle();
+        self.visual.simulate_event(
+            gpui::ScrollWheelEvent {
+                position: gpui::point(gpui::px(x as f32), gpui::px(y as f32)),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(dy as f32))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            },
+        );
+        self.settle();
+    }
+
+    fn mouse(&mut self, kind: &str, x: f64, y: f64, clicks: usize) {
+        let position = gpui::point(gpui::px(x as f32), gpui::px(y as f32));
+        let modifiers = gpui::Modifiers::default();
+        match kind {
+            "down" => self.visual.simulate_event(gpui::MouseDownEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: clicks, first_mouse: false }),
+            "up" => self.visual.simulate_event(gpui::MouseUpEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: clicks }),
+            _ => self.visual.simulate_event(gpui::MouseMoveEvent { position, modifiers, pressed_button: Some(gpui::MouseButton::Left) }),
+        }
+        self.settle();
+    }
+
+    /// The last `note(name, …)`.
+    fn last(&self, name: &str) -> Option<Vec<Value>> {
+        self.notes.borrow().iter().rev().find(|n| n.first() == Some(&json!(name))).cloned()
+    }
+}
+
+/// The commit detail panel of the Git Log in a `width`×`height` box, dragged by its `dragging()`.
+/// A press with three clicks swaps in another commit's details (the height must stay).
+fn detail_scenario(lines: usize, side: bool, width: f32, height: f32, files: usize) -> String {
+    format!(
+        r#"
+import Real from "./mods/yuzora-git-log/main.js";
+import {{ v_flex }} from "gpui-base";
+import {{ theme }} from "herdr";
+import {{ note }} from "probe";
+const make = (hash, n) => ({{ hash, subject: "Subject " + hash, body: Array.from({{ length: n }}, (_, i) => "line " + i).join("\n"), author: "A", email: "a@x",
+  authorTime: 1700000000, committer: "A", committerEmail: "a@x", commitTime: 1700000000, parents: [], signature: "N", signer: "",
+  files: Array.from({{ length: {files} }}, (_, i) => ({{ path: "src/f" + i + ".rs", kind: "M" }})) }});
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    super.init(p, cx); this.w = 900; this.showDetail = true; this.sel = {{ hash: "a" }}; this.detail = {{ hash: "a", data: make("a", {lines}) }};
+    this.probe = (slot) => (e) => note(slot, e.local_position.y);
+  }}
+  render(cx) {{
+    note("state", this.infoH ?? null, this.infoNow ?? null, this.bodyH ?? null);
+    return this.dragging(v_flex().id("scenario").w({width}).h({height})
+      .on_mouse_down("left", (e, cx) => {{ if (e.click_count === 3) {{ this.detail = {{ hash: "b", data: make("b", 5) }}; cx.notify(); }} }})
+      .child(this.detailPanel(theme(), {side}, "mono", {{}})));
+  }}
+}}
+"#
+    )
+}
+
+fn state(s: &Scenario) -> (Option<f64>, f64, f64) {
+    let n = s.last("state").expect("a render");
+    (n[1].as_f64(), n[2].as_f64().expect("info measured"), n[3].as_f64().expect("body measured"))
+}
+
+// yuzora(L2): the commit message scrolls. `overflow_y_scrollbar` with a `max_h` did not move.
+#[gpui::test]
+fn git_log_commit_message_scrolls_and_the_files_stay(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for (side, width, height) in [(true, 340.0, 600.0), (false, 700.0, 260.0)] {
+        let mut s = Scenario::mount(cx, &staged, &detail_scenario(300, side, width, height, 40), width, height);
+        let (_, visible, body) = state(&s);
+        assert!(visible <= if side { 300.0 } else { 110.0 } + 0.5, "side={side}: the info is as tall as its limit, not its 300 lines: {visible}");
+        assert!(body - visible - 7.0 - 24.0 >= 72.0, "side={side}: the files keep room: body {body}, info {visible}");
+        s.mouse("move", 100.0, 40.0, 0);
+        let before = s.last("info").expect("content under the pointer")[1].as_f64().unwrap();
+        s.wheel(100.0, 40.0, -30.0);
+        s.mouse("move", 100.0, 40.0, 0);
+        let after = s.last("info").unwrap()[1].as_f64().unwrap();
+        assert!(after > before + 10.0, "side={side}: the wheel moves the message ({before} -> {after})");
+    }
+}
+
+// yuzora(L2): drag the bar between the info and the files; the heights follow and stop at the minimums.
+#[gpui::test]
+fn git_log_detail_divider_drags_and_keeps_minimums(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for (side, width, height) in [(true, 340.0, 600.0), (false, 700.0, 300.0)] {
+        let mut s = Scenario::mount(cx, &staged, &detail_scenario(300, side, width, height, 40), width, height);
+        let (set, visible, body) = state(&s);
+        assert_eq!(set, None, "side={side}: untouched, the default");
+        let bar = 28.0 + visible + 3.0; // the panel's header, the info, the middle of the bar
+        let limit = body - 24.0 - 7.0 - 72.0;
+        s.mouse("down", 100.0, bar, 1);
+        s.mouse("move", 100.0, bar - 20.0, 0);
+        assert_eq!(state(&s).1, visible - 20.0, "side={side}: the info follows the pointer up");
+        s.mouse("move", 100.0, height as f64 - 1.0, 0);
+        assert_eq!(state(&s).1, limit, "side={side}: the files keep 72px");
+        s.mouse("move", 100.0, 1.0, 0);
+        assert_eq!(state(&s).1, 48.0, "side={side}: the info keeps 48px");
+        s.mouse("move", 100.0, bar - 40.0, 0);
+        s.mouse("up", 5.0, 5.0, 1); // released away from the bar: the drag is over
+        let dragged = state(&s).1;
+        s.mouse("move", 100.0, bar + 100.0, 0);
+        assert_eq!(state(&s).1, dragged, "side={side}: moves after the release change nothing");
+        s.mouse("down", 100.0, 10.0, 3); // another commit
+        assert_eq!(state(&s).1, dragged, "side={side}: the height stays on another commit");
+        let bar = 28.0 + dragged + 3.0;
+        s.mouse("down", 100.0, bar, 2);
+        assert_eq!(state(&s).0, None, "side={side}: a double press puts the default back");
+    }
+}
+
+// yuzora(L2): leaving the pane with the button down ends the drag (its release would not be seen).
+#[gpui::test]
+fn git_log_detail_divider_drag_ends_when_the_pointer_leaves_the_pane(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut s = Scenario::mount(cx, &staged, &detail_scenario(300, true, 340.0, 600.0, 40), 700.0, 600.0);
+    let (_, visible, _) = state(&s);
+    let bar = 28.0 + visible + 3.0;
+    s.mouse("down", 100.0, bar, 1);
+    s.mouse("move", 100.0, bar - 30.0, 0);
+    let dragged = state(&s).1;
+    assert_eq!(dragged, visible - 30.0);
+    s.mouse("move", 600.0, bar - 30.0, 0); // out of the pane, still in the window
+    s.mouse("move", 100.0, bar - 80.0, 0); // back in, button no longer counted
+    assert_eq!(state(&s).1, dragged, "the drag ended when the pointer left");
+}
+
+// yuzora(L2): a long message shows in full, up to 2000 lines and then says what is left out.
+#[gpui::test]
+fn git_log_commit_message_is_shown_whole_up_to_a_cap(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for (lines, cut) in [(100, false), (2500, true)] {
+        let setup = format!(
+            "this.repo = {{}}; this.showDetail = true; this.sel = {{hash:'a'}}; this.detail = {{hash:'a', data: {{hash:'a', subject:'S', body: Array.from({{length:{lines}}}, (_, i) => 'line ' + i).join('\\n'), \
+             author:'A', email:'a@x', authorTime:1, committer:'A', committerEmail:'a@x', commitTime:1, parents:[], signature:'N', signer:'', files:[]}}}};"
+        );
+        let tree = describe(cx, &staged, "mods/yuzora-git-log", false, props(), updates("current", "current"), Some(&setup)).unwrap();
+        assert!(tree.contains(&format!("line {}\"", lines.min(2000) - 1)), "{lines} lines: the last one shows");
+        assert!(!tree.contains("line 2000\""), "{lines} lines: the cap");
+        assert_eq!(tree.contains("text \"detail.truncated\""), cut, "{lines} lines: the notice");
+    }
+}
+
+// yuzora(L2): in a narrow sidebar the name gives way before +N −M and the buttons.
+#[gpui::test]
+fn sidebar_git_row_keeps_counts_and_buttons_clear_of_the_name(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let source = |section: &str, path: &str, add: u32, del: u32, width: f32| {
+        format!(
+            r#"
+import Real from "./mods/yuzora-sidebar-git/main.js";
+import {{ div }} from "gpui-kit";
+import {{ theme }} from "herdr";
+import {{ note }} from "probe";
+export default class Scenario extends Real {{
+  init(p, cx) {{ super.init(p, cx); }}
+  render(cx) {{
+    const probe = (slot) => (size) => note(slot, size.width);
+    return div().id("box").w({width}).child(this.fileRow({{ section: "{section}", f: {{ path: "{path}", kind: "M", add: {add}, del: {del} }} }}, theme(), probe));
+  }}
+}}
+"#
+        )
+    };
+    let long = format!("deep/er/{}/{}.rs", "folder".repeat(10), "a-very-long-file-name".repeat(4));
+    for (section, buttons) in [("unstaged", 2.0), ("staged", 1.0), ("conflicts", 1.0)] {
+        for width in [180.0, 248.0] {
+            let list = width - 12.0; // the list's own padding
+            let s = Scenario::mount(cx, &staged, &source(section, &long, 123, 45, list), list, 40.0);
+            let w = |slot: &str| s.last(slot).unwrap_or_else(|| panic!("{slot}")) [1].as_f64().unwrap();
+            let (row, text, name, dir, add, del) = (w("row"), w("text"), w("name"), w("dir"), w("add"), w("del"));
+            let actions: Vec<f64> = s.notes.borrow().iter().filter(|n| n[0] == json!("action")).map(|n| n[1].as_f64().unwrap()).collect();
+            let who = format!("{section}/{width}: row {row} text {text} name {name} dir {dir} +{add} -{del} {actions:?}");
+            assert_eq!(row, list as f64, "{who}");
+            assert!(name + 0.5 >= 1.0 && name <= text + 0.5, "the name stays inside its box: {who}");
+            assert!(name + dir + 4.0 <= text + 0.5, "the folder and the name share the box: {who}");
+            assert!(add > 0.0 && del > 0.0 && actions.iter().all(|a| *a == 22.0) && actions.len() as f64 == buttons, "the numbers and buttons keep their size: {who}");
+            // Everything in the row, left to right, fits it: 6 + 12 + 6 + text + 6 + +N + 6 + -M + 6 + buttons.
+            assert!(6.0 + 12.0 + 6.0 + text + 6.0 + add + 6.0 + del + 6.0 + 22.0 * buttons <= row + 0.5, "nothing sticks out of the row: {who}");
+        }
+    }
 }

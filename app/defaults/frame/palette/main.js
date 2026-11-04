@@ -38,7 +38,7 @@ const NAMED = [
   ["space.close", {}, "Space", "Close space", "workspace kill"],
   ["space.next", {}, "Space", "Next space", "workspace"],
   ["space.prev", {}, "Space", "Previous space", "workspace"],
-  ["layout.switch", {}, "Layout", "Next layout", "look switch"],
+  // yuzora(L1): no "Next layout" here: from the yuzora layout it lands in Herdr's own, where Yuzora's features are gone. "Layout: <name>" below stays.
   ["layout.reset", {}, "Layout", "Reset layout", "new version default restore herdr's"],
   ["layout.clone", {}, "Layout", "Duplicate layout", "clone copy customize"],
   ["mod.clone", {}, "Layout", "Duplicate mod", "clone copy customize"],
@@ -67,7 +67,7 @@ const HIDDEN = new Set([
   "space.move", "tab.move", "space.select", "tab.select", "pane.focus", "terminal.keep",
   "terminal.park", "terminal.kill", "terminal.show", "agent.focus", "layout.set", "layout.toggle",
   "layout.show", "layout.hide", "layout.resize", "layout.select", "mod.open", "overlay.close",
-  "tab.settle", "tab.unsettle",
+  "tab.settle", "tab.unsettle", "layout.switch", // yuzora(L1): layout.switch {} (next layout) stays out of the list
   "app.palette", "app.hide", "app.hide_others", "app.show_all", "app.theme", "app.settings",
 ]);
 
