@@ -114,7 +114,7 @@ export default class Changes extends View {
         // The first file's diff shows until you pick another.
         if (!this.open && !this.closed && files.length) this.open = files[0].path;
         if (this.open) {
-          try { await this.load(this.open, context); }
+          try { await this.load(this.open, context, true); } // yuzora(L2): this refresh asked a moment ago
           catch { if (key() === context) this.setLines(["Cannot preview this diff (too large or unreadable)"]); }
         }
       } catch (e) { if (key() === context) this.error = String(e); }
@@ -122,7 +122,7 @@ export default class Changes extends View {
     });
   }
 
-  async load(path, context) {
+  async load(path, context, checked) { // yuzora(L2): checked
     const file = this.files.find((f) => f.path === path), root = this.root, on = this.on;
     if (!file) return;
     let lines;
@@ -135,6 +135,10 @@ export default class Changes extends View {
         lines = [`@@ -0,0 +1,${file.add} @@`, ...text.slice(0, 400000).replace(/\n$/, "").split("\n").slice(0, 1500).map(l => `+${l}`)];
       }
     } else {
+      // yuzora(L2c): asked again, as the config may have gained a program since the refresh.
+      // yuzora(L2): not when that refresh loads it: it asked before its own status and diff.
+      const waits = checked ? null : await untrusted(root, on);
+      if (waits) { if (key() === context && this.open === path) this.setLines([tr("untrusted", { keys: waits.join(", ") })]); return; }
       const r = await exec("git", [...READ, "diff", ...(this.hasHead ? ["HEAD"] : []), "--no-ext-diff", "--no-textconv", "--no-color", "--", path], { cwd: root, on });
       if (r.code !== 0) throw new Error(r.stderr);
       const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
@@ -166,6 +170,8 @@ export default class Changes extends View {
     this.busy = true; this.note = null;
     cx.spawn(async (cx) => {
       try {
+        const waits = await untrusted(root, on); // yuzora(L2c): asked again, as on a diff
+        if (waits) throw new Error(tr("untrusted", { keys: waits.join(", ") })); // yuzora(L2c)
         for (const args of [["add", "-A"], ["commit", "-m", message]]) {
           const r = await exec("git", args, { cwd: root, on });
           if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());

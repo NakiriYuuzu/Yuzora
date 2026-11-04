@@ -185,10 +185,15 @@ export default class Worktree extends View {
     this.busy = true;
     this.error = "";
     cx.notify();
-    try { this.error = props().action === "remove" ? await this.remove() : await this.create(); }
+    try {
+      // yuzora(L2c): asked again, as the config may have gained a program since the dialog opened.
+      const waits = await untrusted(this.repo.top, this.on);
+      if (waits) this.untrusted = tr("untrusted", { keys: waits.join(", ") });
+      else this.error = props().action === "remove" ? await this.remove() : await this.create();
+    }
     catch (error) { this.error = String(error); }
     this.busy = false;
-    if (!this.error) this.close();
+    if (!this.error && !this.untrusted) this.close(); // yuzora(L2c): && !this.untrusted
     cx.notify();
   }
 

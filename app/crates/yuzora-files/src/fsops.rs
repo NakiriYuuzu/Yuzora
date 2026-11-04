@@ -199,13 +199,14 @@ pub(crate) fn machine(on: Option<&str>) -> Option<&str> {
 }
 
 /// Set on everything this crate runs, here or on a machine. The file tree's
-/// marks and the search need no network: git fetches nothing a partial clone
-/// lacks (`GIT_NO_LAZY_FETCH`, git 2.44 and later) and reaches no remote but
-/// a local one (`GIT_ALLOW_PROTOCOL`, which no config of the repo's widens;
-/// it stops an older git's fetch too). Otherwise a promisor remote's URL
-/// picks the transport, or the remote helper, git starts for it.
+/// marks and the search need no remote: git fetches nothing a partial clone
+/// lacks (`GIT_NO_LAZY_FETCH`, git 2.44 and later) and reaches none
+/// (`GIT_ALLOW_PROTOCOL` empty, which no config of the repo's widens; it
+/// stops an older git's fetch too, a local one included, whose file
+/// transport runs the repo's own `uploadpack`). Otherwise a promisor
+/// remote's URL picks the transport, or the remote helper, git starts for it.
 pub(crate) const OFFLINE: [(&str, &str); 2] =
-    [("GIT_NO_LAZY_FETCH", "1"), ("GIT_ALLOW_PROTOCOL", "file")];
+    [("GIT_NO_LAZY_FETCH", "1"), ("GIT_ALLOW_PROTOCOL", "")];
 
 /// Runs `req` here or on its machine with [`OFFLINE`] set: the one way this
 /// crate runs a program (a test holds it to that).
@@ -1368,7 +1369,7 @@ mod tests {
     fn everything_it_runs_runs_offline() {
         assert_eq!(
             OFFLINE,
-            [("GIT_NO_LAZY_FETCH", "1"), ("GIT_ALLOW_PROTOCOL", "file")]
+            [("GIT_NO_LAZY_FETCH", "1"), ("GIT_ALLOW_PROTOCOL", "")]
         );
         let req = offline(ExecRequest::new("git", ["status"]).env("PATH", "/bin"));
         let set = |k: &str, v: &str| req.env.contains(&(k.to_owned(), v.to_owned()));
@@ -1454,6 +1455,97 @@ mod tests {
             let attached = unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) } > 1;
             println!("CONSOLE={}", if attached { "some" } else { "none" });
         }
+    }
+
+    /// A git before 2.44 ignores `GIT_NO_LAZY_FETCH`: a partial clone whose
+    /// promisor is a local repo fetches what it lacks over the file
+    /// transport, which runs the repo's own `remote.<name>.uploadpack`.
+    /// [`OFFLINE`] lets no transport through, so that git fetches nothing.
+    #[cfg(unix)]
+    #[test]
+    fn offline_stops_an_older_git_fetching_from_a_local_promisor() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let at = |p: &str| tmp.path().join(p);
+        let git = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args(["-c", "commit.gpgSign=false"])
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "git {args:?}: {err}");
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        std::fs::create_dir(at("src")).unwrap();
+        git(&at("src"), &["init", "-q"]);
+        std::fs::write(at("src/a.txt"), "1\n").unwrap();
+        git(&at("src"), &["add", "a.txt"]);
+        git(&at("src"), &["commit", "-q", "-m", "one"]);
+        let src = at("src").display().to_string();
+        git(tmp.path(), &["clone", "-q", "--no-hardlinks", &src, "c"]);
+        let c = at("c");
+        // The clone lacks HEAD's tree, as a `--filter=tree:0` one does, and
+        // its uploadpack leaves a mark.
+        let tree = git(&c, &["rev-parse", "HEAD^{tree}"]);
+        std::fs::remove_file(c.join(format!(".git/objects/{}/{}", &tree[..2], &tree[2..])))
+            .unwrap();
+        let (mark, hit) = (at("ran"), at("hit.sh"));
+        let body = format!("#!/bin/sh\ntouch '{}'\n", mark.display());
+        std::fs::write(&hit, body + "exec git-upload-pack \"$@\"\n").unwrap();
+        std::fs::set_permissions(&hit, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let hit = hit.display().to_string();
+        for (k, v) in [
+            ("remote.origin.promisor", "true"),
+            ("extensions.partialClone", "origin"),
+            ("remote.origin.uploadpack", hit.as_str()),
+        ] {
+            git(&c, &["config", k, v]);
+        }
+        // A git that drops GIT_NO_LAZY_FETCH, and so do the ones it starts.
+        let real = git(tmp.path(), &["--exec-path"]);
+        let old = at("old-git");
+        std::fs::create_dir(&old).unwrap();
+        for e in std::fs::read_dir(&real).unwrap().flatten() {
+            if e.file_name() != "git" {
+                std::os::unix::fs::symlink(e.path(), old.join(e.file_name())).unwrap();
+            }
+        }
+        let wrapper = format!("#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '{real}/git' \"$@\"\n");
+        std::fs::write(old.join("git"), wrapper).unwrap();
+        std::fs::set_permissions(old.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!(
+            "{}:{}",
+            old.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let status = |env: &[(&str, &str)]| {
+            let _ = std::fs::remove_file(&mark);
+            let _ = Command::new(old.join("git"))
+                .args(["status", "--porcelain"])
+                .current_dir(&c)
+                .env("GIT_EXEC_PATH", &old)
+                .env("PATH", &path)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .envs(env.iter().copied())
+                .output()
+                .unwrap();
+            mark.exists()
+        };
+        assert!(
+            !status(&OFFLINE),
+            "a git before 2.44 fetched from the local promisor, running its uploadpack"
+        );
+        assert!(
+            status(&[]),
+            "without OFFLINE it didn't fetch either: this proves nothing"
+        );
     }
 
     fn p(dir: &tempfile::TempDir, rel: &str) -> String {

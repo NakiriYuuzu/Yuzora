@@ -954,7 +954,12 @@ All of it is in `herdr.d.ts`. In short:
   `watchFolder(dir)` (here only; poll a remote space's folder): resolves with the changed paths the next time anything
   under `dir` changes. On Linux, Git-ignored directories and Git objects are skipped,
   and trees above 4096 non-ignored directories reject the watch; use a timer fallback.
-  macOS and Windows watch recursively, including ignored directories.
+  <!-- yuzora(perf): -->
+  macOS and Windows watch recursively, but skip paths inside a directory that
+  `dir`'s own `.gitignore` or `dir/.git/info/exclude` ignores (`target/`, `node_modules/`;
+  watching `repo/src` doesn't read `repo/.gitignore`): a mod that needs those changes polls
+  with a timer. An ignored file itself (`.env`) is still reported, and so is everything in `.git`.
+  <!-- /yuzora(perf) -->
   A returned root path means refresh everything (the pending paths are bounded).
   Files also refreshes on its 10-second timer:
   `cx.spawn(async (cx) => { for (;;) { await watchFolder(dir); this.reload(); cx.notify(); } })`.
@@ -1038,7 +1043,7 @@ with these differences.
 <!-- yuzora:lane:L1:start -->
 ### The workspace shell
 
-- The tab bar is `yuzora-shell-tabs`: every Space's tabs, each with its Space's badge. Its "New pane" menu puts
+- The tab bar is `yuzora-shell-tabs`: the current Space's tabs only (the sidebar tells Spaces apart), each with its Space's badge. Its "New pane" menu puts
   a tool pane, a terminal or an agent right of or below the focused pane (`pane.split {direction, pane, mod, props}`).
   A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
 - A person's `space.new` with no arguments but `machine` (a key, a click, a menu, a mod's `run()`) opens the

@@ -39,6 +39,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 fancy-regex = "0.19"
 notify = "7"
+# yuzora(perf): the folder watch skips what .gitignore ignores (already in the lock via yuzora-files).
+ignore = "0.4"
 sha2 = "0.10"
 # yuzora: the Yuzora crates, wired in by src/yuzora/mod.rs only. Lanes change
 # their own crate's Cargo.toml, never this list.
