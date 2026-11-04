@@ -224,6 +224,8 @@ fn command(req: &ExecRequest) -> Command {
     let mut cmd = Command::new(&req.program);
     cmd.args(&req.args).envs(req.env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.current_dir(req.cwd.as_ref().map(PathBuf::from).unwrap_or_else(crate::paths::home_dir));
+    // The app has no console on Windows: without this every call opens a window.
+    crate::spawn::no_window(&mut cmd);
     // Its own process group, so a timeout can end everything it started.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);

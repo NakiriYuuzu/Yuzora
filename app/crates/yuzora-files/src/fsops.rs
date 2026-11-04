@@ -1410,6 +1410,53 @@ mod tests {
         );
     }
 
+    /// The folder listing, the tree's git status, the search and the trust
+    /// scan all start their programs through [`run`]: that start opens no
+    /// console window on Windows. The program here is this test binary
+    /// asking whether it has one; the control starts it by hand and must see ours.
+    #[cfg(windows)]
+    #[test]
+    fn run_starts_its_program_without_a_console_window() {
+        unsafe extern "system" {
+            fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+            fn AllocConsole() -> i32;
+        }
+        // The runner may have no console (CI): give it one, to hand on.
+        let attached = || {
+            let mut list = [0u32; 4];
+            // SAFETY: a buffer of the length it is given.
+            unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) != 0 }
+        };
+        if !attached() {
+            // SAFETY: no arguments.
+            unsafe { AllocConsole() };
+        }
+        assert!(attached(), "this process has no console to hand on");
+        let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        let args = ["--ignored", "--exact", "fsops::tests::console_probe", "--nocapture", "--test-threads=1"];
+        let by_hand = std::process::Command::new(&exe).args(args).output().unwrap();
+        assert!(String::from_utf8_lossy(&by_hand.stdout).contains("CONSOLE=some"), "control: {by_hand:?}");
+        let out = run(ExecRequest::new(exe, args)).unwrap();
+        assert!(out.stdout_text().contains("CONSOLE=none"), "{}", out.stdout_text());
+    }
+
+    /// The child of the test above.
+    #[test]
+    #[ignore = "a child process of run_starts_its_program_without_a_console_window"]
+    fn console_probe() {
+        #[cfg(windows)]
+        {
+            unsafe extern "system" {
+                fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+            }
+            let mut list = [0u32; 4];
+            // SAFETY: a buffer of the length it is given.
+            // CREATE_NO_WINDOW gives the child a console of its own, with only itself on it.
+            let attached = unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) } > 1;
+            println!("CONSOLE={}", if attached { "some" } else { "none" });
+        }
+    }
+
     /// A git before 2.44 ignores `GIT_NO_LAZY_FETCH`: a partial clone whose
     /// promisor is a local repo fetches what it lacks over the file
     /// transport, which runs the repo's own `remote.<name>.uploadpack`.

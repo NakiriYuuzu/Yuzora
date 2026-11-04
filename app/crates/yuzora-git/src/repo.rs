@@ -280,6 +280,7 @@ fn exec_plain(place: &Place, cmd: Git) -> GitResult<exec::Output> {
     args.extend(cmd.args.iter().cloned());
     let mut c = std::process::Command::new(&hc);
     c.args(&args).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    yuzora_core::spawn::no_window(&mut c);
     c.stdin(if cmd.stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() });
     let mut child = c.spawn().map_err(|e| GitError::Spawn(format!("cannot run {hc}: {e}")))?;
     if let Some(input) = cmd.stdin {
