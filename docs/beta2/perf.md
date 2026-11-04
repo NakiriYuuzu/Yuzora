@@ -139,5 +139,5 @@ popover 由 `herdr-app do yuzora-perf.toggle` 打開。排序切換與關閉按�
 已做：
 
 - **檔案側欄**（`yuzora-sidebar-files`）：資料夾有 watcher 時，10 秒計時器改成每 60 秒才完整重讀一次（只當安全網）；沒有 watcher（遠端、home、`/`）仍是 10 秒。
-- **資料夾 watcher**（`app/src/files.rs`）：macOS 與 Windows 的 watcher 遞迴監看整個資料夾，build 寫 `target/`、`node_modules/` 會一直喚醒側欄與 panel。現在事件會先用根目錄的 `.gitignore` 與 `.git/info/exclude` 過濾（只讀檔，不執行任何程式，所以不需要資料夾信任）。`.gitignore` 本身、`.git/` 底下的事件不過濾；watcher 掉事件（rescan）不過濾；規則檔改變後下一批就重讀。Linux 本來就用 git 修剪被忽略的資料夾，不變。
-  - 限制：只讀根目錄的規則，子資料夾的 `.gitignore` 與全域 ignore 不算。被 `.gitignore` 列出但已被 git 追蹤的檔案，變動不會觸發 watcher 事件，最多 60 秒後由安全網計時器反映（Linux 的 `git ls-files --others` 會區分，這裡不做）。
+- **資料夾 watcher**（`app/src/files.rs`）：macOS 與 Windows 的 watcher 遞迴監看整個資料夾，build 寫 `target/`、`node_modules/` 會一直喚醒側欄與 panel。現在位在**被 ignore 的資料夾裡**的事件，會先用根目錄的 `.gitignore` 與 `.git/info/exclude` 過濾掉（只讀檔，不執行任何程式，所以不需要資料夾信任）。被 ignore 的**單一檔案本身**（`.env`、`build.log`）照常回報，因為編輯器、Markdown、圖片檢視器用 `watchFolder(檔案所在資料夾)` 監看，根目錄的 `.env` 被外部改了也要知道，檔案樹新增 `.env.local` 也要馬上出現。`.gitignore` 本身、`.git/` 底下的事件不過濾；watcher 掉事件（rescan）不過濾；規則檔改變後下一批就重讀。Linux 本來就用 git 修剪被忽略的資料夾，不變。
+  - 限制：只讀根目錄的規則，子資料夾的 `.gitignore` 與全域 ignore 不算。被 ignore 的資料夾裡的變動（例如在檔案樹展開 `node_modules/`）最多 60 秒才反映（安全網計時器），與 Linux 修剪被忽略資料夾的行為一致。被 `.gitignore` 列出但已被 git 追蹤的資料夾，同樣只靠安全網（Linux 用 `git ls-files --others` 區分，這裡不做）。

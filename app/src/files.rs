@@ -224,7 +224,8 @@ fn collect_event(event: notify::Event, root: &Path, directories: &HashSet<PathBu
 }
 
 /// yuzora(perf): what the work tree's own `.gitignore` and `.git/info/exclude`
-/// say is not worth a reload (a build writing `target/` or `node_modules/`).
+/// say is not worth a reload: whatever lies inside an ignored folder (a build
+/// writing `target/` or `node_modules/`). Ignored files themselves still count.
 /// Only files are read, no program runs, so it needs no trust. FSEvents and
 /// Windows watch the whole tree; Linux prunes ignored folders instead.
 struct Ignores(Option<ignore::gitignore::Gitignore>);
@@ -250,7 +251,10 @@ impl Ignores {
         if path.components().any(|c| c.as_os_str() == ".git") || path.file_name().is_some_and(|n| n == ".gitignore") {
             return false;
         }
-        path.starts_with(g.path()) && g.matched_path_or_any_parents(path, path.is_dir()).is_ignore()
+        // Only what lies inside an ignored folder (target/, node_modules/), as on Linux:
+        // an ignored file itself (.env, build.log) is still reported, for the editor
+        // that watches its folder and the tree that lists it.
+        path.starts_with(g.path()) && path.parent().is_some_and(|dir| dir.starts_with(g.path()) && dir != g.path() && g.matched_path_or_any_parents(dir, true).is_ignore())
     }
 
     /// The event without the paths that are ignored; None when none is left.
@@ -468,7 +472,10 @@ mod tests {
         let ig = Ignores::read(&root);
         let ev = |paths: &[&str]| notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Any)).add_path(root.join(paths[0]));
         assert!(ig.keep(ev(&["target/debug/app"])).is_none());
-        assert!(ig.keep(ev(&["build.log"])).is_none());
+        assert!(ig.keep(ev(&["target"])).is_some());
+        // An ignored file is reported: an editor watching the folder has it open.
+        assert!(ig.keep(ev(&["build.log"])).is_some());
+        assert!(ig.keep(ev(&[".env"])).is_some());
         assert!(ig.keep(ev(&["src/main.rs"])).is_some());
         assert!(ig.keep(ev(&[".gitignore"])).is_some());
         assert!(ig.keep(ev(&[".git/HEAD"])).is_some());
@@ -483,20 +490,23 @@ mod tests {
     /// is never reported, and a change that follows it still is.
     #[cfg(not(target_os = "linux"))]
     #[test]
-    fn a_build_in_an_ignored_folder_is_not_reported_by_the_watcher() {
+    fn a_build_in_an_ignored_folder_is_not_reported_but_ignored_files_are() {
         let root = test_repo("ignores-live");
         std::fs::create_dir_all(root.join("target")).unwrap();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n.env\n*.log\n").unwrap();
         install_watch(&root);
         std::thread::sleep(BATCH * 3);
         for i in 0..20 {
             std::fs::write(root.join(format!("target/o{i}")), "x").unwrap();
         }
         std::fs::write(root.join("src/a.rs"), "x").unwrap();
+        // Ignored files in the watched folder itself: an editor on .env is told.
+        std::fs::write(root.join(".env"), "x").unwrap();
+        std::fs::write(root.join("x.log"), "x").unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut seen = Vec::new();
-        while !invalidates(&seen, &root.join("src/a.rs")) {
+        while !(invalidates(&seen, &root.join("src/a.rs")) && invalidates(&seen, &root.join(".env")) && invalidates(&seen, &root.join("x.log"))) {
             seen.extend(block_on_until(next_change(root.to_string_lossy().into_owned()), deadline).unwrap());
         }
         assert!(!seen.iter().any(|p| p.contains("target")), "{seen:?}");
