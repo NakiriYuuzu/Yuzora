@@ -169,3 +169,11 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 - **L2、L5**：#194、#192 在淺色主題下的對比問題（git graph 色盤、ref chip、編輯器與 Markdown 的 One Dark 語法色、警告橫幅等）已列給總指揮轉交。原則同上：顏色從 theme 名稱或 `tokens()` 取，不寫死。
 - **L8**：狀態列最右端（指令面板快捷鍵右邊）保留給 L8 的 `yuzora-perf`，由 L8 把 layout 的 `status` 節點改成 row。L1 維持 `status` 的 id 與 26px 高度，不在快捷鍵右邊加東西；`yuzora-statusbar` 根元素的背景（`theme().chrome`）或上緣分隔線（1px，`theme().divider ?? theme().border`）若要改，要在 PR 註明讓 L8 對齊。
 - **總指揮**：lanes.md 的同步檢查用 `git grep -n 'yuzora:'`，抓不到 lane 用的 `yuzora(L1):` 註記，建議改成 `git grep -n 'yuzora[:(]'`。
+
+## 狀態列 Git 的呼叫次數（beta.3 效能）
+
+`yuzora-shell/src/git.rs` 的 `status()` 原本循序跑 3 個 `git`（`symbolic-ref`、`config --get-regexp`、`for-each-ref`），每個在 Windows 都付 `remote::run` 約 52 ms 的輪詢下限，遠端則各是一次 `hc exec` 往返。現在：
+
+- **遠端（`machine` 有值）**：三步合成一個 `sh -c` 在那台機器上依序跑（選項、順序、停止條件與 `--no-lazy-fetch` 都和逐步版相同：不是 repo 或 detached 就停、promisor 才加 `--no-lazy-fetch`），一次往返。那台機器沒有 `sh`（或沒回應）就退回逐步版；逾時照樣當逾時。
+- **本機與退回路徑**：`symbolic-ref` 與 `config` 互不相依，改成並行（3 輪變 2 輪）。
+- 安全條件不變（L1 #197）：只讀 refs 與 config，不讀 index 或 work tree，不執行 filter、fsmonitor；測試守著（`a_machines_repo_filter_never_runs`、`a_machines_partial_clone_is_not_fetched_either`）。
