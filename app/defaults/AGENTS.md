@@ -954,7 +954,10 @@ All of it is in `herdr.d.ts`. In short:
   `watchFolder(dir)` (here only; poll a remote space's folder): resolves with the changed paths the next time anything
   under `dir` changes. On Linux, Git-ignored directories and Git objects are skipped,
   and trees above 4096 non-ignored directories reject the watch; use a timer fallback.
-  macOS and Windows watch recursively, including ignored directories.
+  macOS and Windows watch recursively, but skip paths inside a directory that the
+  root `.gitignore` or `.git/info/exclude` ignores (`target/`, `node_modules/`): a mod
+  that needs those changes polls with a timer. An ignored file itself (`.env`) is still
+  reported, and so is everything in `.git`.
   A returned root path means refresh everything (the pending paths are bounded).
   Files also refreshes on its 10-second timer:
   `cx.spawn(async (cx) => { for (;;) { await watchFolder(dir); this.reload(); cx.notify(); } })`.

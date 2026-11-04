@@ -230,6 +230,12 @@ fn collect_event(event: notify::Event, root: &Path, directories: &HashSet<PathBu
 /// Windows watch the whole tree; Linux prunes ignored folders instead.
 struct Ignores(Option<ignore::gitignore::Gitignore>);
 
+/// Whether the ignore rules may be different now: a rules file was named, or the
+/// backend says it lost events (a rescan), so one may have changed unseen.
+fn rules_may_have_changed(event: &notify::Event) -> bool {
+    event.need_rescan() || event.paths.iter().any(|p| p.file_name().is_some_and(|n| n == ".gitignore" || n == "exclude"))
+}
+
 impl Ignores {
     fn read(root: &Path) -> Self {
         if cfg!(target_os = "linux") {
@@ -305,13 +311,12 @@ fn start_folder(root: &Path) -> Result<std::sync::mpsc::Sender<()>, String> {
                 match events.recv_timeout(left) {
                     Ok(Ok(event)) => {
                         // yuzora(perf): the rules changed: read them again after this batch.
-                        if event.paths.iter().any(|p| p.file_name().is_some_and(|n| n == ".gitignore" || n == "exclude")) {
-                            reread = true;
-                        }
+                        reread |= rules_may_have_changed(&event);
                         let Some(event) = ignores.keep(event) else { continue };
                         refresh |= collect_event(event, &root, &directories, &mut pending, &mut removed);
                     }
                     Ok(Err(_)) => {
+                        reread = true;
                         removed.extend(directories.iter().cloned());
                         refresh = true;
                         pending.clear();
@@ -320,14 +325,16 @@ fn start_folder(root: &Path) -> Result<std::sync::mpsc::Sender<()>, String> {
                     Err(_) => break,
                 }
             }
-            if reread {
-                ignores = Ignores::read(&root);
-            }
             if overflow.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                // Events were lost: the rules may be among what changed.
+                reread = true;
                 removed.extend(directories.iter().cloned());
                 refresh = true;
                 pending.clear();
                 pending.insert(root.to_string_lossy().into_owned());
+            }
+            if reread {
+                ignores = Ignores::read(&root);
             }
             if cfg!(target_os = "linux") && refresh {
                 // Rescan off the notify callback thread: adding watches blocks on it.
@@ -474,7 +481,7 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join(".gitignore"), "target/\n*.log\n").unwrap();
         let ig = Ignores::read(&root);
-        let ev = |paths: &[&str]| notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Any)).add_path(root.join(paths[0]));
+        let ev = |paths: &[&str]| notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Any)).add_path(under(&root, paths[0]));
         assert!(ig.keep(ev(&["target/debug/app"])).is_none());
         assert!(ig.keep(ev(&["target"])).is_some());
         // An ignored file is reported: an editor watching the folder has it open.
@@ -490,9 +497,15 @@ mod tests {
         assert!(ig.keep(lost).is_some());
     }
 
+    /// `rel` ("a/b") below `root`, one component at a time (a `/` is not a separator everywhere).
+    #[cfg(not(target_os = "linux"))]
+    fn under(root: &Path, rel: &str) -> PathBuf {
+        rel.split('/').fold(root.to_path_buf(), |p, part| p.join(part))
+    }
+
     #[cfg(not(target_os = "linux"))]
     fn kept(root: &Path, ig: &Ignores, rel: &str) -> bool {
-        ig.keep(notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Any)).add_path(root.join(rel))).is_some()
+        ig.keep(notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Any)).add_path(under(root, rel))).is_some()
     }
 
     /// yuzora(perf): rules that would hide too much are read the way git reads them.
@@ -560,6 +573,17 @@ mod tests {
             seen.extend(block_on_until(next_change(root.to_string_lossy().into_owned()), deadline).unwrap());
         }
         assert!(!seen.iter().any(|p| p.contains("gen")), "{seen:?}");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn the_rules_are_read_again_when_events_were_lost_or_a_rules_file_changed() {
+        let ev = |kind| notify::Event::new(kind);
+        let any = notify::EventKind::Modify(notify::event::ModifyKind::Any);
+        assert!(rules_may_have_changed(&ev(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan)));
+        assert!(rules_may_have_changed(&ev(any).add_path(PathBuf::from("/r/.gitignore"))));
+        assert!(rules_may_have_changed(&ev(any).add_path(PathBuf::from("/r/.git/info/exclude"))));
+        assert!(!rules_may_have_changed(&ev(any).add_path(PathBuf::from("/r/src/a.rs"))));
     }
 
     /// yuzora(perf): through the real watcher, a burst into an ignored folder
