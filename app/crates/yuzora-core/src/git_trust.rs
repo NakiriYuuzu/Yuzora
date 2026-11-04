@@ -226,9 +226,15 @@ fn programs_here_at<E>(key: &str, top: &str, run: impl FnMut(&[&str]) -> Result<
     if let Some(keys) = kept_answer(&id, top) {
         return Ok(keys);
     }
+    // The files as they were before the scan: the answer is kept only if
+    // they still are after it. A `.git` swapped in meanwhile, its files'
+    // times as old as they were, would otherwise pass for the one read.
+    let before = found_dirs(Path::new(top)).and_then(|dirs| stamps_of(&dirs));
     let (keys, layout) = scan_answer(run)?;
     if let Some((git_dir, common)) = layout
+        && let Some(before) = before
         && let Some(read) = read_from(&git_dir, &common)
+        && (&read.dirs, &read.stamps) == (&before.dirs, &before.stamps)
         && read.latest.is_none_or(|t| began.duration_since(t).is_ok_and(|d| d >= RACY))
     {
         let mut all = kept().lock().unwrap_or_else(|e| e.into_inner());
@@ -286,7 +292,8 @@ fn kept_answer(id: &str, top: &str) -> Option<Vec<String>> {
 ///   and the git dir's `config.worktree`. Neither may name an `include` (any
 ///   `include` in them, as bytes, whatever case): an included file could be
 ///   anywhere and change unseen.
-/// - The index (`ls-files -s`; a gitlink in it already isn't plain), the
+/// - The index (`ls-files -s`; a gitlink in it already isn't plain), which
+///   must hold all its entries itself ([`index_stands_alone`]), the
 ///   common dir's `remotes/` and `branches/` (their listing too), and no
 ///   `modules/` in either dir.
 ///
@@ -296,6 +303,32 @@ fn kept_answer(id: &str, top: &str) -> Option<Vec<String>> {
 /// every git command there fails too.
 fn read_from(git_dir: &str, common: &str) -> Option<Read> {
     let dirs = (std::fs::canonicalize(git_dir).ok()?, std::fs::canonicalize(common).ok()?);
+    let read = stamps_of(&dirs)?;
+    let (git_dir, common) = (dirs.0.as_path(), dirs.1.as_path());
+    let missing = |path: PathBuf| read.stamps.iter().any(|(p, _, s)| *p == path && *s == Stamp::Missing);
+    if !missing(git_dir.join("modules")) || !missing(common.join("modules")) {
+        return None;
+    }
+    for config in [common.join("config"), git_dir.join("config.worktree")] {
+        match std::fs::read(&config) {
+            Ok(bytes) if bytes.windows(7).any(|w| w.eq_ignore_ascii_case(b"include")) => return None,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+    }
+    match std::fs::read(git_dir.join("index")) {
+        Ok(bytes) if !index_stands_alone(&bytes)? => return None,
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return None,
+    }
+    Some(read)
+}
+
+/// The fingerprint files of a git dir and common dir ([`read_from`] says
+/// which) as they are now, and the latest time one of them changed.
+fn stamps_of(dirs: &(PathBuf, PathBuf)) -> Option<Read> {
     let (git_dir, common) = (dirs.0.as_path(), dirs.1.as_path());
     let files = [
         (git_dir.join("HEAD"), Look::Whole),
@@ -315,19 +348,71 @@ fn read_from(git_dir: &str, common: &str) -> Option<Read> {
         read.latest = read.latest.max(changed);
         read.stamps.push((path, look, stamp));
     }
-    let missing = |path: PathBuf| read.stamps.iter().any(|(p, _, s)| *p == path && *s == Stamp::Missing);
-    if !missing(git_dir.join("modules")) || !missing(common.join("modules")) {
+    Some(read)
+}
+
+/// Whether an index file holds all its entries itself: no split index (a
+/// `link` extension; entries in a `sharedindex.*` file) and no sparse
+/// directories (`sdir`; git expands them from trees). Either reads other
+/// files, which may change while the index doesn't (git doesn't check them
+/// against their names). None when it doesn't read as an index (with SHA-1
+/// or SHA-256 ids, version 2 to 4).
+fn index_stands_alone(bytes: &[u8]) -> Option<bool> {
+    [20, 32].into_iter().find_map(|id_len| index_extensions(bytes, id_len)).map(|ext| !ext.iter().any(|e| e == b"link" || e == b"sdir"))
+}
+
+/// The extensions of an index whose ids are `id_len` bytes long, when it
+/// reads as one to its trailing checksum.
+fn index_extensions(bytes: &[u8], id_len: usize) -> Option<Vec<[u8; 4]>> {
+    let be32 = |at: usize| bytes.get(at..at.checked_add(4)?).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    if bytes.get(..4)? != b"DIRC" {
         return None;
     }
-    for config in [common.join("config"), git_dir.join("config.worktree")] {
-        match std::fs::read(&config) {
-            Ok(bytes) if bytes.windows(7).any(|w| w.eq_ignore_ascii_case(b"include")) => return None,
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return None,
-        }
+    let version = be32(4)?;
+    if !(2..=4).contains(&version) {
+        return None;
     }
-    Some(read)
+    let mut at = 12usize;
+    // Version 4: the last path's length (each path drops some of the last one's end).
+    let mut last = 0usize;
+    for _ in 0..be32(8)? {
+        // Times, device, inode, mode, owner, size; the id; the flags.
+        let flags_at = at.checked_add(40 + id_len)?;
+        let flags = u16::from_be_bytes(bytes.get(flags_at..flags_at + 2)?.try_into().ok()?);
+        let mut path = flags_at + 2;
+        if version >= 3 && flags & 0x4000 != 0 {
+            path += 2;
+        }
+        let mut drop = 0usize;
+        if version == 4 {
+            // How much of the last path to drop, in 7-bit groups as git writes it.
+            let mut byte = *bytes.get(path)?;
+            drop = usize::from(byte & 127);
+            while byte & 128 != 0 {
+                path += 1;
+                byte = *bytes.get(path)?;
+                drop = drop.checked_add(1)?.checked_mul(128)?.checked_add(usize::from(byte & 127))?;
+            }
+            path += 1;
+        }
+        let end = path + bytes.get(path..)?.iter().position(|b| *b == 0)?;
+        let len = if version == 4 { last.checked_sub(drop)? + (end - path) } else { end - path };
+        // The flags hold the path's length (up to 0xfff): an entry read from
+        // the wrong place doesn't match it.
+        if usize::from(flags & 0xfff) != len.min(0xfff) {
+            return None;
+        }
+        last = len;
+        // Versions 2 and 3 pad each entry with 1 to 8 NULs to a multiple of 8.
+        at = if version == 4 { end + 1 } else { at + ((end - at + 8) & !7) };
+    }
+    let checksum = bytes.len().checked_sub(id_len)?;
+    let mut ext = Vec::new();
+    while at < checksum {
+        ext.push(bytes.get(at..at + 4)?.try_into().ok()?);
+        at = at.checked_add(8)?.checked_add(be32(at + 4)? as usize)?;
+    }
+    (at == checksum).then_some(ext)
 }
 
 /// The git dir and common dir the top's `.git` leads to, as git reads them
@@ -2336,5 +2421,139 @@ mod tests {
         assert_eq!(plain_layout(b"sub\0\0end\0yuzora-trust-scan\0"), None, "no dirs");
         assert_eq!(plain_layout(b"legacy\0x\0dirs\0/g\n/c\0end\0yuzora-trust-scan\0"), None, "not the top's");
         assert_eq!(plain_layout(b"sub\0\0dirs\0/g\0end\0yuzora-trust-scan\0"), None, "one dir");
+    }
+
+    // A `.git` swapped for one made earlier while the scan ran: its files'
+    // times are as old as they were, so only how they were before tells.
+    #[cfg(unix)]
+    #[test]
+    fn a_git_dir_swapped_in_during_the_scan_is_never_kept() {
+        let k = "kept-swap";
+        let (dir, top, git) = scratch_dir(k);
+        git("", &["init", "-q"]);
+        let g = Path::new(&top).join(".git");
+        assert!(std::process::Command::new("cp").args(["-R", &g.to_string_lossy(), &dir.join("evil").to_string_lossy()]).status().unwrap().success());
+        git("", &["config", "--file", &dir.join("evil/config").to_string_lossy(), "core.sshCommand", "true"]);
+        let mut runs = 0;
+        let got = programs_here_at(
+            k,
+            &top,
+            |args| {
+                runs += 1;
+                let out = std::process::Command::new("git").args(READ_FLAGS).args(args).current_dir(&top).output()?;
+                std::fs::rename(&g, dir.join("old")).unwrap();
+                std::fs::rename(dir.join("evil"), &g).unwrap();
+                Ok::<_, std::io::Error>(whole(out.status.code().unwrap_or(-1), out.stdout))
+            },
+            later(),
+        );
+        assert_eq!((got.unwrap(), runs), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1), "kept for the git dir swapped in");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Nothing to look at before the scan (the git dir its gitfile names came
+    // only meanwhile): nothing tells the answer is still the one read.
+    #[cfg(unix)]
+    #[test]
+    fn a_scan_with_nothing_before_it_is_never_kept() {
+        let k = "kept-nothing-before";
+        let (dir, top, git) = scratch_dir(k);
+        git("", &["init", "-q"]);
+        std::fs::rename(Path::new(&top).join(".git"), dir.join("made.git")).unwrap();
+        std::fs::write(Path::new(&top).join(".git"), format!("gitdir: {}\n", dir.join("later.git").display())).unwrap();
+        let mut runs = 0;
+        let got = programs_here_at(
+            k,
+            &top,
+            |args| {
+                runs += 1;
+                std::fs::rename(dir.join("made.git"), dir.join("later.git")).unwrap();
+                let out = std::process::Command::new("git").args(READ_FLAGS).args(args).current_dir(&top).output()?;
+                Ok::<_, std::io::Error>(whole(out.status.code().unwrap_or(-1), out.stdout))
+            },
+            later(),
+        );
+        assert_eq!((got.unwrap(), runs), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1), "kept with nothing to look at before the scan");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // A split index keeps its entries in `sharedindex.*`, a sparse one
+    // expands from trees: files that may change while the index doesn't.
+    #[cfg(unix)]
+    #[test]
+    fn an_index_that_reads_other_files_is_never_kept() {
+        let k = "kept-split";
+        let (dir, top, git) = kept_repo(k);
+        git("", &["update-index", "--split-index"]);
+        assert!(std::fs::read_dir(Path::new(&top).join(".git")).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("sharedindex.")));
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1), "kept with a split index");
+        git("", &["update-index", "--no-split-index"]);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "kept");
+        for d in ["in", "out"] {
+            std::fs::create_dir_all(Path::new(&top).join(d)).unwrap();
+            std::fs::write(Path::new(&top).join(d).join("f"), "x\n").unwrap();
+        }
+        git("", &["add", "in", "out"]);
+        git("", &["commit", "-qm", "dirs"]);
+        git("", &["sparse-checkout", "set", "--cone", "--sparse-index", "in"]);
+        assert!(git("", &["ls-files", "--sparse"]).lines().any(|l| l == "out/"), "the index isn't sparse, so this test proves nothing");
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1), "kept with a sparse index");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Every index git writes reads to its end: versions 2 to 4 (3 when an
+    // entry has extended flags, 4 with paths shortened), SHA-1 and SHA-256.
+    #[cfg(unix)]
+    #[test]
+    fn indexes_of_each_version_and_hash_are_kept() {
+        let k = "kept-versions";
+        let (dir, top, git) = kept_repo(k);
+        // An entry as long as a multiple of 8 (the header and `ab`) takes 8 NULs.
+        // In version 4, `ab` after 129 `a`s drops 128: a number of two bytes,
+        // the second NUL.
+        for name in ["ab".to_string(), "a".repeat(129)] {
+            std::fs::write(Path::new(&top).join(&name), "x\n").unwrap();
+            git("", &["add", &name]);
+        }
+        std::fs::write(Path::new(&top).join("new"), "x\n").unwrap();
+        git("", &["add", "-N", "new"]);
+        assert_eq!(kept_scan(k, &top, later()).1, 1);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "kept with version 3");
+        git("", &["update-index", "--index-version", "4"]);
+        assert_eq!(kept_scan(k, &top, later()).1, 1);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "kept with version 4");
+        std::fs::remove_dir_all(&dir).unwrap();
+        let k = "kept-sha256";
+        let (dir, top, git) = scratch_dir(k);
+        git("", &["init", "-q", "--object-format=sha256"]);
+        std::fs::write(Path::new(&top).join("f"), "x\n").unwrap();
+        git("", &["add", "f"]);
+        assert_eq!(kept_scan(k, &top, later()).1, 1);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "kept with SHA-256");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_an_index_that_reads_to_its_end_stands_alone() {
+        assert_eq!(index_stands_alone(b""), None);
+        assert_eq!(index_stands_alone(b"DIRC\0\0\0\x02\0\0\0\0"), None, "no checksum");
+        let empty = [b"DIRC\0\0\0\x02\0\0\0\0".as_slice(), &[0; 20]].concat();
+        assert_eq!(index_stands_alone(&empty), Some(true));
+        let with = |ext: &[u8]| [b"DIRC\0\0\0\x02\0\0\0\0".as_slice(), ext, b"\0\0\0\x01x", &[0; 20]].concat();
+        assert_eq!(index_stands_alone(&with(b"link")), Some(false));
+        assert_eq!(index_stands_alone(&with(b"sdir")), Some(false));
+        assert_eq!(index_stands_alone(&with(b"TREE")), Some(true));
+        // One entry, `a`: 62 bytes before its path, 1 NUL after it.
+        let entry = |len: u8| [b"DIRC\0\0\0\x02\0\0\0\x01".as_slice(), &[0; 60], &[0, len], b"a\0", &[0; 20]].concat();
+        assert_eq!(index_stands_alone(&entry(1)), Some(true));
+        assert_eq!(index_stands_alone(&entry(2)), None, "flags that don't hold the path's length");
+        let past = [b"DIRC\0\0\0\x02\0\0\0\0TREE\0\0\0\x64x".as_slice(), &[0; 20]].concat();
+        assert_eq!(index_stands_alone(&past), None, "an extension past the checksum");
+        assert_eq!(index_stands_alone(&[b"DIRC\0\0\0\x05\0\0\0\0".as_slice(), &[0; 20]].concat()), None, "version 5");
     }
 }
