@@ -25,7 +25,8 @@ const REMOTE_GRACE: Duration = Duration::from_secs(5);
 /// After the program exits, how long its output may take to arrive. Anything
 /// it started in the background can keep the pipes open for good.
 const PIPE_GRACE: Duration = Duration::from_millis(500);
-/// How often an idle reader looks whether it should let go of its pipe.
+/// How often an idle reader looks whether it should let go of its pipe (Unix; on Windows it is cancelled).
+#[cfg(unix)]
 const READ_CHECK: Duration = Duration::from_millis(50);
 
 type FindHc = Box<dyn Fn() -> PathBuf + Send + Sync>;
@@ -237,17 +238,20 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     let mut child = cmd.spawn().map_err(|e| ExecError::Spawn(format!("cannot run {}: {e}", req.program)))?;
     let out = Drain::start(child.stdout.take().expect("piped stdout"), req.max_output);
     let err = Drain::start(child.stderr.take().expect("piped stderr"), req.max_output);
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) if start.elapsed() > req.timeout => {
-                kill_tree(&mut child);
-                let _ = child.wait();
-                return Err(ExecError::TimedOut { seconds: req.timeout.as_secs_f64(), machine: None });
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(e) => return Err(ExecError::Spawn(e.to_string())),
+    // yuzora(perf): a thread waits for the exit (no 10 ms polling: the answer comes the moment it exits).
+    let pid = child.id();
+    let (exited, status) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = exited.send(child.wait());
+    });
+    let status = match status.recv_timeout(req.timeout) {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return Err(ExecError::Spawn(e.to_string())),
+        Err(_) => {
+            kill_tree(pid);
+            // The waiting thread reaps it now.
+            let _ = status.recv_timeout(Duration::from_secs(5));
+            return Err(ExecError::TimedOut { seconds: req.timeout.as_secs_f64(), machine: None });
         }
     };
     // What the program wrote is already in the pipes; whatever it left running
@@ -259,25 +263,51 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
 
 /// Ends the program and everything it started: its process group on Unix
 /// (`process_group(0)` above), its process tree on Windows.
-fn kill_tree(child: &mut std::process::Child) {
+fn kill_tree(pid: u32) {
     #[cfg(unix)]
-    if let Ok(group) = libc::pid_t::try_from(child.id()) {
+    if let Ok(group) = libc::pid_t::try_from(pid) {
         // SAFETY: a plain syscall on the group this call created for the child.
-        unsafe { libc::killpg(group, libc::SIGKILL) };
+        unsafe {
+            libc::killpg(group, libc::SIGKILL);
+            libc::kill(group, libc::SIGKILL);
+        }
     }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let _ = Command::new("taskkill")
-            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        let killed = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
-            .status();
+            .status()
+            .is_ok_and(|s| s.success());
+        if !killed {
+            terminate(pid);
+        }
     }
-    let _ = child.kill();
+}
+
+/// Ends one process (`taskkill` not there, or it could not).
+#[cfg(windows)]
+fn terminate(pid: u32) {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+        fn TerminateProcess(process: *mut std::ffi::c_void, code: u32) -> i32;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    }
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    // SAFETY: a handle opened here for this one call and closed in it.
+    unsafe {
+        let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if !h.is_null() {
+            TerminateProcess(h, 1);
+            CloseHandle(h);
+        }
+    }
 }
 
 /// A pipe its reader can wait on without blocking on it for good.
@@ -306,22 +336,46 @@ fn readable(r: &impl Pipe, wait: Duration) -> std::io::Result<bool> {
     }
 }
 
-/// Whether `r` has something to read, or has ended, within `wait`.
+/// yuzora(perf): on Windows the reader blocks in `read` (no polling with a sleep: the bytes
+/// are taken the moment they arrive) and is cancelled from outside when it must let go.
 #[cfg(windows)]
-fn readable(r: &impl Pipe, wait: Duration) -> std::io::Result<bool> {
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn PeekNamedPipe(pipe: *mut std::ffi::c_void, buf: *mut std::ffi::c_void, size: u32, read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
+mod blocking {
+    use std::sync::{Arc, Mutex};
+
+    /// A pipe handle that can be told to stop a read pending on it, for as long as it is open.
+    #[derive(Clone)]
+    pub struct Cancel {
+        handle: usize,
+        open: Arc<Mutex<bool>>,
     }
-    let mut available = 0u32;
-    // SAFETY: the pipe `r` owns and one out-parameter, alive for the whole call.
-    let ok = unsafe { PeekNamedPipe(r.as_raw_handle(), std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut available, std::ptr::null_mut()) };
-    // Failing means the pipe ended (the read then says so).
-    if ok == 0 || available > 0 {
-        return Ok(true);
+
+    impl Cancel {
+        pub fn new(handle: *mut std::ffi::c_void) -> Self {
+            Cancel { handle: handle as usize, open: Arc::new(Mutex::new(true)) }
+        }
+
+        /// The pipe is about to be closed: no cancel reaches a handle that is not this one any more.
+        pub fn closed(&self) {
+            *self.open.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        }
+
+        pub fn is_open(&self) -> bool {
+            *self.open.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        /// Ends a read pending on the pipe (it fails with "aborted").
+        pub fn cancel(&self) {
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn CancelIoEx(file: *mut std::ffi::c_void, overlapped: *mut std::ffi::c_void) -> i32;
+            }
+            let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+            if *open {
+                // SAFETY: the handle is still open (the reader marks it closed, under this lock, before it drops it).
+                unsafe { CancelIoEx(self.handle as *mut std::ffi::c_void, std::ptr::null_mut()) };
+            }
+        }
     }
-    std::thread::sleep(wait);
-    Ok(false)
 }
 
 /// One output stream read on its own thread, up to a limit (the rest is
@@ -332,6 +386,8 @@ struct Drain {
     buf: Arc<Mutex<Vec<u8>>>,
     ended: mpsc::Receiver<()>,
     stop: Arc<AtomicBool>,
+    #[cfg(windows)]
+    cancel: blocking::Cancel,
 }
 
 impl Drain {
@@ -341,10 +397,15 @@ impl Drain {
         let (tx, ended) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let (into, stopped) = (buf.clone(), stop.clone());
+        #[cfg(windows)]
+        let cancel = blocking::Cancel::new(std::os::windows::io::AsRawHandle::as_raw_handle(&r));
+        #[cfg(windows)]
+        let reader_cancel = cancel.clone();
         std::thread::spawn(move || {
             let mut chunk = [0u8; 16 << 10];
             // Until the stream ends or the Drain is dropped; the pipe closes with `r`.
             while !stopped.load(Ordering::Relaxed) {
+                #[cfg(unix)]
                 match readable(&r, READ_CHECK) {
                     Ok(true) => {}
                     Ok(false) => continue,
@@ -361,9 +422,17 @@ impl Drain {
                     Err(_) => break,
                 }
             }
+            #[cfg(windows)]
+            reader_cancel.closed();
             let _ = tx.send(());
         });
-        Drain { buf, ended, stop }
+        Drain {
+            buf,
+            ended,
+            stop,
+            #[cfg(windows)]
+            cancel,
+        }
     }
 
     /// Everything read once the stream ends, or what was read by `until`.
@@ -376,6 +445,21 @@ impl Drain {
 impl Drop for Drain {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        // A reader blocked in `read` (a program's background child holds the other end)
+        // is told to stop; if it was not in `read` yet, the next tries find it.
+        #[cfg(windows)]
+        if self.cancel.is_open() {
+            let cancel = self.cancel.clone();
+            std::thread::spawn(move || {
+                for _ in 0..50 {
+                    cancel.cancel();
+                    std::thread::sleep(Duration::from_millis(20));
+                    if !cancel.is_open() {
+                        break;
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -496,6 +580,54 @@ mod tests {
         let started = Instant::now();
         let out = run(&ExecRequest::new("sh", ["-c", "printf done; printf warn >&2; sleep 4 & exit 0"]).timeout(Duration::from_secs(30))).unwrap();
         assert_eq!((out.code, out.stdout_text().as_str(), out.stderr_text().as_str()), (0, "done", "warn"));
+        assert!(started.elapsed() < Duration::from_secs(3), "waited {:?}", started.elapsed());
+    }
+
+    /// A program that ends only when asked to (about `secs` seconds), on any Windows: `ping`.
+    #[cfg(windows)]
+    fn waits(ip: &str, secs: u32) -> String {
+        format!("ping -n {} {ip} > nul", secs + 1)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_local_runs_capture_output_and_stop_at_the_timeout() {
+        let out = run(&ExecRequest::new("cmd", ["/c", "echo out& echo err 1>&2& exit 3"])).unwrap();
+        assert_eq!((out.code, out.stdout_text().trim(), out.stderr_text().trim()), (3, "out", "err"));
+        let capped = run(&ExecRequest::new("cmd", ["/c", "echo 0123456789"]).max_output(4)).unwrap();
+        assert_eq!(capped.stdout_text(), "0123");
+        let started = Instant::now();
+        let slow = run(&ExecRequest::new("cmd", ["/c", waits("127.0.0.71", 20).as_str()]).timeout(Duration::from_millis(300)));
+        assert!(matches!(slow, Err(ExecError::TimedOut { .. })));
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+        assert!(matches!(run(&ExecRequest::new("yuzora-no-such-program", Vec::<String>::new())), Err(ExecError::Spawn(_))));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_a_timeout_ends_what_the_program_started() {
+        let ip = "127.0.0.77";
+        let slow = run(&ExecRequest::new("cmd", ["/c", waits(ip, 60).as_str()]).timeout(Duration::from_millis(500)));
+        assert!(matches!(slow, Err(ExecError::TimedOut { .. })));
+        let check = format!("@(Get-CimInstance Win32_Process -Filter \"Name='PING.EXE'\" | Where-Object {{ $_.CommandLine -like '*{ip}*' }}).Count");
+        let gone = (0..50).any(|_| {
+            let n = run(&ExecRequest::new("powershell", ["-NoProfile", "-Command", check.as_str()])).unwrap().stdout_text();
+            let gone = n.trim() == "0";
+            if !gone {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            gone
+        });
+        assert!(gone, "the ping outlived the timeout");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_a_background_child_holding_the_pipes_does_not_hold_the_answer() {
+        // `ping` inherits stdout and stderr and outlives the shell by seconds.
+        let started = Instant::now();
+        let out = run(&ExecRequest::new("cmd", ["/c", "start /b ping -n 6 127.0.0.78 > nul & echo done"]).timeout(Duration::from_secs(30))).unwrap();
+        assert_eq!((out.code, out.stdout_text().trim()), (0, "done"));
         assert!(started.elapsed() < Duration::from_secs(3), "waited {:?}", started.elapsed());
     }
 
