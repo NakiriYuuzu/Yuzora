@@ -479,8 +479,6 @@ impl LogSession {
             "stage": d.stage,
             "complete": d.complete,
             "error": d.error,
-            // The pane offers to trust the folder and fetch.
-            "lazyFetch": d.error.as_deref().is_some_and(|e| e.starts_with(crate::trust::LAZY_FETCH)),
             "graph": d.graph_shown,
             "width": d.width,
             "firstMs": d.first_ms,
@@ -541,8 +539,7 @@ impl LogSession {
                 } else {
                     me.load_all(&cancel)
                 }
-            })
-            .map_err(|e| lazy_fetch_refused(&me.repo, e));
+            });
             let mut d = me.data.write().unwrap_or_else(|e| e.into_inner());
             d.loading = false;
             if let Err(e) = r {
@@ -749,30 +746,13 @@ impl LogSession {
 /// (opening, refs moving), so until the person trusts the folder a partial
 /// clone never fetches what it lacks: that contacts the remote the repo's
 /// own config names, plain URL or not. A trusted folder fetches as git does.
-/// A log that git failed to read in an untrusted partial clone most likely
-/// needed objects it may not fetch yet ([`log_read`]): says so, so the pane
-/// can offer to trust the folder (the sidebar offers it only when the repo's
-/// settings name programs).
-fn lazy_fetch_refused(repo: &Repo, e: GitError) -> GitError {
-    match &e {
-        GitError::Failed { .. } if !crate::trust::trusted_folder(repo) && partial_clone(repo) => {
-            GitError::Other(format!("{} ({e})", crate::trust::LAZY_FETCH))
-        }
-        _ => e,
-    }
-}
-
-/// Whether git would fetch missing objects here: `extensions.partialClone`
-/// set, or a remote marked `promisor` (as git's own `repo_has_promisor_remote`).
-fn partial_clone(repo: &Repo) -> bool {
-    let read = |args: &[&str]| repo.run(Git::read(["config"]).args(args.iter().copied())).ok().and_then(|o| o.text().ok());
-    read(&["--get", "extensions.partialClone"]).is_some_and(|v| !v.trim().is_empty())
-        || read(&["--type=bool", "--get-regexp", r"^remote\..*\.promisor$"]).is_some_and(|v| v.lines().any(|l| l.ends_with(" true")))
-}
-
+/// A partial clone waits for trust from the start (its keys count in
+/// [`yuzora_core::git_trust::names_program`]): the log refuses with
+/// [`crate::trust::UNTRUSTED`], which sends the person to the Git sidebar's
+/// trust card. Any failure past that (a bad range, a bad regex) stays git's
+/// own.
 fn log_read<'a>(repo: &Repo, args: impl IntoIterator<Item = &'a str>) -> Git {
-    let cmd = Git::read(["log"]).args(args);
-    if crate::trust::trusted_folder(repo) { cmd } else { cmd.env("GIT_NO_LAZY_FETCH", "1") }
+    crate::trust::own_read(repo, Git::read(["log"]).args(args))
 }
 
 /// HEAD (when there is one), branches, remotes, and on the full read, tags.
@@ -1243,33 +1223,19 @@ mod tests {
     }
 
     #[test]
-    fn tells_a_partial_clone_the_way_git_does() {
-        let s = scratch();
-        s.commit("a.txt", "1\n", "first");
-        assert!(!partial_clone(&s.repo));
-        s.git(&["config", "remote.origin.promisor", "false"]);
-        assert!(!partial_clone(&s.repo));
-        s.git(&["config", "remote.origin.promisor", "yes"]);
-        assert!(partial_clone(&s.repo));
-        s.git(&["config", "--unset", "remote.origin.promisor"]);
-        s.git(&["config", "extensions.partialClone", "origin"]);
-        assert!(partial_clone(&s.repo));
-    }
-
-    #[test]
     fn an_untrusted_partial_clone_never_fetches_what_its_log_lacks() {
         let s = scratch();
         s.commit("a.txt", "1\n", "first");
         s.commit("a.txt", "2\n", "second");
-        // The promisor remote is a plain URL, so nothing waits for trust;
-        // a path-filtered log still reads a tree the clone lacks.
+        // A path-filtered log reads a tree the clone lacks.
         let src = s.dir.path().join("src.git");
         let out = std::process::Command::new("git").args(["clone", "-q", "--bare", "--no-local", s.root()]).arg(&src).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         for (key, value) in [("remote.origin.url", format!("file://{}", src.display())), ("remote.origin.promisor", "true".into())] {
             s.git(&["config", key, &value]);
         }
-        assert_eq!(crate::trust::pending(&s.repo).unwrap(), Vec::<String>::new());
+        // A partial clone waits for trust from the start, so the sidebar asks.
+        assert_eq!(crate::trust::pending(&s.repo).unwrap(), ["remote.origin.promisor"]);
         let tree = s.git(&["rev-parse", "HEAD~1^{tree}"]).trim().to_owned();
         std::fs::remove_file(s.repo.git_path(&format!("objects/{}/{}", &tree[..2], &tree[2..]))).unwrap();
         let present = || s.repo.run(Git::read(["cat-file", "-e", &tree]).env("GIT_NO_LAZY_FETCH", "1")).unwrap().ok();
@@ -1277,8 +1243,7 @@ mod tests {
         let log = open(s.repo.clone(), filter.clone());
         wait_loaded(&log);
         assert!(!present(), "the log fetched from the promisor remote before the folder was trusted");
-        // Said so the pane can offer to trust the folder and fetch (no Trust shows elsewhere).
-        assert_eq!(log.info()["lazyFetch"], true, "{}", log.info());
+        assert!(log.info()["error"].as_str().is_some_and(|e| e.starts_with(crate::trust::UNTRUSTED)), "{}", log.info());
         log.start(true);
         wait_loaded(&log);
         assert!(!present(), "a refresh fetched before the folder was trusted");
@@ -1289,7 +1254,6 @@ mod tests {
         wait_loaded(&log);
         assert!(present(), "the log didn't fetch, so this test proves nothing: {}", log.info());
         assert_eq!(log.info()["rows"], 2, "{}", log.info());
-        assert_eq!(log.info()["lazyFetch"], false);
         close(log.id);
     }
 }

@@ -295,6 +295,13 @@ fn locale(remote: bool) -> &'static str {
     if !remote && cfg!(target_os = "macos") { "en_US.UTF-8" } else { "C.UTF-8" }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// More environment for every command this test thread starts (a PATH
+    /// with a remote helper on it), as a person's own environment would have.
+    pub static TEST_ENV: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The environment every call carries; the command's own entries win.
 pub fn environment(kind: Kind, remote: bool, own: &[(String, String)]) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = vec![
@@ -314,6 +321,8 @@ pub fn environment(kind: Kind, remote: bool, own: &[(String, String)]) -> Vec<(S
     if kind == Kind::Read {
         env.push(("GIT_OPTIONAL_LOCKS".into(), "0".into()));
     }
+    #[cfg(test)]
+    TEST_ENV.with(|t| env.extend(t.borrow().iter().cloned()));
     for (k, v) in own {
         env.retain(|(key, _)| key != k);
         env.push((k.clone(), v.clone()));
@@ -330,11 +339,17 @@ pub fn run(place: &Place, cmd: Git) -> GitResult<Output> {
 /// end (on another machine) instead of it being kept. A sink returning false
 /// stops the command.
 pub fn run_streaming(place: &Place, cmd: Git, sink: Option<&mut dyn FnMut(&[u8]) -> bool>) -> GitResult<Output> {
+    // Every git the engine starts comes through here: offline until the folder is trusted.
+    let (cmd, guarded) = crate::trust::guard(place, cmd);
     let _guard = match cmd.kind {
         Kind::Write => Some(lock(&place.write_lock, cmd.cancel.as_ref())?),
         Kind::Read => None,
     };
-    if place.is_remote() { run_remote(place, &cmd, sink) } else { run_local(place, &cmd, sink) }
+    let out = if place.is_remote() { run_remote(place, &cmd, sink) } else { run_local(place, &cmd, sink) }?;
+    if let Some(g) = guarded {
+        crate::trust::heard(g, &out);
+    }
+    Ok(out)
 }
 
 fn lock<'a>(m: &'a Mutex<()>, cancel: Option<&Cancel>) -> GitResult<std::sync::MutexGuard<'a, ()>> {

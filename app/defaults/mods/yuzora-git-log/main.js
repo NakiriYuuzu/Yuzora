@@ -8,7 +8,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
 import { spaces, panes, focused, theme, settings, run, props, openOverlay, closeOverlay, notify, setShared } from "herdr";
 import { t, tokens, getSetting } from "yuzora:core";
-import { open, trust, branches, logOpen, logInfo, logRows, logWait, logFind, logRefresh, logClose, commitDetails, compare, GraphCell, checkout, branchCreate, tagCreate, cherryPick, revert, reset, undoCommit, rewordInMemory, patchCreate, settings as gitSettings } from "yuzora:git";
+import { open, branches, logOpen, logInfo, logRows, logWait, logFind, logRefresh, logClose, commitDetails, compare, GraphCell, checkout, branchCreate, tagCreate, cherryPick, revert, reset, undoCommit, rewordInMemory, patchCreate, settings as gitSettings } from "yuzora:git";
 
 const ROW = 26, LANE = 16, FILE = 24, MENU = 28, MENU_HEAD = 34;
 // Filter boxes after the branch one: [field, width, applied while typing].
@@ -473,14 +473,13 @@ export default class GitLog extends View {
         .on_item_click((key, cx) => { this.handle.focus(); this.showDetail = true; this.select(Number(key), cx, false); })
         .on_item_secondary_click((key, _e, cx) => this.contextMenu(Number(key), cx)))
       .child(Scrollbar.vertical("log-rows").viewport_from_layout().absolute().inset_0())
-      .when(info.rows === 0 && !info.lazyFetch, (el) => el.child(div().absolute().top(16).left(0).right(0).px(12).text_center().text_size(11.5).text_color(info.error ? th.ansi1 : th.dim)
+      .when(info.rows === 0, (el) => el.child(div().absolute().top(16).left(0).right(0).px(12).text_center().text_size(11.5).text_color(info.error ? th.ansi1 : th.dim)
         .child(info.error ?? (info.loading ? t("loading") : t("empty")))));
     return v_flex().id("git-log").size_full().min_h(0).bg(th.background).text_color(th.foreground).text_size(12).track_focus(this.handle)
       .on_key_down((e, cx) => this.key(e, cx))
       .on_size_change((size, cx) => { const cls = (w) => (w < 480) + (w < 640) + (w < 760); if (cls(size.width) !== cls(this.w)) { this.w = size.width; cx.notify(); } })
       .when(Boolean(this.p.title), (el) => el.child(div().h(28).flex_none().px(10).flex().items_center().font_semibold().truncate().child(this.p.title)))
       .child(this.toolbar(th))
-      .when(Boolean(info?.lazyFetch), (el) => el.child(this.lazyFetch(info, th)))
       .when(this.dd, (el) => el.child(this.dropdown(th)))
       .child((side ? h_flex().items_stretch() : v_flex()).flex_1().min_h(0)
         .child(rows)
@@ -641,22 +640,6 @@ export default class GitLog extends View {
     else return;
     cx.stop_propagation();
     cx.notify();
-  }
-
-  // The log needs objects this partial clone lacks, and git fetches none
-  // until the folder is trusted (the sidebar asks only when the repo's
-  // settings name programs): ask here.
-  lazyFetch(info, th) {
-    const repo = this.repo;
-    return h_flex().id("lazy-fetch").mx(8).my(6).p(8).gap(8).flex_none().items_center().rounded(6).border_1().border_color(th.blocked).bg(th.raised).text_size(11.5)
-      .child(div().flex_1().min_w(0).text_color(this.lazyErr ? th.ansi1 : th.muted).child(this.lazyErr ?? t("lazy.body")))
-      .child(div().id("lazy-trust").h(24).px(10).flex().flex_none().items_center().rounded(4).cursor_pointer()
-        .bg(th.accent).text_color(th.accent_foreground).hover((s) => s.opacity(0.88))
-        .on_click((_e, cx) => cx.spawn(async (cx) => {
-          try { await trust(repo.id); this.lazyErr = null; logRefresh(info.id); } catch (e) { this.lazyErr = msg(e); }
-          cx.notify();
-        }))
-        .child(t("lazy.button")));
   }
 
   button(id, label, th, kind, action) {

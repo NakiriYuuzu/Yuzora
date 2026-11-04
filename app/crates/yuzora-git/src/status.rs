@@ -320,8 +320,9 @@ pub fn refresh(repo: &Repo) -> GitResult<()> {
     r
 }
 
-fn status_cmd(cap: usize) -> Git {
-    Git::read(["status", "--porcelain=v2", "-z", "--branch", "--show-stash", "--untracked-files=no"]).env("GIT_LITERAL_PATHSPECS", "1").max_output(cap + 1)
+/// `--branch` counts ahead/behind, walking to the upstream's commit.
+fn status_cmd(repo: &Repo, cap: usize) -> Git {
+    crate::trust::own_read(repo, Git::read(["status", "--porcelain=v2", "-z", "--branch", "--show-stash", "--untracked-files=no"])).env("GIT_LITERAL_PATHSPECS", "1").max_output(cap + 1)
 }
 
 fn untracked_cmd(cap: usize) -> Git {
@@ -377,7 +378,7 @@ fn full(repo: &Repo) -> GitResult<()> {
                 .collect())
         });
         let links = s.spawn(|| gitlinks(repo, cap));
-        let st = repo.run(status_cmd(cap)).and_then(|o| whole(o, cap)).map(|o| parse_porcelain_v2(&o));
+        let st = repo.run(status_cmd(repo, cap)).and_then(|o| whole(o, cap)).map(|o| parse_porcelain_v2(&o));
         (st, joined(untracked), joined(ignored), links.join().unwrap_or_default())
     });
     let (st, (untracked, untracked_lossy), ignored_dirs) = (st?, untracked?, ignored_dirs?);
@@ -451,7 +452,7 @@ fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {
     }
     paths.sort();
     paths.dedup();
-    let (cmd, kept) = status_cmd(cap).paths_or_all(&paths);
+    let (cmd, kept) = status_cmd(repo, cap).paths_or_all(&paths);
     if !kept {
         return full(repo);
     }
@@ -494,7 +495,7 @@ fn forget(c: &mut StatusCache, paths: &[String]) {
 }
 
 fn numstat(repo: &Repo, cached: bool, paths: &[String]) -> GitResult<HashMap<String, Stat>> {
-    let mut cmd = Git::read(["diff", "--numstat", "-z", "-M", "--no-ext-diff", "--no-textconv"]).env("GIT_LITERAL_PATHSPECS", "1");
+    let mut cmd = crate::trust::own_read(repo, Git::read(["diff", "--numstat", "-z", "-M", "--no-ext-diff", "--no-textconv"])).env("GIT_LITERAL_PATHSPECS", "1");
     if cached {
         cmd = cmd.arg("--cached");
     }
@@ -839,6 +840,37 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
             Dirty::All => panic!("folded too far"),
         }
         assert!(took < std::time::Duration::from_secs(2), "{took:?} for 40 000 paths");
+    }
+
+    // A partial clone fetches what it lacks from its remote as it reads:
+    // `--branch` counts ahead/behind and would fetch the upstream commit. It
+    // waits for trust from the start, and git run past the gate stays offline.
+    #[test]
+    fn an_untrusted_partial_clone_fetches_nothing_for_its_status() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "one");
+        let two = s.commit("a.txt", "2\n", "two");
+        let src = s.dir.path().join("src.git");
+        let out = std::process::Command::new("git").args(["clone", "-q", "--bare", "--no-local", s.root()]).arg(&src).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        for (key, value) in [("remote.origin.url", format!("file://{}", src.display())), ("remote.origin.promisor", "true".into()), ("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*".into()), ("branch.main.remote", "origin".into()), ("branch.main.merge", "refs/heads/main".into())] {
+            s.git(&["config", key, &value]);
+        }
+        s.git(&["update-ref", "refs/remotes/origin/main", &two]);
+        s.git(&["reset", "-q", "--hard", "HEAD~1"]);
+        std::fs::remove_file(s.repo.git_path(&format!("objects/{}/{}", &two[..2], &two[2..]))).unwrap();
+        let present = || s.repo.run(Git::read(["cat-file", "-e", &two]).env("GIT_NO_LAZY_FETCH", "1")).unwrap().ok();
+        assert!(!present());
+        let v = read(&s.repo, true).unwrap();
+        assert_eq!(v["trust"], serde_json::json!(["remote.origin.promisor"]), "{v}");
+        assert!(!present(), "status fetched from the promisor remote before the folder was trusted");
+        // Past the gate, as a git before 2.44 (Ubuntu 22.04 has 2.34) that
+        // ignores GIT_NO_LAZY_FETCH: the empty GIT_ALLOW_PROTOCOL stops it alone.
+        s.repo.run(status_cmd(&s.repo, OUTPUT_CAP).env("GIT_NO_LAZY_FETCH", "0")).unwrap();
+        assert!(!present(), "a git that ignores GIT_NO_LAZY_FETCH fetched");
+        crate::trust::trust(&s.repo).unwrap();
+        let v = read(&s.repo, true).unwrap();
+        assert!(present(), "status didn't fetch once trusted, so this test proves nothing: {v}");
     }
 
     #[test]

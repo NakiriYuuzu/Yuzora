@@ -20,6 +20,8 @@ export default class GitDiff extends View {
     this.sel = {}; this.hunk = 0; this.askDiscard = null;
     this.scroll = VirtualListScrollHandle.new();
     this.handle = cx.focus_handle();
+    // Props without `at` (an agent's tab.new) date from now, not from 1970.
+    this.born = Date.now();
     this.follow(cx);
   }
 
@@ -28,7 +30,7 @@ export default class GitDiff extends View {
     const p = props() ?? {}, s = shared("yuzora.git.diff");
     // In a modal, only what it was opened with.
     if (p.overlay) return p.path ? p : null;
-    return s?.path && (!p.path || (s.at ?? 0) >= (p.at ?? 0)) ? s : p.path ? p : null;
+    return s?.path && (!p.path || (s.at ?? 0) >= (p.at ?? this.born ?? 0)) ? s : p.path ? p : null;
   }
 
   follow(cx) {

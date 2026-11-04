@@ -39,14 +39,20 @@ use std::time::Duration;
 use crate::remote::{self, ExecRequest};
 
 /// Config keys (lowercased by git) that name a program run without asking.
-pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remote\..+\.(uploadpack|receivepack|vcs|url|pushurl)|url\..+\.(insteadof|pushinsteadof)|protocol(\..+)?\.allow|merge\..+\.driver|diff\.(external|.+\.(command|textconv))|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.update)$";
+pub const PROGRAMS: &str = r"^(filter\..+\.(clean|smudge|process)|core\.(fsmonitor|sshcommand|gitproxy|askpass|alternaterefscommand|alternaterefsprefixes)|credential(\..+)?\.helper|remotes?\..+|branch\..+\.(remote|pushremote)|url\..+\.(insteadof|pushinsteadof)|extensions\.partialclone|protocol(\..+)?\.allow|merge\..+\.driver|diff\.(external|.+\.(command|textconv))|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|submodule\..+\.(update|url|gitdir))$";
 
 /// Whether a matched key's value runs something: fsmonitor as a boolean is
 /// git's own daemon, and a submodule's update mode is a command only after
 /// `!`. Only the exact values git takes that way pass (no trimming, ASCII
-/// case as git compares); anything else counts. A remote's URL counts when
-/// it names a remote helper (`ext::` runs its command), and so does an
-/// `insteadOf` that makes URLs into one.
+/// case as git compares); anything else counts. A URL counts when it names a
+/// remote helper (`ext::` runs its command): a remote's or a submodule's,
+/// and a remote's name too, which git takes for the URL when the remote has
+/// none. So do the remote names that stand where a remote is wanted (a
+/// branch's remote or push remote, the push default, a group's members),
+/// and an `insteadOf` whose replacement a URL's rest can make into one
+/// (`ext:` and `:sh …`). A partial clone counts whatever its URL
+/// (`extensions.partialClone`, a remote's `promisor` or
+/// `partialCloneFilter`): it fetches from its promisor remote as it reads.
 pub fn names_program(key: &str, value: &str) -> bool {
     let any = |list: &[&str]| list.iter().any(|v| value.eq_ignore_ascii_case(v));
     if key == "core.fsmonitor" {
@@ -55,21 +61,66 @@ pub fn names_program(key: &str, value: &str) -> bool {
     if key.starts_with("submodule.") && key.ends_with(".update") {
         return !any(&["checkout", "rebase", "merge", "none"]);
     }
-    if key.starts_with("remote.") && (key.ends_with(".url") || key.ends_with(".pushurl")) {
+    if key.starts_with("submodule.") && key.ends_with(".url") {
         return names_helper(value);
     }
+    // Since git 2.54 (`extensions.submodulePathConfig`) a submodule's git dir is where this says.
+    if key.starts_with("submodule.") && key.ends_with(".gitdir") {
+        return true;
+    }
+    let branch_remote = key.starts_with("branch.") && (key.ends_with(".remote") || key.ends_with(".pushremote"));
+    if branch_remote || key == "remote.pushdefault" {
+        return names_helper(value);
+    }
+    // A partial clone: it fetches what it lacks from its promisor remote as it reads.
+    if key == "extensions.partialclone" {
+        return true;
+    }
+    if key.starts_with("remotes.") {
+        // A group's members, split as git splits them.
+        return value.split([' ', '\t', '\n']).any(names_helper);
+    }
+    // `remote.<name>.<key>`: the name may stand for the URL whatever the key.
+    if let Some((name, var)) = key.strip_prefix("remote.").and_then(|k| k.rsplit_once('.')) {
+        return names_helper(name) || matches!(var, "uploadpack" | "receivepack" | "vcs" | "partialclonefilter") || (var == "promisor" && git_true(value)) || (matches!(var, "url" | "pushurl") && names_helper(value));
+    }
     if let Some(to) = key.strip_prefix("url.").and_then(|k| k.strip_suffix(".insteadof").or_else(|| k.strip_suffix(".pushinsteadof"))) {
-        return names_helper(to);
+        return may_name_helper(to);
     }
     true
 }
 
-/// A URL git hands to a remote helper: `<scheme>::…`, the scheme as git's
-/// `transport_get` reads it (letters and digits, then `+`, `-` or `.` too;
-/// even none).
+/// A boolean as git reads it: false is `false`, `no`, `off`, empty or a
+/// number that is 0 (a unit after it too); anything else (a key alone, a
+/// value git can't read) is true.
+fn git_true(value: &str) -> bool {
+    let v = value.to_ascii_lowercase();
+    !(matches!(v.as_str(), "false" | "no" | "off" | "") || v.trim_end_matches(['k', 'm', 'g']).parse::<i64>() == Ok(0))
+}
+
+/// A URL git hands to a remote helper, as git's `transport_get` reads it:
+/// `<scheme>::…` (letters and digits, then `+`, `-` or `.` too; even none),
+/// or `<scheme>://…` with a scheme git doesn't serve itself, which goes to
+/// `git-remote-<scheme>`.
 fn names_helper(url: &str) -> bool {
-    let n = url.char_indices().take_while(|&(i, c)| c.is_ascii_alphanumeric() || (i > 0 && "+-.".contains(c))).count();
-    url[n..].starts_with("::")
+    let (scheme, rest) = url.split_at(scheme_len(url));
+    rest.starts_with("::") || (!scheme.is_empty() && rest.starts_with("://") && !OWN_SCHEMES.contains(&scheme))
+}
+
+/// The `<scheme>://` git serves itself, compared as git does (case and all):
+/// `HTTPS://` goes to `git-remote-HTTPS`.
+const OWN_SCHEMES: [&str; 9] = ["file", "git", "ssh", "git+ssh", "ssh+git", "http", "https", "ftp", "ftps"];
+
+/// Whether a URL starting with `start` may name a remote helper, whatever
+/// follows: it does already, or its scheme (maybe empty) has at most one `:`
+/// after it so far, or `:/` after one git doesn't serve itself.
+fn may_name_helper(start: &str) -> bool {
+    let (scheme, rest) = start.split_at(scheme_len(start));
+    matches!(rest, "" | ":") || (rest == ":/" && !OWN_SCHEMES.contains(&scheme)) || names_helper(start)
+}
+
+fn scheme_len(url: &str) -> usize {
+    url.char_indices().take_while(|&(i, c)| c.is_ascii_alphanumeric() || (i > 0 && "+-.".contains(c))).count()
 }
 
 /// Stands for the keys when the config couldn't be read: the gate stays shut.
@@ -154,14 +205,43 @@ const SCAN: &str = "yuzora-trust-scan";
 /// feed (`$(…)` drops one at the end,
 /// so the scan would read another folder: `rev-parse`'s answer is taken with
 /// a `.` after it, and must be two lines then), and more than 16 levels can't
-/// be followed: all count as unreadable too. `GIT_NO_LAZY_FETCH`: listing a
-/// sparse index in a partial clone never fetches with the repo's ssh.
+/// be followed: all count as unreadable too. `GIT_NO_LAZY_FETCH` (and an
+/// empty `GIT_ALLOW_PROTOCOL` for a git before 2.44, which ignores it):
+/// listing a sparse index in a partial clone never fetches with the repo's
+/// ssh. Each repo's remote files (`remotes/`, `branches/` in its common
+/// dir) count too: git reads remotes from them besides the config. So does
+/// each git dir under `modules/` (nested ones too) in its git dir and its
+/// common dir, as `.git/modules/<name>` (a linked worktree keeps its own,
+/// `.git/worktrees/<id>/modules/<name>`), with the remote files of its
+/// common dir: a submodule not checked out keeps one there, which `submodule
+/// update` reuses and a fetch recurses into. git says which folders are git
+/// dirs and reads their config (`GIT_DIR`, with a work tree of its own so a
+/// missing one doesn't stop it): any folder there with a `HEAD` (as the file
+/// system opens it: `head` where case doesn't count, a link that leads
+/// nowhere) and a `commondir` or `objects/` and `refs/` is asked, which is
+/// all git's own test (`is_git_directory`) can take. So does any file there
+/// that starts `gitdir: ` (a gitfile, or a link to one, up to 2 MiB: git
+/// reads none past 1 MiB), which git follows when it opens a submodule in
+/// its own process (a push that checks them does); the git dir it names
+/// counts, and that git dir's own `modules/` in turn. A link to a gitfile
+/// names two: `GIT_DIR` reads the path in it from the link's folder, and git
+/// opening a submodule in its own process takes the real path first, so from
+/// the file's own folder; both count. One git won't take, and a path whose
+/// real one can't be had (no `readlink`, links 40 deep), count as
+/// unreadable. They're read last, and one the scan already read as a
+/// checked-out submodule keeps that name. A link there the kernel can't
+/// follow (so neither can `find -L`), and a `modules` that isn't a folder it
+/// can, count as unreadable too: the real path git takes may still get
+/// through one (`x/..` past a file, a trailing slash, more links). A path
+/// there `find` gives that can't be read back (a line feed in it) and a
+/// `find` that fails count as unreadable.
 const SCAN_SCRIPT: &str = r#"unset CDPATH GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
-GIT_NO_LAZY_FETCH=1
-export GIT_NO_LAZY_FETCH
+GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=
+export GIT_NO_LAZY_FETCH GIT_ALLOW_PROTOCOL
 tab=$(printf '\t') nl='
 '
 IFS=$nl
+mseen=$nl mods=
 set -f
 case ${OS-}:$(uname -s 2>/dev/null) in Windows_NT:*|*:CYGWIN*|*:MINGW*|*:MSYS*) win=1 ;; *) win= ;; esac
 where() {
@@ -184,6 +264,88 @@ scan() {
   for line in $links; do
     [ "$line" = '160000 #end' ] || enter "$1" "$2" "${4%/}" "${line#*"$tab"}" "$5"
   done
+}
+files() {
+  for d in remotes branches; do
+    if [ -d "$1/$d" ] && [ ! -L "$1/$d" ]; then
+      l=$(ls -A "$1/$d" && echo .) || l=x
+      [ "$l" = . ] || printf 'legacy\0.git/%s\0' "$d"
+    elif [ -e "$1/$d" ] || [ -L "$1/$d" ]; then
+      printf 'legacy\0.git/%s\0' "$d"
+    fi
+  done
+}
+has() { [ -e "$1" ] || [ -L "$1" ]; }
+real() {
+  rp=$1 rk=0
+  while [ -L "$rp" ]; do
+    [ $rk -lt 40 ] || return 1
+    rl=$(readlink "$rp" && echo .) || return 1
+    rl=${rl%"$nl."} rk=$((rk+1))
+    case "$rl" in /*) rp=$rl ;; *) rp=${rp%/*}/$rl ;; esac
+  done
+  rd=$(cd -P "${rp%/*}/" && pwd -P && echo .) || return 1
+  rd=${rd%"$nl."}
+  rp=${rd%/}/${rp##*/}
+}
+queue() {
+  mods=$mods+$1$nl$2$nl$2$nl
+  [ "$3" = "$2" ] || mods=$mods+$1$nl$2$nl$3$nl
+}
+gitdir() {
+  w=$(GIT_DIR=$3 GIT_WORK_TREE=$4 git rev-parse --path-format=absolute --git-common-dir --absolute-git-dir && echo .) || w=
+  case "$w" in *"$nl"*"$nl"*"$nl"*) w= ;; ?*"$nl"?*"$nl.") w=${w%"$nl."} ;; *) w= ;; esac
+  [ -n "$w" ] || { printf 'sub\0%s%s\0err\0gitdir\0' "$1" "$2"; return 1; }
+  mg=${w#*"$nl"} w=${w%%"$nl"*}
+  case "$mseen" in *"$nl$mg$nl"*) return 1 ;; esac
+  mseen=$mseen$mg$nl
+  printf 'sub\0%s%s\0' "$1" "$2"
+  GIT_DIR=$3 GIT_WORK_TREE=$4 git config --show-scope -z --get-regexp '@PROGRAMS@'
+  r=$?
+  if [ $r -gt 1 ]; then printf 'err\0%s\0' $r; fi
+  files "$w"
+}
+modules() {
+  case "$3" in "$2") n=.git ;; "$2"/*) n=.git/${3#"$2/"} ;; *) n=$3 ;; esac
+  [ -d "$3/modules" ] || { has "$3/modules" && printf 'sub\0%s%s/modules\0err\0modules\0' "$1" "$n"; return; }
+  dirs=$(find -L "$3/modules" -type d && echo .) || dirs=
+  gfs=$(find -L "$3/modules" -type f -size -4097 -exec sh -c 'grep -l "^gitdir: " "$@"; [ $? -le 1 ]' sh {} + && echo .) || gfs=
+  lns=$(find -L "$3/modules" -type l && echo .) || lns=
+  case "$dirs" in .|*"$nl.") ;; *) dirs= ;; esac
+  case "$gfs" in .|*"$nl.") ;; *) gfs= ;; esac
+  case "$lns" in .|*"$nl.") ;; *) lns= ;; esac
+  [ -n "$dirs" ] && [ -n "$gfs" ] && [ -n "$lns" ] || { printf 'sub\0%s%s/modules\0err\0modules\0' "$1" "$n"; return; }
+  for m in $lns; do
+    [ "$m" != . ] || continue
+    case "$m" in "$3/modules/"*) [ -L "$m" ] ;; *) false ;; esac || { printf 'sub\0%s%s/modules\0err\0name\0' "$1" "$n"; continue; }
+    printf 'sub\0%s%s\0err\0gitdir\0' "$1" "$n/${m#"$3/"}"
+  done
+  for m in $dirs; do
+    [ "$m" != . ] || continue
+    case "$m" in "$3/modules"|"$3/modules/"*) [ -d "$m" ] ;; *) false ;; esac || { printf 'sub\0%s%s/modules\0err\0name\0' "$1" "$n"; continue; }
+    has "$m/HEAD" && { has "$m/commondir" || { has "$m/objects" && has "$m/refs"; }; } || continue
+    gitdir "$1" "$n/${m#"$3/"}" "$m" "$m"
+  done
+  for m in $gfs; do
+    [ "$m" != . ] || continue
+    case "$m" in "$3/modules/"*) [ -f "$m" ] ;; *) false ;; esac || { printf 'sub\0%s%s/modules\0err\0name\0' "$1" "$n"; continue; }
+    first=
+    IFS= read -r first < "$m"
+    case "$first" in "gitdir: "*) ;; *) continue ;; esac
+    ml=$n/${m#"$3/"}
+    real "$m" || { printf 'sub\0%s%s\0err\0gitdir\0' "$1" "$ml"; continue; }
+    gitdir "$1" "$ml" "$rp" "${rp%/*}" && queue "$1$ml/" "$w" "$mg"
+    [ "$rp" = "$m" ] || { gitdir "$1" "$ml" "$m" "${m%/*}" && queue "$1$ml/" "$w" "$mg"; }
+  done
+}
+legacy() {
+  p=$1
+  shift
+  c=$("$@" rev-parse --path-format=absolute --git-common-dir --absolute-git-dir && echo .) || c=
+  case "$c" in *"$nl"*"$nl"*"$nl"*) printf 'err\0commondir\0'; return ;; ?*"$nl"?*"$nl.") c=${c%"$nl."} ;; *) printf 'err\0commondir\0'; return ;; esac
+  g=${c#*"$nl"} c=${c%%"$nl"*}
+  files "$c"
+  queue "$p" "$c" "$g"
 }
 gone() {
   case "$1" in */*) up=${1%/*} ;; *) up=. ;; esac
@@ -210,15 +372,28 @@ enter() {
   c=$?
   if [ $c -gt 1 ]; then printf 'err\0%s\0' $c; return; fi
   w=$(GIT_DIR=.git git -C "$4" rev-parse --absolute-git-dir --show-toplevel && echo .) && where "$w" || { printf 'err\0worktree\0'; return; }
+  mseen=$mseen$gd$nl
   case "$5" in *"$node"*) printf 'err\0cycle\0'; return ;; esac
   case "$seen" in *"$node"*) return ;; esac
   seen=$seen$node
+  legacy "$1$4/" env GIT_DIR=.git git -C "$4"
   scan "$1$4/" $(($2 + 1)) "$gd" "$top" "$5$node"
 }
 if w=$(git rev-parse --absolute-git-dir --show-toplevel && echo .) && where "$w"; then
   unset GIT_DIR GIT_WORK_TREE
   seen=$node
+  printf 'sub\0\0'
+  legacy "" git
   scan "" 0 "$gd" "$top" "$node"
+  while [ -n "$mods" ]; do
+    mp=${mods%%"$nl"*}
+    mods=${mods#*"$nl"}
+    mc=${mods%%"$nl"*}
+    mods=${mods#*"$nl"}
+    mm=${mods%%"$nl"*}
+    mods=${mods#*"$nl"}
+    modules "${mp#+}" "$mc" "$mm"
+  done
 else
   printf 'sub\0.\0err\0worktree\0'
 fi
@@ -238,6 +413,10 @@ fn repo_keys(out: &[u8], first: &str) -> BTreeSet<String> {
             "sub" => place = c[1].to_owned(),
             "err" => {
                 keys.insert(format!("{place}: {UNREADABLE}"));
+            }
+            // Files git reads remotes from besides the config (any there counts).
+            "legacy" => {
+                keys.insert(if place.is_empty() { c[1].to_owned() } else { format!("{place}: {}", c[1]) });
             }
             "local" | "worktree" => {
                 let (key, value) = c[1].split_once('\n').unwrap_or((c[1], "true"));
@@ -331,6 +510,30 @@ mod tests {
         assert!(names_program("remote.origin.url", "ext::sh -c touch% x") && names_program("remote.o.pushurl", "Ext::x") && names_program("remote.o.url", "fd::0") && names_program("remote.o.url", "1x+y::z") && names_program("remote.o.url", "::z"));
         assert!(!names_program("remote.o.url", "https://example.com/r.git") && !names_program("remote.o.url", "git@host:r.git") && !names_program("remote.o.url", "/srv/r") && !names_program("remote.o.url", "c:/srv/r") && !names_program("remote.o.url", ".x::y") && !names_program("remote.o.url", "a b::y"));
         assert!(names_program("url.ext::sh -c x.insteadof", "https://") && names_program("url.ext::x.pushinsteadof", "git@") && !names_program("url.https://mirror/.insteadof", "https://"));
+        // An insteadOf whose replacement a URL's rest can make one (`ext:` + `:sh …`).
+        assert!(names_program("url.ext:.insteadof", "P") && names_program("url.ext.insteadof", "P") && names_program("url..insteadof", "P") && names_program("url.x+y:.pushinsteadof", "P"));
+        assert!(!names_program("url.git@github.com:.insteadof", "gh:") && !names_program("url.ssh://host/.insteadof", "h:") && !names_program("url.a:b.insteadof", "P"));
+        // The promisor remote of a partial clone, by name or as a URL.
+        assert!(names_program("extensions.partialclone", "ext::sh -c x") && names_program("extensions.partialclone", "origin"));
+        // A partial clone fetches what it lacks from its promisor remote as it reads.
+        assert!(names_program("remote.origin.promisor", "true") && names_program("remote.origin.promisor", "Yes") && names_program("remote.origin.promisor", "1"));
+        assert!(!names_program("remote.origin.promisor", "false") && !names_program("remote.origin.promisor", "off") && !names_program("remote.origin.promisor", "") && !names_program("remote.origin.promisor", "0"));
+        assert!(names_program("remote.origin.partialclonefilter", "blob:none") && !names_program("remote.origin.fetch", "+refs/*:refs/*"));
+        // Since git 2.54 a submodule's git dir may be anywhere config says.
+        assert!(names_program("submodule.x.gitdir", ".git/modules/x"));
+        // A remote's name, which stands for its URL when it has none, whatever the key.
+        assert!(names_program("remote.ext::sh -c x.fetch", "+refs/heads/*:refs/remotes/x/*") && names_program("remote.zz::p.promisor", "true") && names_program("remote.a.b.vcs", "hg"));
+        assert!(!names_program("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*") && !names_program("remote.team/a.b.prune", "true") && !names_program("remote.origin.tagopt", "--no-tags"));
+        // Remote names where a remote is wanted, and a submodule's URL.
+        assert!(names_program("branch.main.remote", "zz::p") && names_program("branch.a.b.pushremote", "Ext::x") && names_program("remote.pushdefault", "ext::x"));
+        assert!(!names_program("branch.main.remote", "origin") && !names_program("branch.main.pushremote", ".") && !names_program("remote.pushdefault", "fork"));
+        assert!(names_program("remotes.all", "origin\text::x") && !names_program("remotes.all", "origin  upstream"));
+        assert!(names_program("submodule.s.url", "ext::sh -c x") && !names_program("submodule.s.url", "../s.git"));
+        // `<scheme>://` with a scheme git doesn't serve itself goes to `git-remote-<scheme>` (case counts, as in git).
+        assert!(names_program("remote.o.url", "zz://payload") && names_program("remote.o.url", "ext://x/run") && names_program("remote.o.url", "HTTPS://h/r") && names_program("remote.zz://p.fetch", "+refs/heads/*:refs/remotes/x/*"));
+        assert!(["https://h/r", "http://h/r", "ssh://h/r", "git://h/r", "git+ssh://h/r", "ssh+git://h/r", "file:///srv/r", "ftp://h/r", "ftps://h/r"].iter().all(|u| !names_program("remote.o.url", u)));
+        assert!(names_program("extensions.partialclone", "zz://payload") && names_program("url.zz://p/.insteadof", "https://") && names_program("url.zz:/.insteadof", "P"));
+        assert!(!names_program("url.https:/.insteadof", "P") && !names_program("url.https://mirror/.insteadof", "https://"));
     }
 
     #[test]
@@ -357,6 +560,9 @@ mod tests {
         let subs = &format!("sub\0vendor/a\0local\0filter.y.clean\ncat\0sub\0vendor/b\0err\0128\0{END}");
         assert_eq!(answer((1, ""), (0, subs)).0, ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"], "no key above: the submodules still count");
         assert_eq!(answer((0, "global\0core.askpass\nx\0"), (0, subs)).0, ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"]);
+        // Remote files beside a config, the top's and a submodule's.
+        let legacy = &format!("sub\0\0legacy\0.git/remotes\0sub\0vendor/a\0legacy\0.git/branches\0{END}");
+        assert_eq!(answer((1, ""), (0, legacy)).0, [".git/remotes", "vendor/a: .git/branches"]);
         assert!(answer((0, ""), (2, "")).0.contains(&UNREADABLE.to_string()));
         // A scan that stopped part way (exit 0, records missing) keeps it shut.
         assert_eq!(answer((1, ""), (0, "")).0, [UNREADABLE]);
@@ -717,6 +923,385 @@ mod tests {
         assert_eq!(direct, Ok(vec!["remote.origin.url".to_string()]));
         assert_eq!(plain, Ok(Vec::new()));
         assert_eq!(rewritten, Ok(vec![format!("url.{ext}.insteadof")]));
+    }
+
+    // A remote helper git reaches without a remote URL saying `ext::`: the
+    // URL split between it and an insteadOf, the remote files git still
+    // reads (`.git/remotes/<name>`, `.git/branches/<name>`), and the promisor
+    // remote a partial clone fetches from by name.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_helper_named_any_other_way_waits_for_trust() {
+        // A case's setup: the top, the command to run, and git there.
+        type Setup = dyn Fn(&Path, &str, &dyn Fn(&str, &[&str]) -> String);
+        let case = |name: &str, setup: &Setup, runs: &[&str]| {
+            let (dir, top, git) = scratch_dir(name);
+            git("", &["init", "-q"]);
+            git("", &["commit", "-q", "--allow-empty", "-m", "x"]);
+            let mark = dir.join("ran");
+            setup(Path::new(&top), &format!("sh -c touch% {}", mark.display()), &git);
+            let keys = programs_within(None, &top, Duration::from_secs(30));
+            // As a person's global config may allow it.
+            let _ = std::process::Command::new("git").args(["-c", "protocol.ext.allow=always"]).args(runs).current_dir(&top).output();
+            let ran = mark.exists();
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert!(ran, "{name}: git didn't run the command, so this proves nothing");
+            keys
+        };
+        let split = case("ext-split", &|_, cmd, git| {
+            git("", &["remote", "add", "origin", &format!("P:{cmd}")]);
+            git("", &["config", "url.ext:.insteadOf", "P"]);
+        }, &["fetch", "-q", "origin"]);
+        let remotes = case("ext-remotes", &|top, cmd, _| {
+            std::fs::create_dir_all(top.join(".git/remotes")).unwrap();
+            std::fs::write(top.join(".git/remotes/origin"), format!("URL: ext::{cmd}\n")).unwrap();
+        }, &["fetch", "-q", "origin"]);
+        let branches = case("ext-branches", &|top, cmd, _| {
+            std::fs::create_dir_all(top.join(".git/branches")).unwrap();
+            std::fs::write(top.join(".git/branches/origin"), format!("ext::{cmd}\n")).unwrap();
+        }, &["fetch", "-q", "origin"]);
+        let promisor = case("ext-promisor", &|_, cmd, git| {
+            git("", &["config", "extensions.partialClone", &format!("ext::{cmd}")]);
+        }, &["cat-file", "-e", "1111111111111111111111111111111111111111"]);
+        assert_eq!(split, Ok(vec!["url.ext:.insteadof".to_string()]));
+        assert_eq!(remotes, Ok(vec![".git/remotes".to_string()]));
+        assert_eq!(branches, Ok(vec![".git/branches".to_string()]));
+        assert_eq!(promisor, Ok(vec!["extensions.partialclone".to_string()]));
+    }
+
+    // git takes a remote's name for its URL when the remote has none: a
+    // remote the config names by a helper URL (whatever its keys), or such a
+    // name where a remote is wanted (a branch's remote, the push default, a
+    // group), runs the helper. Also with git's default policy, through a
+    // helper the person installed (`zz::`).
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_named_by_a_helper_url_waits_for_trust() {
+        use std::os::unix::fs::PermissionsExt;
+        // A case's setup: the top, an `ext::` URL that runs one program, and git there.
+        type Setup = dyn Fn(&Path, &str, &dyn Fn(&str, &[&str]) -> String);
+        let case = |name: &str, setup: &Setup, runs: &[&str]| {
+            let (dir, top, git) = scratch_dir(name);
+            git("", &["init", "-q", "-b", "main"]);
+            git("", &["commit", "-q", "--allow-empty", "-m", "x"]);
+            let mark = dir.join("ran");
+            let bin = dir.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            for program in ["hit", "git-remote-zz"] {
+                std::fs::write(bin.join(program), format!("#!/bin/sh\ntouch '{}'\n", mark.display())).unwrap();
+                std::fs::set_permissions(bin.join(program), std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let cmd = format!("ext::{}", bin.join("hit").display());
+            setup(Path::new(&top), &cmd, &git);
+            let keys = programs_within(None, &top, Duration::from_secs(30));
+            let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+            // As a person's global config may allow `ext`; `zz` needs nothing.
+            let _ = std::process::Command::new("git").args(["-c", "protocol.ext.allow=always"]).args(runs).current_dir(&top).env("PATH", path).output();
+            let ran = mark.exists();
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert!(ran, "{name}: git didn't run the helper, so this proves nothing");
+            keys.map(|keys| keys.into_iter().map(|k| k.replace(&cmd, "<ext>")).collect::<Vec<_>>())
+        };
+        let fetch_all: &[&str] = &["fetch", "-q", "--all"];
+        let got = [
+            case("name-fetch", &|_, cmd, git| _ = git("", &["config", &format!("remote.{cmd}.fetch"), "+refs/heads/*:refs/remotes/x/*"]), fetch_all),
+            case("name-skip", &|_, cmd, git| _ = git("", &["config", &format!("remote.{cmd}.skipDefaultUpdate"), "false"]), fetch_all),
+            case("name-promisor", &|_, cmd, git| _ = git("", &["config", &format!("remote.{cmd}.promisor"), "true"]), &["cat-file", "-e", "1111111111111111111111111111111111111111"]),
+            case("branch-remote", &|_, cmd, git| _ = git("", &["config", "branch.main.remote", cmd]), &["fetch", "-q"]),
+            // Pushing elsewhere than the branch's remote: git needs no upstream then.
+            case("branch-pushremote", &|_, cmd, git| {
+                git("", &["config", "branch.main.remote", "origin"]);
+                git("", &["config", "branch.main.pushRemote", cmd]);
+            }, &["push", "-q"]),
+            case("push-default", &|_, cmd, git| {
+                git("", &["config", "branch.main.remote", "origin"]);
+                git("", &["config", "remote.pushDefault", cmd]);
+            }, &["push", "-q"]),
+            // A group of one is fetched as the remote of its own name: two.
+            case("group", &|_, cmd, git| _ = git("", &["config", "remotes.all", &format!("origin {cmd}")]), &["fetch", "-q", "all"]),
+            case("submodule-url", &|_, cmd, git| {
+                git("", &["config", "-f", ".gitmodules", "submodule.s.path", "s"]);
+                git("", &["config", "-f", ".gitmodules", "submodule.s.url", "https://example.invalid/s"]);
+                let head = git("", &["rev-parse", "HEAD"]);
+                git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{head},s")]);
+                git("", &["config", "submodule.s.url", cmd]);
+            }, &["submodule", "-q", "update", "--init"]),
+            case("zz-name", &|_, _, git| _ = git("", &["config", "remote.zz::payload.fetch", "+refs/heads/*:refs/remotes/x/*"]), fetch_all),
+            case("zz-branch", &|_, _, git| _ = git("", &["config", "branch.main.remote", "zz::payload"]), &["fetch", "-q"]),
+            // `<scheme>://` that git doesn't serve itself: the same helper.
+            case("zz-url", &|_, _, git| _ = git("", &["config", "remote.origin.url", "zz://payload"]), &["fetch", "-q", "origin"]),
+            case("zz-url-name", &|_, _, git| _ = git("", &["config", "remote.zz://payload.fetch", "+refs/heads/*:refs/remotes/x/*"]), fetch_all),
+            case("zz-url-insteadof", &|_, _, git| {
+                git("", &["remote", "add", "origin", "https://example.invalid/r"]);
+                git("", &["config", "url.zz://p/.insteadOf", "https://example.invalid/"]);
+            }, &["fetch", "-q", "origin"]),
+            case("zz-url-partialclone", &|_, _, git| _ = git("", &["config", "extensions.partialClone", "zz://payload"]), &["cat-file", "-e", "1111111111111111111111111111111111111111"]),
+            // `ext://x/run` runs `ext:/x/run`, a program the repo itself can hold.
+            case("ext-url", &|top, _, git| {
+                let run = top.join("ext:/x/run");
+                std::fs::create_dir_all(run.parent().unwrap()).unwrap();
+                std::fs::copy(top.join("bin/hit"), &run).unwrap();
+                git("", &["config", "remote.origin.url", "ext://x/run"]);
+            }, &["fetch", "-q", "origin"]),
+        ];
+        let want = [
+            "remote.<ext>.fetch",
+            "remote.<ext>.skipdefaultupdate",
+            "remote.<ext>.promisor",
+            "branch.main.remote",
+            "branch.main.pushremote",
+            "remote.pushdefault",
+            "remotes.all",
+            "submodule.s.url",
+            "remote.zz::payload.fetch",
+            "branch.main.remote",
+            "remote.origin.url",
+            "remote.zz://payload.fetch",
+            "url.zz://p/.insteadof",
+            "extensions.partialclone",
+            "remote.origin.url",
+        ];
+        assert_eq!(got.to_vec(), want.map(|k| Ok(vec![k.to_string()])));
+    }
+
+    // git takes a folder for a git dir by its `HEAD` as the file system opens
+    // it (`head` where case doesn't count, a link to a ref that's only
+    // packed) and by `objects/` and `refs/` in its common dir (`commondir`):
+    // the scan asks git which folders under `modules/` are git dirs and reads
+    // their config through git. One that looks like one, but git won't take,
+    // shuts the gate.
+    #[cfg(unix)]
+    #[test]
+    fn a_git_dir_counts_however_it_hides_from_a_listing() {
+        let (dir, top, git) = scratch_dir("hidden");
+        git("", &["init", "-q", "-b", "main"]);
+        git("", &["commit", "-q", "--allow-empty", "-m", "x"]);
+        let at = |p: &str| Path::new(&top).join(p);
+        let bare = |gd: &str, key: &str| {
+            git("", &["init", "-q", "--bare", gd]);
+            git("", &["config", "--file", &format!("{gd}/config"), key, "hit"]);
+        };
+        bare(".git/modules/lower", "filter.evil.smudge");
+        std::fs::rename(at(".git/modules/lower/HEAD"), at(".git/modules/lower/head")).unwrap();
+        let ignores_case = at(".git/modules/lower/HEAD").exists();
+        bare(".git/elsewhere", "core.sshCommand");
+        std::fs::create_dir_all(at(".git/modules/common")).unwrap();
+        std::fs::copy(at(".git/elsewhere/HEAD"), at(".git/modules/common/HEAD")).unwrap();
+        std::fs::write(at(".git/modules/common/commondir"), "../../elsewhere\n").unwrap();
+        bare(".git/modules/link", "core.gitProxy");
+        std::fs::remove_file(at(".git/modules/link/HEAD")).unwrap();
+        std::os::unix::fs::symlink("refs/heads/main", at(".git/modules/link/HEAD")).unwrap();
+        // A submodule's git dir names a work tree (`core.worktree`) a removed
+        // submodule may not have anymore: git there stops at it, not here.
+        bare(".git/modules/gone", "filter.evil.clean");
+        git("", &["config", "--file", ".git/modules/gone/config", "core.bare", "false"]);
+        git("", &["config", "--file", ".git/modules/gone/config", "core.worktree", "../../../no/such/s"]);
+        let git_dir = |gd: &str| std::process::Command::new("git").args(["rev-parse", "--git-dir"]).env("GIT_DIR", at(gd)).output().unwrap().status.success();
+        assert!(git_dir(".git/modules/common") && git_dir(".git/modules/link"), "git doesn't take them, so this proves nothing");
+        assert_eq!(git_dir(".git/modules/lower"), ignores_case);
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        assert!(!git_dir(".git/modules/gone"), "git doesn't stop at the missing work tree, so this proves nothing");
+        // `link/HEAD`, to a ref that's only packed, leads the kernel nowhere,
+        // and the scan can't tell where git's real path would lead.
+        let mut want = vec![".git/modules/common: core.sshcommand".to_string(), ".git/modules/gone: filter.evil.clean".into(), format!(".git/modules/link/HEAD: {UNREADABLE}"), ".git/modules/link: core.gitproxy".into()];
+        if ignores_case {
+            want.push(".git/modules/lower: filter.evil.smudge".into());
+        }
+        want.sort();
+        assert_eq!(got, Ok(want.clone()));
+        // `HEAD`, `objects/` and `refs/`, but a `HEAD` git can't read.
+        git("", &["init", "-q", "--bare", ".git/modules/broken"]);
+        std::fs::write(at(".git/modules/broken/HEAD"), "nonsense\n").unwrap();
+        assert!(!git_dir(".git/modules/broken"));
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        std::fs::remove_dir_all(&dir).unwrap();
+        want.insert(0, format!(".git/modules/broken: {UNREADABLE}"));
+        assert_eq!(got, Ok(want));
+    }
+
+    // `.git/modules/<name>` may be a gitfile (`gitdir: …`, or a link to one):
+    // git follows it when it opens the submodule, as a push that checks the
+    // submodule's commits does in its own process. The git dir it names
+    // counts, and that git dir's own `modules/`; one git won't take shuts the
+    // gate. Since git 2.54 `submodule.<name>.gitdir` may put one anywhere.
+    #[cfg(unix)]
+    #[test]
+    fn a_gitfile_in_modules_counts_as_the_git_dir_it_names() {
+        let (dir, top, git) = scratch_dir("gitfile");
+        git("", &["init", "-q", "-b", "main"]);
+        git("", &["commit", "-q", "--allow-empty", "-m", "x"]);
+        let at = |p: &str| Path::new(&top).join(p);
+        let bare = |gd: &str, key: &str| {
+            git("", &["init", "-q", "--bare", gd]);
+            git("", &["config", "--file", &format!("{gd}/config"), key, "hit"]);
+        };
+        bare(".git/evil.git", "remote.origin.uploadPack");
+        bare(".git/evil.git/modules/n", "filter.evil.smudge");
+        bare(".git/other.git", "core.sshCommand");
+        std::fs::create_dir_all(at(".git/modules")).unwrap();
+        std::fs::create_dir_all(at(".git/elsewhere")).unwrap();
+        std::fs::write(at(".git/modules/s"), "gitdir: ../evil.git\n").unwrap();
+        // git reads a link's target, relative to where the link is.
+        std::fs::write(at(".git/elsewhere/f"), "gitdir: ../other.git\n").unwrap();
+        std::os::unix::fs::symlink("../elsewhere/f", at(".git/modules/l")).unwrap();
+        // A link to a gitfile a level deeper: `GIT_DIR` reads `../d.git`
+        // from the link's folder, git opening a submodule itself (its real
+        // path first) from the file's. Each git dir's own `modules/` counts.
+        bare(".git/d.git", "core.gitProxy");
+        bare(".git/d.git/modules/n", "filter.link.clean");
+        bare(".git/deep/d.git", "remote.origin.receivePack");
+        std::fs::create_dir_all(at(".git/deep/a")).unwrap();
+        std::fs::write(at(".git/deep/a/f"), "gitdir: ../d.git\n").unwrap();
+        std::os::unix::fs::symlink("../deep/a/f", at(".git/modules/d")).unwrap();
+        // git takes a gitfile by how it starts.
+        std::fs::write(at(".git/modules/note"), "a note\ngitdir: ../evil.git\n").unwrap();
+        let git_dir = |gd: &str| std::process::Command::new("git").args(["rev-parse", "--git-dir"]).env("GIT_DIR", at(gd)).output().unwrap().status.success();
+        assert!(git_dir(".git/modules/s") && git_dir(".git/modules/l") && !git_dir(".git/modules/note"), "git doesn't take them as it should, so this proves nothing");
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        let want = [".git/modules/d/.git/modules/n: filter.link.clean", ".git/modules/d: core.gitproxy", ".git/modules/d: remote.origin.receivepack", ".git/modules/l: core.sshcommand", ".git/modules/s/.git/modules/n: filter.evil.smudge", ".git/modules/s: remote.origin.uploadpack"];
+        assert_eq!(got, Ok(want.map(String::from).to_vec()));
+        std::fs::write(at(".git/modules/bad"), "gitdir: ../nowhere\n").unwrap();
+        git("", &["config", "submodule.x.gitdir", "../anywhere"]);
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let mut want = want.map(String::from).to_vec();
+        want.insert(0, format!(".git/modules/bad: {UNREADABLE}"));
+        want.push("submodule.x.gitdir".into());
+        assert_eq!(got, Ok(want));
+    }
+
+    // A link under `modules/` (or `modules/` itself) the kernel can't follow,
+    // so neither `find -L` nor `[ -d ]`, git may: the real path it takes
+    // before it opens a submodule in its own process reads `x/..` and a
+    // trailing slash as written, whatever `x` is, and follows more links than
+    // macOS does (32). The scan can't read where git would go, so one shuts
+    // the gate; one the kernel follows is read as before.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_the_kernel_cant_follow_shuts_the_gate() {
+        let (mut got, mut want) = (vec![], vec![]);
+        for case in ["slash", "file-dotdot", "file-dotdot-dir", "modules", "chain-33", "dir-slash", "chain-32"] {
+            let name = format!("kernel-{case}");
+            let (dir, root, git) = scratch_dir(&name);
+            let at = |p: &str| Path::new(&root).join(p);
+            git("lib", &["init", "-q", "-b", "main"]);
+            for n in ["one", "two"] {
+                std::fs::write(at("lib/f"), n).unwrap();
+                git("lib", &["add", "f"]);
+                git("lib", &["commit", "-q", "-m", n]);
+            }
+            let one = git("lib", &["rev-parse", "HEAD~1"]);
+            git("top", &["init", "-q", "-b", "main"]);
+            git("top", &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &at("lib").display().to_string(), "s"]);
+            git("top/s", &["checkout", "-q", &one]);
+            git("top", &["commit", "-q", "-am", "one"]);
+            git("top/s", &["checkout", "-q", "main"]);
+            git("top", &["commit", "-q", "-am", "two"]);
+            git("top", &["submodule", "deinit", "-q", "-f", "s"]);
+            // The submodule's git dir moved out of `modules/`, a gitfile to it.
+            let g = |p: &str| at(&format!("top/.git/{p}"));
+            std::fs::create_dir_all(g("deep/a")).unwrap();
+            std::fs::rename(g("modules/s"), g("deep/evil.git")).unwrap();
+            git("top", &["config", "--file", ".git/deep/evil.git/config", "core.sshCommand", "hit"]);
+            std::fs::write(g("deep/a/f"), "gitdir: ../evil.git\n").unwrap();
+            let link = |to: &str, from: &str| std::os::unix::fs::symlink(to, g(from)).unwrap();
+            let chain = |n: usize| {
+                std::fs::create_dir_all(g("l")).unwrap();
+                (1..n - 1).for_each(|i| link(&(i + 1).to_string(), &format!("l/{i}")));
+                link("../deep/evil.git", &format!("l/{}", n - 1));
+                link("../l/1", "modules/s");
+            };
+            match case {
+                "slash" => link("../deep/a/f/", "modules/s"),
+                "file-dotdot" | "file-dotdot-dir" => {
+                    std::fs::write(g("modules/x"), "").unwrap();
+                    link(if case == "file-dotdot" { "x/../../deep/a/f" } else { "x/../../deep/evil.git" }, "modules/s");
+                }
+                "modules" => {
+                    std::fs::remove_dir(g("modules")).unwrap();
+                    std::fs::create_dir(g("store")).unwrap();
+                    std::fs::rename(g("deep/evil.git"), g("store/s")).unwrap();
+                    std::fs::write(g("x"), "").unwrap();
+                    link("x/../store", "modules");
+                }
+                "chain-33" => chain(33),
+                "chain-32" => chain(32),
+                _ => link("../deep/evil.git/", "modules/s"),
+            }
+            let follows = std::fs::metadata(g("modules/s")).is_ok();
+            let opens = git("top", &["diff", "--submodule=log", "HEAD~1", "HEAD"]).contains("> two");
+            got.push((case, follows, opens, programs_within(None, &at("top").display().to_string(), Duration::from_secs(30))));
+            std::fs::remove_dir_all(&dir).unwrap();
+            // Linux follows 40 links, so 33 too.
+            let kernel = matches!(case, "dir-slash" | "chain-32") || (case == "chain-33" && !cfg!(target_os = "macos"));
+            // GNU find stops at a link it can't follow but for a missing
+            // target, so there all of `modules/` can't be read.
+            let scan = match (kernel, case) {
+                (true, _) => ".git/modules/s: core.sshcommand".to_owned(),
+                (false, "modules") => format!(".git/modules: {UNREADABLE}"),
+                (false, _) if cfg!(target_os = "linux") => format!(".git/modules: {UNREADABLE}"),
+                (false, _) => format!(".git/modules/s: {UNREADABLE}"),
+            };
+            want.push((case, kernel, true, Ok(vec![scan])));
+        }
+        assert_eq!(got, want, "(case, the kernel follows, git opens it in its own process, the scan)");
+    }
+
+    // A partial clone, by the keys git reads: its promisor remote is
+    // contacted as it reads, whatever its URL.
+    #[cfg(unix)]
+    #[test]
+    fn a_partial_clone_counts() {
+        let (dir, top, git) = scratch_dir("partial");
+        git("", &["init", "-q", "-b", "main"]);
+        git("", &["commit", "-q", "--allow-empty", "-m", "x"]);
+        assert_eq!(programs_within(None, &top, Duration::from_secs(30)), Ok(vec![]));
+        git("", &["config", "remote.origin.url", "https://example.invalid/r.git"]);
+        git("", &["config", "remote.origin.promisor", "true"]);
+        git("", &["config", "remote.origin.partialclonefilter", "blob:none"]);
+        git("", &["config", "extensions.partialClone", "origin"]);
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(got, Ok(vec!["extensions.partialclone".to_string(), "remote.origin.partialclonefilter".into(), "remote.origin.promisor".into()]));
+    }
+
+    // A submodule not checked out keeps its git dir (`.git/modules/<name>`,
+    // its own nested ones inside it), and `submodule update` reuses it, a
+    // fetch recurses into it: its config's programs count, though no
+    // gitlink's folder holds a `.git`.
+    #[cfg(unix)]
+    #[test]
+    fn a_submodule_git_dir_nothing_checks_out_counts_too() {
+        let (dir, top, git) = scratch_dir("modules");
+        git("", &["init", "-q", "-b", "main"]);
+        git("", &["commit", "-q", "--allow-empty", "-m", "x"]);
+        assert_eq!(programs_within(None, &top, Duration::from_secs(30)), Ok(vec![]));
+        // As `submodule deinit` leaves them: a name with a slash, one nested in another.
+        for (gd, key) in [(".git/modules/s", "filter.evil.smudge"), (".git/modules/vendor/lib", "core.sshCommand"), (".git/modules/s/modules/n", "core.gitProxy"), (".git/modules/plain", "")] {
+            git("", &["init", "-q", "--bare", gd]);
+            if !key.is_empty() {
+                git("", &["config", "--file", &format!("{gd}/config"), key, "hit"]);
+            }
+        }
+        // A remote's HEAD and a reflog's are files named HEAD too, not git dirs.
+        git("", &["update-ref", "refs/remotes/origin/HEAD", "HEAD"]);
+        let got = programs_within(None, &top, Duration::from_secs(30));
+        assert_eq!(got, Ok(vec![".git/modules/s/modules/n: core.gitproxy".to_string(), ".git/modules/s: filter.evil.smudge".into(), ".git/modules/vendor/lib: core.sshcommand".into()]));
+        // A linked worktree keeps its own (`.git/worktrees/<id>/modules`); the
+        // common dir's count there too. The main worktree never uses a linked one's.
+        git("", &["worktree", "add", "-q", "wt"]);
+        git("", &["init", "-q", "--bare", ".git/worktrees/wt/modules/x"]);
+        git("", &["config", "--file", ".git/worktrees/wt/modules/x/config", "core.sshCommand", "hit"]);
+        let at_wt = programs_within(None, &format!("{top}/wt"), Duration::from_secs(30));
+        assert_eq!(programs_within(None, &top, Duration::from_secs(30)), got, "the main worktree");
+        let mut want = got.clone().unwrap();
+        want.push(".git/worktrees/wt/modules/x: core.sshcommand".into());
+        assert_eq!(at_wt, Ok(want));
+        // One whose name the scan can't read back whole shuts the gate.
+        git("", &["init", "-q", "--bare", ".git/modules/a\nb"]);
+        let got = programs_within(None, &top, Duration::from_secs(30)).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(got.iter().any(|k| k.ends_with(UNREADABLE)), "{got:?}");
     }
 
     #[cfg(unix)]
