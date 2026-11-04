@@ -11,6 +11,7 @@ Fixes for beta.2, mostly on Windows, and faster Git and Files on large folders a
 - Checking whether a folder needs trust takes one Git call instead of two (one round trip to a remote machine instead of two), and the Changes panel checks once per refresh instead of twice.
 - The Files sidebar and panels no longer reload on macOS and Windows every time a build writes into an ignored folder such as `target/` or `node_modules/`.
 - The status bar's Git look takes one round trip on a remote machine instead of three.
+- On a remote machine, opening a diff takes 2 round trips instead of 5 (unstaged) or 4 (staged), and the Git log reads its refs in 1 instead of 3: reads that don't depend on each other now go out together.
 
 ### Fixed
 

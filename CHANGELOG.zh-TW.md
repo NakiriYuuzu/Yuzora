@@ -11,6 +11,7 @@
 - 檢查資料夾是否需要信任，現在只要一次 Git 呼叫（遠端機器少一次來回），Changes 面板每次 refresh 也只檢查一次，不再是兩次。
 - macOS 與 Windows 上，build 寫入 `target/`、`node_modules/` 這類被 ignore 的資料夾時，Files 側欄與面板不再每次都重新載入。
 - 狀態列的 Git 資訊在遠端機器上只要一次來回，不再是三次。
+- 遠端機器上，開啟 diff 的來回次數從 5 次（unstaged）或 4 次（staged）降到 2 次，Git log 讀取 refs 也從 3 次降到 1 次：彼此不相依的讀取改成同時發出。
 
 ### 修正
 

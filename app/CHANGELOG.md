@@ -13,6 +13,7 @@
 - Trust check: the repository's config is read in the same shell as the submodule scan, so each check is one git call (one `hc exec` on a machine), and an answer without the config's exit code counts as unreadable; the Changes panel's refresh no longer asks a second time for the diff it opens on its own.
 - Files: on macOS and Windows, changes inside a folder that the root `.gitignore` or `.git/info/exclude` ignores (a build's `target/`, `node_modules/`) no longer wake the Files sidebar and panels.
 - Status bar: the Git branch look takes one round trip on a remote machine instead of three, and two reads run in parallel on a local one.
+- Remote Git reads: a diff's independent reads (index entry, blob, kind, HEAD, modes), the log's refs and the repo's operation state are sent together instead of one after another (unstaged diff 5 → 2 round trips, staged 4 → 2, refs 3 → 1), and the index side of a diff is read by the entry's object id so it matches the entry it was checked against.
 - Windows: the installer's prompt to remove an older all-users Yuzora now notes that connections and settings are not brought over automatically yet.
 
 ## [0.1.0-beta.2] - 2026-11-04
