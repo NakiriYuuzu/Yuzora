@@ -1106,12 +1106,14 @@ with these differences.
   pinned for the space: `setShared("yuzora.git.repo.<space id>", {root, on})`
   pins it (kept across restarts), `null` follows the focus again. The badge,
   `yuzora.status.git`, and the Log, diff, branches and push opened from the
-  sidebar follow the repository picked. A pinned repository that is gone (or
-  that git opens as the one above it) is unpinned with a note.
+  sidebar follow the repository picked. A pinned repository that is gone (its
+  folder, or the `.git` in it, as the file system tells) is unpinned with a
+  note; one that can't be looked at now stays pinned, with the error.
   `repos(folder, on, cwds)` lists a space's repositories without running git
   (the file system only; on a machine, one call): the ones `folder` and each
   of `cwds` are in, then folders one and two below `folder` with a `.git`, at
-  most 50.
+  most 50. A `folder` gone for sure has none; one that can't be looked into
+  now (no permission, say) rejects.
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->

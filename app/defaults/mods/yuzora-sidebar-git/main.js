@@ -80,9 +80,16 @@ export default class SidebarGit extends View {
       try {
         const repo = await open(cwd, on);
         if (this.ctx !== ctx) return;
-        // A pinned repo opens as itself: without its `.git` (or with one git
-        // won't take) git opens the repo above it instead.
-        if (here.pin && repo.root !== cwd && this.unpin(here)) { this.attach(cx); return; }
+        // A pinned repo opens as itself. Without its `.git` git opens the repo
+        // above it instead: unpinned. With one git won't take now (it can't be
+        // read, say), the pin stays, and so does the error: not the repo above.
+        if (here.pin && repo.root !== cwd) {
+          if (await this.unpinIfGone(here)) { if (this.ctx === ctx) this.attach(cx); return; }
+          if (this.ctx !== ctx) return;
+          this.error = t("repo.opensAbove", { root: repo.root });
+          this.publish(); cx.notify();
+          return;
+        }
         this.repo = repo;
         await this.reload(cx);
         this.loadMessages(cx);
@@ -121,7 +128,8 @@ export default class SidebarGit extends View {
 
   // A pinned repo that's gone (its folder, or the `.git` in it: the file
   // system says, no git runs) is unpinned, with a note: the Git mode follows
-  // the focus again. One that can't be looked at now (a machine away) stays.
+  // the focus again. One that can't be looked at now (a machine away, no
+  // permission to its folder: `repos` fails) stays.
   async unpinIfGone(here) {
     try {
       const found = await repos(here.cwd, here.on, []);

@@ -45,11 +45,13 @@ pub struct Listing {
 }
 
 /// The repositories of a Space whose folder is `folder`, with panes in
-/// `cwds`, here or on machine `on`. A folder that isn't there has none.
+/// `cwds`, here or on machine `on`. A folder that is gone has none; one that
+/// can't be looked into now (no permission to it, say) is an error, so a
+/// pinned repo isn't taken for gone.
 pub fn find(folder: &str, cwds: &[String], on: Option<&str>) -> Result<Listing, String> {
     match on.filter(|m| !m.is_empty()) {
         Some(m) => on_machine(m, folder, cwds),
-        None => Ok(here(Path::new(folder), cwds)),
+        None => here(Path::new(folder), cwds),
     }
 }
 
@@ -99,16 +101,21 @@ fn git_path(path: &Path) -> String {
 /// then the folders one and two below `folder` with a `.git` (the first
 /// [`FOLDERS`] looked at), in path order (bytes). Links to folders are
 /// followed (two levels at most, so a link back up ends there); [`SKIP`]
-/// folders aren't looked into.
-pub fn here(folder: &Path, cwds: &[String]) -> Listing {
-    let Ok(base) = std::fs::canonicalize(folder) else { return Listing::default() };
+/// folders aren't looked into. A `folder` that can't be looked into is none
+/// if it's [`gone`], else an error.
+pub fn here(folder: &Path, cwds: &[String]) -> Result<Listing, String> {
+    let base = match std::fs::canonicalize(folder) {
+        Ok(base) if can_enter(&base) => base,
+        _ if gone(folder) => return Ok(Listing::default()),
+        _ => return Err(format!("{} can't be looked into now", folder.display())),
+    };
     let mut found = Collect { base: base.clone(), out: Listing::default() };
     for dir in std::iter::once(folder).chain(cwds.iter().map(Path::new)) {
         if let Ok(real) = std::fs::canonicalize(dir)
             && let Some(top) = real.ancestors().find(|a| has_git(a))
             && !found.add(top)
         {
-            return found.out;
+            return Ok(found.out);
         }
     }
     let mut below = Vec::new();
@@ -137,7 +144,30 @@ pub fn here(folder: &Path, cwds: &[String]) -> Listing {
             break;
         }
     }
-    found.out
+    Ok(found.out)
+}
+
+/// Whether `dir` is a folder that can be looked into, as `cd` takes it: on
+/// unix, one it may search.
+fn can_enter(dir: &Path) -> bool {
+    dir.is_dir() && (cfg!(windows) || std::fs::metadata(dir.join(".")).is_ok())
+}
+
+/// Whether `folder`, which can't be looked into, is gone for sure: it, or a
+/// folder on the way to it, isn't there (in a folder that can be looked
+/// into), or is no folder. Else nothing is known now: no permission to it or
+/// to a folder above it, or a link that doesn't lead anywhere (it may lead
+/// into a folder that can't be looked into). As [`SCRIPT`]'s `gone`.
+fn gone(folder: &Path) -> bool {
+    let mut below = false;
+    for p in folder.ancestors() {
+        match std::fs::metadata(p) {
+            Ok(m) => return !m.is_dir() || (below && can_enter(p)),
+            Err(_) if std::fs::symlink_metadata(p).is_ok() => return false,
+            Err(_) => below = true,
+        }
+    }
+    false
 }
 
 /// The folders in `dir` (links to folders too), but [`SKIP`]'s, as the file
@@ -193,7 +223,8 @@ fn listing(out: &[u8]) -> Option<Listing> {
 /// panes' folders. Prints `base\0<real path>\0`, a `repo\0<real top
 /// level>\0` for each repository (at most [`MOST`]), `more\0\0` when there
 /// were more, and `end\0\0` last; `gone\0\0` instead of `base` when the
-/// folder isn't there. `find -L` follows links to folders as [`here`] does
+/// folder is gone (as [`gone`]), and nothing (exit 1) when it can't be looked
+/// into now. `find -L` follows links to folders as [`here`] does
 /// (two levels, so a link back up ends there); its names come back a line
 /// each, so one with a line feed in it can't be read and is passed over
 /// (`real` refuses it; a part of one is no folder). The first 5000 as `find`
@@ -215,6 +246,20 @@ add() {
   printf 'repo\0%s\0' "$1"
 }
 has() { [ -d "$1/.git" ] || [ -f "$1/.git" ]; }
+gone() {
+  p=$1 below=
+  while :; do
+    if [ -L "$p" ] && [ ! -e "$p" ]; then return 1; fi
+    if [ -e "$p" ]; then
+      [ -d "$p" ] || return 0
+      [ -n "$below" ] && [ -e "$p/." ]
+      return
+    fi
+    case "$p" in /) return 1 ;; */*) ;; *) return 1 ;; esac
+    below=1 p=${p%/*}
+    [ -n "$p" ] || p=/
+  done
+}
 up() {
   real "$1" || return 0
   d=$r
@@ -225,7 +270,11 @@ up() {
     [ -n "$d" ] || d=/
   done
 }
-real "$1" || { printf 'gone\0\0end\0\0'; exit 0; }
+if ! real "$1"; then
+  if gone "$1"; then printf 'gone\0\0end\0\0'; exit 0; fi
+  printf '%s\n' "$1 can't be looked into now" >&2
+  exit 1
+fi
 base=$r
 printf 'base\0%s\0' "$base"
 for c in "$@"; do up "$c"; done
@@ -267,11 +316,56 @@ mod tests {
         listing(&out.stdout)
     }
 
-    /// [`here`], checked against [`SCRIPT`]: both must answer the same.
-    fn both(folder: &Path, cwds: &[String]) -> Listing {
+    /// [`here`], checked against [`SCRIPT`]: both must answer the same (or
+    /// both have no answer).
+    fn answer(folder: &Path, cwds: &[String]) -> Result<Listing, String> {
         let got = here(folder, cwds);
-        assert_eq!(by_script(folder, cwds).as_ref(), Some(&got), "the script and here differ");
+        assert_eq!(by_script(folder, cwds), got.clone().ok(), "the script and here differ");
         got
+    }
+
+    fn both(folder: &Path, cwds: &[String]) -> Listing {
+        answer(folder, cwds).expect("an answer")
+    }
+
+    /// Gives folders their permissions back, so a scratch folder can be removed.
+    struct Unlock(Vec<PathBuf>);
+
+    impl Drop for Unlock {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            for p in &self.0 {
+                let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+
+    // A folder that can't be looked into now (no permission to it, or to a folder above it, or a
+    // link that leads nowhere: maybe into such a folder) has no answer, both here and on a
+    // machine: an error, not an empty list, so a pinned repo isn't unpinned for it. One gone for
+    // sure (not there, a file, below a file) has no repositories.
+    #[test]
+    fn a_folder_that_cant_be_looked_into_has_no_answer() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = scratch("locked");
+        mkdirs(&base, &["shut/.git", "above/r/.git"]);
+        std::fs::write(base.join("file"), "").unwrap();
+        std::os::unix::fs::symlink(base.join("nowhere"), base.join("dangling")).unwrap();
+        std::os::unix::fs::symlink(base.join("above/r"), base.join("into")).unwrap();
+        for gone in ["missing", "missing/deeper/still", "file", "file/sub"] {
+            assert_eq!(answer(&base.join(gone), &[]), Ok(Listing::default()), "{gone}");
+        }
+        assert!(answer(&base.join("dangling"), &[]).is_err(), "a link to nothing");
+        let _unlock = Unlock(vec![base.join("shut"), base.join("above")]);
+        for dir in ["shut", "above"] {
+            std::fs::set_permissions(base.join(dir), std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        if std::fs::metadata(base.join("shut/.")).is_ok() {
+            return; // Privileged: no permission is refused.
+        }
+        for locked in ["shut", "above/r", "into", "into/deeper"] {
+            assert!(answer(&base.join(locked), &[]).is_err(), "{locked}");
+        }
     }
 
     #[test]

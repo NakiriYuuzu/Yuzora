@@ -79,5 +79,6 @@
   "repo.loading": "正在尋找 repo…",
   "repo.empty": "這個 Space 裡沒有 repo。",
   "repo.truncated": "只列出前 {count} 個。",
-  "repo.gone": "{name} 已不是 repo，改回跟隨焦點"
+  "repo.gone": "{name} 已不是 repo，改回跟隨焦點",
+  "repo.opensAbove": "git 在這裡打開的是 {root}：這個 repo 的 .git 目前無法使用"
 }

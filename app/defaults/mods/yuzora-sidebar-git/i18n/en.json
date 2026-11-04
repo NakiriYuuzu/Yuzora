@@ -79,5 +79,6 @@
   "repo.loading": "Looking for repositories…",
   "repo.empty": "No repositories in this space.",
   "repo.truncated": "Showing the first {count}.",
-  "repo.gone": "{name} is no longer a repository: following focus again"
+  "repo.gone": "{name} is no longer a repository: following focus again",
+  "repo.opensAbove": "Git opens {root} here instead: this repository's .git can't be used now"
 }

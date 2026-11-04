@@ -572,7 +572,7 @@ struct GitSidebar {
 
 /// A space `s1` (folder `/sp`, panes `p1` in `/sp/a` and `p2` in `/sp/b/c`; `p3` is another
 /// space's), and yuzora:git: `open` takes any folder but `fails` names (with that error; and
-/// `/sp/nested`, with no `.git` of its own, opens as the repo above, `/sp`), `status`
+/// `/sp/nested` and `/sp/broken` open as a repo above, `/sp` and `/sp/r`), `status`
 /// has as many changes as the repo's name says (`/sp/a` 1, `/sp/b/c` 2, `/sp/r` 3) and fails for
 /// `/sp/vanish`, `repos` answers with `found`.
 fn git_sidebar_module(state: Rc<GitSidebar>, props: Value, fails: &'static [(&'static str, &'static str)], found: fn(&str) -> Result<Value, String>) -> HostModule {
@@ -618,7 +618,7 @@ fn git_sidebar_module(state: Rc<GitSidebar>, props: Value, fails: &'static [(&'s
     module = module.async_function("open", move |a| {
         let cwd = a.string(0)?.to_owned();
         s.opened.borrow_mut().push(cwd.clone());
-        let top = if cwd == "/sp/nested" { "/sp".to_owned() } else { cwd.clone() };
+        let top = match cwd.as_str() { "/sp/nested" => "/sp".to_owned(), "/sp/broken" => "/sp/r".to_owned(), _ => cwd.clone() };
         Ok(answer(match fails.iter().find(|(root, _)| *root == cwd) {
             Some((_, e)) => Err(e.to_string()),
             None => Ok(json!({"id": top, "root": top, "machine": null, "gitDir": format!("{top}/.git"), "commonDir": format!("{top}/.git")})),
@@ -719,8 +719,9 @@ fn yuzora_git_repo_follows_the_focus_or_the_pin_of_its_space(cx: &mut TestAppCon
 // yuzora(L2): a pinned repo that's gone (no `.git` left in its folder, or no folder: `repos`
 // reads the file system, no git runs) is unpinned with a note, and the sidebar follows the focus
 // again; found gone when it opens, or later, when status fails, or when git opens it as another
-// repo (the one above: no file system look needed). One that can't be looked at (a machine away)
-// or still has its `.git` stays pinned.
+// repo (the one above). One that can't be looked at (a machine away, no permission: `repos`
+// fails) or still has its `.git` stays pinned, with the error: git opening the repo above one
+// whose `.git` it won't take now doesn't make the sidebar show that repo.
 #[gpui::test]
 fn yuzora_git_repo_pinned_and_gone_follows_the_focus_again(cx: &mut TestAppContext) {
     const FAILS: &[(&str, &str)] = &[("/sp/gone", "fatal: not a git repository"), ("/sp/moved", "fatal: not a git repository"), ("/sp/away", "machine lab is not connected"), ("/sp/still", "fatal: bad config line 1")];
@@ -728,33 +729,40 @@ fn yuzora_git_repo_pinned_and_gone_follows_the_focus_again(cx: &mut TestAppConte
         match folder {
             "/sp/away" => Err("machine lab is not connected".into()),
             "/sp/still" => Ok(json!({"repos": [{"root": "/sp/still", "name": "still", "rel": ".", "trusted": false}], "truncated": false})),
+            "/sp/broken" => Ok(json!({"repos": [{"root": "/sp/broken", "name": "broken", "rel": ".", "trusted": false}], "truncated": false})),
             // Its `.git` gone: the repo it is in now is the one above.
             "/sp/moved" => Ok(json!({"repos": [{"root": "/sp", "name": "sp", "rel": "/sp", "trusted": false}], "truncated": false})),
             _ => Ok(json!({"repos": [], "truncated": false})),
         }
     }
     let mut failures = Vec::new();
-    for (root, gone) in [("/sp/gone", true), ("/sp/moved", true), ("/sp/vanish", true), ("/sp/nested", true), ("/sp/away", false), ("/sp/still", false)] {
+    for (root, gone) in [("/sp/gone", true), ("/sp/moved", true), ("/sp/vanish", true), ("/sp/nested", true), ("/sp/away", false), ("/sp/still", false), ("/sp/broken", false)] {
         let state = Rc::new(GitSidebar::default());
         *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
         state.shared.borrow_mut().insert("yuzora.git.repo.s1".into(), json!({"root": root, "on": null}));
         let module = git_sidebar_module(state.clone(), Value::Null, FAILS, found);
-        let (_fixture, mut visual) = git_sidebar_mount(cx, &git_sidebar_source(&[]), module);
+        // The error the sidebar shows.
+        let source = git_sidebar_source(&[(".child(this.error ?? t(\"loading\"))", ".child((note(\"error\", this.error ?? null), this.error ?? t(\"loading\")))")]);
+        let (_fixture, mut visual) = git_sidebar_mount(cx, &source, module);
         git_sidebar_tick(&mut visual);
         let pin = state.shared.borrow().get("yuzora.git.repo.s1").cloned().unwrap_or(Value::Null);
         let notes: Vec<Value> = state.effects.borrow().iter().filter(|(name, _)| name == "notify").map(|(_, v)| v.clone()).collect();
         let opened = state.opened.borrow().clone();
         let listed = state.listed.borrow().clone();
-        let want_listed = if root == "/sp/nested" { vec![] } else { vec![json!([root, null, []])] };
-        if listed != want_listed {
+        if listed != vec![json!([root, null, []])] {
             failures.push(format!("{root}: asked the file system {listed:?}"));
         }
         let want_opened: Vec<String> = if gone { vec![root.into(), "/sp/a".into()] } else { vec![root.into()] };
         if gone && (pin != Value::Null || notes.len() != 1 || notes[0]["title"] != "repo.gone" || notes[0]["level"] != "warning" || opened != want_opened) {
             failures.push(format!("{root}: gone, but pin {pin}, notes {notes:?}, opened {opened:?}"));
         }
-        if !gone && (pin["root"] != root || !notes.is_empty() || opened != want_opened) {
-            failures.push(format!("{root}: still there, but pin {pin}, notes {notes:?}, opened {opened:?}"));
+        // Not the repo above's changes either (`/sp/r` has 3).
+        let badge = state.shared.borrow().get("yuzora.badge.git").cloned().unwrap_or(Value::Null);
+        if !gone && (pin["root"] != root || !notes.is_empty() || opened != want_opened || badge != Value::Null) {
+            failures.push(format!("{root}: still there, but pin {pin}, notes {notes:?}, opened {opened:?}, badge {badge}"));
+        }
+        if root == "/sp/broken" && state.notes.borrow().last() != Some(&json!(["error", "repo.opensAbove"])) {
+            failures.push(format!("{root}: shows {:?}", state.notes.borrow().last()));
         }
         visual.update(|window, _| window.remove_window());
     }
