@@ -1,5 +1,5 @@
 // The tab bar. Owned by lane L1.
-// Every Space's tabs, each with its Space's badge, its most urgent agent state and (when
+// The current Space's tabs only (the sidebar tells Spaces apart), each with its Space's badge, its most urgent agent state and (when
 // shown) a close button; + opens Herdr's new-tab menu. "New pane ▾" mixes a tool pane
 // (yuzora:core panes(): mods whose mod.json says "yuzora": {"pane": …}), a terminal or an
 // agent into the shown tab, right of or below the focused pane. Window buttons where

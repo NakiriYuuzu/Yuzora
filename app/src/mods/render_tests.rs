@@ -836,7 +836,7 @@ fn yuzora_tab_bar_lists_only_the_current_space(cx: &mut TestAppContext) {
     let tab = |id: &str, active: bool, settled: bool| json!({"id":id,"index":1,"name":id,"active":active,"status":"idle","panes":1,"zoomed":false,"settled":settled,"settled_at":null,"changed_at":null,"working_since":null});
     let spaces = |active: Option<&str>| json!([
         {"id":"s1","index":1,"name":"Local","folder":"/a","machine":null,"branch":null,"active":active==Some("s1"),"status":"idle","tabs":[tab("a-one", true, false), tab("a-two", false, false), tab("a-old", false, true)]},
-        {"id":"s2","index":2,"name":"Remote","folder":"/b","machine":"remote","branch":null,"active":active==Some("s2"),"status":"idle","tabs":[tab("b-one", true, false)]},
+        {"id":"s2","index":2,"name":"Remote","folder":"/b","machine":"remote","branch":null,"active":active==Some("s2"),"status":"idle","tabs":[tab("b-one", true, true)]},
     ]);
     let shown = |cx: &mut TestAppContext, active: Option<&str>| {
         let mut values = fixture(true, json!({}), updates("current", "current"));
