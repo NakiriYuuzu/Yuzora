@@ -32,7 +32,7 @@ function place() {
 const key = () => JSON.stringify(place());
 const baseName = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 
-const ROW = 24, HEAD = 26, ACTION = 22, ACTION_ALL = 84, LIST_PAD = 6, PICK_ROW = 26, PICK_MAX = 360;
+const ROW = 24, HEAD = 26, ACTION = 22, ACTION_ALL = 84, LIST_PAD = 6, PICK_ROW = 26, PICK_MAX = 358;
 // Line counts of six digits would not fit the narrowest sidebar next to the buttons: 150000 reads 150k.
 const count = (n) => (n < 100000 ? String(n) : n < 1000000 ? `${Math.round(n / 1000)}k` : "999k+");
 const SECTIONS = ["conflicts", "staged", "unstaged"];
@@ -169,7 +169,7 @@ export default class SidebarGit extends View {
     const folder = space.folder || cwds[0];
     if (!folder) return;
     const pin = pinned();
-    openOverlay({ mod: "yuzora-sidebar-git", kind, ...(kind === "popup" ? { at: "pointer" } : {}), width: 340, height: 360,
+    openOverlay({ mod: "yuzora-sidebar-git", kind, ...(kind === "popup" ? { at: "pointer", height: 360 } : {}), width: 340,
       props: { picker: { space: space.id, folder, on: space.machine ?? null, cwds, current: pin?.root ?? this.repo?.root ?? null, pinned: Boolean(pin) } } });
   }
 
@@ -216,7 +216,7 @@ export default class SidebarGit extends View {
       .child(div().flex_none().max_w(150).truncate().child(title))
       .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(th.dim).child(detail ?? ""))
       .when(Boolean(extra), (el) => el.child(div().flex_none().text_size(10.5).text_color(th.muted).child(extra)));
-    // As a popup the overlay is as tall as its content: the column takes its rows' height (PICK_MAX at most) and only
+    // As a popup the overlay is as tall as its content: the column takes its rows' height (PICK_MAX at most: 360, the popup's, less its border) and only
     // then does the list shrink and scroll. Nothing here waits for a height to fill: not size_full or flex_1, and not
     // overflow_y_scrollbar, whose scroll area fills its parent (the list was 0 high).
     return v_flex().id("picker").track_focus(this.handle).w_full().max_h(PICK_MAX).min_h(0).p(4).bg(th.popover ?? th.raised).text_color(th.foreground).text_size(12)
