@@ -15,6 +15,7 @@
 - 遠端機器上，開啟 diff 的來回次數從 5 次（unstaged）或 4 次（staged）降到 2 次，Git log 讀取 refs 也從 3 次降到 1 次：彼此不相依的讀取改成同時發出。
 - 在本機執行程式（Git、搜尋、腳本）時不再多等輪詢：`git --version` 這類呼叫在 Windows 上從約 52 ms 降到 29 ms，在 macOS 上從約 53 ms 降到 8 ms。
 - 開著的 Git diff 不再因為 repo 裡任何變動就重新載入，只有它自己的檔案（或改名前的檔案）可能變動時才會。
+- Git：尚未信任的資料夾裡，開 diff 與 Files 重新整理不再每次都重新掃描 repo；只要答案來源的檔案沒變就沿用上次結果（有 submodule 的 repo、Windows 上的 repo，以及放在 FAT、exFAT 或網路磁碟上的 repo，仍每次掃描）。
 
 ### 修正
 

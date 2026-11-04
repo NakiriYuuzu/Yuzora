@@ -15,6 +15,7 @@ Fixes for beta.2, mostly on Windows, and faster Git and Files on large folders a
 - On a remote machine, opening a diff takes 2 round trips instead of 5 (unstaged) or 4 (staged), and the Git log reads its refs in 1 instead of 3: reads that don't depend on each other now go out together.
 - Running programs on this computer (Git, search, scripts) no longer waits for polling: a `git --version` call dropped from about 52 ms to 29 ms on Windows and from about 53 ms to 8 ms on macOS.
 - An open Git diff no longer reloads whenever anything in the repository changes, only when its own file (or the one it was renamed from) may have.
+- Git: in a folder not trusted yet, opening a diff and reloading Files no longer scan the repository again each time; the answer is reused until a file it came from changes (repositories with submodules, any on Windows, and any on a FAT, exFAT or network drive are still scanned each time).
 
 ### Fixed
 

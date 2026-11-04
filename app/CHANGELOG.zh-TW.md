@@ -19,6 +19,7 @@
 - Windows：編輯器、Markdown、圖片窗格會在檔案於磁碟上變更時重新載入；SFTP 本機面板顯示 `C:\…` 路徑。
 - 在本機執行程式（Git、搜尋、腳本）時不再多等輪詢：`git --version` 這類呼叫在 Windows 上從約 52 ms 降到 29 ms，在 macOS 上從約 53 ms 降到 8 ms。
 - Git diff pane：只有變動可能碰到自己的檔案、改名前的檔案、它們的上層資料夾或底下的路徑，或任何 `.gitattributes` 時才重新載入，不再因為 repo 裡任何變動就重讀；無法判斷變動的路徑時（git 寫了 index 或 refs、rescan）照舊重新載入。
+- 信任檢查（本機，macOS 與 Linux）：單純 repo 的答案會保留，條件是 `HEAD`、`index`、`config`、`config.worktree`、`objects/`、`refs/`、`remotes/`、`branches/` 都沒變，`.git` 與 `commondir` 也仍指向同一組 dir；index 裡有 gitlink、有 `modules/` 資料夾、設定含 `include`、index 是 split 或 sparse（是否讀 shared index 由 git 自己回答）、檔案系統的 kernel 不自己維護 change time（只在 APFS、HFS+、ext2/3/4、XFS、Btrfs、tmpfs、ZFS、F2FS 上保留；FAT、exFAT 與網路檔案系統不保留），或檔案在掃描前 3 秒內或掃描當中變動過，就每次都掃描。未信任資料夾開 diff 從 74 ms 降到 32 ms；Files reload 的檢查原本 47 ms、8 個行程，現在都是 0。
 
 ## [0.1.0-beta.2] - 2026-11-04
 

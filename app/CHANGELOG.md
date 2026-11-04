@@ -20,6 +20,7 @@
 - Windows: the editor, Markdown and image panes now reload when the file changes on disk, and the SFTP local panel shows `C:\…` paths.
 - Running programs on this computer (Git, search, scripts) no longer waits for polling: a `git --version` call dropped from about 52 ms to 29 ms on Windows and from about 53 ms to 8 ms on macOS.
 - Git diff pane: it loads again only when a change may touch its file, the one it was renamed from, a folder above or a path inside either, or a `.gitattributes`, instead of for any change in the repo; when the changed paths can't be told (the index or refs git wrote, a rescan) it loads again as before.
+- Trust check, on this computer (macOS and Linux): a plain repository's answer is kept while its `HEAD`, `index`, `config`, `config.worktree`, `objects/`, `refs/`, `remotes/` and `branches/` stay as they were and `.git` and `commondir` lead to the same dirs; a gitlink in the index, a `modules/` folder, an `include` in its config, a split or sparse index (git is asked whether it reads a shared index), a file system whose kernel doesn't keep change times itself (kept only on APFS, HFS+, ext2/3/4, XFS, Btrfs, tmpfs, ZFS and F2FS; not on FAT, exFAT or network file systems), a file changed in the 3 s before the scan, or one that changed during it means scanning each time. Opening a diff in an untrusted folder took 74 ms and now takes 32 ms; a Files reload's check, 47 ms and 8 processes, now 0.
 
 ## [0.1.0-beta.2] - 2026-11-04
 
