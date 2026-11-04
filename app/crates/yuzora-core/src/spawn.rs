@@ -40,12 +40,12 @@ mod tests {
     }
 
     /// Run by the tests below as a child of this test binary (`--ignored`
-    /// keeps it out of a normal run): says whether it is attached to a console.
+    /// keeps it out of a normal run): says whether it shares the console of its parent.
     #[test]
     #[ignore = "a child process of the Windows console tests"]
     fn console_probe() {
         #[cfg(windows)]
-        println!("CONSOLE={}", if probe::console_window() { "some" } else { "none" });
+        println!("CONSOLE={}", if probe::shares_console() { "some" } else { "none" });
     }
 
     #[cfg(windows)]
@@ -55,12 +55,23 @@ mod tests {
             fn AllocConsole() -> i32;
         }
 
-        /// Attached to a console (the window of one may be hidden, as on CI,
-        /// where `GetConsoleWindow` says nothing).
-        pub fn console_window() -> bool {
+        /// How many processes share this one's console (0: none). With
+        /// `CREATE_NO_WINDOW` a child gets a console of its own, hidden, with
+        /// only itself on it; without it, a child of a process that has a
+        /// console shares that one. (`GetConsoleWindow` says nothing on CI.)
+        pub fn console_sharers() -> u32 {
             let mut list = [0u32; 4];
             // SAFETY: a buffer of the length it is given.
-            unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) != 0 }
+            unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) }
+        }
+
+        pub fn console_window() -> bool {
+            console_sharers() != 0
+        }
+
+        /// Said by the probe child: `some` when it shares a console.
+        pub fn shares_console() -> bool {
+            console_sharers() > 1
         }
 
         /// The test runner may have no console (CI starts it without one),

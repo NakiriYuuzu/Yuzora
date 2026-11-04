@@ -1450,7 +1450,8 @@ mod tests {
             }
             let mut list = [0u32; 4];
             // SAFETY: a buffer of the length it is given.
-            let attached = unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) } != 0;
+            // CREATE_NO_WINDOW gives the child a console of its own, with only itself on it.
+            let attached = unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) } > 1;
             println!("CONSOLE={}", if attached { "some" } else { "none" });
         }
     }
