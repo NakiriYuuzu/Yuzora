@@ -1094,6 +1094,17 @@ with these differences.
   file instead. A diff pane's props can also set its view: `layout: "side" |
   "unified"`, `whitespace: "none" | "trim" | "all"`, `context` (lines; `-1` is
   the whole file).
+- A space can hold several repositories. The picker at the top of the Git
+  sidebar follows the focused pane's repository (the default) or keeps one
+  pinned for the space: `setShared("yuzora.git.repo.<space id>", {root, on})`
+  pins it (kept across restarts), `null` follows the focus again. The badge,
+  `yuzora.status.git`, and the Log, diff, branches and push opened from the
+  sidebar follow the repository picked. A pinned repository that is gone (or
+  that git opens as the one above it) is unpinned with a note.
+  `repos(folder, on, cwds)` lists a space's repositories without running git
+  (the file system only; on a machine, one call): the ones `folder` and each
+  of `cwds` are in, then folders one and two below `folder` with a `.git`, at
+  most 50.
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->

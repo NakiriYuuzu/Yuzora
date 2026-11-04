@@ -16,8 +16,9 @@ use yuzora_core::remote::{self, ExecRequest};
 /// How many repositories are listed at most; past that, `truncated`.
 pub const MOST: usize = 50;
 
-/// How many folders below the Space's are looked at at most (the first, in
-/// path order); past that, `truncated` too.
+/// How many folders below the Space's are looked at at most: as the file
+/// system lists them, each folder's own right after it (as `find` walks).
+/// Past that no more is read, and the list is `truncated` too.
 const FOLDERS: usize = 5000;
 
 /// Folders never looked into: a git dir, dependencies and build output (they
@@ -95,9 +96,10 @@ fn git_path(path: &Path) -> String {
 
 /// [`find`] here: the repository each of `folder` and `cwds` is in (itself
 /// or the nearest folder above with a `.git`, by real path, as git looks),
-/// then the folders one and two below `folder` with a `.git`, in path order
-/// (bytes). Links to folders are followed (two levels at most, so a link
-/// back up ends there); [`SKIP`] folders aren't looked into.
+/// then the folders one and two below `folder` with a `.git` (the first
+/// [`FOLDERS`] looked at), in path order (bytes). Links to folders are
+/// followed (two levels at most, so a link back up ends there); [`SKIP`]
+/// folders aren't looked into.
 pub fn here(folder: &Path, cwds: &[String]) -> Listing {
     let Ok(base) = std::fs::canonicalize(folder) else { return Listing::default() };
     let mut found = Collect { base: base.clone(), out: Listing::default() };
@@ -110,15 +112,23 @@ pub fn here(folder: &Path, cwds: &[String]) -> Listing {
         }
     }
     let mut below = Vec::new();
-    for dir in folders_in(&base) {
-        below.extend(folders_in(&dir));
-        below.push(dir);
+    'walk: for dir in folders_in(&base) {
+        below.push(dir.clone());
+        if below.len() > FOLDERS {
+            break;
+        }
+        for sub in folders_in(&dir) {
+            below.push(sub);
+            if below.len() > FOLDERS {
+                break 'walk;
+            }
+        }
     }
-    below.sort_by(|a, b| a.as_os_str().as_encoded_bytes().cmp(b.as_os_str().as_encoded_bytes()));
     if below.len() > FOLDERS {
         below.truncate(FOLDERS);
         found.out.truncated = true;
     }
+    below.sort_by(|a, b| a.as_os_str().as_encoded_bytes().cmp(b.as_os_str().as_encoded_bytes()));
     for dir in below {
         if has_git(&dir)
             && let Ok(top) = std::fs::canonicalize(&dir)
@@ -130,15 +140,21 @@ pub fn here(folder: &Path, cwds: &[String]) -> Listing {
     found.out
 }
 
-/// The folders in `dir` (links to folders too), but [`SKIP`]'s.
-fn folders_in(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    entries
-        .flatten()
-        .filter(|e| !SKIP.iter().any(|s| e.file_name() == *s))
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect()
+/// The folders in `dir` (links to folders too), but [`SKIP`]'s, as the file
+/// system lists them; each looked at only when it's asked for.
+fn folders_in(dir: &Path) -> impl Iterator<Item = PathBuf> {
+    let entries = std::fs::read_dir(dir).into_iter().flatten().flatten();
+    entries.filter(|e| !SKIP.iter().any(|s| e.file_name() == *s)).map(|e| e.path()).filter(|p| {
+        #[cfg(test)]
+        LOOKED.with(|n| n.set(n.get() + 1));
+        p.is_dir()
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many folders [`folders_in`] looked at on this thread.
+    static LOOKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// [`find`] on machine `m`: [`SCRIPT`] in one `hc exec`, read by [`listing`].
@@ -180,8 +196,9 @@ fn listing(out: &[u8]) -> Option<Listing> {
 /// folder isn't there. `find -L` follows links to folders as [`here`] does
 /// (two levels, so a link back up ends there); its names come back a line
 /// each, so one with a line feed in it can't be read and is passed over
-/// (`real` refuses it; a part of one is no folder). Sorted as bytes
-/// (`LC_ALL=C`), as [`here`] sorts.
+/// (`real` refuses it; a part of one is no folder). The first 5000 as `find`
+/// walks (the file system's order, as [`here`] reads them), then sorted as
+/// bytes (`LC_ALL=C`), as [`here`] sorts.
 const SCRIPT: &str = r#"nl='
 '
 set -f
@@ -212,12 +229,11 @@ real "$1" || { printf 'gone\0\0end\0\0'; exit 0; }
 base=$r
 printf 'base\0%s\0' "$base"
 for c in "$@"; do up "$c"; done
-dirs=$(find -L "$base" -mindepth 1 -maxdepth 2 \( -name .git -o -name node_modules -o -name target \) -prune -o -type d -print 2>/dev/null | LC_ALL=C sort | head -n 5001)
+all=$(find -L "$base" -mindepth 1 -maxdepth 2 \( -name .git -o -name node_modules -o -name target \) -prune -o -type d -print 2>/dev/null | head -n 5001)
 IFS=$nl
-k=0
-for d in $dirs; do
-  k=$((k + 1))
-  if [ "$k" -gt 5000 ]; then printf 'more\0\0'; break; fi
+set -- $all
+if [ "$#" -gt 5000 ]; then printf 'more\0\0'; all=$(printf '%s\n' "$all" | head -n 5000); fi
+for d in $(printf '%s\n' "$all" | LC_ALL=C sort); do
   if has "$d" && real "$d"; then add "$r"; fi
 done
 printf 'end\0\0'
@@ -331,15 +347,58 @@ mod tests {
         assert!(!both(&base, &[]).truncated, "exactly fifty");
     }
 
+    // The folder past FOLDERS (the last the file system lists, so `find` too) isn't looked at,
+    // even with a `.git`, nor into; the first is.
     #[test]
-    fn past_the_folders_looked_at_the_list_is_cut() {
-        let base = scratch("folders");
-        for i in 0..(FOLDERS + 1) {
-            std::fs::create_dir(base.join(format!("d{i:05}"))).unwrap();
+    fn the_folder_past_the_ones_looked_at_is_left_out() {
+        let base = scratch("past");
+        for i in 0..=FOLDERS {
+            std::fs::create_dir(base.join(format!("d{i:04}"))).unwrap();
         }
-        mkdirs(&base, &["d00000/.git"]);
+        let order: Vec<PathBuf> = std::fs::read_dir(&base).unwrap().flatten().map(|e| e.path()).collect();
+        assert_eq!(order.len(), FOLDERS + 1);
+        mkdirs(&order[0], &[".git"]);
+        mkdirs(&order[FOLDERS], &[".git", "sub"]);
+        let first = order[0].file_name().unwrap().to_str().unwrap();
+        LOOKED.with(|n| n.set(0));
         let got = both(&base, &[]);
-        assert_eq!((rels(&got), got.truncated), (vec!["d00000"], true));
+        let looked = LOOKED.with(|n| n.get());
+        assert_eq!((rels(&got), got.truncated), (vec![first], true));
+        assert_eq!(looked, FOLDERS + 1);
+    }
+
+    // Past FOLDERS, no more is read: a space folder with tens of thousands
+    // of folders lists quickly too.
+    #[test]
+    fn past_the_folders_looked_at_no_more_is_read() {
+        let base = scratch("folders");
+        // 50 folders of 99: 5000 to look at.
+        for i in 0..50 {
+            for j in 0..99 {
+                std::fs::create_dir_all(base.join(format!("d{i:02}/c{j:02}"))).unwrap();
+            }
+        }
+        mkdirs(&base, &["d00/c00/.git"]);
+        let got = both(&base, &[]);
+        assert_eq!((rels(&got), got.truncated), (vec!["d00/c00"], false), "exactly 5000");
+        mkdirs(&base, &["e"]);
+        assert!(both(&base, &[]).truncated, "5001");
+        // 101 folders of 100: 10,201, of which only the first 5001 are looked at, in the file
+        // system's order (the script too: `both`), not the first in path order. A repo in every
+        // fourth folder's first: 26, about half of them in the folders looked at.
+        for i in 50..101 {
+            for j in 0..100 {
+                std::fs::create_dir_all(base.join(format!("d{i:02}/c{j:02}"))).unwrap();
+            }
+        }
+        for i in (0..101).step_by(4) {
+            mkdirs(&base, &[&format!("d{i:02}/c00/.git")]);
+        }
+        LOOKED.with(|n| n.set(0));
+        let got = both(&base, &[]);
+        let looked = LOOKED.with(|n| n.get());
+        assert!(got.truncated && !got.repos.is_empty() && got.repos.len() < 26, "{:?}", rels(&got));
+        assert!(looked <= FOLDERS + 1, "looked at {looked} folders");
     }
 
     #[test]

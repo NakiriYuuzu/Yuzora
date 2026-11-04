@@ -571,7 +571,8 @@ struct GitSidebar {
 }
 
 /// A space `s1` (folder `/sp`, panes `p1` in `/sp/a` and `p2` in `/sp/b/c`; `p3` is another
-/// space's), and yuzora:git: `open` takes any folder but `fails` names (with that error), `status`
+/// space's), and yuzora:git: `open` takes any folder but `fails` names (with that error; and
+/// `/sp/nested`, with no `.git` of its own, opens as the repo above, `/sp`), `status`
 /// has as many changes as the repo's name says (`/sp/a` 1, `/sp/b/c` 2, `/sp/r` 3) and fails for
 /// `/sp/vanish`, `repos` answers with `found`.
 fn git_sidebar_module(state: Rc<GitSidebar>, props: Value, fails: &'static [(&'static str, &'static str)], found: fn(&str) -> Result<Value, String>) -> HostModule {
@@ -617,9 +618,10 @@ fn git_sidebar_module(state: Rc<GitSidebar>, props: Value, fails: &'static [(&'s
     module = module.async_function("open", move |a| {
         let cwd = a.string(0)?.to_owned();
         s.opened.borrow_mut().push(cwd.clone());
+        let top = if cwd == "/sp/nested" { "/sp".to_owned() } else { cwd.clone() };
         Ok(answer(match fails.iter().find(|(root, _)| *root == cwd) {
             Some((_, e)) => Err(e.to_string()),
-            None => Ok(json!({"id": cwd, "root": cwd, "machine": null, "gitDir": format!("{cwd}/.git"), "commonDir": format!("{cwd}/.git")})),
+            None => Ok(json!({"id": top, "root": top, "machine": null, "gitDir": format!("{top}/.git"), "commonDir": format!("{top}/.git")})),
         }))
     });
     module = module.async_function("status", move |a| {
@@ -716,8 +718,9 @@ fn yuzora_git_repo_follows_the_focus_or_the_pin_of_its_space(cx: &mut TestAppCon
 
 // yuzora(L2): a pinned repo that's gone (no `.git` left in its folder, or no folder: `repos`
 // reads the file system, no git runs) is unpinned with a note, and the sidebar follows the focus
-// again; found gone when it opens, or later, when status fails. One that can't be looked at (a
-// machine away) or still has its `.git` stays pinned.
+// again; found gone when it opens, or later, when status fails, or when git opens it as another
+// repo (the one above: no file system look needed). One that can't be looked at (a machine away)
+// or still has its `.git` stays pinned.
 #[gpui::test]
 fn yuzora_git_repo_pinned_and_gone_follows_the_focus_again(cx: &mut TestAppContext) {
     const FAILS: &[(&str, &str)] = &[("/sp/gone", "fatal: not a git repository"), ("/sp/moved", "fatal: not a git repository"), ("/sp/away", "machine lab is not connected"), ("/sp/still", "fatal: bad config line 1")];
@@ -731,7 +734,7 @@ fn yuzora_git_repo_pinned_and_gone_follows_the_focus_again(cx: &mut TestAppConte
         }
     }
     let mut failures = Vec::new();
-    for (root, gone) in [("/sp/gone", true), ("/sp/moved", true), ("/sp/vanish", true), ("/sp/away", false), ("/sp/still", false)] {
+    for (root, gone) in [("/sp/gone", true), ("/sp/moved", true), ("/sp/vanish", true), ("/sp/nested", true), ("/sp/away", false), ("/sp/still", false)] {
         let state = Rc::new(GitSidebar::default());
         *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
         state.shared.borrow_mut().insert("yuzora.git.repo.s1".into(), json!({"root": root, "on": null}));
@@ -742,7 +745,8 @@ fn yuzora_git_repo_pinned_and_gone_follows_the_focus_again(cx: &mut TestAppConte
         let notes: Vec<Value> = state.effects.borrow().iter().filter(|(name, _)| name == "notify").map(|(_, v)| v.clone()).collect();
         let opened = state.opened.borrow().clone();
         let listed = state.listed.borrow().clone();
-        if listed.first() != Some(&json!([root, null, []])) {
+        let want_listed = if root == "/sp/nested" { vec![] } else { vec![json!([root, null, []])] };
+        if listed != want_listed {
             failures.push(format!("{root}: asked the file system {listed:?}"));
         }
         let want_opened: Vec<String> = if gone { vec![root.into(), "/sp/a".into()] } else { vec![root.into()] };

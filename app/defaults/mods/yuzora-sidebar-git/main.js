@@ -78,6 +78,9 @@ export default class SidebarGit extends View {
       try {
         const repo = await open(cwd, on);
         if (this.ctx !== ctx) return;
+        // A pinned repo opens as itself: without its `.git` (or with one git
+        // won't take) git opens the repo above it instead.
+        if (here.pin && repo.root !== cwd && this.unpin(here)) { this.attach(cx); return; }
         this.repo = repo;
         await this.reload(cx);
         this.loadMessages(cx);
@@ -122,6 +125,11 @@ export default class SidebarGit extends View {
       const found = await repos(here.cwd, here.on, []);
       if (found.repos.some((r) => r.rel === ".")) return false;
     } catch { return false; }
+    return this.unpin(here);
+  }
+
+  // Unpins `here`, with a note (unless it was pinned again meanwhile).
+  unpin(here) {
     if (shared(pinKey(here.pin))?.root !== here.cwd) return false;
     setShared(pinKey(here.pin), null);
     notify({ title: t("repo.gone", { name: baseName(here.cwd) }), body: here.cwd, level: "warning", timeout: 5000 });
