@@ -9,7 +9,9 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn trash(path: &Path) -> std::io::Result<()> {
-    platform(&absolute(path)?)
+    // Windows: `canonicalize` gives `\\?\C:\…`, which the shell's recycle API (behind
+    // PowerShell's `DeleteFile`) doesn't take; the usual `C:\…` it does.
+    platform(&yuzora_core::paths::plain(&absolute(path)?))
 }
 
 /// `path` with its folder resolved but not the file itself: a link goes to the

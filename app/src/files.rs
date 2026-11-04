@@ -87,7 +87,8 @@ fn folders() -> std::sync::MutexGuard<'static, std::collections::HashMap<PathBuf
 /// The next changes under `path` (recursive), as absolute paths: at once if
 /// some came since the last call, else when the next batch lands.
 pub async fn next_change(path: String) -> Result<Vec<String>, String> {
-    let root = Path::new(&path).canonicalize().map_err(|e| format!("{path}: {e}"))?;
+    // yuzora(L5): no `\\?\` on Windows, or the paths below never equal the ones a mod knows.
+    let root = yuzora_core::paths::plain(&Path::new(&path).canonicalize().map_err(|e| format!("{path}: {e}"))?);
     let rx = {
         let mut all = folders();
         if !all.contains_key(&root) {

@@ -1056,6 +1056,86 @@ return JSON.stringify([a, b, c, d]); }})()"#
         assert_eq!((agent.as_deref(), none), (Some("codex"), None));
     }
 
+    // The panes watch their file's folder and match what the watch reports with the path
+    // they opened: both need Windows paths (`C:\\…`, either slash, any case), not only `/`.
+    #[test]
+    fn the_panes_follow_files_by_windows_paths_too() {
+        let sources = [
+            include_str!("../../../defaults/mods/yuzora-editor/doc-pane.js"),
+            include_str!("../../../defaults/mods/yuzora-files-image/main.js"),
+        ];
+        for src in sources {
+            let function = |name: &str| {
+                let start = src.find(&format!("\nfunction {name}(")).unwrap();
+                let end = start + src[start..].find("\n}\n").unwrap();
+                &src[start..end + 2]
+            };
+            let script = format!(
+                r#"(() => {{ {}{}{}{}{}
+                const parents = [{p}].map(parent);
+                const roots = [{r}].map(isRoot);
+                const names = [{n}].map(baseName);
+                const same = [{s}].map(([a, b]) => samePath(a, b));
+                return JSON.stringify([parents, roots, names, same]);
+                }})()"#,
+                function("isWin"),
+                function("parent"),
+                function("isRoot"),
+                function("baseName"),
+                function("samePath"),
+                p = PARENTS.iter().map(|(p, _)| format!("{p:?}")).collect::<Vec<_>>().join(", "),
+                r = ROOTS.iter().map(|(p, _)| format!("{p:?}")).collect::<Vec<_>>().join(", "),
+                n = NAMES.iter().map(|(p, _)| format!("{p:?}")).collect::<Vec<_>>().join(", "),
+                s = SAME.iter().map(|(a, b, _)| format!("[{a:?}, {b:?}]")).collect::<Vec<_>>().join(", "),
+            );
+            let runtime = quickjs::Runtime::new().unwrap();
+            let context = quickjs::Context::full(&runtime).unwrap();
+            let out: String = context.with(|ctx| ctx.eval(script).unwrap());
+            let (parents, roots, names, same): (Vec<String>, Vec<bool>, Vec<String>, Vec<bool>) =
+                serde_json::from_str(&out).unwrap();
+            assert_eq!(parents, PARENTS.iter().map(|(_, w)| w.to_string()).collect::<Vec<_>>());
+            assert_eq!(roots, ROOTS.iter().map(|(_, w)| *w).collect::<Vec<_>>());
+            assert_eq!(names, NAMES.iter().map(|(_, w)| w.to_string()).collect::<Vec<_>>());
+            assert_eq!(same, SAME.iter().map(|(.., w)| *w).collect::<Vec<_>>());
+        }
+    }
+
+    const PARENTS: [(&str, &str); 9] = [
+        ("/home/a/b.txt", "/home/a"),
+        ("/b.txt", ""),
+        (r"C:\Users\me\a b.txt", r"C:\Users\me"),
+        (r"C:\Users/me/a.txt", r"C:\Users/me"),
+        (r"C:\a.txt", r"C:\"),
+        (r"C:/a.txt", "C:/"),
+        (r"\\srv\share\x\a.md", r"\\srv\share\x"),
+        // Elsewhere a backslash belongs to the name.
+        (r"/home/a\b.txt", "/home"),
+        ("rel.txt", ""),
+    ];
+    const ROOTS: [(&str, bool); 6] = [
+        ("/", true),
+        (r"C:\", true),
+        ("c:/", true),
+        ("C:", true),
+        (r"C:\Users", false),
+        ("/home", false),
+    ];
+    const NAMES: [(&str, &str); 4] = [
+        ("/home/a/b.png", "b.png"),
+        (r"C:\pics\a b.png", "a b.png"),
+        (r"C:\pics/a.png", "a.png"),
+        (r"/home/a\b.png", r"a\b.png"),
+    ];
+    const SAME: [(&str, &str, bool); 7] = [
+        ("/a/b", "/a/b", true),
+        ("/a/b", "/a/B", false),
+        (r"C:\Users\me\a.txt", r"c:\users\me\A.TXT", true),
+        (r"C:\Users\me\a.txt", "C:/Users/me/a.txt", true),
+        (r"C:\Users\me", r"C:\Users\me\", true),
+        (r"C:\Users\me\a.txt", r"\\?\C:\Users\me\a.txt", false),
+        (r"C:\", "C:/", true),
+    ];
+
     // Code and its language's badge read on both Yuzora themes: AA on the light
     // one; on the dark one, no less than One Dark and the old badge colors did.
     #[test]

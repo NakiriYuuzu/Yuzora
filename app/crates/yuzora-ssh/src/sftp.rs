@@ -130,12 +130,14 @@ fn local_entry(path: &Path) -> Option<Entry> {
 fn list_local(path: &str, home: &Path) -> Result<Listing> {
     let dir = match path.trim() {
         "" | "~" => home.to_path_buf(),
-        p => match p.strip_prefix("~/") {
+        // `~\` is home too on Windows (a backslash is a name's own character elsewhere).
+        p => match p.strip_prefix("~/").or_else(|| if cfg!(windows) { p.strip_prefix("~\\") } else { None }) {
             Some(rest) => home.join(rest),
             None => PathBuf::from(p),
         },
     };
-    let dir = std::fs::canonicalize(&dir).map_err(SshError::io)?;
+    // What people see is `C:\…`, not the `\\?\C:\…` canonicalize gives on Windows.
+    let dir = yuzora_core::paths::plain(&std::fs::canonicalize(&dir).map_err(SshError::io)?);
     let mut entries: Vec<Entry> = std::fs::read_dir(&dir).map_err(SshError::io)?.filter_map(|e| e.ok()).filter_map(|e| local_entry(&e.path())).collect();
     sort(&mut entries);
     Ok(Listing { path: dir.to_string_lossy().into_owned(), parent: dir.parent().map(|p| p.to_string_lossy().into_owned()), entries })
