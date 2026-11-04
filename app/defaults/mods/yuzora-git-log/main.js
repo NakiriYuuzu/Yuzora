@@ -444,7 +444,7 @@ export default class GitLog extends View {
   }
 
   // While a drag is on, the pane's root sees every move and the release, wherever the pointer is
-  // inside the pane (a release outside the window is not seen; the next press ends the drag).
+  // inside the pane. Leaving the pane ends the drag: the release would not be seen out there.
   dragging(el) {
     return el.when(Boolean(this.drag), (root) => root
       .on_mouse_move((e, cx) => {
@@ -453,7 +453,8 @@ export default class GitLog extends View {
         if (h !== this.infoH) { this.infoH = h; cx.notify(); }
       })
       .on_mouse_up("left", (_e, cx) => { this.drag = null; cx.notify(); })
-      .on_mouse_down("left", (_e, cx) => { this.drag = null; cx.notify(); }));
+      .on_mouse_down("left", (_e, cx) => { this.drag = null; cx.notify(); })
+      .on_hover((hovered, cx) => { if (!hovered) { this.drag = null; cx.notify(); } }));
   }
 
   detailPanel(th, side, mono, fs) {

@@ -436,6 +436,6 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - **commit 詳情不能捲動的原因**：`detail-info` 原本是 `flex_none().max_h(…).overflow_y_scrollbar()`。`overflow_y_scrollbar` 搭配 `max_h` 不會捲（同樣的 `h` 或 `overflow_y_scroll`＋`max_h` 都會）。現在是 `relative` 外框裡一個 `overflow_y_scroll` 的區域（有 id `detail-scroll`），上面蓋 `Scrollbar.vertical("detail-scroll")`；沒拖過時高度跟內容走、最多 300（並排）／110（上下）。
 - **訊息完整顯示**：不再 `slice(0, 80)`。為了避免一則極端長的訊息建出數萬個元素，上限 `BODY_LINES = 2000` 行，超過時資訊區最後一行顯示「還有 N 行未顯示」。
 - **上下比例**：資訊區與「變更檔案」標題之間有 7px 的分隔線（`detail-split`，游標是上下調整）。按下後 pane 的根節點接手 `on_mouse_move`／`on_mouse_up`，所以放開時不必在分隔線上；拖到 pane 內任何位置都跟著。資訊區最小 48px、檔案區最小 72px（標題 24px、分隔線 7px 另計）；面板縮小時，存下的高度也照最大值夾住。雙擊分隔線回到預設（內容高度、有上限）。高度存在 pane 的狀態裡（`infoH`），同一個 pane 換選 commit 會保留；不跨 pane、不跨重啟（每個 pane 大小不同，存一個絕對高度沒有意義，要存也該存比例）。
-- 限制：mod 的滑鼠事件沒有「按著哪個鍵」，也收不到視窗外的放開；在視窗外放開時，拖曳狀態留著，下一次按下（任何位置）會結束它。
+- 指標離開 pane（`on_hover` 變成 false）時拖曳就結束：mod 的滑鼠事件沒有「按著哪個鍵」，離開後的放開也收不到，所以不讓狀態留著。要拖得更遠就得在 pane 內重新按下。
 - 未改：compare 畫面（`renderCompare`）的 `cmp-files` 仍是 `h(150)`。
 - 測試（`app/src/mods/render_tests.rs`，真的把 mod 放進視窗排版、送滑鼠與滾輪事件）：`sidebar_git_row_keeps_counts_and_buttons_clear_of_the_name`、`git_log_commit_message_scrolls_and_the_files_stay`、`git_log_detail_divider_drags_and_keeps_minimums`、`git_log_commit_message_is_shown_whole_up_to_a_cap`。

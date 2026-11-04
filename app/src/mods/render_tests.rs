@@ -1136,6 +1136,23 @@ fn git_log_detail_divider_drags_and_keeps_minimums(cx: &mut TestAppContext) {
     }
 }
 
+// yuzora(L2): leaving the pane with the button down ends the drag (its release would not be seen).
+#[gpui::test]
+fn git_log_detail_divider_drag_ends_when_the_pointer_leaves_the_pane(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut s = Scenario::mount(cx, &staged, &detail_scenario(300, true, 340.0, 600.0, 40), 700.0, 600.0);
+    let (_, visible, _) = state(&s);
+    let bar = 28.0 + visible + 3.0;
+    s.mouse("down", 100.0, bar, 1);
+    s.mouse("move", 100.0, bar - 30.0, 0);
+    let dragged = state(&s).1;
+    assert_eq!(dragged, visible - 30.0);
+    s.mouse("move", 600.0, bar - 30.0, 0); // out of the pane, still in the window
+    s.mouse("move", 100.0, bar - 80.0, 0); // back in, button no longer counted
+    assert_eq!(state(&s).1, dragged, "the drag ended when the pointer left");
+}
+
 // yuzora(L2): a long message shows in full, up to 2000 lines and then says what is left out.
 #[gpui::test]
 fn git_log_commit_message_is_shown_whole_up_to_a_cap(cx: &mut TestAppContext) {
