@@ -268,12 +268,27 @@ impl Ignores {
         path.starts_with(g.path()) && path.parent().is_some_and(|dir| dir.starts_with(g.path()) && dir != g.path() && g.matched_path_or_any_parents(dir, true).is_ignore())
     }
 
+    /// Whether `path` is an ignored folder (not the watched one) that is only being written into:
+    /// Windows reports the folder itself as modified whenever a file in it is, so every build
+    /// write would reach the panels once more. Its creation, removal and renaming still count
+    /// (the tree shows `target/` appear and go).
+    fn is_ignored_folder_written_into(&self, kind: &notify::EventKind, path: &Path) -> bool {
+        let Some(g) = &self.0 else { return false };
+        matches!(kind, notify::EventKind::Modify(m) if !matches!(m, notify::event::ModifyKind::Name(_)))
+            && path.starts_with(g.path())
+            && path != g.path()
+            && !path.components().any(|c| c.as_os_str() == ".git")
+            && path.is_dir()
+            && g.matched_path_or_any_parents(path, true).is_ignore()
+    }
+
     /// The event without the paths that are ignored; None when none is left.
     fn keep(&self, mut event: notify::Event) -> Option<notify::Event> {
         if self.0.is_none() || event.need_rescan() {
             return Some(event);
         }
-        event.paths.retain(|p| !self.is_ignored(p));
+        let kind = event.kind;
+        event.paths.retain(|p| !self.is_ignored(p) && !self.is_ignored_folder_written_into(&kind, p));
         (!event.paths.is_empty()).then_some(event)
     }
 }
@@ -485,7 +500,18 @@ mod tests {
         let ig = Ignores::read(&root);
         let ev = |paths: &[&str]| notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Any)).add_path(under(&root, paths[0]));
         assert!(ig.keep(ev(&["target/debug/app"])).is_none());
-        assert!(ig.keep(ev(&["target"])).is_some());
+        // The ignored folder itself: written into (modified) is noise, made, removed or renamed is not.
+        let on = |kind, rel: &str| ig.keep(notify::Event::new(kind).add_path(under(&root, rel))).is_some();
+        let any = notify::EventKind::Modify(notify::event::ModifyKind::Any);
+        assert!(!on(any, "target"));
+        assert!(!on(notify::EventKind::Modify(notify::event::ModifyKind::Metadata(notify::event::MetadataKind::Any)), "target"));
+        assert!(!on(notify::EventKind::Modify(notify::event::ModifyKind::Data(notify::event::DataChange::Any)), "target/debug"));
+        assert!(on(notify::EventKind::Create(notify::event::CreateKind::Folder), "target"));
+        assert!(on(notify::EventKind::Remove(notify::event::RemoveKind::Folder), "target"));
+        assert!(on(notify::EventKind::Modify(notify::event::ModifyKind::Name(notify::event::RenameMode::Any)), "target"));
+        // A folder that is not ignored, and an ignored file, are reported as before.
+        assert!(on(any, "src"));
+        assert!(on(any, ".env"));
         // An ignored file is reported: an editor watching the folder has it open.
         assert!(ig.keep(ev(&["build.log"])).is_some());
         assert!(ig.keep(ev(&[".env"])).is_some());
