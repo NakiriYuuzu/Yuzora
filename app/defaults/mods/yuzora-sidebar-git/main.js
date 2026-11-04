@@ -256,28 +256,32 @@ export default class SidebarGit extends View {
     const titles = { conflicts: t("section.conflicts"), staged: t("section.staged"), unstaged: t("section.unstaged") };
     const action = it.section === "staged" ? t("unstageAll") : it.section === "unstaged" ? t("stageAll") : t("resolve");
     return h_flex().id(`h-${it.section}`).h(HEAD).px(6).gap(4).items_center().text_size(11.5).text_color(th.muted).cursor_pointer()
-      .child(div().w(10).text_size(10).child(this.closed[it.section] ? "▸" : "▾"))
+      .child(div().w(10).flex_none().text_size(10).child(this.closed[it.section] ? "▸" : "▾"))
       .child(div().flex_1().min_w(0).truncate().child(`${titles[it.section]} · ${it.count}`))
       .when(it.count > 0, (el) => el.child(div().w(ACTION_ALL).flex_none().text_right().text_size(11).hover((s) => s.text_color(th.foreground)).child(action)));
   }
 
-  fileRow(it, th) {
+  // The name shrinks (to a "…") before the +N −M and the buttons do: those are flex_none at the
+  // right edge, where clickRow counts slots from. The folder is flex_1 with no basis, so it gives
+  // way first. `probe(slot)` (tests only) returns an on_size_change handler for a part of the row.
+  fileRow(it, th, probe) {
     const f = it.f, d = tokens().diff ?? {};
     const parts = f.path.split("/"), name = parts.pop(), dir = parts.join("/");
     const id = `${it.section}:${f.path}`;
-    const glyph = (label) => div().w(ACTION).h(18).flex().flex_none().items_center().justify_center().rounded(4)
-      .text_size(12).text_color(th.dim).hover((s) => s.bg(th.hover).text_color(th.foreground)).child(label);
-    return h_flex().id(`f-${id}`).h(ROW).pl(6).gap(6).items_center().rounded(5).cursor_pointer()
+    const seen = (el, slot) => (probe ? el.on_size_change(probe(slot)) : el);
+    const glyph = (label) => seen(div().w(ACTION).h(18).flex().flex_none().items_center().justify_center().rounded(4)
+      .text_size(12).text_color(th.dim).hover((s) => s.bg(th.hover).text_color(th.foreground)).child(label), "action");
+    return seen(h_flex().id(`f-${id}`).h(ROW).pl(6).gap(6).items_center().rounded(5).cursor_pointer()
       .when(this.selected === id, (el) => el.bg(th.selected)).hover((s) => s.bg(th.hover))
       .child(div().w(12).flex_none().text_size(11).font_semibold().text_color(this.fileColor(f.kind, th)).child(f.kind === "?" ? "U" : f.kind))
-      .child(h_flex().flex_1().min_w(0).gap(4).child(div().flex_none().max_w(140).truncate().child(name))
-        .when(Boolean(dir), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(th.dim).child(dir))))
-      .when(f.add > 0, (el) => el.child(div().flex_none().text_size(10.5).text_color(d.added ?? th.ansi2).child(`+${f.add}`)))
-      .when(f.del > 0, (el) => el.child(div().flex_none().text_size(10.5).text_color(d.removed ?? th.ansi1).child(`−${f.del}`)))
+      .child(seen(h_flex().flex_1().min_w(0).gap(4), "text").child(seen(div().flex_shrink(1).min_w(0).max_w(140).truncate().child(name), "name"))
+        .when(Boolean(dir), (el) => el.child(seen(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(th.dim).child(dir), "dir"))))
+      .when(f.add > 0, (el) => el.child(seen(div().flex_none().text_size(10.5).text_color(d.added ?? th.ansi2).child(`+${f.add}`), "add")))
+      .when(f.del > 0, (el) => el.child(seen(div().flex_none().text_size(10.5).text_color(d.removed ?? th.ansi1).child(`−${f.del}`), "del")))
       .child(h_flex().flex_none()
         .when(it.section === "unstaged", (el) => el.child(glyph("↺")).child(glyph("+")))
         .when(it.section === "staged", (el) => el.child(glyph("−")))
-        .when(it.section === "conflicts", (el) => el.child(glyph("⇄"))));
+        .when(it.section === "conflicts", (el) => el.child(glyph("⇄")))), "row");
   }
 
   // A click on a row: the action under the pointer, else open its diff.
@@ -420,10 +424,10 @@ export default class SidebarGit extends View {
 
     const branch = h_flex().id("branch").mx(8).mb(6).h(28).px(8).gap(6).flex_none().items_center().rounded(6).border_1().border_color(th.border)
       .bg(th.raised).text_size(11.5).cursor_pointer().hover((s) => s.bg(th.hover)).on_click(() => this.openBranches())
-      .child(div().text_color(th.muted).child("⎇"))
+      .child(div().flex_none().text_color(th.muted).child("⎇"))
       .child(div().flex_1().min_w(0).truncate().child(branchName))
       .when(Boolean(b.upstream) || ahead || behind, (el) => el.child(div().flex_none().text_size(11).text_color(ahead || behind ? (tokens().diff?.added ?? th.ansi2) : th.dim).child(`↑${ahead} ↓${behind}`)))
-      .child(div().text_size(9).text_color(th.dim).child("▾"));
+      .child(div().flex_none().text_size(9).text_color(th.dim).child("▾"));
 
     const list = div().id("git-list").flex_1().min_h(0).relative().px(LIST_PAD)
       .on_size_change((size) => { this.listWidth = size.width; })

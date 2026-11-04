@@ -55,6 +55,7 @@
   "detail.root": "none (root commit)",
   "detail.signature": "Signature",
   "detail.files": "Changed files · {count}",
+  "detail.truncated": "{count} more lines not shown",
   "sig.G": "Good signature",
   "sig.B": "Bad signature",
   "sig.U": "Good signature, trust unknown",

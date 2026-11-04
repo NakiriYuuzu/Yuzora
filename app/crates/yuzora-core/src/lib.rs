@@ -3,7 +3,7 @@
 //! - [`paths`]: the app home (`~/.config/yuzora`, `YUZORA_APP_HOME`).
 //! - [`remote`]: one program here or on a machine (`hc exec --on`), with a timeout.
 //! - [`secrets`]: the system credential store.
-//! - [`i18n`]: en / zh-TW strings per mod or crate, the language setting.
+//! - [`i18n`]: the English strings per mod or crate (the interface is English only).
 //! - [`settings`]: Yuzora's `settings.json`, one section per lane.
 //! - [`discovery`]: tool panes and settings pages declared in `mod.json`.
 //! - [`spawn`]: starting console programs without a console window on Windows.
