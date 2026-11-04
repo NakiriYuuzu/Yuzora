@@ -322,6 +322,92 @@ export default class extends View {
     window.update(cx, |_, window, _| window.remove_window()).unwrap();
 }
 
+// yuzora(L2): a diff follows its repo only for a change that may touch its file: another file's leaves it;
+// its own (in another case, as macOS's NFD, after `./`), a folder above it (`.` the top, `src/`),
+// anything inside it (a submodule), the file it was renamed from (a `\` in its name the watcher
+// writes as `/`), attributes, a Windows short name, and a change that can't be told (the index
+// or refs git wrote) load it again. A
+// commit's diff never follows. The shipped mod with its imports stubbed; `changes` answers in turn.
+#[gpui::test]
+fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut TestAppContext) {
+    let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
+    let (from, to) = (
+        "import { theme, props, shared, settings, run, panes, focused, closeOverlay } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
+        "import { theme, props, shared, settings, run, panes, focused, closeOverlay, t, tokens, open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, gitSettings } from \"fixture\";",
+    );
+    assert_eq!(source.matches(from).count(), 1, "the diff mod no longer has: {from}");
+    source = source.replacen(from, to, 1);
+    // (paths changed, whether the diff loads again)
+    let answers = [
+        // The first answer only says where the repo is.
+        (json!(null), false),
+        (json!(["src/b.txt", "src/\u{30C7}.txt.bak", "sr", "src/\u{30C7}", "old/a.txt2", "a.gitattributes", "src/a~b.txt"]), false),
+        (json!(["src/\u{30C7}.txt"]), true),
+        (json!(["SRC/\u{30C7}.TXT"]), true),
+        // As macOS hands it from the disk: デ as テ and ゛ (NFD); git and the pane have it NFC.
+        (json!(["src/\u{30C6}\u{3099}.txt"]), true),
+        (json!(null), true),
+        (json!(["docs/.gitattributes"]), true),
+        (json!([".gitattributes"]), true),
+        (json!(["src"]), true),
+        (json!(["src/\u{30C7}.txt/m"]), true),
+        (json!(["old/a.txt"]), true),
+        (json!(["SRC~1/X.TXT"]), true),
+        // Pathspecs Yuzora's own stage, unstage and discard may name.
+        (json!(["."]), true),
+        (json!(["src/"]), true),
+        (json!(["./src/\u{30C7}.txt"]), true),
+    ];
+    let reloads = answers.iter().filter(|(_, again)| *again).count();
+    for (mode, loads) in [("unstaged", 1 + reloads), ("staged", 1 + reloads), ("commit", 1)] {
+        let fixture = Fixture::new(&source);
+        let mut queue: std::collections::VecDeque<Value> = answers.iter().enumerate().map(|(i, (paths, _))| json!({ "generation": i + 1, "paths": paths })).collect();
+        // Ran out of time: the same generation, nothing changed.
+        queue.push_back(json!({ "generation": answers.len(), "paths": [] }));
+        let queue = Rc::new(RefCell::new(queue));
+        let opened = Rc::new(Cell::new(0));
+        let mut module = HostModule::new("fixture");
+        for (name, value) in [
+            ("theme", json!({"background": "#101010", "foreground": "#e0e0e0", "border": "#303030", "raised": "#202020", "dim": "#808080", "muted": "#a0a0a0", "accent": "#4080ff", "selected": "#304050", "hover": "#282828", "ansi1": "#f08a8a", "ansi2": "#86d17a"})),
+            ("props", json!({"cwd": "/r", "on": null, "path": "src/\u{30C7}.txt", "orig": "old\\a.txt", "mode": mode, "rev": "HEAD", "at": 1})),
+            ("tokens", json!({"diff": {}})),
+            ("open", json!({"id": "repo"})),
+            ("diffView", json!({"id": "d1", "rows": [], "hunks": [], "stageable": true, "add": 0, "del": 0, "leftExists": true, "rightExists": true, "identical": true})),
+            ("settings", json!({})),
+            ("gitSettings", json!({})),
+        ] {
+            module = module.function(name, move |_| Ok(to_host(&value)));
+        }
+        for name in ["shared", "run", "panes", "focused", "closeOverlay", "diffStage", "diffUnstage", "diffDiscard"] {
+            module = module.function(name, |_| Ok(HostValue::Null));
+        }
+        module = module.function("t", |a| Ok(a.string(0)?.into()));
+        let count = opened.clone();
+        module = module.function("diffOpen", move |_| {
+            count.set(count.get() + 1);
+            Ok(to_host(&json!({"id": "d1"})))
+        });
+        let next = queue.clone();
+        module = module.async_function("changes", move |_| {
+            let answer: std::pin::Pin<Box<dyn std::future::Future<Output = gpui_shell::HostResult> + Send>> = match next.borrow_mut().pop_front() {
+                Some(v) => Box::pin(std::future::ready(Ok(to_host(&v)))),
+                None => Box::pin(std::future::pending()),
+            };
+            Ok(answer)
+        });
+        gpui_shell::policy::set_default(Policy::new().with_host_module(module).unwrap());
+        let runtime = ShellRuntime::new_isolated().unwrap();
+        let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
+        let mut visual = VisualTestContext::from_window(*window.deref(), cx);
+        for _ in 0..3 {
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.run_until_parked();
+        }
+        assert_eq!(opened.get(), loads, "{mode}: diffOpen calls");
+        assert_eq!(queue.borrow().len(), if mode == "commit" { answers.len() + 1 } else { 0 }, "{mode}: answers left");
+    }
+}
+
 // yuzora(L2): side by side, each side of the Git diff is as wide as its own longest line. An
 // added file's empty left side stays narrow, so its lines start in view (they used to start past
 // the longest line's width), and a press on a side's numbers picks that side's line where the
@@ -335,8 +421,8 @@ fn yuzora_diff_sides_are_as_wide_as_their_own_lines(cx: &mut TestAppContext) {
     let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
     for (from, to) in [
         (
-            "import { theme, props, shared, settings, run, panes, focused, closeOverlay } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, changed, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
-            "import { theme, props, shared, settings, run, panes, focused, closeOverlay, t, tokens, open, changed, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, gitSettings, note } from \"fixture\";",
+            "import { theme, props, shared, settings, run, panes, focused, closeOverlay } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
+            "import { theme, props, shared, settings, run, panes, focused, closeOverlay, t, tokens, open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, gitSettings, note } from \"fixture\";",
         ),
         // A list's rows can't report their size, so the list's own first row is built once more
         // in the same render and laid out as the list lays out its rows: as wide as the list
@@ -398,7 +484,7 @@ fn yuzora_diff_sides_are_as_wide_as_their_own_lines(cx: &mut TestAppContext) {
             module = module.function(name, |_| Ok(HostValue::Null));
         }
         module = module.function("t", |a| Ok(a.string(0)?.into()));
-        module = module.async_function("changed", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
+        module = module.async_function("changes", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
         let calls = notes.clone();
         module = module.function("note", move |a| {
             calls.borrow_mut().push(Value::Array((0..4).filter_map(|i| a.get(i).map(from_host)).collect()));
