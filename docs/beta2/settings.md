@@ -8,7 +8,7 @@
 | 項目 | 位置 | 狀態 |
 | --- | --- | --- |
 | 設定框架接上 Yuzora（品牌、隱私、「Yuzora」分組） | `app/defaults/frame/settings/yuzora.js`（新檔）＋ `main.js` 帶 `// yuzora(L6):` 的改動 | 完成 |
-| `general` 設定頁：語系、外觀（主題、字型、字級、縮放）、啟動行為、終端機剪貼簿 | `yuzora-settings-general` | 完成；「啟動」區塊要等 L1 套用並設 `yuzora.startup.honored` 才顯示（見後續整合） |
+| `general` 設定頁：外觀（主題、字型、字級、縮放）、啟動行為、終端機剪貼簿 | `yuzora-settings-general` | 完成；「啟動」區塊要等 L1 套用並設 `yuzora.startup.honored` 才顯示（見後續整合） |
 | Template 管理：各 machine 列出、表單＋body 編輯、存前驗證、移到垃圾桶 | `yuzora-settings-templates`、`yuzora-settings` 的 `templates`／`trash` | 完成 |
 | 以模板啟動 agent（選 Space／tab、輸入任務、`hc run` 帶 label） | `yuzora-settings-launch`、`yuzora-settings` 的 `launch` | 完成；「＋」選單入口由 L1 串接 |
 | MOD 管理：mods／layouts 清單、clone、開資料夾、check、還原內建、切換 layout、從資料夾安裝（含信任警告） | `yuzora-settings-mods`、`yuzora-settings` 的 `mods` | 完成；「以編輯器開啟」與 mod 立即還原需整合（見後續整合） |
@@ -46,7 +46,7 @@
 | `privacy` | 整頁改為 `yz.privacy`：Yuzora 不收集任何資料（Herdr 的遙測已在 L0 關閉，toggle 與「What we send」都沒有意義） |
 | `render` | 換頁中先畫空白並量高度；nav 插入 Yuzora 分組；nav-only 模式下 Herdr 分頁不標示選取、點了回原 frame；nav-only 模式只回傳 nav（含 Esc 與 Send feedback，與原 frame 相同）；記下對話框高度（`this.measured`） |
 
-上游的英文字串（Look、Machines…）維持英文，只有 Yuzora 加的部分有 zh-TW。
+上游的英文字串（Look、Machines…）維持英文，Yuzora 加的部分也只有英文（介面只有英文）。
 
 ## `general` section
 
@@ -55,7 +55,6 @@
 ```json
 {
   "general": {
-    "locale": "system",
     "startup": { "sidebar": "last" }
   }
 }
@@ -63,7 +62,7 @@
 
 | key | 值 | 誰套用 |
 | --- | --- | --- |
-| `locale` | `system`／`en`／`zh-TW` | `yuzora:core` `setLocale`（立即重畫所有 mod） |
+| `locale`（已移除） | 舊版存的 `system`／`en`／`zh-TW` | 不再讀取：介面只有英文，檔案裡留著也照常啟動 |
 | `startup.sidebar` | `last`（預設）／`workspace`／`files`／`git`／`database`／`ssh` | L1 的模式列在視窗開啟時呼叫 `yuzora:settings` 的 `startup()`，拿到 `yuzora-sidebar-<mode>` 就 `layout.select`（尚未串接；串接前一般頁不顯示這個設定） |
 
 外觀與剪貼簿寫的是 Herdr 自己的 `settings.json`，寫法與上游 frame 相同（讀 → 改 → 只在沒人改過時寫回）：`appearance`、`font`、`ui_font`、`font_size`、`clipboard_write`；主題用 `app.theme`、縮放用 `app.zoom_*`。主題與字型本身由 L1 提供，L6 只負責挑選 UI。

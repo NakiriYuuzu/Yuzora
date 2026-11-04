@@ -39,7 +39,7 @@ the same window.
 - **Spaces and agents.** A Space is a folder on this computer or on a herdr machine reached over SSH. The workspace
   sidebar lists machines → Spaces → worktrees → agents, shows each agent's state by color and shape (working, needs a
   reply, done, idle) and keeps the agents that need you in a "Needs attention" list.
-- **Mixed splits.** "+ New pane" puts a tool pane (Git, editor, database, SFTP…), a terminal or an agent right of or
+- **Mixed splits.** The new-pane menu (command `yuzora-shell-tabs.new-pane`) puts a tool pane (Git, editor, database, SFTP…), a terminal or an agent right of or
   below the focused pane, in the same tab.
 - **Git** modeled on IntelliJ IDEA Community, with the staging area: changes and commits in the sidebar, a diff pane
   that stages hunks and lines, the log with its branch graph, branches, push, three-way merge, interactive rebase
@@ -53,7 +53,7 @@ the same window.
   fingerprint; side-by-side SFTP whose transfers resume.
 - **Settings, mods and templates.** Yuzora's own UI is herdr mods you can clone and change, and the Mods page
   installs others after a trust warning. herdr-core agent templates can be edited and started from Settings.
-- English and Traditional Chinese (Taiwan), light and dark themes, both following the system by default.
+- English interface only (this README and the changelog also come in Traditional Chinese), light and dark themes, following the system by default.
 - **Nothing is collected.** Telemetry is off and feedback opens a GitHub issue. An installed release checks this
   repository's GitHub Releases for updates and `releases.herdr.dev` for herdr-core's.
 
@@ -153,7 +153,7 @@ beta.2 is built in parallel lanes, each owning its own directories and its secti
 ### L1 · Shell and workspace
 
 The workspace sidebar (machines → Spaces → worktrees → agents, needs attention, scope chips per machine), the mode
-bar with each mode's badge, the tab bar whose "+ New pane" menu mixes tool panes, terminals and agents into one tab,
+bar with each mode's badge, the tab bar (the new-pane menu, opened with the `yuzora-shell-tabs.new-pane` command, mixes tool panes, terminals and agents into one tab),
 pane headers (amber while an agent needs a reply) and the status bar. A new Space starts by picking its folder; on a
 remote machine you type the path, checked on that machine. `yuzora:shell` (`app/crates/yuzora-shell`) holds the
 sidebar's model, Space badges and a small Git summary. Details: [docs/beta2/shell.md](docs/beta2/shell.md).
@@ -200,7 +200,7 @@ Details: [docs/beta2/files.md](docs/beta2/files.md).
 
 Settings open on Yuzora's own pages. Herdr's settings frame gets a "Yuzora" group listing every mod that declares `"yuzora": {"settings": …}`, and Privacy and Updates speak for Yuzora (it collects and sends nothing). L6's pages:
 
-- **General** (`yuzora-settings-general`): language (system, English, 繁體中文), look (themes, fonts, size, zoom), terminal clipboard writes (the sidebar mode at startup appears once the mode bar applies it).
+- **General** (`yuzora-settings-general`): look (themes, fonts, size, zoom), terminal clipboard writes (the sidebar mode at startup appears once the mode bar applies it).
 - **Templates** (`yuzora-settings-templates`): herdr-core agent templates on each machine. List them, edit the frontmatter as a form and the body as text (checked before saving), move one to the trash, or start one in a Space and tab (`yuzora-settings-launch`: `hc run` with `herdr.space`/`herdr.tab` labels).
 - **Mods** (`yuzora-settings-mods`): shipped, edited, cloned and personal mods and layouts with their errors. Clone, show in folder, check, switch or reset a layout, or install from a folder after a trust warning. An edited shipped mod is moved aside to `<name>-edited` and the shipped one comes back at the next start.
 

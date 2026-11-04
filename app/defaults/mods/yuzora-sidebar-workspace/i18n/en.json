@@ -6,7 +6,6 @@
   "tools": {
     "title": "Herdr tools",
     "palette": "Command palette",
-    "layout": "Next layout",
     "help": "Herdr manual"
   },
   "menu": {

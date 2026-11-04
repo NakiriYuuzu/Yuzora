@@ -7,6 +7,7 @@
 //! Layout (see docs/beta2/git.md):
 //! - [`exec`]: running git (environment, locks, cancel, timeout, remote);
 //! - [`repo`]: opened repos, change generations, `.git` state;
+//! - [`repos`]: which repositories a Space holds (the sidebar's picker);
 //! - [`status`] + [`watch`]: status by dirty scope, the file watcher;
 //! - [`diff`] + [`diffview`]: Myers/Patience diff, the diff pane, partial staging;
 //! - [`log`] + [`graph`] + [`graph_view`]: two-phase log, the graph and its element;
@@ -25,6 +26,7 @@ pub mod merge;
 pub mod ops;
 pub mod rebase;
 pub mod repo;
+pub mod repos;
 pub mod settings;
 pub mod status;
 pub mod trust;
@@ -47,6 +49,7 @@ pub const NAME: &str = "yuzora:git";
 /// The TypeScript face of [`host_module`]: one `export function` per function.
 pub const DECLARATIONS: &str = r#"
 export interface RepoInfo { id: string; root: string; machine: string | null; gitDir: string; commonDir: string }
+export interface RepoChoice { root: string; name: string; rel: string; trusted: boolean }
 export interface FileChange { path: string; orig?: string | null; kind: string; add: number | null; del: number | null; binary: boolean; submodule?: string | null }
 export interface Status {
   repo: string; root: string; machine: string | null; generation: number;
@@ -66,6 +69,8 @@ export interface LogRow { row: number; hash: string; short: string; subject: str
 export function version(): string;
 /** The repository holding cwd (here, or on machine `on`): opened once, watched while open. */
 export function open(cwd: string, on?: string | null): Promise<RepoInfo>;
+/** The repositories of a Space whose folder is `folder` (on machine `on`), with panes in `cwds`: the ones they are in, then folders one and two below `folder` with a `.git`. Read from the file system only (no git runs); on a machine, in one call. At most 50 (`truncated`: more were left out). `rel`: `.`, a path below `folder`, else `root`. `trusted`: in the trusted folders already (no git runs to tell more). */
+export function repos(folder: string, on?: string | null, cwds?: string[]): Promise<{ repos: RepoChoice[]; truncated: boolean }>;
 /** Status, refreshed by dirty scope (force: read everything again). */
 export function status(repo: string, options?: { force?: boolean }): Promise<Status>;
 /** Trusts the repo's folder: git may run the programs its own config names (see Status.trust). */
@@ -298,6 +303,24 @@ pub fn host_module() -> HostModule {
                 Ok(json!({ "id": r.id, "root": r.place.root, "machine": r.place.on, "gitDir": r.git_dir, "commonDir": r.common_dir }))
             }))
         })
+        .async_function("repos", |a| {
+            let folder = a.string(0)?.to_owned();
+            let on = a.get(1).and_then(HostValue::as_str).map(str::to_owned).filter(|m| !m.is_empty());
+            let cwds = strings(&arg(a, 2));
+            Ok(finish("repos", move || {
+                let found = repos::find(&folder, &cwds, on.as_deref()).map_err(GitError::Other)?;
+                let trusted = trust::trusted_ids();
+                let list: Vec<Value> = found
+                    .repos
+                    .iter()
+                    .map(|r| {
+                        let name = r.root.rsplit('/').find(|p| !p.is_empty()).unwrap_or(&r.root);
+                        json!({ "root": r.root, "name": name, "rel": r.rel, "trusted": trusted.contains(&repo::repo_id(on.as_deref(), &r.root)) })
+                    })
+                    .collect();
+                Ok(json!({ "repos": list, "truncated": found.truncated }))
+            }))
+        })
         .async_function("changed", |a| {
             let repo = repo::get(a.string(0)?).map_err(err)?;
             let since = a.number(1).unwrap_or(0.0) as u64;
@@ -517,6 +540,27 @@ mod tests {
         assert!(m.is_async("status") && m.is_async("open") && !m.is_async("logRows"));
         let settings = json_of(&m.call("settings", &HostArguments::new([])).unwrap());
         assert_eq!(settings["forceWithLease"], true);
+    }
+
+    // `repos` from a script: each repo's name, where it is and whether its folder is trusted
+    // already (from the list: no git runs).
+    #[cfg(unix)]
+    #[test]
+    fn repos_answers_each_repos_name_place_and_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        for d in ["a/.git", "b/.git"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let root = |d: &str| base.join(d).to_string_lossy().into_owned();
+        yuzora_core::git_trust::trust_at(&crate::settings::own_dir().join("git").join("trusted.json"), &repo::repo_id(None, &root("b"))).unwrap();
+        let m = host_module();
+        let args = HostArguments::new([HostValue::Str(base.to_string_lossy().into_owned()), HostValue::Null, to_host(&json!([]))]);
+        let got = json_of(&crate::repo::tests::futures_lite_block(m.begin("repos", &args).unwrap()).unwrap());
+        assert_eq!(got, json!({ "repos": [
+            { "root": root("a"), "name": "a", "rel": "a", "trusted": false },
+            { "root": root("b"), "name": "b", "rel": "b", "trusted": true },
+        ], "truncated": false }));
     }
 
     #[test]

@@ -164,8 +164,9 @@ the highlighted line shows where it will land.
 
 ## Layouts: `layouts/<name>.json`
 
-Each file is one whole window. `layout.switch` (`ctrl-shift-l`) cycles
-through them, `layout.switch {name}` picks one; `shared("layout")` is the
+Each file is one whole window. <!-- yuzora(L1): -->`layout.switch` cycles through them (no
+key is bound to it by default, and the command palette has no "Next layout":
+in Yuzora it would leave for Herdr's own layout)<!-- /yuzora(L1) -->, `layout.switch {name}` picks one; `shared("layout")` is the
 shown one's name. Herdr ships `main` ("Herdr": spaces by machine and the
 agents list on the left, `workspace-chrome`; tabs as pills with a + menu
 that starts a terminal or any installed agent, `new-menu`; panes as cards
@@ -434,8 +435,8 @@ folder on GitHub):
 4. A mod's `keys.json`: merge it into the person's. Add its sections and
    keys, and ask before replacing a key they already use.
 5. `herdr-app check` each mod; for a layout, then `layout.switch {name}`.
-   The person's own layout stays as it was; `ctrl-shift-l` switches back,
-   and deleting the files removes it.
+   The person's own layout stays as it was; <!-- yuzora(L1): -->`layout.switch {name}` (or Settings > Mods > Layouts)<!-- /yuzora(L1) -->
+   switches back, and deleting the files removes it.
 
 To share one: put that folder in a public GitHub repo (one folder each if
 there are several), write its `RECIPE.md`, save a screenshot of it as
@@ -1020,15 +1021,17 @@ with these differences.
   has no name for (diff colors, agent brand colors, Space badge colors, the
   agent states' shapes, sizes) come from `tokens()`, which gives a light theme
   its own text, diff and status colors.
-- Mods can import Yuzora's modules: `yuzora:core` (`t`, `locale`, `tokens`,
+- Mods can import Yuzora's modules: `yuzora:core` (`t`, `tokens`,
   `panes`, `settingsPages`, `getSetting`, `setSetting`, `exec` with its own
   timeout and `on` machine) and `yuzora:shell`, `yuzora:git`, `yuzora:db`,
   `yuzora:ssh`, `yuzora:files`, `yuzora:settings`, `yuzora:perf`. Their
   types are in `yuzora.d.ts` beside `herdr.d.ts` (rewritten on every start).
 - Text: a Yuzora mod keeps its strings in `mods/<mod>/i18n/en.json` and
-  `zh-TW.json` and shows them with `t("key", {name: value})`. The language is
-  `general.locale` in `yuzora/settings.json`: `"system"` (the default), `"en"`
-  or `"zh-TW"`. A mod you write for Yuzora fills both files.
+  shows them with `t("key", {name: value})`. Yuzora's interface is English
+  only: there is no language setting and no other language file. `locale()`
+  always returns `"en"` and `setLocale()` does nothing (both stay so older
+  mods keep working); an old `general.locale` in `yuzora/settings.json` is
+  ignored.
 - A mod offers itself as a tool pane (the new-pane menu) or a settings page
   in its own `mod.json`: `"yuzora": {"pane": {"title": "pane.title"}}`,
   `"yuzora": {"settings": {"title": "settings.title", "section": "git"}}`.
@@ -1043,9 +1046,15 @@ with these differences.
 <!-- yuzora:lane:L1:start -->
 ### The workspace shell
 
-- The tab bar is `yuzora-shell-tabs`: the current Space's tabs only (the sidebar tells Spaces apart), each with its Space's badge. Its "New pane" menu puts
+- The tab bar is `yuzora-shell-tabs`: the current Space's tabs only (the sidebar tells Spaces apart), each with its Space's badge. It has no new-pane or
+  split buttons: a pane splits from the buttons in its header or with `pane.split`. The new-pane menu opens with the
+  command `yuzora-shell-tabs.new-pane` (a mod's command is written with a dot: `"global": { "alt-n": "yuzora-shell-tabs.new-pane" }`
+  in `keys.json`; a colon makes the whole file fail to load; or `herdr-app do yuzora-shell-tabs.new-pane`) and puts
   a tool pane, a terminal or an agent right of or below the focused pane (`pane.split {direction, pane, mod, props}`).
   A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
+  The sidebar's tools menu has no "next layout" row: switch layouts in Settings > Mods > Layouts. Yuzora ignores the old
+  default `cmd-shift-l`/`ctrl-shift-l` → `layout.switch` in `global` (also in a keys.json written before it was removed):
+  bind another key, or a named `layout.switch:<name>`.
 - A person's `space.new` with no arguments but `machine` (a key, a click, a menu, a mod's `run()`) opens the
   `yuzora-new-space` dialog to pick the folder and answers `{"asked": "folder"}`; no Space exists yet. A folder
   that is already a Space's root on that machine selects that Space. Scripts (`herdr-app do`) and calls with
@@ -1094,6 +1103,21 @@ with these differences.
   file instead. A diff pane's props can also set its view: `layout: "side" |
   "unified"`, `whitespace: "none" | "trim" | "all"`, `context` (lines; `-1` is
   the whole file).
+- A space can hold several repositories. The picker at the top of the Git
+  sidebar follows the focused pane's repository (the default) or keeps one
+  pinned for the space: `setShared("yuzora.git.repo.<space id>", {root, on})`
+  pins it (kept across restarts), `null` follows the focus again; the command
+  `yuzora-sidebar-git.pick-repo` opens the picker for the keyboard (↑↓, Enter,
+  Esc). The badge, `yuzora.status.git`, and the Log, diff, branches and push
+  opened from the sidebar follow the repository picked. A pinned repository
+  that is gone (its folder, or the `.git` in it, as the file system tells) is
+  unpinned with a note; one that can't be looked at now stays pinned, with the
+  error. `repos(folder, on, cwds)` lists a space's repositories without
+  running git (the file system only; on a machine, one call): the ones
+  `folder` and each of `cwds` are in, then folders one and two below `folder`
+  with a `.git`, at most 50 (names with a line feed in them are passed over).
+  A `folder` gone for sure has none; one that can't be looked into now (no
+  permission, say) rejects.
 <!-- yuzora:lane:L2:end -->
 
 <!-- yuzora:lane:L3:start -->
@@ -1185,11 +1209,10 @@ with these differences.
   follows stable; `"update": {"channel": "beta"}` in
   `yuzora/settings.json` makes it take pre-releases too. An update waiting
   shows in Settings and goes in when Yuzora restarts.
-- What's new follows the language shown (`general.locale`): Chinese
-  (zh-TW) from the bundled `CHANGELOG.zh-TW.md`, English from
-  `CHANGELOG.md`; a version without Chinese notes shows in English. A newer
-  release's notes are kept per language, `update-notes-cache.md` (English)
-  and `update-notes-cache.zh-TW.md`.
+- What's new is English, from the bundled `CHANGELOG.md`. A newer release's
+  notes are kept in `update-notes-cache.md`. (`CHANGELOG.zh-TW.md` ships in
+  the repo and the release for people who read Chinese; the app does not
+  show it.)
 <!-- yuzora:lane:L7:end -->
 
 <!-- yuzora:lane:L8:start -->

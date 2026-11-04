@@ -51,7 +51,7 @@ beta.2 的 SSH 主機、SFTP 雙欄傳輸、tunnel 與已知主機。Rust 原生
 - 已知主機：`knownHosts()`、`removeKnownHost(file, line, raw)`。
 - tunnel：`openTunnel(host, remoteHost, remotePort, localPort?)`、`tunnels()`、`closeTunnel(id)`。
 - 狀態：`status()` 回傳 `{text, tone}`，側欄與 SFTP pane 以 `setShared("yuzora.status.ssh", …)` 發布（值改變才寫；兩者任一開著就會更新，也會清掉上一輪留下的值）；`yuzora.badge.ssh` 是進行中＋排隊中的傳輸數（沒有時為 `null`）。
-- 錯誤以 `"[code] message"` 拋出，code 見 `ErrorKind::code`（`host-key-unknown`、`needs-input`、`auth-failed`…），message 依語系。
+- 錯誤以 `"[code] message"` 拋出，code 見 `ErrorKind::code`（`host-key-unknown`、`needs-input`、`auth-failed`…），message 是英文。
 
 ## Tunnel API（給 L3）
 
@@ -78,7 +78,7 @@ export CARGO_TARGET_DIR=/Users/yuuzu/HanaokaYuuzu/App/Tauri/.yuzora-lanes/_targe
 cd app && cargo test --locked -p yuzora-ssh
 ```
 
-- 單元測試：config、known_hosts、hosts、prompt、runtime、sftp 路徑、傳輸計畫、i18n 兩語系 key 一致、HostModule 宣告一致。
+- 單元測試：config、known_hosts、hosts、prompt、runtime、sftp 路徑、傳輸計畫、i18n 變數代入、HostModule 宣告一致。
 - 整合測試（`src/tests/`，Unix）：測試行程內啟動 russh SSH 伺服器（密碼、公鑰、keyboard-interactive、direct-tcpip），SFTP 交給系統的 OpenSSH `sftp-server`（以 `-d` 指到暫存資料夾）。涵蓋首次連線確認並記錄金鑰、金鑰變更拒絕／接受、加密私鑰問密語（含輸錯重問）、keyboard-interactive 兩題、tunnel 轉送與關閉、ProxyJump、SFTP 瀏覽與增刪改、上傳續傳＋保留權限時間、資料夾上傳、取消後重試、下載續傳與資料夾下載、遠端檔編輯上傳與衝突。
 - 機器上沒有 `sftp-server` 時，SFTP 相關整合測試印出 skipped 後通過（macOS 一定有；Ubuntu 需 `openssh-sftp-server`）。
 - 所有測試只用暫存目錄與記憶體憑證庫，不讀寫 `~/.ssh`、系統鑰匙圈或 app home。

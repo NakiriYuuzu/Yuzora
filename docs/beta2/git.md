@@ -24,7 +24,7 @@ yuzora-git-settings ┘
 
 | mod | 種類 | 內容 |
 | --- | --- | --- |
-| `yuzora-sidebar-git` | 側欄模式 | 分支按鈕（↑↓，開分支 popup）、操作中橫幅（繼續／中止／略過）、衝突／已暫存／變更三段清單（數量、全部暫存／取消、列尾 +／−／↺）、右鍵選單、commit 訊息（歷史、範本、amend、sign-off、略過 hooks、作者）、Commit／Commit 並 Push／Push ↑N、「分支圖」。寫 `yuzora.badge.git`、`yuzora.status.git` |
+| `yuzora-sidebar-git` | 側欄模式 | 分支按鈕（↑↓，開分支 popup）、操作中橫幅（繼續／中止／略過）、衝突／已暫存／變更三段清單（數量、全部暫存／取消、列尾 +／−／↺）、右鍵選單、commit 訊息（歷史、範本、amend、sign-off、略過 hooks、作者）、Commit／Commit 並 Push／Push ↑N、「分支圖」；頂端的 repo 選擇器（跟隨焦點，或替這個 Space 釘選一個 repo，見〈同一個 Space 的多個 repo〉）。寫 `yuzora.badge.git`、`yuzora.status.git` |
 | `yuzora-git-branches` | popup | 搜尋、更新專案、Fetch、Push…、新分支、checkout revision、stash；最近／本地／遠端／tags；每個 ref 的動作（checkout、smart／強制 checkout、從此建分支、比較、merge／rebase 進目前分支、改名、upstream、刪除、tag push／刪除） |
 | `yuzora-git-push` | 對話框 | 目標 remote／分支、要送出的 commits、force（lease／force，受保護分支禁止）、tags（none／follow／all）、略過 hooks、新分支自動 set-upstream、被拒時依設定自動更新 |
 | `yuzora-git-diff` | modal 或 tool pane | 預設開成 modal（dialog overlay），「保留」把它移到 pane（預設分割在目前 pane 右側，可改成新分頁）；並排／合併、字詞高亮、空白（精確／忽略頭尾／全部忽略）、context（3 行／整檔）、hunk 導覽、暫存／取消暫存／捨棄 hunk 或選取的行、Annotate、歷史；即時更新 |
@@ -46,7 +46,32 @@ yuzora-git-settings ┘
   - 「保留」：依 `diffKeepIn`，`split`（預設）在焦點 pane 右側 `pane.split {direction: "right", mod, props}`，沒有焦點 pane 或設成 `tab` 時 `tab.new`；新 pane 帶著 modal 裡的檢視（並排／合併、空白、context），然後關閉 modal。`run()` 只把指令排進佇列、不回傳錯誤，所以 split 或 `tab.new` 失敗時 modal 照樣關閉，pane 也不會出現。
 - 即時更新：`changed(repo, since)` 在 repo 的 generation 變了（watcher 或我們自己的寫入）時 resolve；遠端 repo 沒有 watcher，約 25 秒逾時一次，呼叫端藉此輪詢。本機 repo 的 watcher 啟動失敗時（例如系統的監看數用完），等待逾時就把整個 repo 與 refs 視為已變更，generation 前進，各 pane 照常重讀。逾時由一條共用的計時執行緒負責，不靠 watcher 的 tick（只在有人等待時存在）。
 - `changes(repo, since)`：同 `changed`，另外回傳這段期間變動的路徑（`{generation, paths}`）。路徑來自 watcher 看到的工作樹，以及我們自己的 stage／unstage／discard 指定的路徑；無法判斷時 `paths` 是 `null`，包括 git 自己寫的 index 或 refs、rescan、整個 status 失效，以及一次超過 1000 個路徑，或已經超出保留範圍（repo 保留最近 256 個 generation；每個 generation 的路徑去重）。diff pane 只在變動可能碰到它的檔案時重讀：檔案本身、改名前的檔案、上層資料夾（`.` 是頂層）、檔案底下的路徑（submodule）、任何 `.gitattributes`。watcher、git 與 pathspec 對同一個檔案的寫法可能不同，所以兩邊都先換成同一種寫法再比對：`\` 當成 `/`（watcher 在每個系統上都這樣寫）、不分大小寫、轉成 NFC（macOS 交出的是磁碟上的名稱，常是 NFD；git 存的是 NFC）、去掉開頭的 `./` 與結尾的 `/`。含 `~` 加數字的路徑可能是 Windows 的 8.3 短檔名（watcher 可能回報長或短的名稱），和 `paths` 是 `null` 一樣一律重讀。staged diff 也會因為同一個檔案的工作樹變動重讀：watcher 回報的路徑分不出是工作樹還是 index。commit 的 diff 不跟隨。
-- 跨 lane：`yuzora.badge.git`＝變更檔案數（乾淨時 `null`），`yuzora.status.git`＝`{text: "⎇ main ↑2 · 4 變更", tone}`，tone：衝突 `blocked`、操作中或執行中 `working`、有變更 `accent`、乾淨 `muted`。
+- 跨 lane：`yuzora.badge.git`＝變更檔案數（乾淨時 `null`），`yuzora.status.git`＝`{text: "⎇ main ↑2 · 4 變更", tone}`，tone：衝突 `blocked`、操作中或執行中 `working`、有變更 `accent`、乾淨 `muted`。兩者都是側欄目前選中的 repo 的值（跟隨焦點時就是焦點所在的 repo）。
+- `yuzora.git.repo.<space id>`＝這個 Space 釘選的 repo（`{root, on}`），沒有就是跟隨焦點；見下一節。
+
+### 同一個 Space 的多個 repo（beta.3）
+
+情境：同一個 Space 裡有好幾個 repo，例如外層資料夾放了好幾個專案，或 monorepo 裡的子 repo。不跨 Space，也不做 submodule／worktree 的切換。
+
+- 側欄頂端的 repo 選擇器：預設「跟隨焦點」，和以前一樣看焦點 pane 的資料夾（否則 Space 的資料夾，`location()`）；也可以替這個 Space 釘選一個 repo，之後焦點怎麼換都看那個 repo。每個 Space 各自記住選擇：存在 shared 的 `yuzora.git.repo.<space id>`（`{root, on}`），shared 會存檔，所以重啟後仍然有效；選「跟隨焦點」就清掉。選擇器標示目前的 repo，釘選時名稱前有一個點。
+- 鍵盤：指令 `yuzora-sidebar-git.pick-repo`（和其他 mod 指令一樣用點號寫進 `keys.json`，或 `herdr-app do`）把選擇器置中打開。選擇器裡 ↑↓ 在「跟隨焦點」與各 repo 之間移動（頭尾相接，一開始停在目前選的那一列），Enter 選定，Esc 關閉。和分支 popup 一樣，選到的列不會自動捲進畫面。
+- 跟著選中的 repo：側欄本身、`yuzora.badge.git`、`yuzora.status.git`，以及從側欄開的 Git Log、diff、分支 popup、Push 對話框、merge（都用側欄的 `repo`）。狀態列底部的 git 摘要不在範圍內，仍跟著焦點的終端機。
+- 列出 repo：`repos(folder, on, cwds)`（`repos.rs`），只讀檔案系統，不跑 git，所以不論信任與否都不會執行 repo 設定的程式。列出的順序：
+  1. Space 資料夾所在的 repo：資料夾本身，或往上最近一個有 `.git` 的資料夾（照真實路徑，和 git 往上找的方式相同；Space 資料夾是某個 repo 的子資料夾時就是那個 repo）。
+  2. Space 內各 pane 的資料夾所在的 repo（同樣往上找，可以在 Space 資料夾外面）。
+  3. Space 資料夾往下一層、兩層、含 `.git` 的資料夾（`.git` 是資料夾或 gitfile，指向它們的 symlink 也算；FIFO 之類的不算），依路徑的位元組排序。
+  - 不進入 `.git`、`node_modules`、`target`。指向資料夾的 symlink 會跟著走：最多兩層，所以指回上層的 symlink 自然停住；同一個 repo 照真實路徑只列一次。
+  - 名稱含換行的資料夾不列，也不進入。資料夾只看真實路徑，真實路徑裡有換行的（pane 的資料夾、經過這種資料夾的 symlink）也不算，Space 資料夾本身有換行就是問不到。原因是遠端的 `find` 一行印一個名稱：名稱一切開，後半段會被當成路徑，相對路徑落在遠端 home（`hc exec --on` 在那裡執行），就會列出 Space 外的 repo。所以 `find` 以 `-name "*<LF>*"` prune 掉這些名稱，Rust 照樣略過，兩邊連計數都相同。
+  - 最多 50 個，超過時 `truncated`，選擇器顯示「只列出前 N 個」。往下看的資料夾最多 5000 個：依檔案系統列出的順序走（每個資料夾之後緊接著它底下的，和 `find` 走訪的順序相同），看滿就不再讀後面的資料夾，同樣 `truncated`；看過的這些才依位元組排序。所以超過 5000 個時，列出哪些取決於檔案系統的順序，不一定是路徑排序的前 5000 個。
+  - 每一筆有 `root`（真實路徑，git 的寫法；Windows 去掉 `\\?\`、用 `/`）、`name`、`rel`（`.`、Space 資料夾底下的路徑，否則就是 `root`）、`trusted`（已經在信任清單裡；不跑 git 就只知道這麼多，所以「不在清單」只代表還沒信任過，不代表需要信任，選擇器只標「已信任」）。
+  - 遠端 Space：同樣的規則寫成 POSIX sh（`repos::SCRIPT`），經 `hc exec --on` 一次呼叫完成，不會每個資料夾來回一次。`repos::tests` 在本機用 sh 跑這個腳本，每個情境都要和 Rust 的走訪結果完全相同；換行名稱的情境讓腳本在一個底下有對應 repo 的資料夾裡執行（模擬遠端 home），特殊名稱（空白、引號、`$(…)`、反引號、反斜線、`-` 開頭、`*`、`[ab]`、`;`、printf 格式、tab，以及 pane 的資料夾是 `-`、`--`）都要列成名稱本身，不能執行任何東西。
+- 信任：每個 repo 各自過原本的信任關卡。只有選中的 repo 會跑 status（以及信任掃描）；列出 repo 不會對任何一個跑 git。
+- 釘選的 repo 消失：打開它失敗、之後 status 失敗，或打開的不是它（見下一點）時，再問一次檔案系統（`repos(root, on, [])`）。確定不見才取消釘選，跳出提示，改回跟隨焦點。確定不見是指：那個資料夾還在、可以進入，但已經沒有 `.git`；或資料夾本身（或路上某一層）不存在而它的上一層可以進入；或那一層不是資料夾。問不到時保留釘選並顯示錯誤，例如遠端機器離線、沒有權限進入那個資料夾或它的上層、路上有解析不了的 symlink（可能指向沒有權限的資料夾）。這些情況下 `repos` 回傳錯誤，不回空清單，遠端的 sh 也一樣（以 `exit 1` 回報，不印 `gone`）。`.git` 還在（錯誤是別的原因）時也保留釘選。
+- 打開成功也要是同一個 repo：資料夾的 `.git` 沒了，git 會往上打開外層的 repo，`open` 照樣成功。所以釘選時 `open` 回傳的 `root` 不是釘選的 `root`，就照上一點問檔案系統：確定沒有 `.git` 就取消釘選。`.git` 還在但 git 不接受（例如讀不到），或問不到時，保留釘選並顯示「git 在這裡打開的是 …」，不改用外層的 repo。git 的寫法和釘選的不同、其實是同一個資料夾時（例如 Windows 的 subst 磁碟機：`canonicalize` 解析成實際位置，git 可能保留磁碟機代號），先問 `repos(git 的 root, on, [])`：它的頂層真實路徑就是釘選的 `root`，就照常打開。Windows 上這一點沒有實測。
+- 和總指揮提案不同的地方：
+  - 多列了 Space 資料夾所在的 repo（往上找）：Space 資料夾是 repo 的子資料夾時，跟隨焦點本來就會打開它，選擇器裡沒有它就切不回去。
+  - symlink 不跳過而是跟著走兩層：指向別處的專案資料夾也列得出來；兩層的限制就足以擋住迴圈。
+  - 另外限制往下看的資料夾數（5000）：走訪時就停，子資料夾上萬的 Space 資料夾不會讓列表變慢（遠端的 `find` 也接在 `head -n 5001` 後面：`head` 讀滿就結束，`find` 下一次寫出時跟著停）。
 
 ### virtual list 的限制
 
@@ -123,7 +148,7 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - 判斷方式：
   - mods 用 `yuzora:git` 的 `open(cwd, on)` 與 `status(id)`，`trust` 有值就是未信任。這和 Git 側欄是同一份答案，遠端 machine 也適用。沒有待信任的項目時（已信任，或設定裡本來就沒有會執行的程式），`status` 會順便讀一次 status：有快取；本機另有 watcher，遠端 machine 沒有，靠 `changed()` 逾時輪詢（見〈已知限制〉）。
   - Rust 用 `yuzora_core::git_trust::pending(None, top)`，`top` 是帶 `READ_FLAGS` 的 `rev-parse --show-toplevel` 的輸出。讀不到、不是 UTF-8 或 `Err` 都當成未信任。
-- 提示文字放在各 mod 自己的 `i18n/{en,zh-TW}.json`（`changes`、`files`、`worktree`），其他文字維持上游的英文。
+- 提示文字放在各 mod 自己的 `i18n/en.json`（`changes`、`files`、`worktree`），其他文字維持上游的英文。
 - 測試：
   - `app/src/yuzora/trust.rs`：fixture 用自己的 HOME 建立，斷言未信任時沒有任何程式執行、信任後照舊（fixture 的程式真的會被 git 執行）。白名單指令同樣在這個 fixture 跑過。Linux 上另外從 `watchFolder` 端到端跑一次。
   - `app/scripts/yuzora-trust-mods.test.ts`：真實的 git，`yuzora:git` 的回答用 stub。也守住 default mods 跑 git 的位置數：每個 `exec("git", …)`，以及 mod 自己包住它的 helper（第一行就是 `exec("git", …)` 的函式，或 `name = (…) => exec("git", …)`，目前是 `changes` 與 `worktree` 的 `git`、`menu` 的 `checkout`）的呼叫數。上游同步在這些地方多了呼叫時會失敗，要重新判斷。守衛只讀各 mod 的 `main.js`（不讀 mod 裡其他 `.js` 檔，也不讀 `defaults/frame/`），helper 也只認上面兩種寫法（class method、block body 的 arrow function 不算）；目前 `exec("git"` 只出現在 changes、files、menu、spaces、worktree 的 `main.js`。經由更上層、本身會跑 git 的函式（例如 `worktree` 的 `submodules()`）多出的呼叫數不到，同步時仍要讀這幾個 mod 的 diff。
@@ -205,7 +230,7 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 
 - ⏳ Clone（含 shallow／unshallow）、init：beta.2 由 Workspace（L1）開資料夾，Git 側欄不提供 clone／init。
 - 🟡 Git 執行檔：設定頁可指定路徑（`executable`），每次呼叫時讀取，已開啟的 repo 也立刻換用；版本顯示在 repo pane 的「身分與簽章」；沒有自動下載。
-- ✅ Repo 偵測：側欄依焦點 pane 的資料夾（否則 space 的資料夾）找所在的 repo，跟著焦點切換；本機與遠端 space（`hc exec --on`）都可以。
+- ✅ Repo 偵測：側欄依焦點 pane 的資料夾（否則 space 的資料夾）找所在的 repo，跟著焦點切換；本機與遠端 space（`hc exec --on`）都可以。同一個 Space 有多個 repo 時，可以從側欄頂端的選擇器替這個 Space 釘選其中一個（beta.3，見〈同一個 Space 的多個 repo〉）。
 - ⛔ Multi-root 同步分支操作：一次看一個 repo。
 - 🟡 Submodules：列出狀態（路徑照原樣，含空白）、`submodule update`；子模組本身當成另一個 repo 開啟。
 - 🟡 Safe mode（未受信任專案）：Git 有自己的信任資料夾（見〈執行器〉）：repo 本地設定會自動執行程式時，Git 的所有操作先等使用者信任；自動執行的讀取另外關掉 `core.fsmonitor`，簽章檢查不用 repo 本地指定的程式，blame 不跑 textconv。⏳ 整個 app 共用的信任模型（終端機、其他模式）屬於殼層。
@@ -435,3 +460,14 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - `status::full` 的 `operation()`（遠端要 `ls .git`，rebase 中還有逐檔 `cat`）搬進第一輪的平行區，少一輪。
 
 `exec::spawn_scoped` 讓測試用的 `TEST_ENV`（thread-local）也傳給這些執行緒。測試用記錄開始／結束的 `git` 替身（`repo::testing::timed_git`）證明同時在跑的數量，並證明任何一路失敗都不會被當成答案。
+
+## 側欄列的版面與 commit 詳情的上下比例（beta.3）
+
+- **側欄檔案列**（`yuzora-sidebar-git` 的 `fileRow`）：檔名 `flex_shrink(1).min_w(0).max_w(140).truncate()`，資料夾 `flex_1.min_w(0).truncate()`（沒有 basis，先縮），按鈕 `flex_none` 貼在列的右緣；`+N`、`−M` 可以縮（`flex_shrink(1).min_w(0).truncate()`，排在檔名之後），6 位數以上寫成 `150k`（`count()`，上限 `999k+`），所以最窄的 180px 也放得下，比 180 更窄的自訂 layout 數字會被截斷但按鈕不會被推走。所以任何側欄寬度（預設 248、最小 180）下，名稱用 `…` 截斷，數字與按鈕完整可見；`clickRow` 從右邊用 `ACTION` 算 slot 的算法不變（按鈕仍是 22px 寬、貼右緣）。section 標頭的箭頭與分支列的 `⎇`、`▾` 也補 `flex_none`。`fileRow(it, th, probe)` 的 `probe` 只有測試給：`probe(slot)` 回傳各部分的 `on_size_change`，`probe(slot, "move")` 回傳 `on_mouse_move`（帶著該部分的位置）；按鈕的 slot 帶標籤（`action:↺`），測試才分得出順序。`sidebar_git_row_buttons_are_where_clickrow_counts_them` 用真的 `fileRow` 加上和 list 相同的 padding 與 `downX`，點每顆按鈕的中心與左右邊緣內 2px，斷言 `+` → stage、`↺` → discard、`−` → unstage、數字與名稱 → 開 diff（virtual list 在測試視窗不排版，所以不經過它）。
+- **commit 詳情不能捲動的原因**：`detail-info` 原本是 `flex_none().max_h(…).overflow_y_scrollbar()`。`overflow_y_scrollbar` 搭配 `max_h` 不會捲（同樣的 `h` 或 `overflow_y_scroll`＋`max_h` 都會）。現在是 `relative` 外框裡一個 `overflow_y_scroll` 的區域（有 id `detail-scroll`），上面蓋 `Scrollbar.vertical("detail-scroll")`；沒拖過時高度跟內容走、最多 300（並排）／110（上下），並且不超過 `infoLimit()`，矮的 pane 裡分隔線不會被推出畫面。
+- **訊息完整顯示**：不再 `slice(0, 80)`。為了避免一則極端長的訊息建出數萬個元素，上限 `BODY_LINES = 2000` 行，超過時資訊區最後一行顯示「還有 N 行未顯示」。
+- **上下比例**：資訊區與「變更檔案」標題之間有 7px 的分隔線（`detail-split`，游標是上下調整）。按下後 pane 的根節點接手 `on_mouse_move`／`on_mouse_up`，所以放開時不必在分隔線上；拖到 pane 內任何位置都跟著。資訊區最小 48px、檔案區最小 72px（標題 24px、分隔線 7px 另計）；面板縮小時，存下的高度也照最大值夾住。雙擊分隔線回到預設（內容高度、有上限）。高度存在 pane 的狀態裡（`infoH`），同一個 pane 換選 commit 會保留；不跨 pane、不跨重啟（每個 pane 大小不同，存一個絕對高度沒有意義，要存也該存比例）。
+- 指標離開 pane（`on_hover` 變成 false）時拖曳就結束：mod 的滑鼠事件沒有「按著哪個鍵」，離開後的放開也收不到，所以不讓狀態留著。要拖得更遠就得在 pane 內重新按下。
+- 未改：compare 畫面（`renderCompare`）的 `cmp-files` 仍是 `h(150)`。
+- 測試（`app/src/mods/render_tests.rs`，真的把 mod 放進視窗排版、送滑鼠與滾輪事件）：`sidebar_git_row_keeps_counts_and_buttons_clear_of_the_name`、`git_log_commit_message_scrolls_and_the_files_stay`、`git_log_detail_divider_drags_and_keeps_minimums`、`git_log_commit_message_is_shown_whole_up_to_a_cap`。
+- beta.4 評估：gpui-base 其實有 `v_resizable`／`resizable_panel`（`size_range`、`on_resize`），拖曳由 gpui 處理；之後可評估是否取代自製的分隔線。

@@ -20,6 +20,19 @@ use std::rc::Rc;
 use gpui_shell::action::ShellAction;
 use std::collections::BTreeMap;
 
+/// yuzora(L1): where the shipped keys used to bind `layout.switch` (next layout).
+#[cfg(target_os = "macos")]
+const OLD_NEXT_LAYOUT_KEY: &str = "cmd-shift-l";
+#[cfg(not(target_os = "macos"))]
+const OLD_NEXT_LAYOUT_KEY: &str = "ctrl-shift-l";
+
+/// yuzora(L1): the binding the shipped keys used to have for next layout, in a keys.json written
+/// before it was removed. `parse` and `listing` both leave it out; a named `layout.switch:<name>`,
+/// another key, or another section stays.
+fn retired_default(section: &str, keys: &str, action: &str) -> bool {
+    section == "global" && action == "layout.switch" && keys == OLD_NEXT_LAYOUT_KEY
+}
+
 /// The reserved shortcut that restores the default layout and keys.
 pub const ESCAPE_HATCH: &str = "ctrl-alt-shift-escape";
 
@@ -37,13 +50,16 @@ fn defaults() -> BTreeMap<String, BTreeMap<String, String>> {
 
 /// Every binding as `(section, keys, action)`, for the keybind help.
 pub fn listing() -> Vec<(String, String, String)> {
-    let text = std::fs::read_to_string(path()).unwrap_or_default();
-    let sections: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_str(&text).unwrap_or_else(|_| defaults());
+    listing_of(&std::fs::read_to_string(path()).unwrap_or_default())
+}
+
+fn listing_of(text: &str) -> Vec<(String, String, String)> {
+    let sections: BTreeMap<String, BTreeMap<String, String>> = serde_json::from_str(text).unwrap_or_else(|_| defaults());
     let mut out = Vec::new();
     for (s, keys) in sections {
         for (k, a) in keys {
             let a = current(&a);
-            if !gone_mod(&a) {
+            if !gone_mod(&a) && !retired_default(&s, &k, &a) {
                 out.push((s.clone(), k, a));
             }
         }
@@ -132,6 +148,11 @@ pub fn parse(text: &str) -> Result<Vec<KeyBinding>, String> {
         for (keys, action) in keys {
             let action = &current(action);
             if gone_mod(action) {
+                continue;
+            }
+            // yuzora(L1): the old default "next layout" key is dropped from keys.json files written
+            // before it was removed (keys.json is only written once); another key for it stays.
+            if retired_default(section, keys, action) {
                 continue;
             }
             if !valid_action(action) {
@@ -242,6 +263,101 @@ mod tests {
             .collect::<serde_json::Map<_, _>>();
         let bindings = super::parse(&serde_json::json!({ "global": help }).to_string()).unwrap();
         assert!(bindings.iter().any(|binding| binding.match_keystrokes(&[event.clone()]) == Some(false)));
+    }
+
+    // yuzora(L1): no default key switches layout (from the yuzora layout it lands in Herdr's own),
+    // and a keys.json written earlier loses that one default binding but keeps any other.
+    #[test]
+    fn next_layout_has_no_default_key_and_the_old_one_is_dropped() {
+        for keys in [include_str!("../defaults/keys.json"), include_str!("../defaults/keys.macos.json")] {
+            let value: serde_json::Value = serde_json::from_str(keys).unwrap();
+            for (section, bound) in value.as_object().unwrap() {
+                for (key, action) in bound.as_object().unwrap() {
+                    assert_ne!(action.as_str().unwrap().split(':').next(), Some("layout.switch"), "{section}.{key}");
+                }
+            }
+        }
+        let old = super::OLD_NEXT_LAYOUT_KEY;
+        let count = |text: String| super::parse(&text).unwrap().len();
+        let with = |bound: serde_json::Value| serde_json::json!({ "global": bound }).to_string();
+        assert_eq!(count(with(serde_json::json!({ old: "layout.switch" }))), 0, "the old default is dropped");
+        assert_eq!(count(with(serde_json::json!({ "ctrl-alt-l": "layout.switch" }))), 1, "another key stays");
+        assert_eq!(count(with(serde_json::json!({ old: "layout.switch:main" }))), 1, "a named layout stays");
+        let in_layout = serde_json::json!({ "layout:x": { old: "layout.switch" } }).to_string();
+        assert_eq!(count(in_layout.clone()), 1, "only the global section is dropped");
+        // The help page, the palette's key hints and the welcome list the same bindings.
+        let listed = |text: &str| super::listing_of(text).into_iter().filter(|(_, _, a)| a == "layout.switch").count();
+        assert_eq!(listed(&with(serde_json::json!({ old: "layout.switch" }))), 0, "not listed either");
+        assert_eq!(listed(&in_layout), 1);
+    }
+
+    // yuzora(L1): the keys.json examples in the docs and in the guide users' agents read must load:
+    // one wrong action (a `:` where the mod's command has a `.`) makes the whole file fail.
+    // Every `"<modifier>-…": "<action>"` is matched on its own, so a stray quote or a missing
+    // space elsewhere in the file can't hide one.
+    //
+    // Which files are checked isn't a list in this test: it walks every *.md and *.d.ts under
+    // app/defaults and docs/ plus the root and app docs below, so a new document is covered
+    // without anyone remembering to add it, and deleting a line here can't drop a file. The
+    // examples that must be found are a separate table, and every file on it must have been
+    // walked. The files are read when the test runs (not include_str!), so cargo does not rebuild
+    // the tests when a document changes: `cargo test` still runs this one every time, but it reads
+    // whatever is on disk then.
+    #[test]
+    fn keys_examples_in_the_docs_load() {
+        use std::path::{Path, PathBuf};
+        // Not documents of ours: dependencies, build output, screenshots, git.
+        const SKIP_DIRS: &[&str] = &["node_modules", "target", "vendor", "evidence", ".git"];
+        const ROOT_DOCS: &[&str] = &[
+            "README.md", "README.zh-TW.md", "AGENTS.md", "CLAUDE.md", "CHANGELOG.md", "CHANGELOG.zh-TW.md",
+            "app/CHANGELOG.md", "app/CHANGELOG.zh-TW.md", "app/AGENTS.md", "app/README.md",
+        ];
+        // (file from the repo root, key, action) that must be found: each is a document users or
+        // their agents read.
+        const MUST_FIND: &[(&str, &str, &str)] = &[
+            ("app/defaults/AGENTS.md", "ctrl-shift-t", "tab.new"),
+            ("app/defaults/AGENTS.md", "alt-n", "yuzora-shell-tabs.new-pane"),
+            ("docs/beta2/shell.md", "alt-n", "yuzora-shell-tabs.new-pane"),
+            ("app/defaults/herdr.d.ts", "alt-s", "<mod>.<command>"),
+        ];
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    if !SKIP_DIRS.contains(&name.as_str()) {
+                        walk(&path, out);
+                    }
+                } else if name.ends_with(".md") || name.ends_with(".d.ts") {
+                    out.push(path);
+                }
+            }
+        }
+        let app = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = app.parent().unwrap();
+        let mut files = Vec::new();
+        walk(&app.join("defaults"), &mut files);
+        walk(&root.join("docs"), &mut files);
+        files.extend(ROOT_DOCS.iter().map(|f| root.join(f)).filter(|p| p.is_file()));
+        let rel = |p: &Path| p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+
+        let pair = fancy_regex::Regex::new(r#""((?:ctrl|alt|cmd|shift)-[^"\n]*)"\s*:\s*"([^"\n]*)""#).unwrap();
+        let mut found = Vec::new(); // (file, key, action)
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            for caps in pair.captures_iter(text.as_str()) {
+                let caps = caps.unwrap();
+                let (key, action) = (caps[1].to_owned(), caps[2].replace("\\u001b", "\u{1b}"));
+                let one = serde_json::json!({ "global": { key.clone(): action.clone() } });
+                assert_eq!(super::parse(&one.to_string()).err(), None, "{}: {key} -> {action}", rel(file));
+                found.push((rel(file), key, action));
+            }
+        }
+        for (file, key, action) in MUST_FIND {
+            assert!(files.iter().any(|f| rel(f) == *file), "{file} was not walked ({} files)", files.len());
+            assert!(found.iter().any(|(f, k, a)| f == file && k == key && a == action), "{file}: example {key} -> {action} not found");
+        }
     }
 
     #[test]

@@ -1,10 +1,10 @@
 // The tab bar. Owned by lane L1.
 // The current Space's tabs only (the sidebar tells Spaces apart), each with its Space's badge, its most urgent agent state and (when
-// shown) a close button; + opens Herdr's new-tab menu. "New pane ▾" mixes a tool pane
-// (yuzora:core panes(): mods whose mod.json says "yuzora": {"pane": …}), a terminal or an
-// agent into the shown tab, right of or below the focused pane. Window buttons where
-// the system draws none. Opened as a popup with props { menu: "pane" } it draws that menu;
-// the command "yuzora-shell-tabs.new-pane" opens it.
+// shown) a close button; + opens Herdr's new-tab menu. The bar has no new-pane or split
+// buttons. The new-pane menu mixes a tool pane (yuzora:core panes(): mods whose mod.json
+// says "yuzora": {"pane": …}), a terminal or an agent into the shown tab, right of or below
+// the focused pane. Window buttons where the system draws none. Opened as an overlay with
+// props { menu: "pane" } it draws that menu; the command "yuzora-shell-tabs.new-pane" opens it.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -82,7 +82,7 @@ export default class Tabs extends View {
     if (props()?.menu !== "pane") {
       // "yuzora-shell-tabs.new-pane" (a key in keys.json, or herdr-app do) opens the new-pane menu.
       cx.spawn(async () => {
-        for (;;) if ((await nextCommand()) === "new-pane") this.openPaneMenu("dialog");
+        for (;;) if ((await nextCommand()) === "new-pane") this.openPaneMenu();
       });
       return;
     }
@@ -107,10 +107,10 @@ export default class Tabs extends View {
     return shared(AGENTS)?.[spaces().find((s) => s.active)?.machine ?? ""] ?? [];
   }
 
-  // Under the pointer from the button; centered from a key or script (nothing to point at).
-  // No height: it's as tall as its rows (MENU_MAX at most).
-  openPaneMenu(kind = "popup") {
-    openOverlay({ mod: SELF, kind, width: 280, props: { menu: "pane" } });
+  // Centered, from a key or script (the tab bar has no button for it). No height: it's as tall
+  // as its rows (MENU_MAX at most).
+  openPaneMenu() {
+    openOverlay({ mod: SELF, kind: "dialog", width: 280, props: { menu: "pane" } });
   }
 
   // The tool panes offered (yuzora:core panes()).
@@ -157,7 +157,7 @@ export default class Tabs extends View {
     const tools = this.tools();
     const choices = choicesOf(this.agents);
     const agentsNote = choices.length ? null : this.failed ? "menu.failed" : this.listed ? "menu.no_agents" : "menu.checking";
-    // A popup is as tall as what's in it: the column takes its rows' height (MENU_MAX at most)
+    // The menu opens as a dialog without a height, so it is as tall as what's in it: the column takes its rows' height (MENU_MAX at most)
     // and only then does the list shrink and scroll. Nothing here waits for a height to fill:
     // not flex_1, and not overflow_y_scrollbar, whose scroll area fills its parent.
     return v_flex().id("pane-menu").w_full().max_h(MENU_MAX).min_h(0).p(5).bg(th.popover).text_size(12.5)
@@ -266,12 +266,6 @@ export default class Tabs extends View {
         })
         .child(svg(icon).size(14)).child(t(`panel.${id}`));
     };
-    // Split the focused pane; a layout terminal block (or nothing) has the keyboard: nothing to split.
-    const target = focused()?.pane;
-    const split = (id, direction) => target
-      ? button(id, svg(`mods/pane/${id}.svg`).size(14), t(`pane.${id.replace("-", "_")}`), () => run("pane.split", { direction, pane: target }))
-      : div().id(id).w(28).h(26).flex_none().flex().items_center().justify_center().text_color(th.dim).opacity(0.45)
-        .tooltip(t("pane.no_pane")).child(svg(`mods/pane/${id}.svg`).size(14));
     return h_flex().id("root").size_full().min_w(0).pl(lights).pr(6).gap(6).items_center().bg(th.chrome).border_b(1).border_color(th.divider ?? th.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel((e) => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
@@ -279,17 +273,8 @@ export default class Tabs extends View {
       .child(button("tab-new", svg("mods/workspace-chrome/plus.svg").size(14), t("tab.new"),
         () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 }), 26))
       .child(div().flex_1())
-      .child(h_flex().id("pane-add").h(26).px(8).gap(6).flex_none().items_center().rounded(6).border(1).border_color(th.input)
-        .text_size(12.5).text_color(th.foreground).hover((s) => s.bg(th.hover))
-        .on_mouse_down("left", stop)
-        .on_click(() => this.openPaneMenu())
-        .child(svg(`mods/${SELF}/pane-add.svg`).size(14).text_color(th.muted))
-        .child(t("pane.add"))
-        .child(svg("mods/workspace-chrome/chevron-down.svg").size(11).text_color(th.dim)))
       .when(enabled.includes("files") && Boolean(panel), (el) => el.child(panelButton("files", "mods/files/file.svg")))
       .when(enabled.includes("changes") && Boolean(panel), (el) => el.child(panelButton("changes", "mods/changes/changes.svg")))
-      .child(split("split-right", "right"))
-      .child(split("split-down", "down"))
       .when(Boolean(w?.buttons), (el) => el.child(div().w(1).h(16).flex_none().bg(th.border))
         .child(button("minimize", winIcon("min", "—"), t("window.minimize"), () => run("window.minimize"), 30))
         .child(button("maximize", winIcon(w.maximized ? "restore" : "max", "□"), t("window.maximize"), () => run("window.maximize"), 30))

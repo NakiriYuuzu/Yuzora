@@ -301,13 +301,11 @@ test("Spaces: branch and ahead/behind come from yuzora:shell, never git status",
   expect(other.unsure.size).toBe(0);
 });
 
-test("each mod's untrusted note is in both languages", async () => {
+test("each mod's untrusted note is in its strings", async () => {
   for (const mod of ["changes", "files", "worktree"]) {
-    const [en, zh] = await Promise.all(["en", "zh-TW"].map(async (l) => JSON.parse(await readFile(new URL(`${mod}/i18n/${l}.json`, mods), "utf8"))));
-    expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort());
+    const en = JSON.parse(await readFile(new URL(`${mod}/i18n/en.json`, mods), "utf8"));
     for (const [, k] of (await read(mod)).matchAll(/\btr\("([\w.]+)"/g)) {
       expect(en[k]).toContain("{keys}");
-      expect(zh[k]).toContain("{keys}");
     }
   }
 });

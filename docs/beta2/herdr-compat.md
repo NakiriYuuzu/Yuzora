@@ -129,7 +129,7 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
 - 標題和內文改用「Yuzora」：例如「Yuzora 需要較新的 herdr-core」「這個 Yuzora 比 herdr-core 舊」「更新 Yuzora：<Releases>」。
 - 「要更新 core」的畫面多一句：更新會重啟 herdr-core，所有使用它的 app（例如 Herdr）都會受影響，但終端機會繼續執行。
 - 「core 比較新」的畫面寫出兩邊的 generation，並提醒：可能是共用的另一個 app（例如 Herdr）更新了它。
-- 文字依 Yuzora 的語系設定顯示中文或英文（`app/src/yuzora/herdr_compat/{en,zh-TW}.json`）。
+- 文字是英文（`app/src/yuzora/herdr_compat/en.json`；beta.3 起介面只有英文）。
 - 按鈕和流程不變。按鈕文字是上游的，維持英文。
 
 ### B2. 重連時也檢查 core
@@ -150,15 +150,14 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
 - core 被修好（更新或換回）之後，Yuzora 會自動接上，並收掉 toast。
 - 通過時行為完全不變。
 
-toast 的樣子（隔離環境 zh-TW，假 core 回報 generation 2）：
+toast 的樣子（beta.2 時的隔離環境，當時顯示 zh-TW；假 core 回報 generation 2）：
 
 ![重連時拒絕不相容 core 的 toast](evidence/l9-core-refused-toast.png)
 
 測試：
 
-- `yuzora::herdr_compat::tests::both_languages_have_every_string`
-- `yuzora::herdr_compat::tests::every_core_screen_says_yuzora_and_that_the_core_is_shared`（兩個語系）
-- `yuzora::herdr_compat::tests::a_core_that_comes_back_unable_to_serve_is_refused_and_said_once`（兩個語系）
+- `yuzora::herdr_compat::tests::every_core_screen_says_yuzora_and_that_the_core_is_shared`
+- `yuzora::herdr_compat::tests::a_core_that_comes_back_unable_to_serve_is_refused_and_said_once`
 - 實機：用假 core 模擬，見「實測紀錄」。
 
 ### 沒有改的

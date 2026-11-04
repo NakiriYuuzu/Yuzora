@@ -640,12 +640,8 @@ mod tests {
     #[test]
     fn every_refusal_has_its_text() {
         let en: serde_json::Value = serde_json::from_str(include_str!("../i18n/en.json")).unwrap();
-        let zh: serde_json::Value =
-            serde_json::from_str(include_str!("../i18n/zh-TW.json")).unwrap();
         for key in REFUSALS.iter().chain(&crate::svg::REFUSALS) {
-            for catalog in [&en, &zh] {
-                assert!(catalog["image"][key].is_string(), "image.{key}");
-            }
+            assert!(en["image"][key].is_string(), "image.{key}");
         }
     }
 

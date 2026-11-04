@@ -3,9 +3,9 @@
 // Publishes yuzora.badge.git (changed files) and yuzora.status.git.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, InputState, Input, v_virtual_list, Scrollbar } from "gpui-base";
-import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, shared, setShared, props } from "herdr";
+import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, shared, setShared, props, nextCommand } from "herdr";
 import { t, tokens } from "yuzora:core";
-import { open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, pushPreview, sequencer, fetch, trust, settings as gitSettings } from "yuzora:git";
+import { open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, pushPreview, sequencer, fetch, trust, repos, settings as gitSettings } from "yuzora:git";
 
 // Where the Git mode looks: the focused pane's folder, else the space's.
 function location() {
@@ -14,15 +14,35 @@ function location() {
   const on = f?.pane === null ? (f.terminal?.includes("/") ? f.terminal.split("/")[0] : null) : space?.machine ?? null;
   return { cwd: pane?.cwd || f?.cwd || space?.folder || null, on };
 }
-const key = () => JSON.stringify(location());
 
-const ROW = 24, HEAD = 26, ACTION = 22, ACTION_ALL = 84, LIST_PAD = 6;
+// The repo picked for the active space (shared `yuzora.git.repo.<space id>`,
+// kept across restarts), else none: the Git mode follows the focus.
+const pinKey = (space) => `yuzora.git.repo.${space}`;
+function pinned() {
+  const space = spaces().find((s) => s.active);
+  const pin = space ? shared(pinKey(space.id)) : null;
+  return pin?.root ? { space: space.id, root: pin.root, on: pin.on ?? null } : null;
+}
+
+// Where the Git mode looks now: the pinned repo, else location().
+function place() {
+  const pin = pinned();
+  return pin ? { cwd: pin.root, on: pin.on, pin: pin.space } : location();
+}
+const key = () => JSON.stringify(place());
+const baseName = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+
+const ROW = 24, HEAD = 26, ACTION = 22, ACTION_ALL = 84, LIST_PAD = 6, PICK_ROW = 26;
+// Line counts of six digits would not fit the narrowest sidebar next to the buttons: 150000 reads 150k.
+const count = (n) => (n < 100000 ? String(n) : n < 1000000 ? `${Math.round(n / 1000)}k` : "999k+");
 const SECTIONS = ["conflicts", "staged", "unstaged"];
 
 export default class SidebarGit extends View {
   init(_props, cx) {
     this.menu = props()?.menu ?? null;
     if (this.menu) { this.handle = cx.focus_handle(); this.handle.focus(); return; }
+    this.picker = props()?.picker ?? null;
+    if (this.picker) { this.handle = cx.focus_handle(); this.handle.focus(); this.findRepos(cx); return; }
     this.st = null; this.repo = null; this.error = null; this.busy = null; this.note = null;
     this.closed = {}; this.warnings = null; this.showHistory = false; this.more = false;
     this.amend = false; this.signOff = Boolean(gitSettings().signOff); this.noVerify = Boolean(gitSettings().skipHooks);
@@ -35,6 +55,8 @@ export default class SidebarGit extends View {
     this.text = "";
     this.attach(cx);
     cx.timer.every(1000, (cx) => { if (key() !== this.ctx) this.attach(cx); });
+    // "yuzora-sidebar-git.pick-repo" (a key in keys.json, or herdr-app do) opens the repo picker.
+    cx.spawn(async () => { for (;;) if ((await nextCommand()) === "pick-repo") this.openPicker("dialog"); });
     this.fetchedAt = Date.now();
     cx.timer.every(60000, (cx) => this.autoFetch(cx));
   }
@@ -52,12 +74,26 @@ export default class SidebarGit extends View {
   // A new place: open its repo and follow it until the place changes.
   attach(cx) {
     this.ctx = key();
-    const ctx = this.ctx, { cwd, on } = location();
+    const ctx = this.ctx, here = place(), { cwd, on } = here;
+    this.place = here;
     this.repo = null; this.st = null; this.error = null; this.warnings = null;
     if (!cwd) { this.error = t("noFolder"); this.publish(); cx.notify(); return; }
     cx.spawn(async (cx) => {
       try {
         const repo = await open(cwd, on);
+        if (this.ctx !== ctx) return;
+        // A pinned repo opens as itself (git may spell it another way: a subst
+        // drive on Windows, say; the file system tells). Without its `.git`
+        // git opens the repo above it instead: unpinned. With one git won't
+        // take now (it can't be read, say), the pin stays, and so does the
+        // error: not the repo above.
+        if (here.pin && repo.root !== cwd && !(await this.sameFolder(repo.root, here))) {
+          if (await this.unpinIfGone(here)) { if (this.ctx === ctx) this.attach(cx); return; }
+          if (this.ctx !== ctx) return;
+          this.error = t("repo.opensAbove", { root: repo.root });
+          this.publish(); cx.notify();
+          return;
+        }
         if (this.ctx !== ctx) return;
         this.repo = repo;
         await this.reload(cx);
@@ -72,6 +108,7 @@ export default class SidebarGit extends View {
         }
       } catch (e) {
         if (this.ctx !== ctx) return;
+        if (here.pin && await this.unpinIfGone(here)) { if (this.ctx === ctx) this.attach(cx); return; }
         this.error = String(e).includes("not a git repository") ? t("notRepo") : String(e);
         this.publish(); cx.notify();
       }
@@ -86,8 +123,108 @@ export default class SidebarGit extends View {
       const st = await status(repo.id, { force });
       if (this.repo?.id !== repo.id) return;
       this.st = st; this.error = null;
-    } catch (e) { this.error = String(e); }
+    } catch (e) {
+      this.error = String(e);
+      const here = this.place;
+      if (here?.pin && this.repo?.id === repo.id && await this.unpinIfGone(here)) { this.attach(cx); return; }
+    }
     this.publish(); cx.notify();
+  }
+
+  // A pinned repo that's gone (its folder, or the `.git` in it: the file
+  // system says, no git runs) is unpinned, with a note: the Git mode follows
+  // the focus again. One that can't be looked at now (a machine away, no
+  // permission to its folder: `repos` fails) stays.
+  async unpinIfGone(here) {
+    try {
+      const found = await repos(here.cwd, here.on, []);
+      if (found.repos.some((r) => r.rel === ".")) return false;
+    } catch { return false; }
+    return this.unpin(here);
+  }
+
+  // Whether `root` (as git names it) is `here`'s pinned folder: their real
+  // paths, as `repos` gives them, are the same.
+  async sameFolder(root, here) {
+    try { return (await repos(root, here.on, [])).repos.some((r) => r.rel === "." && r.root === here.cwd); }
+    catch { return false; }
+  }
+
+  // Unpins `here`, with a note (unless it was pinned again meanwhile).
+  unpin(here) {
+    if (shared(pinKey(here.pin))?.root !== here.cwd) return false;
+    setShared(pinKey(here.pin), null);
+    notify({ title: t("repo.gone", { name: baseName(here.cwd) }), body: here.cwd, level: "warning", timeout: 5000 });
+    return true;
+  }
+
+  // The repo picker: follow the focus, or pin one of the space's repos (the
+  // space's folder, its panes' folders: no git runs to list them).
+  // At the pointer (a click on the header), or centered (the command).
+  openPicker(kind = "popup") {
+    const space = spaces().find((s) => s.active);
+    if (!space) return;
+    const tabs = new Set((space.tabs ?? []).map((tab) => tab.id));
+    const cwds = [...new Set(panes().filter((p) => tabs.has(p.tab) && p.cwd).map((p) => p.cwd))];
+    const folder = space.folder || cwds[0];
+    if (!folder) return;
+    const pin = pinned();
+    openOverlay({ mod: "yuzora-sidebar-git", kind, ...(kind === "popup" ? { at: "pointer" } : {}), width: 340, height: 360,
+      props: { picker: { space: space.id, folder, on: space.machine ?? null, cwds, current: pin?.root ?? this.repo?.root ?? null, pinned: Boolean(pin) } } });
+  }
+
+  // The picker popup (props.picker) lists the repos itself.
+  findRepos(cx) {
+    const p = this.picker;
+    this.found = null;
+    cx.spawn(async (cx) => {
+      try { this.found = await repos(p.folder, p.on, p.cwds); }
+      catch (e) { this.found = { repos: [], truncated: false, error: String(e) }; }
+      cx.notify();
+    });
+  }
+
+  // Pins `root` for the picker's space (none: follow the focus).
+  pick(root) {
+    const p = this.picker;
+    setShared(pinKey(p.space), root ? { root, on: p.on } : null);
+    closeOverlay(props()?.overlay);
+  }
+
+  // The picker's row the keys are on: 0 "follow the focus", then the repos;
+  // at first the one picked now.
+  pickAt(list) {
+    const p = this.picker;
+    return this.hi ?? (p.pinned ? list.findIndex((r) => r.root === p.current) + 1 : 0);
+  }
+
+  pickKey(e, cx, list) {
+    const n = list.length + 1, at = this.pickAt(list);
+    if (e.key === "escape") closeOverlay(props()?.overlay);
+    else if (e.key === "down") this.hi = (at + 1) % n;
+    else if (e.key === "up") this.hi = (at - 1 + n) % n;
+    else if (e.key === "enter") { if (this.found) this.pick(at ? list[at - 1].root : null); }
+    else return;
+    cx.stop_propagation(); cx.notify();
+  }
+
+  renderPicker() {
+    const th = theme(), p = this.picker, found = this.found, list = found?.repos ?? [], at = this.pickAt(list);
+    const row = (id, title, detail, on, extra, action, i) => h_flex().id(id).h(PICK_ROW).px(8).gap(6).flex_none().items_center().rounded(5).cursor_pointer()
+      .when(on, (el) => el.bg(th.selected)).when(!on && i === at, (el) => el.bg(th.hover)).hover((s) => s.bg(th.hover)).on_click(() => action())
+      .child(div().w(10).flex_none().text_size(10).text_color(th.accent).child(on ? "✓" : ""))
+      .child(div().flex_none().max_w(150).truncate().child(title))
+      .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(th.dim).child(detail ?? ""))
+      .when(Boolean(extra), (el) => el.child(div().flex_none().text_size(10.5).text_color(th.muted).child(extra)));
+    return v_flex().id("picker").track_focus(this.handle).size_full().p(4).bg(th.popover ?? th.raised).text_color(th.foreground).text_size(12)
+      .on_key_down((e, cx) => this.pickKey(e, cx, list))
+      .child(row("pick-follow", t("repo.follow"), !p.pinned && p.current ? baseName(p.current) : null, !p.pinned, null, () => this.pick(null), 0))
+      .child(div().h(1).mx(4).my(2).flex_none().bg(th.divider ?? th.border))
+      .child(v_flex().id("pick-list").flex_1().min_h(0).overflow_y_scrollbar()
+        .children(list.map((r, i) => row(`pick-${i}`, r.name, r.rel === "." ? t("repo.here") : r.rel, p.pinned && r.root === p.current, r.trusted ? t("repo.trusted") : null, () => this.pick(r.root), i + 1)))
+        .when(!found, (el) => el.child(div().px(8).py(4).text_size(11).text_color(th.dim).child(t("repo.loading"))))
+        .when(Boolean(found) && !list.length, (el) => el.child(div().px(8).py(4).text_size(11).text_color(found.error ? th.ansi1 : th.dim).child(found.error ?? t("repo.empty"))))
+        .when(Boolean(found?.truncated), (el) => el.child(div().px(8).py(4).text_size(10.5).text_color(th.dim).child(t("repo.truncated", { count: list.length })))));
   }
 
   loadMessages(cx) {
@@ -256,28 +393,33 @@ export default class SidebarGit extends View {
     const titles = { conflicts: t("section.conflicts"), staged: t("section.staged"), unstaged: t("section.unstaged") };
     const action = it.section === "staged" ? t("unstageAll") : it.section === "unstaged" ? t("stageAll") : t("resolve");
     return h_flex().id(`h-${it.section}`).h(HEAD).px(6).gap(4).items_center().text_size(11.5).text_color(th.muted).cursor_pointer()
-      .child(div().w(10).text_size(10).child(this.closed[it.section] ? "▸" : "▾"))
+      .child(div().w(10).flex_none().text_size(10).child(this.closed[it.section] ? "▸" : "▾"))
       .child(div().flex_1().min_w(0).truncate().child(`${titles[it.section]} · ${it.count}`))
       .when(it.count > 0, (el) => el.child(div().w(ACTION_ALL).flex_none().text_right().text_size(11).hover((s) => s.text_color(th.foreground)).child(action)));
   }
 
-  fileRow(it, th) {
+  // The buttons are flex_none at the right edge, where clickRow counts slots from, so nothing may
+  // push them: the folder (flex_1, no basis) gives way first, then the name, and last the +N −M,
+  // which can shrink to a "…" in a layout narrower than the 180px minimum.
+  // `probe(slot, "move")` (tests only) returns a handler for a part of the row: its size, or where it sits.
+  fileRow(it, th, probe) {
     const f = it.f, d = tokens().diff ?? {};
     const parts = f.path.split("/"), name = parts.pop(), dir = parts.join("/");
     const id = `${it.section}:${f.path}`;
-    const glyph = (label) => div().w(ACTION).h(18).flex().flex_none().items_center().justify_center().rounded(4)
-      .text_size(12).text_color(th.dim).hover((s) => s.bg(th.hover).text_color(th.foreground)).child(label);
-    return h_flex().id(`f-${id}`).h(ROW).pl(6).gap(6).items_center().rounded(5).cursor_pointer()
+    const seen = (el, slot) => (probe ? el.on_size_change(probe(slot)).on_mouse_move(probe(slot, "move")) : el);
+    const glyph = (label) => seen(div().id(`g-${label}`).w(ACTION).h(18).flex().flex_none().items_center().justify_center().rounded(4)
+      .text_size(12).text_color(th.dim).hover((s) => s.bg(th.hover).text_color(th.foreground)).child(label), `action:${label}`);
+    return seen(h_flex().id(`f-${id}`).h(ROW).pl(6).gap(6).items_center().rounded(5).cursor_pointer()
       .when(this.selected === id, (el) => el.bg(th.selected)).hover((s) => s.bg(th.hover))
       .child(div().w(12).flex_none().text_size(11).font_semibold().text_color(this.fileColor(f.kind, th)).child(f.kind === "?" ? "U" : f.kind))
-      .child(h_flex().flex_1().min_w(0).gap(4).child(div().flex_none().max_w(140).truncate().child(name))
-        .when(Boolean(dir), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(th.dim).child(dir))))
-      .when(f.add > 0, (el) => el.child(div().flex_none().text_size(10.5).text_color(d.added ?? th.ansi2).child(`+${f.add}`)))
-      .when(f.del > 0, (el) => el.child(div().flex_none().text_size(10.5).text_color(d.removed ?? th.ansi1).child(`−${f.del}`)))
+      .child(seen(h_flex().id("text").flex_1().min_w(0).gap(4), "text").child(seen(div().id("name").flex_shrink(1).min_w(0).max_w(140).truncate().child(name), "name"))
+        .when(Boolean(dir), (el) => el.child(seen(div().id("dir").flex_1().min_w(0).truncate().text_size(10.5).text_color(th.dim).child(dir), "dir"))))
+      .when(f.add > 0, (el) => el.child(seen(div().id("add").flex_shrink(1).min_w(0).truncate().text_size(10.5).text_color(d.added ?? th.ansi2).child(`+${count(f.add)}`), "add")))
+      .when(f.del > 0, (el) => el.child(seen(div().id("del").flex_shrink(1).min_w(0).truncate().text_size(10.5).text_color(d.removed ?? th.ansi1).child(`−${count(f.del)}`), "del")))
       .child(h_flex().flex_none()
         .when(it.section === "unstaged", (el) => el.child(glyph("↺")).child(glyph("+")))
         .when(it.section === "staged", (el) => el.child(glyph("−")))
-        .when(it.section === "conflicts", (el) => el.child(glyph("⇄"))));
+        .when(it.section === "conflicts", (el) => el.child(glyph("⇄")))), "row");
   }
 
   // A click on a row: the action under the pointer, else open its diff.
@@ -378,6 +520,7 @@ export default class SidebarGit extends View {
 
   render(cx) {
     if (this.menu) return this.renderMenu();
+    if (this.picker) return this.renderPicker();
     const th = theme();
     const st = this.st;
     const b = st?.branch;
@@ -388,8 +531,17 @@ export default class SidebarGit extends View {
     const branchName = !b ? "…" : b.detached ? `${t("detached")} ${(b.oid ?? "").slice(0, 8)}` : b.head ?? "";
     const tone = this.note?.tone === "error" ? th.ansi1 : th.blocked;
 
+    // Which repo: the one the focus is in, or the one pinned for this space.
+    const here = this.place, pin = Boolean(here?.pin);
+    const repoName = this.repo ? baseName(this.repo.root) : pin ? baseName(here.cwd) : t("repo.none");
     const header = h_flex().h(32).px(12).gap(6).flex_none().items_center()
-      .child(div().font_semibold().flex_1().child(t("title")))
+      .child(div().font_semibold().flex_none().child(t("title")))
+      .child(h_flex().id("repo-pick").flex_1().min_w(0).h(22).px(6).gap(4).items_center().rounded(4).text_size(11).text_color(th.muted)
+        .cursor_pointer().hover((s) => s.bg(th.hover).text_color(th.foreground)).tooltip(pin ? t("repo.pinnedTip") : t("repo.followTip"))
+        .on_click(() => this.openPicker())
+        .when(pin, (el) => el.child(div().flex_none().w(6).h(6).rounded(3).bg(th.accent)))
+        .child(div().min_w(0).truncate().child(repoName))
+        .child(div().flex_none().text_size(9).text_color(th.dim).child("▾")))
       .child(div().id("graph").h(22).px(6).flex().items_center().rounded(4).bg(th.raised).text_size(11).text_color(th.muted)
         .when(Boolean(this.repo), (el) => el.cursor_pointer().hover((s) => s.text_color(th.foreground)).on_click(() => this.openLog()))
         .child(t("graph")));
@@ -420,10 +572,10 @@ export default class SidebarGit extends View {
 
     const branch = h_flex().id("branch").mx(8).mb(6).h(28).px(8).gap(6).flex_none().items_center().rounded(6).border_1().border_color(th.border)
       .bg(th.raised).text_size(11.5).cursor_pointer().hover((s) => s.bg(th.hover)).on_click(() => this.openBranches())
-      .child(div().text_color(th.muted).child("⎇"))
+      .child(div().flex_none().text_color(th.muted).child("⎇"))
       .child(div().flex_1().min_w(0).truncate().child(branchName))
       .when(Boolean(b.upstream) || ahead || behind, (el) => el.child(div().flex_none().text_size(11).text_color(ahead || behind ? (tokens().diff?.added ?? th.ansi2) : th.dim).child(`↑${ahead} ↓${behind}`)))
-      .child(div().text_size(9).text_color(th.dim).child("▾"));
+      .child(div().flex_none().text_size(9).text_color(th.dim).child("▾"));
 
     const list = div().id("git-list").flex_1().min_h(0).relative().px(LIST_PAD)
       .on_size_change((size) => { this.listWidth = size.width; })

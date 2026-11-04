@@ -7,7 +7,7 @@ lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popove
 | 路徑 | 內容 |
 | --- | --- |
 | `app/crates/yuzora-perf/` | `yuzora:perf`：取樣 worker、行程樹聚合與分類、找 herdr-core、滾動視窗 |
-| `app/defaults/mods/yuzora-perf/` | 右下角的 chip 與 popover；`i18n/{en,zh-TW}.json`；Lucide 圖示（`cpu`、`memory-stick`、`app-window`、`wrench`、`chevron-up`） |
+| `app/defaults/mods/yuzora-perf/` | 右下角的 chip 與 popover；`i18n/en.json`；Lucide 圖示（`cpu`、`memory-stick`、`app-window`、`wrench`、`chevron-up`） |
 | `app/crates/yuzora-perf/examples/cost.rs` | 從外部對執行中的 app 量測單次取樣成本 |
 
 自己目錄以外的改動（總指揮特准）：
@@ -80,7 +80,7 @@ beta.2 沒有 WebView，分成三類：
 - chip：`{cpu}% · {mem}MB`，取樣有問題（失敗、空樣本、找不到 herdr-core）時加 ⚠。tooltip 是各類明細與取樣統計。
 - popover（gpui-base `Popover`，`anchor: bottom_right`）：內容畫在視窗最上層並夾在視窗內，不會被 26px 的 block 裁切。內容依序是標題與關閉、範圍說明、總記憶體與 CPU、各類記憶體摘要、「記憶體／CPU」排序切換（gpui-base `ToggleGroup`＋`Toggle`）、各類列（行程數、說明、數值、占比、占比條）、註腳（量測方式、取樣頻率、herdr-core 的 pid、取樣統計、取樣耗時、錯誤）。
 - 配色用 `yuzora-dark` theme 色名：底 `popover`、框 `border`、分隔 `divider`、摘要列 `raised`、選取 `selected`、次要文字 `muted`；⚠ 與錯誤用 `tokens().status.blocked.color`（琥珀）。數值用 JetBrains Mono（app 內建）。
-- 文字 en、zh-TW 兩個語系都有。
+- 文字只有英文（`i18n/en.json`）。
 
 ### 放置
 

@@ -122,7 +122,6 @@ export default class SidebarWorkspace extends View {
     } else {
       rows = [
         this.menuRow(th, "m-palette", `${CHROME}/search.svg`, t("tools.palette"), () => run("app.palette")),
-        this.menuRow(th, "m-layout", `${CHROME}/layers.svg`, t("tools.layout"), () => run("layout.switch")),
         this.menuRow(th, "m-help", `${CHROME}/file-text.svg`, t("tools.help"), () => run("app.help")),
       ];
     }

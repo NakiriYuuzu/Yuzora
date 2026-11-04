@@ -19,7 +19,7 @@ v0.1.0-beta.2 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust＋GP
 | `app/src/` | herdr-app 殼（上游）。`app/src/yuzora/mod.rs` 是 Yuzora 唯一整合點：品牌常數、外連開關、掛上所有 `yuzora:*` HostModule；同目錄另有 lane glue（`shell.rs`、`herdr_compat.rs`、`release/` 更新通道與 manifest 驗證） |
 | `app/crates/yuzora-core/` | 共用層：app home、`hc exec --on` 遠端執行、keyring、i18n、Yuzora 設定、mod 探索、design tokens、beta.1 資料遷移框架（`migrate`） |
 | `app/crates/yuzora-{shell,git,db,ssh,files,settings,perf}/` | 各 lane 的原生層；各自提供 `host_module()`（JS `import … from "yuzora:<name>"`） |
-| `app/defaults/mods/yuzora-*` | Yuzora 的 JS mods（側欄模式、模式列、狀態列、tool panes、設定頁）；i18n 在各 mod 的 `i18n/{en,zh-TW}.json` |
+| `app/defaults/mods/yuzora-*` | Yuzora 的 JS mods（側欄模式、模式列、狀態列、tool panes、設定頁）；i18n 在各 mod 的 `i18n/en.json`（介面只有英文） |
 | `app/defaults/layouts/yuzora.json` | 新安裝的預設 layout（248px 側欄＋5 模式 stack＋右側 tab 區與狀態列） |
 | `app/defaults/themes/yuzora-{dark,light}.json`、`app/defaults/yuzora/tokens.json` | 深淺兩套 theme 色名與 theme 沒有的設計 tokens（`light` 區塊是淺色覆寫值） |
 | `app/vendor/` | 上游 vendored crates、ghostty submodule、Yuzora 的 russh／russh-sftp／tiberius patches |

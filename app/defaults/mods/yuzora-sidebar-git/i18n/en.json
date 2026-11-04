@@ -69,5 +69,16 @@
   "trust.status": "untrusted folder",
   "trust.refused": "This folder isn't trusted yet: trust it in the Git sidebar first ({keys}).",
   "path.lossy": "{path}: this name isn't UTF-8, so Yuzora can't hand it to git as it is. Use a terminal for it.",
-  "tab.diff": "Diff"
+  "tab.diff": "Diff",
+  "repo.none": "No repository",
+  "repo.follow": "Follow focus",
+  "repo.followTip": "Shows the repository the focused pane is in. Click to pin one for this space",
+  "repo.pinnedTip": "Pinned for this space. Click to change",
+  "repo.here": "This space's folder",
+  "repo.trusted": "Trusted",
+  "repo.loading": "Looking for repositories…",
+  "repo.empty": "No repositories in this space.",
+  "repo.truncated": "Showing the first {count}.",
+  "repo.gone": "{name} is no longer a repository: following focus again",
+  "repo.opensAbove": "Git opens {root} here instead: this repository's .git can't be used now"
 }
