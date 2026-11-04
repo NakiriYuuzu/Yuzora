@@ -206,6 +206,19 @@ mod tests {
     use yuzora_core::git_trust::{UNREADABLE, names_program};
     use std::os::unix::fs::PermissionsExt;
 
+    // On a machine every `hc exec` is a round trip: the scan is one, the
+    // config's read and the submodules' in one shell.
+    #[test]
+    fn a_folder_on_a_machine_is_scanned_in_one_hc_exec() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "one");
+        s.git(&["config", "filter.evil.clean", "cat"]);
+        let there = crate::repo::testing::on_machine(&s);
+        let before = crate::repo::testing::hc_calls_in(s.root());
+        assert_eq!(repo_programs(&there).unwrap(), ["filter.evil.clean"]);
+        assert_eq!(crate::repo::testing::hc_calls_in(s.root()) - before, 1);
+    }
+
     #[test]
     fn a_repo_whose_config_runs_programs_waits_for_trust() {
         let s = scratch();
