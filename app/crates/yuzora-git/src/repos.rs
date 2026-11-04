@@ -214,12 +214,19 @@ fn on_machine(m: &str, folder: &str, cwds: &[String]) -> Result<Listing, String>
 /// What [`SCRIPT`] printed, read as [`here`] answers; none unless it got to
 /// its end.
 fn listing(out: &[u8]) -> Option<Listing> {
-    let text = std::str::from_utf8(out).ok()?;
-    let parts: Vec<&str> = text.split('\0').collect();
+    let parts: Vec<&[u8]> = out.split(|b| *b == 0).collect();
     let mut found: Option<Collect> = None;
     let mut ended = false;
     for pair in parts.chunks(2).filter(|c| c.len() == 2) {
-        match (pair[0], pair[1]) {
+        let Ok(key) = std::str::from_utf8(pair[0]) else { return None };
+        // A repository whose path isn't UTF-8 is passed over, not the whole answer.
+        let Ok(path) = std::str::from_utf8(pair[1]) else {
+            if key == "repo" {
+                continue;
+            }
+            return None;
+        };
+        match (key, path) {
             ("base", path) if found.is_none() => found = Some(Collect { base: PathBuf::from(path), out: Listing::default() }),
             ("repo", path) => {
                 if let Some(f) = found.as_mut() {
@@ -577,6 +584,8 @@ mod tests {
         assert_eq!(listing(b"base\0/b\0repo\0/b\0repo\0/b/x\0repo\0/elsewhere\0end\0\0").map(|l| l.repos.into_iter().map(|r| r.rel).collect::<Vec<_>>()), Some(vec![".".into(), "x".into(), "/elsewhere".into()]));
         assert_eq!(listing(b"base\0/b\0more\0\0end\0\0").map(|l| l.truncated), Some(true));
         assert_eq!(listing(b"gone\0\0end\0\0"), Some(Listing::default()));
+        // A name that isn't UTF-8 is passed over, the rest still read.
+        assert_eq!(listing(b"base\0/b\0repo\0/b/\xff\0repo\0/b/ok\0end\0\0").map(|l| l.repos.into_iter().map(|r| r.rel).collect::<Vec<_>>()), Some(vec!["ok".into()]));
         for cut in [&b"base\0/b\0repo\0/b\0"[..], b"", b"base\0/b\0what\0x\0end\0\0", b"repo\0/b\0end\0\0"] {
             assert_eq!(listing(cut).map(|l| l.repos.len()).filter(|n| *n > 0), None, "{:?}", String::from_utf8_lossy(cut));
         }

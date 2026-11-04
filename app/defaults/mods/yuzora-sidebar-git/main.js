@@ -203,7 +203,7 @@ export default class SidebarGit extends View {
     if (e.key === "escape") closeOverlay(props()?.overlay);
     else if (e.key === "down") this.hi = (at + 1) % n;
     else if (e.key === "up") this.hi = (at - 1 + n) % n;
-    else if (e.key === "enter") this.pick(at ? list[at - 1].root : null);
+    else if (e.key === "enter") { if (this.found) this.pick(at ? list[at - 1].root : null); }
     else return;
     cx.stop_propagation(); cx.notify();
   }
