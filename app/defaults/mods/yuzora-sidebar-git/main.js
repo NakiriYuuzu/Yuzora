@@ -17,6 +17,8 @@ function location() {
 const key = () => JSON.stringify(location());
 
 const ROW = 24, HEAD = 26, ACTION = 22, ACTION_ALL = 84, LIST_PAD = 6;
+// Line counts of six digits would not fit the narrowest sidebar next to the buttons: 150000 reads 150k.
+const count = (n) => (n < 100000 ? String(n) : n < 1000000 ? `${Math.round(n / 1000)}k` : "999k+");
 const SECTIONS = ["conflicts", "staged", "unstaged"];
 
 export default class SidebarGit extends View {
@@ -261,23 +263,24 @@ export default class SidebarGit extends View {
       .when(it.count > 0, (el) => el.child(div().w(ACTION_ALL).flex_none().text_right().text_size(11).hover((s) => s.text_color(th.foreground)).child(action)));
   }
 
-  // The name shrinks (to a "…") before the +N −M and the buttons do: those are flex_none at the
-  // right edge, where clickRow counts slots from. The folder is flex_1 with no basis, so it gives
-  // way first. `probe(slot)` (tests only) returns an on_size_change handler for a part of the row.
+  // The buttons are flex_none at the right edge, where clickRow counts slots from, so nothing may
+  // push them: the folder (flex_1, no basis) gives way first, then the name, and last the +N −M,
+  // which can shrink to a "…" in a layout narrower than the 180px minimum.
+  // `probe(slot, "move")` (tests only) returns a handler for a part of the row: its size, or where it sits.
   fileRow(it, th, probe) {
     const f = it.f, d = tokens().diff ?? {};
     const parts = f.path.split("/"), name = parts.pop(), dir = parts.join("/");
     const id = `${it.section}:${f.path}`;
-    const seen = (el, slot) => (probe ? el.on_size_change(probe(slot)) : el);
-    const glyph = (label) => seen(div().w(ACTION).h(18).flex().flex_none().items_center().justify_center().rounded(4)
-      .text_size(12).text_color(th.dim).hover((s) => s.bg(th.hover).text_color(th.foreground)).child(label), "action");
+    const seen = (el, slot) => (probe ? el.on_size_change(probe(slot)).on_mouse_move(probe(slot, "move")) : el);
+    const glyph = (label) => seen(div().id(`g-${label}`).w(ACTION).h(18).flex().flex_none().items_center().justify_center().rounded(4)
+      .text_size(12).text_color(th.dim).hover((s) => s.bg(th.hover).text_color(th.foreground)).child(label), `action:${label}`);
     return seen(h_flex().id(`f-${id}`).h(ROW).pl(6).gap(6).items_center().rounded(5).cursor_pointer()
       .when(this.selected === id, (el) => el.bg(th.selected)).hover((s) => s.bg(th.hover))
       .child(div().w(12).flex_none().text_size(11).font_semibold().text_color(this.fileColor(f.kind, th)).child(f.kind === "?" ? "U" : f.kind))
-      .child(seen(h_flex().flex_1().min_w(0).gap(4), "text").child(seen(div().flex_shrink(1).min_w(0).max_w(140).truncate().child(name), "name"))
-        .when(Boolean(dir), (el) => el.child(seen(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(th.dim).child(dir), "dir"))))
-      .when(f.add > 0, (el) => el.child(seen(div().flex_none().text_size(10.5).text_color(d.added ?? th.ansi2).child(`+${f.add}`), "add")))
-      .when(f.del > 0, (el) => el.child(seen(div().flex_none().text_size(10.5).text_color(d.removed ?? th.ansi1).child(`−${f.del}`), "del")))
+      .child(seen(h_flex().id("text").flex_1().min_w(0).gap(4), "text").child(seen(div().id("name").flex_shrink(1).min_w(0).max_w(140).truncate().child(name), "name"))
+        .when(Boolean(dir), (el) => el.child(seen(div().id("dir").flex_1().min_w(0).truncate().text_size(10.5).text_color(th.dim).child(dir), "dir"))))
+      .when(f.add > 0, (el) => el.child(seen(div().id("add").flex_shrink(1).min_w(0).truncate().text_size(10.5).text_color(d.added ?? th.ansi2).child(`+${count(f.add)}`), "add")))
+      .when(f.del > 0, (el) => el.child(seen(div().id("del").flex_shrink(1).min_w(0).truncate().text_size(10.5).text_color(d.removed ?? th.ansi1).child(`−${count(f.del)}`), "del")))
       .child(h_flex().flex_none()
         .when(it.section === "unstaged", (el) => el.child(glyph("↺")).child(glyph("+")))
         .when(it.section === "staged", (el) => el.child(glyph("−")))

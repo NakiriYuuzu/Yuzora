@@ -491,7 +491,7 @@ export default class GitLog extends View {
     const info = div().relative().flex_none()
       .child(v_flex().id("detail-scroll").overflow_y_scroll()
         .on_size_change((size, cx) => { if (Math.abs(size.height - (this.infoNow ?? -1)) > 0.5) { this.infoNow = size.height; cx.notify(); } })
-        .when(set != null, (el) => el.h(set)).when(set == null, (el) => el.max_h(this.side ? 300 : 110)).child(content))
+        .when(set != null, (el) => el.h(set)).when(set == null, (el) => el.max_h(Math.min(this.side ? 300 : 110, limit))).child(content))
       .child(Scrollbar.vertical("detail-scroll").absolute().inset_0());
     const how = { mode: "commit", rev: d.hash };
     return shell(v_flex().flex_1().min_h(0)

@@ -157,7 +157,7 @@ export default class Tabs extends View {
     const tools = this.tools();
     const choices = choicesOf(this.agents);
     const agentsNote = choices.length ? null : this.failed ? "menu.failed" : this.listed ? "menu.no_agents" : "menu.checking";
-    // A popup is as tall as what's in it: the column takes its rows' height (MENU_MAX at most)
+    // The menu opens as a dialog without a height, so it is as tall as what's in it: the column takes its rows' height (MENU_MAX at most)
     // and only then does the list shrink and scroll. Nothing here waits for a height to fill:
     // not flex_1, and not overflow_y_scrollbar, whose scroll area fills its parent.
     return v_flex().id("pane-menu").w_full().max_h(MENU_MAX).min_h(0).p(5).bg(th.popover).text_size(12.5)
