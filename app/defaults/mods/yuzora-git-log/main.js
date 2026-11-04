@@ -11,6 +11,9 @@ import { t, tokens, getSetting } from "yuzora:core";
 import { open, branches, logOpen, logInfo, logRows, logWait, logFind, logRefresh, logClose, commitDetails, compare, GraphCell, checkout, branchCreate, tagCreate, cherryPick, revert, reset, undoCommit, rewordInMemory, patchCreate, settings as gitSettings } from "yuzora:git";
 
 const ROW = 26, LANE = 16, FILE = 24, MENU = 28, MENU_HEAD = 34;
+// The commit detail panel: the info above, a divider to drag, the changed files below. Neither
+// side drags smaller than its minimum; a message is cut at BODY_LINES (the rest says so).
+const INFO_MIN = 48, FILES_MIN = 72, FILES_HEAD = 24, SPLIT = 7, BODY_LINES = 2000;
 // Filter boxes after the branch one: [field, width, applied while typing].
 const FILTERS = [["user", 110, true], ["since", 96, false], ["until", 96, false], ["path", 130, true], ["hash", 84, false], ["range", 110, false]];
 const SIGNATURE = { G: "ok", U: "warn", X: "warn", Y: "warn", R: "bad", B: "bad", E: "warn", N: "dim" };
@@ -421,7 +424,40 @@ export default class GitLog extends View {
     return h_flex().gap(8).items_start().child(div().w(64).flex_none().text_color(th.dim).child(label)).child(h_flex().flex_1().min_w(0).flex_wrap().gap(6).children(value));
   }
 
+  // The most the info may take: the files keep their header, the divider and FILES_MIN.
+  infoLimit() {
+    return this.bodyH == null ? Infinity : Math.max(INFO_MIN, this.bodyH - FILES_HEAD - SPLIT - FILES_MIN);
+  }
+
+  // The bar between the info and the files. A press starts a drag (a double press puts the
+  // default back); the pane's root follows the pointer and ends it (see dragging()).
+  splitter(th) {
+    return div().id("detail-split").h(SPLIT).w_full().flex_none().flex().items_center().cursor_row_resize()
+      .hover((s) => s.bg(th.hover))
+      .on_mouse_down("left", (e, cx) => {
+        cx.stop_propagation();
+        if (e.click_count >= 2) { this.infoH = null; this.drag = null; }
+        else this.drag = { y: e.position.y, h: this.infoNow ?? INFO_MIN };
+        cx.notify();
+      })
+      .child(div().h(1).w_full().bg(th.divider ?? th.border));
+  }
+
+  // While a drag is on, the pane's root sees every move and the release, wherever the pointer is
+  // inside the pane (a release outside the window is not seen; the next press ends the drag).
+  dragging(el) {
+    return el.when(Boolean(this.drag), (root) => root
+      .on_mouse_move((e, cx) => {
+        if (!this.drag) return;
+        const h = Math.round(Math.max(INFO_MIN, Math.min(this.drag.h + e.position.y - this.drag.y, this.infoLimit())));
+        if (h !== this.infoH) { this.infoH = h; cx.notify(); }
+      })
+      .on_mouse_up("left", (_e, cx) => { this.drag = null; cx.notify(); })
+      .on_mouse_down("left", (_e, cx) => { this.drag = null; cx.notify(); }));
+  }
+
   detailPanel(th, side, mono, fs) {
+    this.side = side;
     const d = this.detail?.data, shell = (body) => v_flex().flex_none().bg(th.chrome ?? th.background).border_color(th.divider ?? th.border)
       .when(side, (el) => el.w(340).h_full().border_l(1)).when(!side, (el) => el.h(260).w_full().border_t(1)).text_size(11.5)
       .child(h_flex().h(28).flex_none().px(10).items_center().child(div().flex_1().font_semibold().child(t("detail.title")))
@@ -429,11 +465,17 @@ export default class GitLog extends View {
           .on_click((_e, cx) => { this.showDetail = false; cx.notify(); }).child("×")))
       .child(body);
     if (!d) return shell(div().px(10).text_color(this.detail?.error ? th.ansi1 : th.dim).child(this.detail?.error ?? t("loading")));
-    const lines = d.body ? d.body.split("\n").slice(0, 80) : [];
+    const all = d.body ? d.body.split("\n") : [], lines = all.slice(0, BODY_LINES);
     const sig = SIGNATURE[d.signature] ?? "warn", sigColor = sig === "ok" ? tokens().diff?.added ?? th.ansi2 : sig === "bad" ? th.ansi1 : sig === "warn" ? th.blocked : th.dim;
     const person = (name, email, time) => [div().child(`${name} <${email}>`), div().text_color(th.dim).child(stamp(time))];
     const link = d.parents.length > 0 && this.id != null;
-    const info = v_flex().id("detail-info").flex_none().max_h(side ? 300 : 110).overflow_y_scrollbar().px(10).pb(6).gap(6)
+    // `overflow_y_scrollbar` with a max_h does not scroll (the bar's wrapper takes the box's place
+    // and the content is never clipped), so the scroll area is a plain `overflow_y_scroll` with
+    // its own Scrollbar over it. Dragged to a height, it is that height; else as tall as its
+    // content, up to a limit.
+    const limit = this.infoLimit(), set = this.infoH == null ? null : Math.max(INFO_MIN, Math.min(this.infoH, limit));
+    const content = v_flex().id("detail-info").flex_none().px(10).pb(6).gap(6)
+      .when(Boolean(this.probe), (el) => el.on_mouse_move(this.probe("info"))) // tests: where the content sits under the pointer
       .child(div().font_semibold().text_size(12.5).child(d.subject))
       .when(lines.length > 0, (el) => el.child(v_flex().text_color(th.muted).children(lines.map((l) => (l.trim() ? div().child(l) : div().h(8))))))
       .child(this.meta(t("detail.hash"), th, div().id("detail-hash").font_family(mono).cursor_pointer().hover((s) => s.text_color(th.accent)).tooltip(t("detail.copy"))
@@ -443,11 +485,19 @@ export default class GitLog extends View {
       .child(this.meta(t("detail.parents"), th, ...(d.parents.length ? d.parents.map((p) => div().id(`parent-${p}`).font_family(mono)
         .text_color(link ? th.accent : th.muted).when(link, (el) => el.cursor_pointer().hover((s) => s.opacity(0.8)).on_click((_e, cx) => this.goto(p, cx))).child(p.slice(0, 8))) : [div().text_color(th.dim).child(t("detail.root"))])))
       .child(this.meta(t("detail.signature"), th, div().text_color(sigColor).child(SIGNATURE[d.signature] ? t(`sig.${d.signature}`) : d.signature || t("sig.N")),
-        ...(d.signer ? [div().text_color(th.dim).child(d.signer)] : [])));
+        ...(d.signer ? [div().text_color(th.dim).child(d.signer)] : [])))
+      .when(all.length > BODY_LINES, (el) => el.child(div().text_color(th.dim).child(t("detail.truncated", { count: all.length - BODY_LINES }))));
+    const info = div().relative().flex_none()
+      .child(v_flex().id("detail-scroll").overflow_y_scroll()
+        .on_size_change((size, cx) => { if (Math.abs(size.height - (this.infoNow ?? -1)) > 0.5) { this.infoNow = size.height; cx.notify(); } })
+        .when(set != null, (el) => el.h(set)).when(set == null, (el) => el.max_h(this.side ? 300 : 110)).child(content))
+      .child(Scrollbar.vertical("detail-scroll").absolute().inset_0());
     const how = { mode: "commit", rev: d.hash };
     return shell(v_flex().flex_1().min_h(0)
+      .on_size_change((size, cx) => { if (Math.abs(size.height - (this.bodyH ?? -1)) > 0.5) { this.bodyH = size.height; cx.notify(); } })
       .child(info)
-      .child(div().h(24).flex_none().px(10).flex().items_center().text_color(th.dim).child(t("detail.files", { count: d.files.length })))
+      .child(this.splitter(th))
+      .child(div().h(FILES_HEAD).flex_none().px(10).flex().items_center().text_color(th.dim).child(t("detail.files", { count: d.files.length })))
       .child(this.filesList("detail-files", d.files, th, fs, (f) => openDiff(this.repo, f, how))));
   }
 
@@ -475,7 +525,7 @@ export default class GitLog extends View {
       .child(Scrollbar.vertical("log-rows").viewport_from_layout().absolute().inset_0())
       .when(info.rows === 0, (el) => el.child(div().absolute().top(16).left(0).right(0).px(12).text_center().text_size(11.5).text_color(info.error ? th.ansi1 : th.dim)
         .child(info.error ?? (info.loading ? t("loading") : t("empty")))));
-    return v_flex().id("git-log").size_full().min_h(0).bg(th.background).text_color(th.foreground).text_size(12).track_focus(this.handle)
+    return this.dragging(v_flex().id("git-log").size_full().min_h(0).bg(th.background).text_color(th.foreground).text_size(12).track_focus(this.handle)
       .on_key_down((e, cx) => this.key(e, cx))
       .on_size_change((size, cx) => { const cls = (w) => (w < 480) + (w < 640) + (w < 760); if (cls(size.width) !== cls(this.w)) { this.w = size.width; cx.notify(); } })
       .when(Boolean(this.p.title), (el) => el.child(div().h(28).flex_none().px(10).flex().items_center().font_semibold().truncate().child(this.p.title)))
@@ -484,7 +534,7 @@ export default class GitLog extends View {
       .child((side ? h_flex().items_stretch() : v_flex()).flex_1().min_h(0)
         .child(rows)
         .when(Boolean(detail), (el) => el.child(this.detailPanel(th, side, mono, fs))))
-      .child(this.footer(th, parts, info?.loading ? t(`stage.${info.stage || "start"}`) : null));
+      .child(this.footer(th, parts, info?.loading ? t(`stage.${info.stage || "start"}`) : null)));
   }
 
   cmpRow(c, th, mono) {
@@ -508,7 +558,7 @@ export default class GitLog extends View {
         .when(commits.length === 0, (el) => el.child(div().absolute().top(8).left(0).right(0).text_center().text_size(11.5).text_color(th.dim).child(t("compare.none")))));
     // The file list is b's changes since the merge base, so diff from there.
     const how = { mode: "compare", rev: c.base ?? a, to: b };
-    return v_flex().id("git-log").size_full().min_h(0).bg(th.background).text_color(th.foreground).text_size(12).track_focus(this.handle)
+    return this.dragging(v_flex().id("git-log").size_full().min_h(0).bg(th.background).text_color(th.foreground).text_size(12).track_focus(this.handle)
       .on_size_change((size, cx) => { if ((size.width >= 760) !== side) { this.w = size.width; cx.notify(); } })
       .child(h_flex().h(34).flex_none().px(10).gap(8).items_center().border_b(1).border_color(th.divider ?? th.border)
         .child(div().px(8).h(20).flex().items_center().rounded(4).bg(th.raised).font_family(mono).text_size(11).child(a))
@@ -520,7 +570,7 @@ export default class GitLog extends View {
           .child(div().h(26).flex_none().px(10).flex().items_center().border_t(1).border_color(th.divider ?? th.border).text_size(11.5).text_color(th.muted).child(t("detail.files", { count: c.files.length })))
           .child(div().h(150).flex_none().flex().child(this.filesList("cmp-files", c.files, th, fs, (f) => openDiff(this.repo, f, how)))))
         .when(Boolean(detail), (el) => el.child(this.detailPanel(th, side, mono, fs))))
-      .child(this.footer(th, [t("compare.footer", { a: c.onlyA.length, b: c.onlyB.length, files: c.files.length })], null));
+      .child(this.footer(th, [t("compare.footer", { a: c.onlyA.length, b: c.onlyB.length, files: c.files.length })], null)));
   }
 
   // ------------------------------------------------------- the context menu

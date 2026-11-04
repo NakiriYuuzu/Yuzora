@@ -55,6 +55,7 @@
   "detail.root": "無（root commit）",
   "detail.signature": "簽章",
   "detail.files": "變更檔案 · {count}",
+  "detail.truncated": "還有 {count} 行未顯示",
   "sig.G": "簽章有效",
   "sig.B": "簽章無效",
   "sig.U": "簽章有效，信任度未知",
