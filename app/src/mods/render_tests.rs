@@ -1276,6 +1276,76 @@ fn git_log_commit_message_is_shown_whole_up_to_a_cap(cx: &mut TestAppContext) {
     }
 }
 
+/// The repo picker in the frame an overlay gives it (`render_overlays`): 340 wide, at most 360 high
+/// (it is as tall as its rows: a popup, or a dialog without a height), a border, clipped, a row
+/// holding `render_slot`'s `size_full` div and, in it, the shell root of a `fit` overlay. Reports the
+/// frame's and the picker's size; a row picked says `pick`.
+fn picker_in_overlay(n: usize, loaded: bool) -> String {
+    format!(
+        r#"
+import Real from "./mods/yuzora-sidebar-git/main.js";
+import {{ div }} from "gpui-kit";
+import {{ note }} from "probe";
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    this.handle = cx.focus_handle(); this.handle.focus();
+    this.picker = {{ space: "s1", folder: "/sp", on: null, cwds: [], current: "/sp/r0", pinned: false }};
+    this.found = {loaded} ? {{ repos: Array.from({{ length: {n} }}, (_, i) => ({{ root: "/sp/r" + i, name: "r" + i, rel: "r" + i, trusted: false }})), truncated: false }} : null;
+  }}
+  pick(root) {{ note("pick", root); }}
+  render(cx) {{
+    const picker = this.renderPicker().on_size_change((s) => note("picker", s.width, s.height));
+    return div().id("scenario").size_full().child(
+      div().id("ov-frame").w(340).max_h(360).border_1().overflow_hidden().flex().on_size_change((s) => note("frame", s.width, s.height))
+        .child(div().size_full().child(div().relative().flex().flex_col().min_h(0).child(picker))));
+  }}
+}}
+"#
+    )
+}
+
+// yuzora(L2): the repo picker opens as a popup (or a dialog) without a height of its own, so it is as
+// tall as its rows, up to the frame's 360. With flex_1 and overflow_y_scrollbar (a scroll area that
+// fills its parent) its list was 0 high and the frame 39: only "follow the focus" showed. Laid out in
+// the overlay's frame: the rows show and can be clicked (the last one too, scrolled to), loading and an
+// empty list leave room for their text, and a click anywhere in the frame leaves the keys working.
+#[gpui::test]
+fn yuzora_git_repo_picker_fills_its_overlay_frame(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let size = |s: &Scenario, k: &str| s.last(k).map(|v| v[2].as_f64().unwrap()).unwrap_or_else(|| panic!("{k} not measured"));
+    let picked = |s: &mut Scenario, y: f64| {
+        let before = s.notes.borrow().len();
+        s.click(100.0, y);
+        s.notes.borrow()[before..].iter().rev().find(|n| n[0] == json!("pick")).map(|n| n[1].as_str().unwrap_or("follow").to_owned())
+    };
+    // Rows of 26 under 1 + 4 px: the follow row, 1 + 2 + 2 for the line, then the repos.
+    let staged = Staged::new();
+    let mut s = Scenario::mount(cx, &staged, &picker_in_overlay(2, true), 600.0, 800.0);
+    assert_eq!(size(&s, "frame"), 3.0 * 26.0 + 5.0 + 8.0 + 2.0, "2 repos: the frame takes the rows' height");
+    assert_eq!(picked(&mut s, 49.0).as_deref(), Some("/sp/r0"));
+    assert_eq!(picked(&mut s, 75.0).as_deref(), Some("/sp/r1"));
+    for (n, loaded) in [(0, false), (0, true)] {
+        let s = Scenario::mount(cx, &staged, &picker_in_overlay(n, loaded), 600.0, 800.0);
+        assert!(size(&s, "frame") > 39.0 + 20.0, "loaded {loaded}: room for the text under the follow row: {}", size(&s, "frame"));
+    }
+    let mut s = Scenario::mount(cx, &staged, &picker_in_overlay(50, true), 600.0, 800.0);
+    assert_eq!(size(&s, "frame"), 360.0, "50 repos: the frame is at its limit");
+    s.wheel(100.0, 200.0, -5000.0);
+    assert_eq!(picked(&mut s, 345.0).as_deref(), Some("/sp/r49"), "scrolled to the end, the last one is there");
+    // The keys: ↓ Enter picks the first repo; a click on the line or a row inside the frame keeps them.
+    for y in [None, Some(33.0), Some(18.0)] {
+        let mut s = Scenario::mount(cx, &staged, &picker_in_overlay(2, true), 600.0, 800.0);
+        if let Some(y) = y {
+            s.click(100.0, y);
+        }
+        let before = s.notes.borrow().len();
+        s.visual.simulate_keystrokes("down enter");
+        s.settle();
+        let keyed = s.notes.borrow()[before..].iter().rev().find(|n| n[0] == json!("pick")).map(|n| n[1].as_str().unwrap_or("follow").to_owned());
+        assert!(keyed.is_some(), "after a click at {y:?}, ↓ Enter picked nothing");
+    }
+}
+
 /// A sidebar file row in a list of `width` (padded and measured like the real list): its parts report
 /// their size (`name`, `dir`, `add`, `del`, `action:<label>`) and, under the pointer, where they sit
 /// (`at:<part>`, x and width). A click goes through the real `clickRow` and says what it did (`result`).
