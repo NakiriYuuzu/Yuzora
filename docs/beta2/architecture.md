@@ -121,12 +121,12 @@ mod 在自己的 `mod.json` 宣告，不需要任何人去改共用清單：
 
 ### D9. i18n
 
-- 每個 Yuzora mod 把字串放在自己旁邊：`app/defaults/mods/<mod>/i18n/en.json`、`zh-TW.json`。巢狀物件攤平成點號 key（`commit.button`），`{name}` 由變數代入。
+- 每個 Yuzora mod 把字串放在自己旁邊：`app/defaults/mods/<mod>/i18n/en.json`。巢狀物件攤平成點號 key（`commit.button`），`{name}` 由變數代入。
 - JS：`import { t } from "yuzora:core"; t("commit.button", { count: 3 })` 讀「這個 mod」的字串；`translate(mod, key, vars)` 讀其他 mod 的。
-- Rust：crate 自己的字串用 `yuzora_core::i18n::Catalog::from_json(include_str!(…en.json), …)`；mod 的字串用 `i18n::translate(mod, key, vars)`。
-- 找不到時依序退回英文、key 本身，缺字串會直接顯示 key，不會變空白。
-- 語系由 Yuzora `settings.json` 的 `general.locale` 決定：`"system"`（預設，跟作業系統，任何中文語系都顯示 zh-TW）、`"en"`、`"zh-TW"`。`setLocale()` 會寫入設定並重畫所有 mod。
-- UI 文字兩個語系都要填；上游 mods 沒有 i18n，維持英文。
+- Rust：crate 自己的字串用 `yuzora_core::i18n::Catalog::from_json(include_str!(…en.json))`；mod 的字串用 `i18n::translate(mod, key, vars)`。
+- 找不到時顯示 key 本身，缺字串會直接顯示 key，不會變空白。
+- **介面只有英文**（beta.3 起，使用者 2026-11-04 決定）：不出貨 `zh-TW.json`，沒有語言設定。`locale()` 永遠回傳 `"en"`；`setLocale()` 保留以免舊 mod 呼叫出錯，接受任何字串、什麼都不做；設定檔裡舊的 `general.locale`（例如 `"zh-TW"`）直接忽略，照常啟動。文件類（README／CHANGELOG 的 zh-TW 版、官網、`docs/`）不屬於介面，保留。
+- UI 文字只填 `en.json`；`app/scripts/yuzora-i18n.test.ts` 守著：不得出現 `zh-TW.json`、設定頁不得有語言選項、每個 `t("…")` 的 key 都在 `en.json`。上游 mods 沒有 i18n，維持英文。
 
 ### D10. 設計 tokens 與 theme
 

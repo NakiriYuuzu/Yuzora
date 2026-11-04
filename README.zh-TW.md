@@ -51,7 +51,7 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
   續傳。
 - **設定、mods 與模板。** Yuzora 自己的介面就是 herdr mods，可以複製後修改；MOD 頁在顯示信任警告後，也能從資料夾
   安裝別人的 mod。herdr-core 的 agent 模板可以在設定裡編輯與啟動。
-- 介面支援英文與繁體中文，深色與淺色主題，預設都跟隨系統。
+- 介面只有英文（本 README 與 changelog 另有繁體中文版），深色與淺色主題，預設跟隨系統。
 - **不收集任何資料。** 遙測已關閉，意見回饋改開 GitHub Issue。安裝好的正式版會向本 repo 的 GitHub Releases 檢查
   Yuzora 更新，並向 `releases.herdr.dev` 檢查 herdr-core 的版本。
 
@@ -189,7 +189,7 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
 設定改從 Yuzora 自己的頁面開啟。Herdr 的設定畫面多了「Yuzora」分組，列出每個在 `mod.json` 宣告
 `"yuzora": {"settings": …}` 的 mod；隱私與更新頁改為說明 Yuzora 的做法（不收集也不傳送任何資料）。L6 的頁面：
 
-- **一般**（`yuzora-settings-general`）：語系（跟隨系統、English、繁體中文）、外觀（主題、字型、字級、縮放）、終端機
+- **一般**（`yuzora-settings-general`）：外觀（主題、字型、字級、縮放）、終端機
   剪貼簿寫入（啟動時的側欄模式要等模式列套用後才會出現）。
 - **模板**（`yuzora-settings-templates`）：各台機器上的 herdr-core agent 模板。可以列出、以表單編輯 frontmatter、以
   文字編輯 body（存檔前檢查）、移到垃圾桶，或啟動到指定的 Space 與 tab（`yuzora-settings-launch`：帶

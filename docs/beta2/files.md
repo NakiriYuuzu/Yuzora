@@ -96,7 +96,7 @@ beta.2 的檔案側欄、程式碼編輯器、Markdown 預覽與圖片檢視。�
 #### 失敗時
 
 - 逾時、超過記憶體、crash（非 0 結束或被 signal 終止）、輸出格式錯誤：殺掉子行程樹，回傳原因。Linux 與 Windows 上，超過記憶體上限時配置會失敗，Rust 會在 stderr 寫 `memory allocation of …` 後 abort，父行程據此判為記憶體不足（stderr 只留前 4 KiB）。
-- 圖片 pane 顯示佔位圖（灰框打叉，由父行程直接產生，不是 SVG）和原因：`image.svg_timeout`、`svg_memory`、`svg_crashed`、`svg_output`、`svg_invalid`、`svg_spawn`、`svgz`，en 與 zh-TW 都有。
+- 圖片 pane 顯示佔位圖（灰框打叉，由父行程直接產生，不是 SVG）和原因：`image.svg_timeout`、`svg_memory`、`svg_crashed`、`svg_output`、`svg_invalid`、`svg_spawn`、`svgz`，都在 `i18n/en.json`。
 - Markdown 預覽顯示同一張佔位圖。`TextView` 的圖片欄位只接受圖片，原因的文字無法放進預覽。
 - 不自動重試。結果依內容的 hash 快取（行程內隨機金鑰，無法造出相撞的檔案），同一份 SVG 只 spawn 一次，失敗的結果也記著；檔案內容改了才重畫。多個請求同時要同一份 SVG 時，等第一個的結果。快取最多 128 MiB 的像素、512 筆，先進先出。取消與子行程無法啟動的結果不快取。
 - 取消：圖片 pane 換檔或關閉、Markdown 預覽關閉或換文件時，排隊中的請求直接放棄，畫到一半的子行程被殺。

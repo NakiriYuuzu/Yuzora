@@ -3,20 +3,18 @@
 //! serve Yuzora: on the setup screen (setup.rs), and when the core that comes
 //! back after a restart is one Yuzora can't use (window.rs reconnects).
 //! Herdr can update or replace the shared core while Yuzora runs, so both
-//! say the core is shared and name the right app. Strings: herdr_compat/*.json,
-//! in Yuzora's language.
+//! say the core is shared and name the right app. Strings: herdr_compat/en.json.
 
 use crate::hc::{GENERATION, Mismatch};
 use crate::setup::Need;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
-use yuzora_core::i18n::{self, Catalog};
+use yuzora_core::i18n::Catalog;
 
 const EN: &str = include_str!("herdr_compat/en.json");
-const ZH_TW: &str = include_str!("herdr_compat/zh-TW.json");
 
 fn catalog() -> Catalog {
-    Catalog::from_json(EN, (i18n::current() == i18n::ZH_TW).then_some(ZH_TW))
+    Catalog::from_json(EN)
 }
 
 /// Title, what's going on, and the line under the buttons (setup.rs `words`).
@@ -99,8 +97,8 @@ fn serves_in(c: &Catalog, hello: &Value, told: &mut Option<Told>, now: Instant) 
 mod tests {
     use super::*;
 
-    fn catalogs() -> [Catalog; 2] {
-        [Catalog::from_json(EN, None), Catalog::from_json(EN, Some(ZH_TW))]
+    fn catalogs() -> [Catalog; 1] {
+        [Catalog::from_json(EN)]
     }
 
     const USES_BUT_ONE: &[&str] = &["terminal.run", "terminal.list", "terminal.kill", "terminal.label", "terminal.attach", "terminal.keep", "doc.get", "doc.set"];
@@ -109,27 +107,9 @@ mod tests {
         json!({"generation": generation, "version": version, "methods": crate::hc::USES})
     }
 
-    /// About how wide a line is in the toast: CJK and fullwidth count twice.
+    /// About how wide a line is in the toast.
     fn width(text: &str) -> usize {
         text.chars().map(|c| if c as u32 >= 0x2E80 { 2 } else { 1 }).sum()
-    }
-
-    fn keys(json: &str) -> Vec<String> {
-        fn walk(v: &Value, at: String, out: &mut Vec<String>) {
-            match v.as_object() {
-                Some(m) => m.iter().for_each(|(k, v)| walk(v, if at.is_empty() { k.clone() } else { format!("{at}.{k}") }, out)),
-                None => out.push(at),
-            }
-        }
-        let mut out = Vec::new();
-        walk(&serde_json::from_str(json).unwrap(), String::new(), &mut out);
-        out.sort();
-        out
-    }
-
-    #[test]
-    fn both_languages_have_every_string() {
-        assert_eq!(keys(EN), keys(ZH_TW));
     }
 
     #[test]

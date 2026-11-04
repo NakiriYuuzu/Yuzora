@@ -58,7 +58,7 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 - **herdr 模型**：herdr-core（`hc`）執行終端機與 machines，app 只畫畫面；space 屬於一台機器，tab 屬於一個 space，pane 可以是終端機或 mod pane（`pane.split {mod, props}`）。layout 節點 `row`／`column`／`stack`／`block`，`layout.select {stack, child}` 切換。mod API 在 `app/defaults/herdr.d.ts`，Yuzora 的在 app home 的 `yuzora.d.ts`。
 - **外連**：遙測、feedback 送 herdr.dev、update notes 媒體都關閉（`app/src/yuzora/mod.rs` 的常數與 `nothing_goes_to_herdr_dev` 測試）；app 自我更新改走本 repo 的 GitHub Releases（`app/src/yuzora/release/`，manifest 必須以 release 金鑰簽章，只有安裝好的 release build 會檢查）；herdr-core 的安裝與更新保留上游官方通道。app home `~/.config/yuzora`（`YUZORA_APP_HOME`；不讀 `HERDR_APP_HOME`），core layout 文件名 `yuzora`。
 - **探索**：mod 在 `mod.json` 宣告 `"yuzora": {"pane": …}`／`{"settings": …}`，由 `yuzora:core` 的 `panes()`／`settingsPages()` 列出。
-- **i18n**：`app/defaults/mods/<mod>/i18n/{en,zh-TW}.json`，JS `t(key, vars)`，Rust `yuzora_core::i18n`；語系預設跟系統。UI 文字兩語系都要填。
+- **i18n**：介面只有英文（beta.3 起）。`app/defaults/mods/<mod>/i18n/en.json`，JS `t(key, vars)`，Rust `yuzora_core::i18n`；沒有語言設定，不要新增 `zh-TW.json`（`app/scripts/yuzora-i18n.test.ts` 會擋）。
 - **與官方 Herdr 共用 core**：終端機、machines、templates 共用；收養來的終端機在任一邊關閉都會在 core 結束。細節與已決定的取捨見 `docs/beta2/herdr-compat.md`。
 - **mod 限制**：mod 的 `exec` 上限 30 秒／8 MiB、`readTextFile` 1 MiB、`writeTextFile` 只能寫 app home。DB 連線、SSH session、大量資料都要在 Rust 層做；遠端用 `yuzora_core::remote`（`hc exec --on`，可自訂 timeout）。
 
@@ -83,7 +83,7 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 
 ## 慣例與路徑
 
-- 語言：回覆繁體中文；技術詞英文、UI 文字兩語系。
+- 語言：回覆繁體中文；技術詞英文、UI 文字只有英文。
 - Git 寫入（add／commit／push 等）僅在使用者明確下令時執行。beta.2 lane 的授權與 PR 流程見 `docs/beta2/lanes.md`；任何 session 都不碰 `main`、tag、release。
 - commit trailer：`Co-Authored-By: Claude Opus 5.5 <yuuzu@yuuzu.net>`。
 - 規劃／執行制度：`.yuuzu/`——`specs/`、`adr/`、`eval/`、`memory/lessons.html`。beta.2 決策以 `docs/beta2/` 為準。

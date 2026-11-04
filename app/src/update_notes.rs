@@ -1,7 +1,7 @@
 //! Cumulative release notes and this launch's update range. Reading notes never
 //! changes the last successful version; only expanded spotlights are recorded.
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap}; // yuzora(L7): BTreeMap
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
@@ -97,8 +97,8 @@ impl Launch {
 }
 
 static LAUNCH: Mutex<Option<Launch>> = Mutex::new(None);
-// yuzora(L7): a newer release's notes, per language (crate::yuzora::release::notes).
-static FETCHED: Mutex<BTreeMap<&'static str, Vec<Note>>> = Mutex::new(BTreeMap::new());
+// yuzora(L7): a newer release's notes (crate::yuzora::release::notes).
+static FETCHED: Mutex<Option<Vec<Note>>> = Mutex::new(None);
 static MEDIA: LazyLock<Mutex<MediaCache>> = LazyLock::new(|| Mutex::new(MediaCache::default()));
 
 fn path(name: &str) -> std::path::PathBuf {
@@ -127,31 +127,26 @@ pub fn started(first_install: bool) {
     std::thread::spawn(|| fetch_media(&all()));
 }
 
-// yuzora(L7): in `locale`.
-pub fn cache(locale: &'static str, text: &str) {
+// yuzora(L7): a newer release's notes, kept for later launches.
+pub fn cache(text: &str) {
     let notes = parse(text);
     if notes.is_empty() { return; }
-    FETCHED.lock().unwrap().insert(locale, notes.clone());
+    *FETCHED.lock().unwrap() = Some(notes.clone());
     std::thread::spawn(move || fetch_media(&notes));
-    if let Err(e) = std::fs::write(path(crate::yuzora::release::notes::cache_file(locale)), text) {
+    if let Err(e) = std::fs::write(path(crate::yuzora::release::notes::CACHE_FILE), text) {
         tracing::warn!("update notes cache: {e}");
     }
 }
 
-// yuzora(L7): in `locale`.
-pub fn has(locale: &'static str, version: &str) -> bool {
-    all_in(locale).iter().any(|note| note.version == version)
+// yuzora(L7): whether the notes of `version` are here, bundled or kept.
+pub fn has(version: &str) -> bool {
+    all().iter().any(|note| note.version == version)
 }
 
-// yuzora(L7): the notes in the shown language.
 fn all() -> Vec<Note> {
-    all_in(yuzora_core::i18n::current())
-}
-
-fn all_in(locale: &'static str) -> Vec<Note> {
-    let mut notes = crate::yuzora::release::notes::bundled(locale); // yuzora(L7): in `locale`
-    let fetched = FETCHED.lock().unwrap().entry(locale).or_insert_with(|| {
-        std::fs::read_to_string(path(crate::yuzora::release::notes::cache_file(locale))).map(|s| parse(&s)).unwrap_or_default()
+    let mut notes = crate::yuzora::release::notes::bundled(); // yuzora(L7)
+    let fetched = FETCHED.lock().unwrap().get_or_insert_with(|| {
+        std::fs::read_to_string(path(crate::yuzora::release::notes::CACHE_FILE)).map(|s| parse(&s)).unwrap_or_default()
     }).clone();
     // The running binary's curated notes win over cached copies of its releases.
     for note in fetched {
@@ -311,21 +306,14 @@ mod tests {
     }
     #[test]
     fn cached_notes_are_read_once_and_version_specific() {
-        // yuzora(L7): per language.
-        use yuzora_core::i18n::{EN, ZH_TW};
         let previous = std::mem::take(&mut *FETCHED.lock().unwrap());
         all();
-        assert!(FETCHED.lock().unwrap().contains_key(yuzora_core::i18n::current()));
-        FETCHED.lock().unwrap().insert(EN, Vec::new());
-        assert!(!has(EN, "99.0.0"));
-        FETCHED.lock().unwrap().insert(EN, parse("## [99.0.0] - 2026-10-30\n- Test release\n"));
-        assert!(has(EN, "99.0.0"));
-        assert!(!has(EN, "99.0.1"));
-        // yuzora(L7): each language has its own; the shown one is read.
-        FETCHED.lock().unwrap().insert(ZH_TW, parse("## [99.0.1] - 2026-10-31\n- 測試版\n"));
-        assert!(!has(ZH_TW, "99.0.0") && has(ZH_TW, "99.0.1"));
-        assert_eq!(all_in(ZH_TW).iter().find(|n| n.version == "99.0.1").unwrap().items[0].detail, "測試版");
-        assert!(!all_in(EN).iter().any(|n| n.version == "99.0.1"));
+        assert!(FETCHED.lock().unwrap().is_some());
+        *FETCHED.lock().unwrap() = Some(Vec::new());
+        assert!(!has("99.0.0"));
+        *FETCHED.lock().unwrap() = Some(parse("## [99.0.0] - 2026-10-30\n- Test release\n"));
+        assert!(has("99.0.0"));
+        assert!(!has("99.0.1"));
         *FETCHED.lock().unwrap() = previous;
     }
     #[test]

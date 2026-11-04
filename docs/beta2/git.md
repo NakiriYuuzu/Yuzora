@@ -148,7 +148,7 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - 判斷方式：
   - mods 用 `yuzora:git` 的 `open(cwd, on)` 與 `status(id)`，`trust` 有值就是未信任。這和 Git 側欄是同一份答案，遠端 machine 也適用。沒有待信任的項目時（已信任，或設定裡本來就沒有會執行的程式），`status` 會順便讀一次 status：有快取；本機另有 watcher，遠端 machine 沒有，靠 `changed()` 逾時輪詢（見〈已知限制〉）。
   - Rust 用 `yuzora_core::git_trust::pending(None, top)`，`top` 是帶 `READ_FLAGS` 的 `rev-parse --show-toplevel` 的輸出。讀不到、不是 UTF-8 或 `Err` 都當成未信任。
-- 提示文字放在各 mod 自己的 `i18n/{en,zh-TW}.json`（`changes`、`files`、`worktree`），其他文字維持上游的英文。
+- 提示文字放在各 mod 自己的 `i18n/en.json`（`changes`、`files`、`worktree`），其他文字維持上游的英文。
 - 測試：
   - `app/src/yuzora/trust.rs`：fixture 用自己的 HOME 建立，斷言未信任時沒有任何程式執行、信任後照舊（fixture 的程式真的會被 git 執行）。白名單指令同樣在這個 fixture 跑過。Linux 上另外從 `watchFolder` 端到端跑一次。
   - `app/scripts/yuzora-trust-mods.test.ts`：真實的 git，`yuzora:git` 的回答用 stub。也守住 default mods 跑 git 的位置數：每個 `exec("git", …)`，以及 mod 自己包住它的 helper（第一行就是 `exec("git", …)` 的函式，或 `name = (…) => exec("git", …)`，目前是 `changes` 與 `worktree` 的 `git`、`menu` 的 `checkout`）的呼叫數。上游同步在這些地方多了呼叫時會失敗，要重新判斷。守衛只讀各 mod 的 `main.js`（不讀 mod 裡其他 `.js` 檔，也不讀 `defaults/frame/`），helper 也只認上面兩種寫法（class method、block body 的 arrow function 不算）；目前 `exec("git"` 只出現在 changes、files、menu、spaces、worktree 的 `main.js`。經由更上層、本身會跑 git 的函式（例如 `worktree` 的 `submodules()`）多出的呼叫數不到，同步時仍要讀這幾個 mod 的 diff。

@@ -11,7 +11,7 @@ L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行�
 | L3 資料庫 | 連線、資料表格（資料／結構／SQL）、SQL 編輯、寫回 | `yuzora-db`（`yuzora:db`） | `yuzora-sidebar-database`、`yuzora-db-*` | `app/vendor/tiberius-0.12.3-yuzora` | `docs/beta2/db.md` | slot-2 |
 | L4 SSH／SFTP | 主機清單、SFTP 雙欄傳輸、tunnel（供 L3 連遠端 DB）、已知主機 | `yuzora-ssh`（`yuzora:ssh`） | `yuzora-sidebar-ssh`、`yuzora-ssh-*`、`yuzora-sftp-*` | `app/vendor/russh-0.62.7-yuzora`、`app/vendor/russh-sftp-3.0.0-yuzora` | `docs/beta2/ssh.md` | slot-3 |
 | L5 檔案＋編輯器 | 檔案樹（git 標記）、程式碼編輯器、Markdown 預覽 | `yuzora-files`（`yuzora:files`） | `yuzora-sidebar-files`、`yuzora-files-*`、`yuzora-editor-*`、`yuzora-markdown-*` | | `docs/beta2/files.md` | slot-1 |
-| L6 設定＋MOD／Template | 設定框架（`settingsPages()`）、`general` 設定（含語系）、mods 管理、herdr-core templates 管理 | `yuzora-settings`（`yuzora:settings`） | `yuzora-settings-*` | Yuzora `settings.json` 的 `general` section | `docs/beta2/settings.md` | slot-3 |
+| L6 設定＋MOD／Template | 設定框架（`settingsPages()`）、`general` 設定、mods 管理、herdr-core templates 管理 | `yuzora-settings`（`yuzora:settings`） | `yuzora-settings-*` | Yuzora `settings.json` 的 `general` section | `docs/beta2/settings.md` | slot-3 |
 | L7 發布更新 | 打包、簽章、更新通道（GitHub Releases）、binary 最終名稱 | 不另設 crate；app 端 glue 放 `app/src/yuzora/update.rs` 等新檔 | | `app/scripts/yuzora/bundle-*`、`app/assets/icons/yuzora*`、新的 app 發布 workflow | `docs/beta2/release.md` | slot-4 |
 | L8 效能監控 | 右下角的資源用量 chip 與 popover：App 本體、herdr-core（終端機與 agents）、Yuzora 工具 | `yuzora-perf`（`yuzora:perf`） | `yuzora-perf` | 總指揮特准：`app/Cargo.toml` 與 `app/src/yuzora/mod.rs` 掛上 crate、`app/defaults/layouts/yuzora.json` 的 `status` 節點 | `docs/beta2/perf.md` | 無固定（slot-1～4 擇未上鎖者） |
 | L9 Herdr 相容與上游更新 | 與官方 Herdr.app 共用 herdr-core 的盤點與修正、herdr-app 上游同步、herdr-core 版本把關 | 不另設 crate；app 端 glue 放 `app/src/yuzora/herdr_compat.rs` | | `app/scripts/yuzora/sync-check`、上游同步 PR（`git subtree pull`，merge commit 合併） | `docs/beta2/herdr-compat.md` | 依總指揮指派 |
@@ -24,7 +24,7 @@ L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行�
 ## 各 lane 可用的掛點
 
 1. **JS 模組**：在自己 crate 的 `host_module()` 加函式（`.function`／`.async_function`）或原生元件（`.component`），並在 `DECLARATIONS` 加對應的 `export function …` 宣告（必須完全一致，否則 `validate` 失敗）。mod 端 `import { … } from "yuzora:<name>"`。
-2. **共用層 `yuzora:core`**（JS）／`yuzora_core`（Rust）：`t`／`translate`、`locale`／`setLocale`、`tokens`、`panes`／`settingsPages`、`getSetting`／`setSetting`、`exec`（可帶 `on`、`timeoutMs`、`maxBytes`）、`appHome`、`version`。Rust 端另有 `secrets`（keyring）、`remote::ExecRequest`、`settings::section`、`paths`。完整宣告在 app home 的 `yuzora.d.ts`。
+2. **共用層 `yuzora:core`**（JS）／`yuzora_core`（Rust）：`t`／`translate`、`locale`（永遠 `"en"`）／`setLocale`（不做事，留給舊 mod）、`tokens`、`panes`／`settingsPages`、`getSetting`／`setSetting`、`exec`（可帶 `on`、`timeoutMs`、`maxBytes`）、`appHome`、`version`。Rust 端另有 `secrets`（keyring）、`remote::ExecRequest`、`settings::section`、`paths`。完整宣告在 app home 的 `yuzora.d.ts`。
 3. **tool pane**：在 mod 的 `mod.json` 宣告 `"yuzora": { "pane": {…} }`，L1 的「＋ 新增 pane」選單會列出它。
 4. **設定頁**：在 mod 的 `mod.json` 宣告 `"yuzora": { "settings": {…} }`，L6 的設定框架會列出它。設定值存在 Yuzora `settings.json` 自己的 section，只讀寫自己的 section。
 5. **側欄模式**：L2–L5 直接把佔位的 `yuzora-sidebar-<mode>` mod 換成真正的內容，不需要改 layout。
@@ -73,7 +73,7 @@ L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行�
   ```
 
 - `app/CHANGELOG.md` 第一筆必須是 `0.1.0-beta.2`（`update_notes` 測試）。各 lane 在該筆底下加自己的條目即可，不要新增版本標題。
-- App 內的更新說明分成兩份：英文在 `app/CHANGELOG.md`，繁體中文在 `app/CHANGELOG.zh-TW.md`（只收 Yuzora 的版本，#206 起）。lane 加條目時兩個檔各加一行，英文進 `app/CHANGELOG.md`、繁中進 `app/CHANGELOG.zh-TW.md`；段落標題兩個檔一律用英文 `### New`／`### Fixed`。細節見 [release.md](release.md)（L7 負責）。
+- App 內的更新說明（App 只顯示英文）分成兩份：英文在 `app/CHANGELOG.md`，繁體中文在 `app/CHANGELOG.zh-TW.md`（只收 Yuzora 的版本，#206 起）。lane 加條目時兩個檔各加一行，英文進 `app/CHANGELOG.md`、繁中進 `app/CHANGELOG.zh-TW.md`（繁中檔 App 不顯示，只是文件）；段落標題兩個檔一律用英文 `### New`／`### Fixed`。細節見 [release.md](release.md)（L7 負責）。
 - 根目錄的 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁中）是 GitHub Release 的內文，由 L10 維護，兩份的版本、段落與項目要一一對應（`scripts/release-notes.test.ts` 會比對）。
 
 ## 分支與 PR 流程
@@ -112,7 +112,7 @@ scripts/yuzora/check-mods yuzora-git-log  # 指定 mod
 
 ```bash
 RUN=/tmp/yz-<lane>-run
-env -i HOME="$HOME" USER="$USER" TMPDIR="$TMPDIR" TERM=xterm-256color LANG=zh_TW.UTF-8 \
+env -i HOME="$HOME" USER="$USER" TMPDIR="$TMPDIR" TERM=xterm-256color LANG=en_US.UTF-8 \
   PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
   YUZORA_APP_HOME=$RUN/home HC_SESSION=yuzora-<lane>-test \
   XDG_STATE_HOME=$RUN/state XDG_CONFIG_HOME=$RUN/config XDG_RUNTIME_DIR=$RUN/runtime \
