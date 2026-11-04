@@ -1,6 +1,34 @@
 # Yuzora 更新說明
 
 <!-- yuzora(L7): CHANGELOG.md 裡 Yuzora 每一筆的繁體中文版，版本、### New／### Fixed 標題與項目數都要一樣（App 依標題判斷 Fixed）。這裡沒有的版本，App 會改顯示 CHANGELOG.md 的英文。 -->
+## [0.1.0-beta.3] - 2026-11-05
+
+### New
+- **整個 App 介面只剩英文，語言設定已移除。** 已存的中文設定或語系不會報錯，只是改成英文。
+- **Git 側欄 repo 選擇器。** 一個 Space 有多個 repo 時，可以選要看哪一個（預設跟隨 focus，也可釘選；每個 Space 記住各自的選擇）。找 repo 不執行 Git，選中的 repo 照常經過信任關卡。指令：`yuzora-sidebar-git.pick-repo`。
+- **Git Log 詳情可調整大小。** 詳情可以捲動，上下比例可以拖曳調整，雙擊恢復預設。詳情顯示完整的 commit 訊息（上限 2000 行）。
+- **更簡潔的 tab 列與側欄。** 移除「新增 pane ▾」選單、兩個分割鈕與「下一個 layout」，並取消 `layout.switch` 的預設快捷鍵（⌘⇧L／Ctrl+Shift+L）。要開新增 pane 選單，請自行綁定 `yuzora-shell-tabs.new-pane`（是點，不是冒號）；`keys.json` 裡舊的預設綁定會被略過。
+
+### Fixed
+- Windows 上執行 Git、檔案與遠端指令時，不再連續跳出 console 視窗。
+- tab 列恢復只列出目前 Space 的 tab（與 Herdr 相同），不再列出所有 Space 的 tab。
+- 並排的 Git diff：左右各自依該側最長的一行決定寬度（新增檔案空白的左欄不再佔掉最長一行的寬度），點行號選行時也照實際的欄寬判斷是哪一側。
+- 信任的資料夾：`trusted.json` 一次只讓一個寫入者修改（thread 與 process 都一樣，用 `trusted.json.lock` 上鎖），並整份取代，所以同時信任的資料夾不會再被蓋掉，同一時間讀清單的指令也不會把資料夾當成未信任。
+- 未信任的資料夾：Changes 面板的 diff 與 Commit、worktree 對話框的 Enter，在執行 Git 前會再確認一次資料夾是否信任（面板上次讀取之後，設定可能多了程式）；Files 面板執行的 Git 不連任何 remote（包括本機的），所以 2.44 以前的 Git 也不會替 partial clone 去抓物件。
+- 信任檢查：repo 設定和 submodule 掃描在同一個 shell 裡讀，每次檢查只要一次 git 呼叫（遠端一次 `hc exec`），回答裡沒有設定的 exit code 時當成讀不到；Changes 面板 refresh 自動開啟的 diff 不再多問一次。
+- Files：macOS 與 Windows 上，根目錄 `.gitignore` 或 `.git/info/exclude` 忽略的資料夾（build 的 `target/`、`node_modules/`）裡的變動，不再喚醒 Files 側欄與面板。
+- Files（Windows）：寫入被 ignore 的資料夾，不再被當成資料夾本身的變動回報（原本每批 build 都讓面板重載一次）；資料夾被建立、刪除或改名時仍會回報。
+- 狀態列：Git 分支資訊在遠端機器上只要一次來回（原本三次），本機則兩項讀取並行。
+- 遠端 Git 讀取：diff 中彼此不相依的讀取（index 項目、blob、種類、HEAD、modes）、log 的 refs 與 repo 的進行中操作狀態改成同時發出，不再循序（unstaged diff 5 → 2 輪、staged 4 → 2 輪、refs 3 → 1 輪）；diff 的 index 側改用該項目的 object id 讀取，內容與檢查過的項目是同一份。
+- Windows：安裝程式詢問移除舊版全機安裝時，改為說明舊版資料會保留、但目前尚不會自動帶入連線與設定。
+- Windows：SFTP「編輯」不再於 30 秒後關掉記事本；設定頁可把模板移到資源回收筒、在檔案總管中顯示檔案。
+- Windows：編輯器、Markdown、圖片窗格會在檔案於磁碟上變更時重新載入；SFTP 本機面板顯示 `C:\…` 路徑。
+- 在本機執行程式（Git、搜尋、腳本）時不再多等輪詢：`git --version` 這類呼叫在 Windows 上從約 52 ms 降到 29 ms，在 macOS 上從約 53 ms 降到 8 ms。
+- Git diff pane：只有變動可能碰到自己的檔案、改名前的檔案、它們的上層資料夾或底下的路徑，或任何 `.gitattributes` 時才重新載入，不再因為 repo 裡任何變動就重讀；無法判斷變動的路徑時（git 寫了 index 或 refs、rescan）照舊重新載入。
+- 信任檢查（本機，macOS 與 Linux）：單純 repo 的答案會保留，條件是 `HEAD`、`index`、`config`、`config.worktree`、`objects/`、`refs/`、`remotes/`、`branches/` 都沒變，`.git` 與 `commondir` 也仍指向同一組 dir；index 裡有 gitlink、有 `modules/` 資料夾、設定含 `include`、index 是 split 或 sparse（是否讀 shared index 由 git 自己回答）、檔案系統的 kernel 不自己維護 change time（只在 APFS、HFS+、ext2/3/4、XFS、Btrfs、tmpfs、ZFS、F2FS 上保留；FAT、exFAT 與網路檔案系統不保留），或檔案在掃描前 3 秒內或掃描當中變動過，就每次都掃描。未信任資料夾開 diff 從 74 ms 降到約 38 ms；Files reload 的檢查原本 47 ms、8 個行程，現在都是 0。
+- Git 側欄：+／− 數字與按鈕不會再被過長的檔名蓋住，6 位數的行數會縮寫成 `150k`。
+- app home 的 `herdr.d.ts` 原本把 mod 指令快捷鍵示範成冒號寫法，照著寫會讓整份 `keys.json` 失效，現在改成點。
+
 ## [0.1.0-beta.2] - 2026-11-04
 
 ### New

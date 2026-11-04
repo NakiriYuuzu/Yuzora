@@ -2,6 +2,34 @@
 
 <!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
 <!-- yuzora(L7): each Yuzora entry here has its Traditional Chinese twin in CHANGELOG.zh-TW.md: add a line to both. -->
+## [0.1.0-beta.3] - 2026-11-05
+
+### New
+- **The whole app interface is English only now, and the language setting is removed.** A language you saved earlier (Chinese, for example) causes no error; the app shows English.
+- **Git sidebar repository picker.** A Space with several repositories lets you pick which one to show (follows focus by default, or pin it; each Space remembers its choice). Finding repositories runs no Git, and the chosen one goes through the trust check. Command: `yuzora-sidebar-git.pick-repo`.
+- **Resizable Git Log detail.** The detail can be scrolled and its top/bottom split dragged; double-click restores the default. The detail shows the full commit message (up to 2000 lines).
+- **Simpler tab bar and sidebar.** The "New pane ▾" menu, the two split buttons and "Next layout" are gone, and the `layout.switch` default shortcut (⌘⇧L / Ctrl+Shift+L) is removed. Bind `yuzora-shell-tabs.new-pane` (a dot, not a colon) yourself to open the new pane menu; the old default binding in `keys.json` is skipped.
+
+### Fixed
+- Windows no longer pops up a stream of console windows while Yuzora runs Git, file and remote commands.
+- The tab bar lists only the current Space's tabs again, as Herdr does, instead of every Space's tabs.
+- Git diff, side by side: each side is as wide as its own longest line (an added file's empty left side no longer takes the width of its longest line), and a click on a side's line numbers picks that side's line where the row lays it out.
+- Trusted folders: `trusted.json` is changed one writer at a time (threads and processes alike, under `trusted.json.lock`) and replaced whole, so a folder trusted at the same moment as another is no longer lost, and a command that reads the list meanwhile no longer takes the folder for untrusted.
+- Untrusted folders: the Changes panel's diff and Commit and the worktree dialog's Enter ask again whether the folder is trusted right before they run Git (its config may have gained a program since the panel last read it), and the Git the Files panel runs reaches no remote at all, a local one included, so a Git older than 2.44 can't fetch for a partial clone either.
+- Trust check: the repository's config is read in the same shell as the submodule scan, so each check is one git call (one `hc exec` on a machine), and an answer without the config's exit code counts as unreadable; the Changes panel's refresh no longer asks a second time for the diff it opens on its own.
+- Files: on macOS and Windows, changes inside a folder that the root `.gitignore` or `.git/info/exclude` ignores (a build's `target/`, `node_modules/`) no longer wake the Files sidebar and panels.
+- Files, Windows: a write into an ignored folder is no longer reported as a change of the folder itself (it made the panels reload once per build batch); the folder being created, removed or renamed is still reported.
+- Status bar: the Git branch look takes one round trip on a remote machine instead of three, and two reads run in parallel on a local one.
+- Remote Git reads: a diff's independent reads (index entry, blob, kind, HEAD, modes), the log's refs and the repo's operation state are sent together instead of one after another (unstaged diff 5 → 2 round trips, staged 4 → 2, refs 3 → 1), and the index side of a diff is read by the entry's object id so it matches the entry it was checked against.
+- Windows: the installer's prompt to remove an older all-users Yuzora now notes that connections and settings are not brought over automatically yet.
+- Windows: SFTP "Edit" no longer closes Notepad after 30 seconds, and Settings can move templates to the Recycle Bin and show files in Explorer.
+- Windows: the editor, Markdown and image panes now reload when the file changes on disk, and the SFTP local panel shows `C:\…` paths.
+- Running programs on this computer (Git, search, scripts) no longer waits for polling: a `git --version` call dropped from about 52 ms to 29 ms on Windows and from about 53 ms to 8 ms on macOS.
+- Git diff pane: it loads again only when a change may touch its file, the one it was renamed from, a folder above or a path inside either, or a `.gitattributes`, instead of for any change in the repo; when the changed paths can't be told (the index or refs git wrote, a rescan) it loads again as before.
+- Trust check, on this computer (macOS and Linux): a plain repository's answer is kept while its `HEAD`, `index`, `config`, `config.worktree`, `objects/`, `refs/`, `remotes/` and `branches/` stay as they were and `.git` and `commondir` lead to the same dirs; a gitlink in the index, a `modules/` folder, an `include` in its config, a split or sparse index (git is asked whether it reads a shared index), a file system whose kernel doesn't keep change times itself (kept only on APFS, HFS+, ext2/3/4, XFS, Btrfs, tmpfs, ZFS and F2FS; not on FAT, exFAT or network file systems), a file changed in the 3 s before the scan, or one that changed during it means scanning each time. Opening a diff in an untrusted folder took 74 ms and now takes about 38 ms; a Files reload's check, 47 ms and 8 processes, now 0.
+- Git sidebar: the +/− counts and buttons are no longer covered by long file names, and 6-digit line counts read `150k`.
+- The `herdr.d.ts` in the app home showed mod command shortcuts with a colon, which made the whole `keys.json` invalid when copied; it now shows a dot.
+
 ## [0.1.0-beta.2] - 2026-11-04
 
 ### New

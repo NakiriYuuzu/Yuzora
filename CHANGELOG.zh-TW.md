@@ -2,6 +2,54 @@
 
 <samp><a href="CHANGELOG.md">English</a> · 繁體中文</samp>
 
+## [0.1.0-beta.3] - 2026-11-05
+
+修正 beta.2 的問題（以 Windows 為主），並讓大型資料夾與遠端機器上的 Git、Files 更快。
+
+> **介面只剩英文，語言設定已移除。** beta.2 是最後一個有中文介面的版本：從 beta.3 起，App 內所有文字（包括 What's new 裡的更新說明）都只有英文。已存的中文設定或語系不會報錯，只是改成英文。README、CHANGELOG 與 release notes 仍有中英兩種版本。
+
+### 變更
+
+- **整個 App 介面只剩英文，語言設定已移除。** 已存的中文設定或語系不會報錯，只是改成英文。README、CHANGELOG 與 release notes 仍有中英兩種版本。
+- tab 列移除「新增 pane ▾」選單與兩個分割鈕，側欄移除「下一個 layout」；`layout.switch` 的預設快捷鍵（⌘⇧L／Ctrl+Shift+L）取消，指令面板也隱藏 Next layout。新增 pane 選單現在要用自己綁定的快捷鍵或 `yuzora do yuzora-shell-tabs.new-pane` 開啟，綁定寫法是 `yuzora-shell-tabs.new-pane`（是點，不是冒號）。升級後，`keys.json` 裡舊的預設綁定會被略過。
+
+### 新增
+
+- 同一個 Space 有多個 repo 時，Git 側欄頂端可以選擇要看哪一個：預設跟隨 focus，也可以釘選，每個 Space 記住各自的選擇。找 repo 只看檔案系統，不執行 Git；選中的 repo 照常經過信任關卡。指令是 `yuzora-sidebar-git.pick-repo`。
+- Git Log 的詳情可以捲動，也可以拖曳調整上下比例，雙擊恢復預設。詳情現在顯示完整的 commit 訊息（上限 2000 行）。
+
+### 改善
+
+- 檢查資料夾是否需要信任，現在只要一次 Git 呼叫（遠端機器少一次來回），Changes 面板每次 refresh 也只檢查一次，不再是兩次。
+- macOS 與 Windows 上，build 寫入 `target/`、`node_modules/` 這類被 ignore 的資料夾時，Files 側欄與面板不再每次都重新載入。
+- Windows 上，寫入被 ignore 的資料夾不再因資料夾本身的變動讓面板每批 build 重載一次；資料夾被建立或刪除時仍會顯示。
+- 狀態列的 Git 資訊在遠端機器上只要一次來回，不再是三次。
+- 遠端機器上，開啟 diff 的來回次數從 5 次（unstaged）或 4 次（staged）降到 2 次，Git log 讀取 refs 也從 3 次降到 1 次：彼此不相依的讀取改成同時發出。
+- 在本機執行程式（Git、搜尋、腳本）時不再多等輪詢：`git --version` 這類呼叫在 Windows 上從約 52 ms 降到 29 ms，在 macOS 上從約 53 ms 降到 8 ms。
+- 開著的 Git diff 不再因為 repo 裡任何變動就重新載入，只有它自己的檔案（或改名前的檔案）可能變動時才會。
+- Git：本機（macOS 與 Linux）尚未信任的資料夾裡，開 diff 與 Files 重新整理不再每次都重新掃描 repo；只要答案來源的檔案沒變就沿用上次結果。遠端機器與 Windows 上的資料夾、有 submodule、設定含 `include` 或 index 是 split／sparse 的 repo，以及放在 FAT、exFAT 或網路磁碟上的 repo，仍每次掃描。
+
+### 修正
+
+- Windows 上執行 Git、檔案與遠端指令時，不再連續跳出 console 視窗。
+- tab 列恢復只列出目前 Space 的 tab（與 Herdr 相同），不再列出所有 Space 的 tab。
+- Git：並排 diff 的左右兩側現在各自依該側最長的一行決定寬度，新增檔案的內容會直接出現，不再被空白的左欄推到畫面外。
+- Git：同時信任兩個資料夾時，兩個都會留在清單裡；正在信任資料夾時執行的 Git 指令，也不會再讀到寫一半的清單。
+- Git：資料夾的 Git 設定在 Yuzora 上次檢查之後才多了會執行的程式（例如 Git LFS 的 filter）時，Changes 面板的 diff 與 Commit、worktree 對話框現在會在執行 Git 前再確認一次信任；Files 面板的 Git 標記與搜尋即使用 2.44 以前的 Git，也不會去抓物件。
+- Windows：安裝程式詢問移除舊版全機安裝時，改為說明舊版資料會保留、但目前尚不會自動帶入連線與設定。
+- Windows：SFTP「編輯」不再於 30 秒後關掉記事本；設定頁可把模板移到資源回收筒、在檔案總管中顯示檔案。
+- Windows：編輯器、Markdown、圖片窗格會在檔案於磁碟上變更時重新載入；SFTP 本機面板顯示 `C:\…` 路徑。
+- Git 側欄：+／− 數字與按鈕不會再被過長的檔名蓋住，6 位數的行數會縮寫成 `150k`。
+- 寫進 app home 的 `herdr.d.ts` 原本把 mod 指令快捷鍵示範成冒號寫法（`mod:command`），照著寫會讓整份 `keys.json` 失效，現在改成點。
+
+### 安裝說明
+
+- beta.2 不會自動更新到 beta.3（beta 版只會更新到正式版）。請到 GitHub 的 `v0.1.0-beta.3` Pre-release 自行下載，直接覆蓋安裝在 beta.2 上。
+- macOS App 僅支援 Apple Silicon，只有 ad-hoc 簽章，沒有 Apple Developer ID 簽章或公證，所以第一次開啟會被 Gatekeeper 擋下：到「系統設定 › 隱私權與安全性」按「強制打開」（或執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`）。
+- Windows 使用免系統管理員權限的 NSIS 安裝程式 `Yuzora_<version>_x64-setup.exe`。Authenticode 尚未啟用，可能出現 SmartScreen 提示。
+- Linux（實驗性）提供 x86_64 與 aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`，解開後執行 `yuzora/install`。只通過 CI，尚未實機試過。
+- beta.2 的已知限制仍然適用。
+
 ## [0.1.0-beta.2] - 2026-11-04
 
 Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI、libghostty、QuickJS mods）為基底重寫成原生 App。終端機與 agent 改由 herdr-core（`hc`）執行，關掉視窗也會繼續；介面依新設計重做。

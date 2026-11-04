@@ -21,10 +21,10 @@
 
 <br />
 
-> **v0.1.0-beta.2 is a preview.** Yuzora is now a native app built on
+> **v0.1.0-beta.3 is a preview.** Yuzora is now a native app built on
 > [herdr-app](https://github.com/herdrdev/herdr-app) (Rust · GPUI · libghostty · QuickJS mods), in [`app/`](app/).
 > v0.1.0-beta.1 and older are the Tauri app in `src-tauri/` and `src/`, kept in the repository as a porting
-> source until beta.2 ships. Architecture: [docs/beta2/architecture.md](docs/beta2/architecture.md).
+> source. Architecture: [docs/beta2/architecture.md](docs/beta2/architecture.md).
 
 Yuzora runs your CLI coding agents (Claude Code, Codex, Pi and the other agents herdr recognizes) in herdr-core
 terminals that keep running when the window closes, and puts Git, files, databases and SSH / SFTP next to them in
@@ -46,7 +46,7 @@ the same window.
   and annotate. Folders whose own Git config runs programs ask for your trust first.
 - **Files and editor.** A file tree with Git marks and file-name and content search, a code editor with tree-sitter
   highlighting, a Markdown preview, and an image and SVG viewer (a repo's SVG is drawn in a separate process, with
-  time and memory limits). Files on a remote machine open read-only in beta.2. There is no language server (LSP).
+  time and memory limits). Files on a remote machine open read-only since beta.2. There is no language server (LSP).
 - **Databases**: PostgreSQL, SQL Server and SQLite, with a schema tree, a data grid that writes edited cells back in
   one transaction, the table structure and a SQL pane.
 - **SSH / SFTP**: hosts from `~/.ssh/config`, Yuzora's own hosts and herdr machines; host keys checked by
@@ -66,11 +66,11 @@ the same window.
   <img src="docs/readme/files-en.png" width="880" alt="Yuzora's Files mode: the repo's tree with Git marks in the sidebar, and the agent's terminal split with the code editor and a Markdown preview" />
 </p>
 
-Not in beta.2: the Browser, Companion and AgentZone.
+Not in beta.2 or beta.3: the Browser, Companion and AgentZone.
 
 ## Download and install
 
-beta.2 is a pre-release: download it from its page on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases).
+beta.3 is a pre-release (beta.2 does not update itself to it; install it over beta.2 by hand): download it from its page on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases).
 The website keeps offering v0.0.19, the last stable Tauri release, until 0.1.0 is stable.
 
 | Platform | File | Installs to |
@@ -82,7 +82,7 @@ The website keeps offering v0.0.19, the last stable Tauri release, until 0.1.0 i
 Starting with 0.1.0 Stable, stable releases also carry fixed names that always point to the newest stable one:
 `releases/latest/download/Yuzora-macos-aarch64.dmg` and `releases/latest/download/Yuzora-windows-x64-setup.exe`.
 Until then `releases/latest` is v0.0.19, the last stable Tauri release: its DMG is the Tauri app and the Windows link
-is a 404 (v0.0.19 ships `Yuzora-windows-x64.msi`). For beta.2, download from its pre-release page.
+is a 404 (v0.0.19 ships `Yuzora-windows-x64.msi`). For beta.3, download from its pre-release page.
 
 - **macOS: no Apple Developer ID signature, no notarization** (ad-hoc signature only). Gatekeeper blocks the first
   open: in System Settings › Privacy & Security, click **Open Anyway**, or run
@@ -190,7 +190,7 @@ The SSH / SFTP sidebar mode lists hosts from `~/.ssh/config`, Yuzora's own hosts
 - **Files** mode in the sidebar: the focused pane's repo as a tree with git marks (M/A/D/U/?), new file and folder, rename, move to Trash, copy path, reveal in Finder; fuzzy file-name search and content search (ripgrep when installed, a built-in search otherwise).
 - **Editor** pane: tree-sitter highlighting for 14 languages, save with a conflict check (⌘S), find and replace (⌘F / ⌘H). It follows changes made on disk and shows when an agent is editing the same file.
 - **Markdown** pane: a GFM preview that follows the editor as you type, with a source / preview toggle. An image and SVG viewer.
-- Files on another machine (remote spaces) can be browsed and opened read-only in beta.2.
+- Files on another machine (remote spaces) can be browsed and opened read-only since beta.2.
 
 Details: [docs/beta2/files.md](docs/beta2/files.md).
 <!-- yuzora:lane:L5:end -->
@@ -213,7 +213,7 @@ Native side: `app/crates/yuzora-settings` (`yuzora:settings`). Design and decisi
 The packages in [Download and install](#download-and-install) are made by `app/scripts/yuzora/package` and checked on all four targets by `.github/workflows/app-package.yml`.
 
 - **Updates.** An installed Yuzora checks this repository's GitHub Releases every hour, downloads a newer version next to itself and switches to it when it restarts. The update manifest must be signed with the release key and every file must match its SHA-256, or nothing is installed. A beta build only updates to a stable release (0.1.0 and later), never to another beta: download betas by hand. A stable build follows stable releases; `"update": {"channel": "beta"}` in `~/.config/yuzora/yuzora/settings.json` makes it take pre-releases too.
-- **Coming from 0.0.x or 0.1.0-beta.1.** Download and install beta.2 yourself (see [Download and install](#download-and-install)): the old app's updater doesn't offer beta.2, and updating to the new app from inside the old one comes with 0.1.0 Stable. beta.1's data stays where it was. Bringing connections and settings over isn't wired up yet, so set them up again for now. On Windows, the installer offers to remove the old all-users install.
+- **Coming from 0.0.x or 0.1.0-beta.1.** Download and install beta.3 yourself (see [Download and install](#download-and-install)): the old app's updater doesn't offer beta.3, and updating to the new app from inside the old one comes with 0.1.0 Stable. beta.1's data stays where it was. Bringing connections and settings over isn't wired up yet, so set them up again for now. On Windows, the installer offers to remove the old all-users install.
 - **The command line program is `yuzora`** (the same commands as `herdr-app`: `yuzora status`, `yuzora do …`). Yuzora never puts `herdr-app` on your PATH, so an official Herdr install keeps its own.
 
 Design, keys and the release steps: [docs/beta2/release.md](docs/beta2/release.md).
