@@ -798,38 +798,52 @@ pub(crate) mod tests {
 
     // An open repo is its top level only. With its `.git` gone and a repo around it, git fails,
     // here and on a machine, rather than reading or writing that repo under this one's name:
-    // status has none of its branch or files (the trust gate can't read this repo's config, so
-    // it asks, or git says there's no repo), a commit fails. Opening the folder now finds the
-    // repo around it, as git looks.
+    // status has none of its branch (the trust gate can't read this repo's config, so it asks,
+    // keeping what this one's status said last; or git says there's no repo), a commit fails.
+    // Opening the folder now finds the
+    // repo around it, as git looks. The same with a `:` in the folder above (no ceiling there:
+    // git splits the list at it), where git works as ever while the `.git` is there.
     #[test]
     fn a_repo_whose_git_is_gone_runs_nothing_in_the_repo_around_it() {
-        let outer = scratch();
-        let head = outer.commit("a.txt", "a", "outer");
-        let inner = format!("{}/inner", outer.root());
-        std::fs::create_dir_all(&inner).unwrap();
-        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&inner).status().unwrap().success());
-        let repo = open(&inner, None).unwrap();
-        assert_eq!(repo.place.root, inner);
-        let mut repos = vec![("here", repo.clone())];
-        #[cfg(unix)]
-        {
-            let _ = super::testing::on_machine(&outer);
-            let place = Place { on: Some("test-machine".into()), write_lock: Arc::default(), ..repo.place.clone() };
-            repos.push(("on a machine", Arc::new(Repo::new(repo_id(Some("test-machine"), &inner), place, repo.git_dir.clone(), repo.common_dir.clone()))));
+        let mut below = vec!["inner"];
+        if cfg!(unix) {
+            below.push("a:b/inner");
         }
-        std::fs::rename(format!("{inner}/.git"), format!("{inner}/.git-away")).unwrap();
-        for (where_, repo) in repos {
-            let status = crate::status::read(&repo, true);
-            let none = match &status {
-                Err(e) => e.to_string().contains("not a git repository"),
-                Ok(st) => st["branch"]["head"].is_null() && st["trust"].as_array().is_some_and(|t| !t.is_empty()),
-            };
-            assert!(none, "{where_}: status {status:?}");
-            let commit = repo.run(Git::write(["commit", "--allow-empty", "-q", "-m", "inner"])).unwrap();
-            assert!(!commit.ok(), "{where_}: committed");
+        for rel in below {
+            let outer = scratch();
+            let head = outer.commit("a.txt", "a", "outer");
+            let inner = format!("{}/{rel}", outer.root());
+            std::fs::create_dir_all(&inner).unwrap();
+            assert!(std::process::Command::new("git").args(["init", "-q", "-b", "main"]).current_dir(&inner).status().unwrap().success());
+            let repo = open(&inner, None).unwrap();
+            assert_eq!(repo.place.root, inner);
+            let mut repos = vec![("here", repo.clone())];
+            #[cfg(unix)]
+            {
+                let _ = super::testing::on_machine(&outer);
+                let place = Place { on: Some("test-machine".into()), write_lock: Arc::default(), ..repo.place.clone() };
+                repos.push(("on a machine", Arc::new(Repo::new(repo_id(Some("test-machine"), &inner), place, repo.git_dir.clone(), repo.common_dir.clone()))));
+            }
+            for (where_, repo) in &repos {
+                let commit = repo.run(Git::write(["-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false", "commit", "--allow-empty", "-q", "-m", "inner"])).unwrap();
+                assert!(commit.ok(), "{rel} {where_}: {}", commit.stderr_text());
+                let st = crate::status::read(repo, true).unwrap();
+                assert_eq!(st["branch"]["head"], "main", "{rel} {where_}: {st}");
+            }
+            std::fs::rename(format!("{inner}/.git"), format!("{inner}/.git-away")).unwrap();
+            for (where_, repo) in repos {
+                let status = crate::status::read(&repo, true);
+                let none = match &status {
+                    Err(e) => e.to_string().contains("not a git repository"),
+                    Ok(st) => st["branch"]["oid"] != head.as_str() && st["trust"].as_array().is_some_and(|t| !t.is_empty()),
+                };
+                assert!(none, "{rel} {where_}: status {status:?}");
+                let commit = repo.run(Git::write(["commit", "--allow-empty", "-q", "-m", "inner"])).unwrap();
+                assert!(!commit.ok(), "{rel} {where_}: committed");
+            }
+            assert_eq!(outer.git(&["rev-parse", "HEAD"]).trim(), head, "{rel}: the repo around it got a commit");
+            assert_eq!(open(&inner, None).unwrap().place.root, outer.root(), "{rel}");
         }
-        assert_eq!(outer.git(&["rev-parse", "HEAD"]).trim(), head, "the repo around it got a commit");
-        assert_eq!(open(&inner, None).unwrap().place.root, outer.root());
     }
 
     #[test]

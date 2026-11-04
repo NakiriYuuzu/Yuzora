@@ -78,10 +78,10 @@ pub struct Place {
     /// at each call, so a change applies to the repos already open.
     pub git: String,
     /// `root` is a work tree's top level (an open repo): git looks for the
-    /// repository there only, never in a folder above (`GIT_CEILING_DIRECTORIES`
-    /// is the folder above `root`). With the work tree's `.git` gone, git then
-    /// fails rather than reading and writing the repo around it under this
-    /// one's name. Off where a repo is looked for from a folder in it (`open`).
+    /// repository there only, never in a folder above ([`Place::confine`]).
+    /// With the work tree's `.git` gone, git then fails rather than reading
+    /// and writing the repo around it under this one's name. Off where a repo
+    /// is looked for from a folder in it (`open`).
     pub top: bool,
     pub write_lock: Arc<Mutex<()>>,
 }
@@ -92,10 +92,20 @@ impl Place {
     }
 
     /// What keeps git in this place's repo, for a [`top`](Self::top) one: the
-    /// folder above `root` as the ceiling (none above `/`).
-    fn ceiling(&self) -> Option<(String, String)> {
-        let above = std::path::Path::new(&self.root).parent().filter(|_| self.top)?;
-        Some(("GIT_CEILING_DIRECTORIES".into(), above.to_string_lossy().into_owned()))
+    /// folder above `root` as `GIT_CEILING_DIRECTORIES` (none above `/`). That
+    /// is a list, split at `:` (`;` for git on Windows), so a folder above with
+    /// one in its path can't be in it: git is told the repository outright
+    /// then, `GIT_DIR` the `.git` at `root` (a gitfile is followed) and
+    /// `GIT_WORK_TREE` `root`. Either way a `.git` that's gone fails.
+    fn confine(&self) -> Vec<(String, String)> {
+        let Some(above) = std::path::Path::new(&self.root).parent().filter(|_| self.top) else { return Vec::new() };
+        let above = above.to_string_lossy();
+        let split = if self.on.is_none() && cfg!(windows) { ';' } else { ':' };
+        if above.contains(split) {
+            vec![("GIT_DIR".into(), format!("{}/.git", self.root)), ("GIT_WORK_TREE".into(), self.root.clone())]
+        } else {
+            vec![("GIT_CEILING_DIRECTORIES".into(), above.into_owned())]
+        }
     }
 
     pub fn program(&self) -> String {
@@ -396,7 +406,7 @@ fn run_local(place: &Place, cmd: &Git, mut sink: Option<&mut dyn FnMut(&[u8]) ->
     let git = place.program();
     let mut c = Command::new(&git);
     c.args(base_args(cmd.kind)).args(&cmd.args).current_dir(&place.root);
-    for (k, v) in environment(cmd.kind, false, &cmd.env).into_iter().chain(place.ceiling()) {
+    for (k, v) in environment(cmd.kind, false, &cmd.env).into_iter().chain(place.confine()) {
         c.env(k, v);
     }
     c.stdin(if cmd.stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -683,7 +693,7 @@ impl Stream {
 pub fn hc_args(place: &Place, cmd: &Git) -> Vec<String> {
     let secs = cmd.timeout.min(REMOTE_MAX_TIMEOUT).as_secs_f64().ceil().max(1.0) as u64;
     let mut a: Vec<String> = vec!["exec".into(), "--json".into(), "--on".into(), place.on.clone().unwrap_or_default(), "--timeout".into(), secs.to_string(), "--cwd".into(), place.root.clone()];
-    for (k, v) in environment(cmd.kind, true, &cmd.env).into_iter().chain(place.ceiling()) {
+    for (k, v) in environment(cmd.kind, true, &cmd.env).into_iter().chain(place.confine()) {
         a.push("--env".into());
         a.push(format!("{k}={v}"));
     }
@@ -836,6 +846,10 @@ mod tests {
         assert!(top.windows(2).any(|w| w == ["--env", "GIT_CEILING_DIRECTORIES=/srv"]), "{top:?}");
         let root = Place { root: "/".into(), top: true, ..place.clone() };
         assert!(!hc_args(&root, &Git::read(["status"])).iter().any(|x| x.starts_with("GIT_CEILING_DIRECTORIES=")), "nothing above /");
+        // A `:` above: no ceiling git would split there, the repository outright.
+        let colon = hc_args(&Place { root: "/srv/a:b/repo".into(), top: true, ..place.clone() }, &Git::read(["status"]));
+        assert!(!colon.iter().any(|x| x.starts_with("GIT_CEILING_DIRECTORIES=")), "{colon:?}");
+        assert!(colon.windows(2).any(|w| w == ["--env", "GIT_DIR=/srv/a:b/repo/.git"]) && colon.windows(2).any(|w| w == ["--env", "GIT_WORK_TREE=/srv/a:b/repo"]), "{colon:?}");
         let dashes = a.iter().position(|x| x == "--").unwrap();
         assert_eq!(a[dashes - 1], "--stdin");
         assert_eq!(a[dashes + 1], "git");

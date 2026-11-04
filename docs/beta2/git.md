@@ -72,7 +72,8 @@ yuzora-git-settings ┘
   - 正常情況下行為不變：git 在 root 就找到 `.git`。
   - `.git` 在 repo 開著時不見了：git 不會往上找到外層 repo。status 會回錯誤，或者信任掃描讀不到這個 repo 的設定，改成詢問（`(unreadable config)`）；commit 等寫入都會失敗。不會頂著這個 repo 的名稱去讀寫外層 repo，跟隨焦點和釘選都一樣。
   - 釘選的 repo 在 status 失敗時，照前面的規則取消釘選；出現信任提示的話，信任之後 status 失敗，再取消釘選。
-  - 代價：hook 會繼承這個變數。hook 如果在上層 repo 的子資料夾（不是這個 repo 的上一層本身）跑 git，會找不到上層 repo。
+  - `GIT_CEILING_DIRECTORIES` 是用 `:` 分隔的清單（Windows 上的 git 用 `;`），上一層的路徑裡有這個字元時，git 會把它切開，限制就失效了。這時改成直接告訴 git 要用哪個 repo：`GIT_DIR=<root>/.git`（gitfile 也會照著走）、`GIT_WORK_TREE=<root>`。`.git` 不見時同樣會失敗，正常情況照常使用。遠端是 Windows 時路徑裡有磁碟機代號的 `:`，也會走這一條。
+  - 代價：hook 會繼承這些變數。用 ceiling 時，hook 如果在上層 repo 的子資料夾（不是這個 repo 的上一層本身）跑 git，會找不到上層 repo。用 `GIT_DIR` 時（只有上一層路徑含分隔字元的 repo），hook 換到別的資料夾跑 git，仍然會對著這個 repo。
 - 和總指揮提案不同的地方：
   - 多列了 Space 資料夾所在的 repo（往上找）：Space 資料夾是 repo 的子資料夾時，跟隨焦點本來就會打開它，選擇器裡沒有它就切不回去。
   - symlink 不跳過而是跟著走兩層：指向別處的專案資料夾也列得出來；兩層的限制就足以擋住迴圈。
