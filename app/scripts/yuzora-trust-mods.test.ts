@@ -56,8 +56,9 @@ async function ran() {
   return names.map((n) => n.slice(4)).sort();
 }
 
-// herdr's exec, run here, and what it was asked.
-function world(trusted: boolean) {
+// herdr's exec, run here, and what it was asked. `trusted` may be asked
+// each time: a repo's config can gain a program after a mod read the answer.
+function world(trusted: boolean | (() => boolean)) {
   const calls: string[][] = [], opened: unknown[][] = [];
   const exec = async (command: string, args: string[], o: { cwd?: string } = {}) => {
     calls.push([command, ...args]);
@@ -68,7 +69,7 @@ function world(trusted: boolean) {
   const stubs = {
     exec,
     gitOpen: async (cwd: string, on: string | null) => (opened.push([cwd, on]), { id: `:${cwd}` }),
-    gitStatus: async () => (trusted ? { branch: "main" } : { branch: "main", trust: KEYS }),
+    gitStatus: async () => ((typeof trusted === "function" ? trusted() : trusted) ? { branch: "main" } : { branch: "main", trust: KEYS }),
     tr: (key: string, vars: { keys?: string } = {}) => `${key} (${vars.keys})`,
     spaces: () => [{ id: "s1", active: true, folder: repo, machine: null, tabs: [] }],
     panes: () => [],
@@ -121,6 +122,35 @@ test("Changes: a trusted folder lists and diffs as before", async () => {
   expect(await ran()).toContain("clean");
 });
 
+// The answer read on a refresh can be stale by the time a diff or a commit
+// runs git (`git lfs install --local` adds a clean and a smudge filter): each
+// asks again first.
+test("Changes: a diff and a commit ask again before they run git", async () => {
+  await touch();
+  await ran();
+  let trusted = true;
+  const w = world(() => trusted);
+  const Changes = await load("changes", "Changes", w.stubs);
+  const view = new Changes();
+  view.init({}, w.cx);
+  await w.settle();
+  expect(view.files.map((f: { path: string }) => f.path)).toEqual(["a.txt"]);
+  expect(await ran()).toContain("clean");
+  trusted = false;
+  await touch();
+  const from = w.calls.length;
+  view.open = null;
+  view.pick("a.txt", w.cx);
+  await w.settle();
+  expect(view.rows.map((r: { text: string }) => r.text)).toEqual([`untrusted (${KEYS.join(", ")})`]);
+  view.message = "a message";
+  view.commit(w.cx);
+  await w.settle();
+  expect(w.calls.slice(from).filter((c) => c[0] === "git").every((c) => c[1] === "rev-parse" && c[2] === "--show-toplevel")).toBe(true);
+  expect(await ran()).toEqual([]);
+  expect(view.note).toContain(`untrusted (${KEYS.join(", ")})`);
+});
+
 test("Files: an untrusted folder lists its files without marks and says why", async () => {
   await touch();
   await ran();
@@ -163,14 +193,14 @@ test("Files: a trusted folder marks changed files as before", async () => {
   expect(await ran()).toContain("clean");
 });
 
-async function worktree(trusted: boolean, p: Record<string, unknown>) {
+async function worktree(trusted: boolean | (() => boolean), p: Record<string, unknown>) {
   const w = world(trusted);
-  const runs: unknown[][] = [];
-  const Worktree = await load("worktree", "Worktree", { ...w.stubs, props: () => p, run: (...a: unknown[]) => runs.push(a), closeOverlay() {} });
+  const runs: unknown[][] = [], closed: unknown[][] = [];
+  const Worktree = await load("worktree", "Worktree", { ...w.stubs, props: () => p, run: (...a: unknown[]) => runs.push(a), closeOverlay: (...a: unknown[]) => closed.push(a) });
   const view = new Worktree();
   view.init({}, w.cx);
   await w.settle();
-  return { view, w, runs };
+  return { view, w, runs, closed };
 }
 
 for (const action of ["remove", "new", "open"]) {
@@ -186,6 +216,30 @@ for (const action of ["remove", "new", "open"]) {
     await w.settle();
     expect(runs).toEqual([]);
     expect(w.refsOnly()).toBe(true);
+    expect(await ran()).toEqual([]);
+  });
+}
+
+// The dialog read the answer when it opened; Enter asks again.
+for (const action of ["remove", "new"]) {
+  test(`Worktree ${action}: Enter asks again before it runs git`, async () => {
+    await touch();
+    await ran();
+    let trusted = true;
+    const { view, w, runs, closed } = await worktree(() => trusted, { folder: repo, action });
+    expect(view.untrusted).toBe(undefined);
+    await ran();
+    trusted = false;
+    await touch();
+    const from = w.calls.length;
+    view.text = "feat";
+    await view.work(w.cx);
+    await w.settle();
+    expect(view.untrusted).toBe(`untrusted (${KEYS.join(", ")})`);
+    // The dialog stays open, saying why.
+    expect(closed).toEqual([]);
+    expect(runs).toEqual([]);
+    expect(w.calls.slice(from)).toEqual([]);
     expect(await ran()).toEqual([]);
   });
 }
@@ -248,15 +302,22 @@ test("each mod asks yuzora:git the same way", async () => {
 });
 
 // A new place a default mod runs git (an upstream sync) needs a look: is it
-// refs only, or does it wait for trust? See docs/beta2/git.md.
+// refs only, or does it wait for trust? See docs/beta2/git.md. Counted: each
+// `exec("git", …)`, and each call of a mod's own helper that is one (a
+// function whose first line runs it, or `name = (…) => exec("git", …)`).
 test("the default mods run git only where it was looked at", async () => {
   const seen: Record<string, number> = {};
   for (const entry of await readdir(mods, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const file = new URL(`${entry.name}/main.js`, mods);
     if (!existsSync(file)) continue;
-    const n = ((await readFile(file, "utf8")).match(/exec\(\s*"git"/g) ?? []).length;
+    const src = await readFile(file, "utf8");
+    const n = (src.match(/exec\(\s*"git"/g) ?? []).length;
     if (n) seen[entry.name] = n;
+    for (const [, a, b] of src.matchAll(/function\s+(\w+)\s*\([^)]*\)\s*\{\n[^\n]*exec\(\s*"git"|(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>\s*exec\(\s*"git"/g)) {
+      const name = a ?? b;
+      seen[`${entry.name} ${name}()`] = (src.match(new RegExp(`(?<![\\w.]|function )${name}\\(`, "g")) ?? []).length;
+    }
   }
-  expect(seen).toEqual({ changes: 4, files: 2, menu: 2, spaces: 2, worktree: 1 });
+  expect(seen).toEqual({ changes: 4, "changes git()": 5, files: 2, menu: 2, "menu checkout()": 1, spaces: 2, worktree: 1, "worktree git()": 15 });
 });
