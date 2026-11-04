@@ -169,6 +169,51 @@ mod tests {
         assert!(include_str!("../files.rs").contains(r#"crate::yuzora::trust::in_work_tree(root, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])"#));
     }
 
+    /// A partial clone fetches what it lacks from its promisor remote as it
+    /// reads, the remote its own config names: in a sparse one, listing the
+    /// ignored folders reads a `.gitignore` outside the checkout from the
+    /// index. Untrusted, the watch doesn't list them; trusted, git fetches as
+    /// it does in a terminal.
+    #[test]
+    fn an_untrusted_partial_clone_fetches_nothing_for_the_folder_watch() {
+        if !git_here() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("yuzora-l2c-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("up/b")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let git = |at: &Path, args: &[&str]| {
+            let out = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgSign=false", "-c", "protocol.file.allow=always"]).args(args).current_dir(at).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        let up = dir.join("up");
+        std::fs::write(up.join("a"), "x\n").unwrap();
+        std::fs::write(up.join("b/.gitignore"), "ign/\n").unwrap();
+        git(&up, &["init", "-q"]);
+        git(&up, &["config", "uploadpack.allowFilter", "true"]);
+        git(&up, &["add", "."]);
+        git(&up, &["commit", "-qm", "one"]);
+        git(&dir, &["clone", "-q", "--filter=blob:none", "--sparse", &format!("file://{}", up.display()), "pc"]);
+        let pc = dir.join("pc");
+        std::fs::create_dir_all(pc.join("b/ign")).unwrap();
+        std::fs::write(pc.join("b/ign/z"), "").unwrap();
+        let blob = git(&pc, &["rev-parse", "HEAD:b/.gitignore"]);
+        let have = || Command::new("git").args(["cat-file", "-e", &blob]).current_dir(&pc).env("GIT_NO_LAZY_FETCH", "1").status().unwrap().success();
+        assert!(!have());
+        let trusted = dir.join("trusted.json");
+        let e = in_work_tree_at(&trusted, &pc, &IGNORED).unwrap_err();
+        assert!(e.to_string().contains("remote.origin.promisor"), "{e}");
+        assert!(!have(), "the watch fetched from the promisor remote before the folder was trusted");
+        git_trust::trust_at(&trusted, &git_trust::folder_id(None, &pc.to_string_lossy())).unwrap();
+        let out = in_work_tree_at(&trusted, &pc, &IGNORED).unwrap();
+        let fetched = have();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "b/ign/\0");
+        assert!(fetched, "trusted, git didn't fetch either: this proves nothing");
+    }
+
     #[test]
     fn outside_a_repo_nothing_runs() {
         if !git_here() {

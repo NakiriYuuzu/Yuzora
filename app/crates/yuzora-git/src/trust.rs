@@ -18,13 +18,14 @@
 //! the status bar and the file tree; this keeps the list under
 //! [`crate::settings::own_dir`] and runs git through the engine.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::Value;
 use yuzora_core::git_trust;
 
-use crate::exec::{Git, GitError, GitResult};
+use crate::exec::{Git, GitError, GitResult, Output, Place};
 use crate::repo::Repo;
 
 /// An empty folder of ours for `core.hooksPath` when hooks must not run.
@@ -59,15 +60,118 @@ fn trusted() -> BTreeSet<String> {
     git_trust::trusted_from(&file())
 }
 
-/// What keeps git from running on its own in this repo: its program keys,
-/// unless the folder is trusted (empty: nothing does).
+/// What keeps git from running on its own in this repo, unless the folder
+/// is trusted (empty: nothing does): its program keys (a partial clone's
+/// too: [`git_trust::names_program`]), and the remote helpers git kept out
+/// of a command there ([`heard`]).
 pub fn pending(repo: &Repo) -> GitResult<Vec<String>> {
-    if trusted_folder(repo) { Ok(Vec::new()) } else { repo_programs(repo) }
+    if trusted_folder(repo) {
+        return Ok(Vec::new());
+    }
+    let mut keys: BTreeSet<String> = repo_programs(repo)?.into_iter().collect();
+    keys.extend(kept_out().lock().unwrap_or_else(|e| e.into_inner()).get(&repo.id).into_iter().flatten().cloned());
+    Ok(keys.into_iter().collect())
+}
+
+/// What git kept out this session in a folder not trusted yet ([`heard`]), by repo.
+fn kept_out() -> &'static Mutex<BTreeMap<String, BTreeSet<String>>> {
+    static KEPT: OnceLock<Mutex<BTreeMap<String, BTreeSet<String>>>> = OnceLock::new();
+    KEPT.get_or_init(Mutex::default)
+}
+
+/// git's own transports: anything else is a remote helper.
+const OWN_TRANSPORTS: [&str; 5] = ["file", "git", "http", "https", "ssh"];
+
+/// What [`guard`] decided for a command: the folder, and whether a helper
+/// git kept out there waits for trust (not for a read that chose to be offline).
+pub(crate) struct Guarded {
+    id: String,
+    listens: bool,
+}
+
+/// Every git command the engine starts passes here first (`exec`'s one way
+/// to start git, here and through `hc exec`). Until the folder is trusted it
+/// runs offline: `GIT_ALLOW_PROTOCOL` empty (no transport, so no remote
+/// helper, however a URL names one) and `GIT_NO_LAZY_FETCH=1` (a git before
+/// 2.44 ignores it; the empty list stops it there too). A command that chose
+/// its own keeps it: [`reach`] lists git's own transports, [`offline`] reads
+/// quietly.
+pub(crate) fn guard(place: &Place, mut cmd: Git) -> (Git, Option<Guarded>) {
+    let id = crate::repo::repo_id(place.on.as_deref(), &place.root);
+    if trusted().contains(&id) {
+        return (cmd, None);
+    }
+    let own = |cmd: &Git, k: &str| cmd.env.iter().rev().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+    let list = own(&cmd, "GIT_ALLOW_PROTOCOL");
+    if list.is_none() {
+        cmd = cmd.env("GIT_ALLOW_PROTOCOL", "");
+    }
+    if own(&cmd, "GIT_NO_LAZY_FETCH").is_none() {
+        cmd = cmd.env("GIT_NO_LAZY_FETCH", "1");
+    }
+    (cmd, Some(Guarded { id, listens: list.as_deref() != Some("") }))
+}
+
+/// After a guarded command: a remote helper git kept out (in its words, in
+/// English here: `transport '<name>' not allowed`) waits for trust from then
+/// on, so the sidebar asks. The scan can't see every URL that names one.
+pub(crate) fn heard(guarded: Guarded, out: &Output) {
+    if !guarded.listens {
+        return;
+    }
+    let stderr = out.stderr_text();
+    let kept = stderr.lines().filter_map(|l| l.split_once("transport '")?.1.strip_suffix("' not allowed")).filter(|t| !OWN_TRANSPORTS.contains(t));
+    let kept: BTreeSet<String> = kept.map(|t| format!("transport '{t}'")).collect();
+    if !kept.is_empty() {
+        kept_out().lock().unwrap_or_else(|e| e.into_inner()).entry(guarded.id).or_default().extend(kept);
+    }
+}
+
+/// Runs a command that reaches a remote (fetch, pull, push, submodule
+/// update). Until the folder is trusted it may use git's own transports the
+/// person's config allows ([`transports`]), never a remote helper, whatever
+/// names one: the scan can't see them all (a tracked `.gitmodules`, a nested
+/// one `--recursive` meets on the way, an unpopulated submodule's git dir,
+/// the person's own `insteadOf`). It fetches nothing a partial clone lacks
+/// either ([`guard`]).
+pub fn reach(repo: &Repo, cmd: Git, from_user: bool) -> GitResult<Output> {
+    if trusted_folder(repo) {
+        return repo.run(cmd);
+    }
+    let config = repo.run(Git::read(["config", "--get-regexp", r"^protocol\."]))?.stdout_text();
+    repo.run(cmd.env("GIT_ALLOW_PROTOCOL", transports(&config, from_user)))
+}
+
+/// Which of git's own transports the person's config allows, as git decides
+/// (`protocol.<name>.allow`, else `protocol.allow`, else its defaults:
+/// `file` only for a URL from the person, which a submodule's isn't), from
+/// `git config --get-regexp '^protocol\.'`; `:`-separated.
+fn transports(config: &str, from_user: bool) -> String {
+    let get = |key: &str| config.lines().rev().filter_map(|l| l.split_once(' ')).find(|(k, _)| *k == key).map(|(_, v)| v.to_ascii_lowercase());
+    let allowed = |t: &str| match get(&format!("protocol.{t}.allow")).or_else(|| get("protocol.allow")).as_deref() {
+        Some("always") => true,
+        Some("user") => from_user,
+        Some(_) => false,
+        None => t != "file" || from_user,
+    };
+    OWN_TRANSPORTS.into_iter().filter(|t| allowed(t)).collect::<Vec<_>>().join(":")
 }
 
 /// Whether the person trusted the folder (not only that nothing waits).
 pub fn trusted_folder(repo: &Repo) -> bool {
     trusted().contains(&repo.id)
+}
+
+/// A read that runs on its own (opening, refreshing, following refs): offline
+/// until the folder is trusted, as [`guard`] makes every command, and quiet
+/// about a helper git kept out (the person didn't start it).
+pub fn own_read(repo: &Repo, cmd: Git) -> Git {
+    if trusted_folder(repo) { cmd } else { offline(cmd) }
+}
+
+/// A read that never fetches what the repository lacks ([`own_read`]).
+pub fn offline(cmd: Git) -> Git {
+    cmd.env("GIT_NO_LAZY_FETCH", "1").env("GIT_ALLOW_PROTOCOL", "")
 }
 
 /// Every other call on the repo goes through here first: while the folder
@@ -87,10 +191,6 @@ pub fn check(repo: &Repo) -> GitResult<()> {
 
 /// The start of [`check`]'s error, for the panes to recognise.
 pub const UNTRUSTED: &str = "untrusted folder: trust it in the Git sidebar first";
-
-/// The start of a log's error when, before the folder is trusted, it needs
-/// objects its partial clone lacks (it fetches none until then).
-pub const LAZY_FETCH: &str = "objects missing from this partial clone: trust the folder to fetch them";
 
 /// Trusts the repo's folder (here or on its machine) from now on.
 pub fn trust(repo: &Repo) -> GitResult<Value> {
@@ -150,6 +250,433 @@ mod tests {
         assert!(v.get("trust").is_none());
         assert_eq!(v["counts"]["unstaged"], 1);
         assert!(std::path::Path::new(&marker).exists(), "trusted: git runs the filter as it would in a terminal");
+    }
+
+    // An unpopulated submodule's git dir (`.git/modules/<name>`) is beyond
+    // the scan, yet `fetch` (on demand) and `submodule update` use its
+    // remote; a tracked `.gitmodules`, a nested one met on the way, likewise.
+    #[test]
+    fn an_untrusted_folder_reaches_no_remote_helper() {
+        let s = scratch();
+        let mark = s.dir.path().join("ran");
+        let hit = s.dir.path().join("hit");
+        std::fs::write(&hit, format!("#!/bin/sh\ntouch '{}'\nexit 1\n", mark.display())).unwrap();
+        std::fs::set_permissions(&hit, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (lib, up) = (scratch(), scratch());
+        lib.commit("l.txt", "1\n", "l1");
+        up.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "m"]);
+        up.git(&["commit", "-q", "-m", "s1"]);
+        s.git(&["remote", "add", "origin", up.root()]);
+        s.git(&["fetch", "-q", "origin"]);
+        s.git(&["reset", "-q", "--hard", "origin/main"]);
+        s.git(&["-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init"]);
+        s.git(&["submodule", "deinit", "-q", "-f", "m"]);
+        // Upstream moves the submodule on; its git dir here names a helper, and allows it.
+        lib.commit("l.txt", "2\n", "l2");
+        up.git(&["-C", "m", "pull", "-q"]);
+        up.git(&["commit", "-q", "-am", "s2"]);
+        let config = s.repo.git_path("modules/m/config");
+        s.git(&["config", "--file", &config, "remote.origin.url", &format!("ext::{}", hit.display())]);
+        s.git(&["config", "--file", &config, "protocol.ext.allow", "always"]);
+        let named = [".git/modules/m: protocol.ext.allow", ".git/modules/m: remote.origin.url"];
+        assert_eq!(pending(&s.repo).unwrap(), named, "the scan reads the git dir of a submodule nothing checks out");
+        crate::ops::fetch(&s.repo, &serde_json::json!({}), None).unwrap();
+        assert!(!mark.exists(), "fetch ran the helper an unpopulated submodule names before the folder was trusted");
+        // Past the gate (which shuts here): git's own transports only, so git
+        // keeps the helper out however the git dir allows it, and says so.
+        s.git(&["reset", "-q", "--hard", "origin/main"]);
+        crate::ops::submodule_update(&s.repo, None).unwrap();
+        assert!(!mark.exists(), "submodule update ran it before the folder was trusted");
+        // The update put a `.git` in `m`: the same git dir, now by its gitlink's name.
+        assert_eq!(pending(&s.repo).unwrap(), ["m: protocol.ext.allow", "m: remote.origin.url", "transport 'ext'"], "what git kept out waits for trust");
+        trust(&s.repo).unwrap();
+        crate::ops::submodule_update(&s.repo, None).unwrap();
+        assert!(mark.exists(), "trusted, git didn't run it either: this proves nothing");
+    }
+
+    // The engine starts git one way (`exec::run_streaming`), here and through
+    // `hc exec`: until the folder is trusted every command there runs
+    // offline, whatever its caller built.
+    #[test]
+    fn every_git_command_in_an_untrusted_folder_runs_offline() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "one");
+        let lines = |out: Output| {
+            let mut v: Vec<String> = out.stdout_text().lines().filter(|l| l.starts_with("GIT_ALLOW_PROTOCOL=") || l.starts_with("GIT_NO_LAZY_FETCH=")).map(str::to_owned).collect();
+            v.sort();
+            v
+        };
+        let env = ["-c", "alias.yz-env=!env", "yz-env"];
+        let offline = ["GIT_ALLOW_PROTOCOL=", "GIT_NO_LAZY_FETCH=1"];
+        let there = crate::repo::testing::on_machine(&s);
+        for repo in [&s.repo, &there] {
+            assert_eq!(lines(repo.run(Git::read(env)).unwrap()), offline, "{}", repo.id);
+            assert_eq!(lines(repo.run(Git::write(env)).unwrap()), offline, "{}", repo.id);
+        }
+        // A command that reaches a remote: git's own transports the person allows.
+        let config = s.repo.run(Git::read(["config", "--get-regexp", r"^protocol\."])).unwrap().stdout_text();
+        let listed = transports(&config, true);
+        assert!(!listed.is_empty() && !listed.contains("ext"), "{listed}");
+        assert_eq!(lines(reach(&s.repo, Git::read(env), true).unwrap()), [format!("GIT_ALLOW_PROTOCOL={listed}"), "GIT_NO_LAZY_FETCH=1".into()]);
+        trust(&s.repo).unwrap();
+        assert_eq!(lines(s.repo.run(Git::read(env)).unwrap()), Vec::<String>::new(), "trusted: as git in a terminal");
+        assert_eq!(lines(there.run(Git::read(env)).unwrap()), offline, "another machine's folder of the same path is another folder");
+    }
+
+    // A URL whose scheme git doesn't serve itself (`zz://`, `ext://`) names a
+    // remote helper too, and a partial clone fetches what it lacks through
+    // it. Before trust a commit's details and its diff start none, even
+    // called past the gate.
+    #[test]
+    fn an_untrusted_partial_clone_starts_no_helper_for_details_or_a_diff() {
+        for url in ["zz://payload", "ext://x/run"] {
+            let s = scratch();
+            let mark = s.dir.path().join("ran");
+            let bin = s.dir.path().join("bin");
+            // A helper the person installed; `ext://x/run` runs `ext:/x/run`, which the repo can hold.
+            for at in [bin.join("git-remote-zz"), std::path::Path::new(s.root()).join("ext:/x/run")] {
+                std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+                std::fs::write(&at, format!("#!/bin/sh\ntouch '{}'\nexit 1\n", mark.display())).unwrap();
+                std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+            crate::exec::TEST_ENV.with(|t| *t.borrow_mut() = vec![("PATH".into(), path)]);
+            let one = s.commit("a.txt", "1\n", "one");
+            let two = s.commit("a.txt", "2\n", "two");
+            // `protocol.ext.allow` stands for the person's global config.
+            for (k, v) in [("remote.origin.url", url), ("remote.origin.promisor", "true"), ("protocol.ext.allow", "always")] {
+                s.git(&["config", k, v]);
+            }
+            std::fs::remove_file(s.repo.git_path(&format!("objects/{}/{}", &one[..2], &one[2..]))).unwrap();
+            // The gate is shut from the start (a partial clone waits); these are called past it.
+            assert!(pending(&s.repo).unwrap().contains(&"remote.origin.promisor".to_string()), "{url}: {:?}", pending(&s.repo));
+            let diff = || _ = crate::diffview::DiffSession::load(s.repo.clone(), "a.txt".into(), None, crate::diffview::Mode::Commit(two.clone()));
+            let details = crate::log::details(&s.repo, &one);
+            assert!(!mark.exists(), "{url}: a commit's details started a helper before the folder was trusted");
+            assert!(details.is_err(), "{url}: {details:?}");
+            diff();
+            assert!(!mark.exists(), "{url}: a diff started a helper before the folder was trusted");
+            trust(&s.repo).unwrap();
+            let _ = crate::log::details(&s.repo, &one);
+            let details_ran = mark.exists();
+            let _ = std::fs::remove_file(&mark);
+            diff();
+            crate::exec::TEST_ENV.with(|t| t.borrow_mut().clear());
+            assert!(details_ran && mark.exists(), "{url}: trusted, git didn't start the helper either ({details_ran}): this proves nothing");
+        }
+    }
+
+    /// A program for a test that notes it ran in `mark`; `tail` ends it.
+    fn hit(s: &crate::repo::testing::Scratch, tail: &str) -> (std::path::PathBuf, String) {
+        let mark = s.dir.path().join("ran");
+        let prog = s.dir.path().join("hit.sh");
+        std::fs::write(&prog, format!("#!/bin/sh\necho \"$*\" >> '{}'\n{tail}\n", mark.display())).unwrap();
+        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (mark, prog.display().to_string())
+    }
+
+    // A submodule not checked out keeps its git dir, and `submodule update`
+    // reuses it: a smudge filter for its checkout, an ssh command or git
+    // proxy for the commit it lacks. They wait for trust like the top's.
+    #[test]
+    fn an_unpopulated_submodules_programs_wait_for_trust() {
+        for (variant, key, url) in [("smudge", "filter.evil.smudge", "ssh://example.invalid/s"), ("sshcommand", "core.sshCommand", "ssh://example.invalid/s"), ("gitproxy", "core.gitProxy", "git://example.invalid/s")] {
+            let (s, lib) = (scratch(), scratch());
+            lib.write(".gitattributes", "*.txt filter=evil\n");
+            lib.git(&["add", ".gitattributes"]);
+            lib.commit("f.txt", "x\n", "l");
+            s.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "s"]);
+            s.git(&["commit", "-q", "-m", "sub"]);
+            s.git(&["submodule", "deinit", "-q", "-f", "s"]);
+            s.git(&["config", "-f", ".gitmodules", "submodule.s.url", url]);
+            s.git(&["commit", "-q", "-am", "url"]);
+            let (mark, prog) = hit(&s, if variant == "smudge" { "cat" } else { "exit 1" });
+            let config = s.repo.git_path("modules/s/config");
+            if variant != "smudge" {
+                // A commit the git dir lacks: update fetches it there.
+                s.git(&["update-index", "--cacheinfo", "160000,1234567890123456789012345678901234567890,s"]);
+                s.git(&["commit", "-q", "-m", "bump"]);
+                s.git(&["config", "--file", &config, "remote.origin.url", url]);
+            }
+            s.git(&["config", "--file", &config, key, &prog]);
+            let pending = pending(&s.repo).unwrap();
+            assert_eq!(pending, [format!(".git/modules/s: {}", key.to_lowercase())], "{variant}");
+            assert!(check(&s.repo).is_err(), "{variant}");
+            assert!(!mark.exists(), "{variant}");
+            // Trusted, update runs it: the setup proves something.
+            trust(&s.repo).unwrap();
+            let _ = crate::ops::submodule_update(&s.repo, None);
+            assert!(mark.exists(), "{variant}: trusted, submodule update didn't run it: this proves nothing");
+        }
+    }
+
+    // `submodule update` reuses whatever is at `.git/modules/<name>`, and git
+    // takes it for a git dir as it opens it: `HEAD` spelled `head` (where
+    // case doesn't count), only `HEAD` and a `commondir` naming where the
+    // rest is, `HEAD` a link to a ref that's only packed. Each waits for
+    // trust like a plain one; where git can't open it, nothing runs either.
+    #[test]
+    fn a_submodule_git_dir_hidden_from_a_listing_waits_for_trust() {
+        for variant in ["lowerhead", "commondir", "symhead"] {
+            let (s, lib) = (scratch(), scratch());
+            lib.write(".gitattributes", "*.txt filter=evil\n");
+            lib.git(&["add", ".gitattributes"]);
+            lib.commit("f.txt", "x\n", "l");
+            s.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "s"]);
+            s.git(&["commit", "-q", "-m", "sub"]);
+            s.git(&["submodule", "deinit", "-q", "-f", "s"]);
+            s.git(&["config", "-f", ".gitmodules", "submodule.s.url", "ssh://example.invalid/s"]);
+            s.git(&["commit", "-q", "-am", "url"]);
+            let gd = std::path::PathBuf::from(s.repo.git_path("modules/s"));
+            let mut config = gd.join("config");
+            match variant {
+                "lowerhead" => std::fs::rename(gd.join("HEAD"), gd.join("head")).unwrap(),
+                "commondir" => {
+                    let common = std::path::PathBuf::from(s.repo.git_path("evil-common"));
+                    std::fs::rename(&gd, &common).unwrap();
+                    std::fs::create_dir(&gd).unwrap();
+                    std::fs::copy(common.join("HEAD"), gd.join("HEAD")).unwrap();
+                    std::fs::write(gd.join("commondir"), "../../evil-common\n").unwrap();
+                    config = common.join("config");
+                }
+                _ => {
+                    let at = gd.display().to_string();
+                    let head = s.git(&["--git-dir", &at, "rev-parse", "HEAD"]);
+                    s.git(&["--git-dir", &at, "update-ref", "refs/heads/keep", head.trim()]);
+                    s.git(&["--git-dir", &at, "pack-refs", "--all"]);
+                    std::fs::remove_file(gd.join("HEAD")).unwrap();
+                    std::os::unix::fs::symlink("refs/heads/keep", gd.join("HEAD")).unwrap();
+                }
+            }
+            let (mark, prog) = hit(&s, "cat");
+            s.git(&["config", "--file", &config.display().to_string(), "filter.evil.smudge", &prog]);
+            // Where case counts, git can't open `head` as `HEAD`.
+            let opens = gd.join("HEAD").exists() || gd.join("HEAD").is_symlink();
+            let pending = pending(&s.repo).unwrap();
+            if opens {
+                // A link to a ref that's only packed leads the kernel nowhere,
+                // and the scan can't tell where git's real path would lead.
+                let mut want = vec![".git/modules/s: filter.evil.smudge".to_owned()];
+                if variant == "symhead" {
+                    want.insert(0, format!(".git/modules/s/HEAD: {UNREADABLE}"));
+                }
+                assert_eq!(pending, want, "{variant}");
+                assert!(check(&s.repo).is_err(), "{variant}");
+            } else {
+                assert_eq!(pending, Vec::<String>::new(), "{variant}");
+            }
+            assert!(!mark.exists(), "{variant}");
+            trust(&s.repo).unwrap();
+            let _ = crate::ops::submodule_update(&s.repo, None);
+            assert_eq!(mark.exists(), opens, "{variant}: trusted, submodule update ran it as git opens it: this proves the scan reads what git does");
+        }
+    }
+
+    // A linked worktree keeps its submodules' git dirs in its own git dir
+    // (`.git/worktrees/<id>/modules`), and its `submodule update` reuses them.
+    #[test]
+    fn a_linked_worktree_s_unpopulated_submodule_waits_for_trust() {
+        let (s, lib) = (scratch(), scratch());
+        lib.write(".gitattributes", "*.txt filter=evil\n");
+        lib.git(&["add", ".gitattributes"]);
+        lib.commit("f.txt", "x\n", "l");
+        s.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "s"]);
+        s.git(&["commit", "-q", "-m", "sub"]);
+        let away = tempfile::tempdir().unwrap();
+        let wt = std::fs::canonicalize(away.path()).unwrap().join("wt").display().to_string();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(["-c", "protocol.file.allow=always", "-C", &wt]).args(args).output().unwrap().status.success(), "{args:?}");
+        s.git(&["worktree", "add", "-q", &wt]);
+        git(&["submodule", "update", "-q", "--init"]);
+        git(&["submodule", "deinit", "-q", "-f", "s"]);
+        let (mark, prog) = hit(&s, "cat");
+        s.git(&["config", "--file", &format!("{}/.git/worktrees/wt/modules/s/config", s.root()), "filter.evil.smudge", &prog]);
+        let w = crate::repo::open(&wt, None).unwrap();
+        assert_eq!(pending(&w).unwrap(), [".git/worktrees/wt/modules/s: filter.evil.smudge"]);
+        assert!(check(&w).is_err());
+        assert_eq!(pending(&s.repo).unwrap(), Vec::<String>::new(), "the main worktree never uses it");
+        trust(&w).unwrap();
+        let _ = crate::ops::submodule_update(&w, None);
+        assert!(mark.exists(), "trusted, submodule update didn't run it: this proves nothing");
+    }
+
+    // The person's fetch recurses on demand into a submodule whose gitlink
+    // the fetched commits move, checked out or not. Before trust it fetches
+    // the folder's own repo only: no submodule's ssh command runs.
+    #[test]
+    fn a_fetch_before_trust_leaves_submodules_alone() {
+        let (s, lib) = (scratch(), scratch());
+        lib.commit("f.txt", "x\n", "l");
+        s.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "s"]);
+        s.git(&["config", "-f", ".gitmodules", "submodule.s.url", "ssh://example.invalid/s"]);
+        s.git(&["config", "submodule.s.url", "ssh://example.invalid/s"]);
+        s.git(&["commit", "-q", "-am", "sub"]);
+        // Upstream moves the gitlink on.
+        let up = s.dir.path().join("up.git");
+        let work = s.dir.path().join("work");
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(["-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false"]).args(args).output().unwrap().status.success(), "{args:?}");
+        git(&["clone", "-q", "--bare", "--no-local", s.root(), &up.display().to_string()]);
+        git(&["clone", "-q", "--no-local", &up.display().to_string(), &work.display().to_string()]);
+        let w = work.display().to_string();
+        git(&["-C", &w, "update-index", "--cacheinfo", "160000,1234567890123456789012345678901234567890,s"]);
+        git(&["-C", &w, "commit", "-q", "-m", "bump"]);
+        git(&["-C", &w, "push", "-q", "origin", "HEAD"]);
+        s.git(&["remote", "add", "origin", &format!("file://{}", up.display())]);
+        // Not checked out: its work tree emptied, its git dir kept.
+        std::fs::remove_dir_all(format!("{}/s", s.root())).unwrap();
+        std::fs::create_dir_all(format!("{}/s", s.root())).unwrap();
+        let (mark, prog) = hit(&s, "exit 1");
+        let config = s.repo.git_path("modules/s/config");
+        s.git(&["config", "--file", &config, "remote.origin.url", "ssh://example.invalid/s"]);
+        s.git(&["config", "--file", &config, "core.sshCommand", &prog]);
+        // Past the gate (which shuts here), as a fetch the person starts.
+        crate::ops::fetch(&s.repo, &serde_json::json!({}), None).unwrap();
+        assert!(!mark.exists(), "fetch ran a submodule's ssh command before the folder was trusted");
+        assert!(!s.git(&["rev-parse", "origin/main"]).is_empty(), "the folder's own repo was fetched");
+        // Pull fetches the same way. Then the commit is new to the next fetch again.
+        s.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+        let head = s.git(&["rev-parse", "HEAD"]);
+        let _ = crate::ops::pull(&s.repo, &serde_json::json!({"remote": "origin", "branch": "main", "method": "merge"}), None);
+        assert!(!mark.exists(), "pull ran a submodule's ssh command before the folder was trusted");
+        assert!(!s.git(&["rev-parse", "origin/main"]).is_empty(), "pull fetched the folder's own repo");
+        s.git(&["reset", "-q", "--hard", head.trim()]);
+        s.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+        trust(&s.repo).unwrap();
+        let _ = crate::ops::fetch(&s.repo, &serde_json::json!({}), None);
+        assert!(mark.exists(), "trusted, fetch didn't run it either: this proves nothing");
+    }
+
+    // A git before 2.44 ignores GIT_NO_LAZY_FETCH: this one drops it from
+    // every git it starts, and from the ones those start (`GIT_EXEC_PATH`).
+    fn old_git(at: &std::path::Path) -> Vec<(String, String)> {
+        let real = std::process::Command::new("git").arg("--exec-path").output().unwrap();
+        let real = String::from_utf8(real.stdout).unwrap().trim().to_owned();
+        std::fs::create_dir_all(at).unwrap();
+        for e in std::fs::read_dir(&real).unwrap().map(Result::unwrap).filter(|e| e.file_name() != "git") {
+            std::os::unix::fs::symlink(e.path(), at.join(e.file_name())).unwrap();
+        }
+        std::fs::write(at.join("git"), format!("#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec '{real}/git' \"$@\"\n")).unwrap();
+        std::fs::set_permissions(at.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        vec![("PATH".into(), format!("{}:{}", at.display(), std::env::var("PATH").unwrap_or_default())), ("GIT_EXEC_PATH".into(), at.display().to_string())]
+    }
+
+    // `.git/modules/<name>` may be a gitfile, here a link to one naming a
+    // partial clone that lacks the commit a push carries: a push that checks
+    // submodules (`push.recurseSubmodules`) opens it in its own process, from
+    // the link's real path, and a git before 2.44 fetches the commit there
+    // with that repo's `uploadpack`. The scan reads the git dir git opens;
+    // before trust no push, of a branch or of tags, checks a submodule either.
+    #[test]
+    fn a_push_before_trust_opens_no_submodule_git_dir() {
+        let (s, lib) = (scratch(), scratch());
+        let away_dir = tempfile::tempdir().unwrap();
+        let away = std::fs::canonicalize(away_dir.path()).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").args(["-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false"]).args(args).output().unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        let (src, up) = (away.join("src.git").display().to_string(), away.join("up.git").display().to_string());
+        lib.commit("f.txt", "1\n", "one");
+        git(&["clone", "-q", "--bare", lib.root(), &src]);
+        git(&["init", "-q", "--bare", &up]);
+        s.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.root(), "s"]);
+        s.git(&["commit", "-q", "-m", "sub"]);
+        s.git(&["remote", "add", "origin", &up]);
+        s.git(&["push", "-q", "origin", "main"]);
+        let sub = s.git(&["rev-parse", "HEAD"]);
+        s.git(&["submodule", "deinit", "-q", "-f", "s"]);
+        // `.git/modules/s` a link to a gitfile a level deeper, `../evil.git`
+        // in it: from the link's folder that is `.git/evil.git` (clean
+        // here), from the file's own `.git/deep/evil.git`, which git opens.
+        let (gd, evil) = (s.repo.git_path("modules/s"), s.repo.git_path("deep/evil.git"));
+        std::fs::create_dir_all(s.repo.git_path("deep/a")).unwrap();
+        std::fs::rename(&gd, &evil).unwrap();
+        std::fs::write(s.repo.git_path("deep/a/f"), "gitdir: ../evil.git\n").unwrap();
+        std::os::unix::fs::symlink("../deep/a/f", &gd).unwrap();
+        git(&["init", "-q", "--bare", &s.repo.git_path("evil.git")]);
+        let (mark, prog) = hit(&s, "exec git-upload-pack \"$@\"");
+        for (k, v) in [("remote.origin.url", src.as_str()), ("remote.origin.promisor", "true"), ("extensions.partialClone", "origin"), ("remote.origin.uploadpack", prog.as_str())] {
+            git(&["--git-dir", &evil, "config", k, v]);
+        }
+        // A commit the partial clone lacks; the push carries the gitlink moved to it.
+        lib.commit("f.txt", "2\n", "two");
+        git(&["-C", lib.root(), "push", "-q", &src, "HEAD:main"]);
+        let two = lib.git(&["rev-parse", "HEAD"]);
+        s.git(&["update-index", "--cacheinfo", &format!("160000,{},s", two.trim())]);
+        s.git(&["commit", "-q", "-m", "bump"]);
+        s.git(&["tag", "v1"]);
+        s.git(&["config", "push.recurseSubmodules", "check"]);
+        assert_eq!(pending(&s.repo).unwrap(), [".git/modules/s: extensions.partialclone", ".git/modules/s: remote.origin.promisor", ".git/modules/s: remote.origin.uploadpack"]);
+        assert!(check(&s.repo).is_err());
+        // Each push the remote lacks, as if nothing had been pushed since
+        // `sub`, and the partial clone without what a push fetched into it.
+        let packs = || std::fs::read_dir(format!("{evil}/objects/pack")).unwrap().map(|e| e.unwrap().path()).collect::<std::collections::BTreeSet<_>>();
+        let kept = packs();
+        let unpushed = || {
+            git(&["--git-dir", &up, "update-ref", "refs/heads/main", sub.trim()]);
+            let _ = std::process::Command::new("git").args(["--git-dir", &up, "update-ref", "-d", "refs/tags/v1"]).output();
+            s.git(&["update-ref", "refs/remotes/origin/main", sub.trim()]);
+            packs().difference(&kept).for_each(|p| std::fs::remove_file(p).unwrap());
+            let _ = std::fs::remove_file(&mark);
+        };
+        let pushes: [(&str, &dyn Fn()); 3] = [
+            ("a branch push", &|| { let _ = crate::ops::push(&s.repo, &serde_json::json!({}), None); }),
+            ("a tag's push", &|| { let _ = crate::ops::tag_push(&s.repo, "origin", Some("v1"), None); }),
+            ("a push of all tags", &|| { let _ = crate::ops::tag_push(&s.repo, "origin", None, None); }),
+        ];
+        // Past the gate (which shuts here), with a git that fetches lazily anyway.
+        let env = old_git(&away.join("old-git"));
+        crate::exec::TEST_ENV.with(|t| *t.borrow_mut() = env);
+        let mut ran = vec![];
+        for (what, push) in &pushes {
+            unpushed();
+            push();
+            ran.push((*what, mark.exists()));
+        }
+        // The same pushes again, trusted: each opens s and fetches there.
+        trust(&s.repo).unwrap();
+        let mut trusted = vec![];
+        for (what, push) in &pushes {
+            unpushed();
+            push();
+            trusted.push((*what, mark.exists()));
+        }
+        crate::exec::TEST_ENV.with(|t| t.borrow_mut().clear());
+        assert_eq!(ran, pushes.map(|(w, _)| (w, false)), "a push before trust ran the uploadpack of a submodule's git dir");
+        assert_eq!(trusted, pushes.map(|(w, _)| (w, true)), "trusted, a push didn't run it either: this proves nothing");
+    }
+
+    #[test]
+    fn a_partial_clone_waits_for_trust_by_the_keys_git_reads() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        assert_eq!(pending(&s.repo).unwrap(), Vec::<String>::new());
+        s.git(&["config", "remote.origin.promisor", "false"]);
+        assert_eq!(pending(&s.repo).unwrap(), Vec::<String>::new());
+        s.git(&["config", "remote.origin.promisor", "yes"]);
+        assert_eq!(pending(&s.repo).unwrap(), ["remote.origin.promisor"]);
+        s.git(&["config", "--unset", "remote.origin.promisor"]);
+        s.git(&["config", "extensions.partialClone", "origin"]);
+        assert_eq!(pending(&s.repo).unwrap(), ["extensions.partialclone"]);
+        // A filter alone makes a remote a promisor, as in git.
+        s.git(&["config", "--unset", "extensions.partialClone"]);
+        s.git(&["config", "remote.origin.partialCloneFilter", "blob:none"]);
+        assert_eq!(pending(&s.repo).unwrap(), ["remote.origin.partialclonefilter"]);
+        trust(&s.repo).unwrap();
+        assert_eq!(pending(&s.repo).unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn git_s_own_transports_follow_the_person_s_policy() {
+        assert_eq!(transports("", true), "file:git:http:https:ssh");
+        assert_eq!(transports("", false), "git:http:https:ssh");
+        // Per transport first, then `protocol.allow`; the last value wins; values in any case.
+        assert_eq!(transports("protocol.allow never\nprotocol.https.allow always", true), "https");
+        assert_eq!(transports("protocol.git.allow NEVER\nprotocol.file.allow always", false), "file:http:https:ssh");
+        assert_eq!(transports("protocol.ssh.allow always\nprotocol.ssh.allow user", false), "git:http:https");
+        assert_eq!(transports("protocol.allow user", false), "");
+        // The transport's name is a subsection: its case counts, as in git.
+        assert_eq!(transports("protocol.HTTPS.allow never", true), "file:git:http:https:ssh");
     }
 
     #[test]

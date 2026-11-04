@@ -457,9 +457,10 @@ pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
     }
     let text = out.stdout_text();
     // A path a line, unless one has a line feed in it (git prints it as it
-    // is): then each on its own.
+    // is): then each on its own. Split at line feeds only: `lines()` would
+    // take a carriage return off the end of a name too.
     let paths: Vec<String> = if text.matches('\n').count() == 3 {
-        text.lines().map(str::to_owned).collect()
+        text.split_terminator('\n').map(str::to_owned).collect()
     } else {
         let mut each = Vec::new();
         for flag in ["--show-toplevel", "--git-dir", "--git-common-dir"] {
@@ -567,8 +568,11 @@ pub mod testing {
         pub fn root(&self) -> &str {
             &self.repo.place.root
         }
+        /// git as the person runs it in a terminal: not offline the way git
+        /// the engine starts is before the folder is trusted.
         pub fn git(&self, args: &[&str]) -> String {
-            let out = self.repo.run(Git::write(args.iter().map(|s| s.to_string()))).unwrap();
+            let cmd = Git::write(args.iter().map(|s| s.to_string())).env("GIT_ALLOW_PROTOCOL", "file:git:http:https:ssh").env("GIT_NO_LAZY_FETCH", "0");
+            let out = self.repo.run(cmd).unwrap();
             assert!(out.ok(), "git {args:?}: {}", out.stderr_text());
             out.stdout_text()
         }
@@ -679,6 +683,23 @@ pub(crate) mod tests {
         assert_eq!(r.common_dir, format!("{root}/.git"));
         assert!(r.run(Git::read(["status", "--porcelain"])).unwrap().ok());
         close(&r.id);
+    }
+
+    // `str::lines` takes a carriage return before the line feed off too, and
+    // the work tree `r` + CR opened as the folder `r` beside it.
+    #[cfg(unix)]
+    #[test]
+    fn a_work_tree_whose_name_ends_in_a_carriage_return_opens_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(dir.path()).unwrap().display().to_string();
+        let root = format!("{base}/r\r");
+        for d in [&root, &format!("{base}/r")] {
+            std::fs::create_dir(d).unwrap();
+            assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(d).status().unwrap().success());
+        }
+        let r = open(&root, None).unwrap();
+        close(&r.id);
+        assert_eq!((r.place.root.as_str(), r.git_dir.as_str(), r.common_dir.as_str()), (root.as_str(), format!("{root}/.git").as_str(), format!("{root}/.git").as_str()));
     }
 
     #[cfg(unix)]

@@ -217,16 +217,24 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 - 側欄的檔名與內容搜尋只丟掉過期結果，背景工作不會取消；大 repo 剛輸入時可能同時跑多個完整列舉。
 - 有未儲存變更且檔案已從磁碟刪除時，只能「重新儲存」，沒有「捨棄」。
 
-## 延後到合併後的 follow-up PR
+## 延後項目
 
-#192 的 Codex P2 可以延後（P0／P1 一律在合併前修好）；延後的項目列在這裡，合併後由 L5 另開 PR 處理。
+#192 的 Codex P2 與 nit 先延後，合併後由 L5 另開 PR 處理。
+
+### 仍延後（等 Windows CI）
 
 - Windows 存檔保留 ACL 與其他屬性：目前 rename 換檔後只保留唯讀屬性，ACL 變成資料夾繼承的。改用 `ReplaceFileW`（保留 DACL、屬性、建立時間），失敗時（`ERROR_UNABLE_TO_MOVE_REPLACEMENT`）要把暫存檔放回原位，不能刪；需要 CI 在 Windows 編譯並測試 app（第 24 輪）。
 - Windows 上 `doc-pane.js` 的 `parent` 只認 `/`：原生路徑（`C:\…`）的檔案不會即時 watch，只靠 15 秒一次的檢查重新載入；watch 回報的路徑也要用和 `within()` 相同的方式比對（第 23 輪修 agent 判斷時發現）。
-- `gitStatus` 失敗時的提示：在 work tree 裡但 `gitStatus` 失敗（讀不到、逾時）時，現在和「不是 repo」一樣清掉分支與標記。要分開記下錯誤，並在樹下方提示 Git 標記無法取得。
-- 遠端檔名清單加 `rg --no-config`：清單腳本的兩個 `rg --files` 會讀 `RIPGREP_CONFIG_PATH`，裡面的 glob 可能讓檔案默默少掉（內容搜尋已經加了）。
-- 遠端列資料夾不展開整個 glob：列目錄腳本的 `for f in ./.[!.]* ./..?* ./*` 會先展開所有名稱，`max` 只限制輸出；超大的遠端資料夾可能逾時。改用逐筆讀取、到 `max + 1` 就停。
-- 模糊比對的配置上限：`fuzzy_match` 的兩個 `m × n` 矩陣在查詢與路徑都長達數千字元時可達數百 MB。限制查詢長度與配置量。
+
+### 已處理（follow-up PR）
+
+- `gitStatus` 失敗的提示：`yuzora-sidebar-files/git-state.js` 的 `readGit` 把「回 null（不是 repo）」和「拋錯（git 失敗、逾時）」分開，後者記在 `here.gitFailed`，樹下方顯示 `git.failed`（中英文都有）；分支與標記照舊清掉。測試：`yuzora-files/src/lib.rs` 的 QuickJS 測試 `sidebar_git_state_tells_a_failure_from_not_a_repo`（CI 會跑），加上 `the_files_sidebar_is_wired_to_git_failures_and_long_queries` 以 `include_str!` 守 `main.js` 的接線（只守字面）。
+- 遠端檔名清單的兩個 `rg --files` 加 `--no-config`（`search.rs` 的 `LIST_SCRIPT`），不再讀 `RIPGREP_CONFIG_PATH`；`the_list_script_*` 測試守著呼叫的參數。
+- 遠端列資料夾不展開整個 glob：`fsops.rs` 的 `LIST_SCRIPT` 改用 `find . ! -name . -prune` 串流逐筆讀，到 `max + 1` 筆就 `break`（find 因 SIGPIPE 自己結束）。名稱含換行的項目分不開，`find` 對它印 `?`（真名稱一定以 `./` 開頭），腳本輸出 `?` 項目，`parse_listing` 設 `Listing.skipped`，側欄顯示「有些檔案無法讀取」（`a_name_with_a_newline_is_reported_as_left_out`）。遠端沒有 `find` 時 exit 3，不會看起來像空資料夾。BSD find（macOS 遠端）會先讀完整個資料夾才輸出第一筆，所以成本仍隨資料夾大小成長，只是不再展開整個 glob、輸出也只到 `max + 1`。測試 `list_script_stops_reading_at_the_limit` 用永不結束的假 `find` 證明腳本會停。
+- `fuzzy_match` 的配置上限：`m × n` 超過 `MAX_MATCH_CELLS`（2²⁰）時不建表，改回最左的子序列比對，分數為 `-路徑長度`（通常低於正常比對）；不是子序列照樣回 `None`。測試 `an_oversized_match_falls_back_to_a_cheap_one`。查詢本身也有長度上限：去掉空白後超過 `MAX_QUERY_CHARS`（256）就不比對（`fuzzy_filter` 回空，`findFiles` 直接回 `tooLong: true`，不列舉檔案），側欄顯示 `search.too_long`（兩語系），測試 `a_query_past_the_length_limit_matches_nothing`。
+- Markdown 預覽的圖片不再在同一個 blocking loop 逐張處理：`markdown.rs` 的 `read_images` 用最多 `IMAGE_WORKERS`（= `svg::CONCURRENT`）條執行緒並行讀，每張讀完就記錄、重畫；點陣圖排在 SVG 前面，不會被慢的 SVG 擋住（`a_bitmap_is_not_kept_waiting_by_svgs_that_are_slow_to_draw`）。一個預覽因此可以同時佔住全部 SVG 名額，其他 pane 的 SVG 最多多等一個逾時時間，這是取捨。`check_images` 在兩張圖之間逐張回報這件事，測試環境的 `docs::blocking` 是同步執行，觀察不到，只用 `the_preview_is_wired_to_the_checked_helpers` 以字面守接線。SVG 仍然經 `svg::draw` 的子行程與它的 watchdog、並行上限，沒有繞過。測試 `images_are_read_a_few_at_once_and_answered_as_each_is_done`。
+- `image_source` 抽成 `source_of`（render 的閉包只剩呼叫它，同一個 wiring 測試守著；沒有畫出整個 `MarkdownView` 的 gpui 測試），測試 `the_preview_never_hands_a_path_to_gpui`：沒有答案時是空路徑，有答案時是畫好的像素（`ImageSource::Render`），遠端文件不讀本機；把 `.svg` 路徑交給 GPUI 會失敗。
+- CHANGELOG（`app/CHANGELOG.md`、`app/CHANGELOG.zh-TW.md`）的 SVG 條目改成：原因由圖片檢視說明，Markdown 預覽只有佔位圖。
 
 ## 待辦
 

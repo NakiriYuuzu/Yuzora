@@ -52,10 +52,19 @@ const MAGIC: &[&[u8]] = &[
 /// the same order. Stops after `$2` entries. `$1` is the directory.
 const LIST_SCRIPT: &str = r#"d=$1; max=$2
 cd -- "$d" 2>/dev/null || { echo "cannot open $d" >&2; exit 3; }
+command -v find >/dev/null 2>&1 || { echo "find not found" >&2; exit 3; }
+# Entries are read one by one from find, never expanded as a glob: past `max`
+# the loop stops and find stops (SIGPIPE) with it, so the rest is not
+# printed (the machine's find may still have read the folder). A name with a
+# newline in it cannot be told apart in this stream: find prints `?` for it
+# (a real name starts with `./`), which is listed as `?` with no name.
+find . ! -name . -prune \( -name '*
+*' -exec printf '?\n' \; -o -print \) 2>/dev/null | {
 n=0
 set --
-for f in ./.[!.]* ./..?* ./*; do
+while IFS= read -r f; do
   case $f in
+    '?') n=$((n+1)); [ "$n" -gt "$max" ] && break; printf '?\0\0'; continue;;
     ./.git|./.DS_Store) continue;;
     ./.yuzora-save-*) r=${f#./.yuzora-save-}; case $r in *[!0-9a-f]*) ;; *) [ "${#r}" -eq 32 ] && continue;; esac;;
   esac
@@ -74,6 +83,7 @@ printf -- '-\0'
 if [ "$#" -gt 0 ]; then
   stat -c %s -- "$@" 2>/dev/null || stat -f %z -- "$@" 2>/dev/null
 fi
+}
 exit 0"#;
 
 /// Exit 4 when `$1` does not exist; else prints `size mtime-seconds`. Not
@@ -387,7 +397,10 @@ fn parse_listing(out: &[u8], limit: usize) -> Listing {
             } else {
                 0
             };
-            let Ok(name) = std::str::from_utf8(name) else {
+            let Ok(name) = std::str::from_utf8(name).map_err(drop).and_then(|n| {
+                // `?` is a name the script could not pass on (a newline in it).
+                if kind == b'?' { Err(()) } else { Ok(n) }
+            }) else {
                 unreadable = true;
                 return None;
             };
@@ -1429,6 +1442,78 @@ mod tests {
             put(&d, f, body.as_bytes());
         }
         d
+    }
+
+    /// The listing script reads names one by one and stops at `max + 1`: with
+    /// a `find` that never ends it still finishes (a glob would have to
+    /// expand every name first).
+    /// A name with a newline in it cannot go through the listing script's
+    /// stream: it is marked, and the listing says something was left out.
+    #[cfg(unix)]
+    #[test]
+    fn a_name_with_a_newline_is_reported_as_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        put(&dir, "plain.txt", b"x");
+        put(&dir, "two\nlines.txt", b"x");
+        let out = std::process::Command::new("/bin/sh")
+            .args(["-c", LIST_SCRIPT, "sh"])
+            .arg(dir.path())
+            .arg("10")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let listing = parse_listing(&out.stdout, 10);
+        assert_eq!(names(&listing.entries), ["plain.txt"]);
+        assert!(listing.skipped);
+        assert!(!listing.truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_script_without_find_is_an_error_not_an_empty_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("/bin/sh")
+            .args(["-c", LIST_SCRIPT, "sh"])
+            .arg(dir.path())
+            .arg("10")
+            .env("PATH", empty.path())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_script_stops_reading_at_the_limit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        put(&dir, "a", b"x");
+        let bin = tempfile::tempdir().unwrap();
+        let fake = bin.path().join("find");
+        std::fs::write(&fake, "#!/bin/sh\nexec yes ./a\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", LIST_SCRIPT, "sh"])
+            .arg(dir.path())
+            .arg("3")
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.path().display()))
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let t = std::time::Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            if t.elapsed() > Duration::from_secs(10) {
+                let _ = child.kill();
+                panic!("never stopped reading");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(child.stdout.as_mut().unwrap(), &mut out).unwrap();
+        let listing = parse_listing(&out, 2);
+        assert!(listing.truncated);
+        assert_eq!(listing.entries.len(), 2);
     }
 
     #[test]
