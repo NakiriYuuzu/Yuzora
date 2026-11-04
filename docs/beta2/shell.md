@@ -63,7 +63,7 @@ L1 讀的 key：
 
 ## 設計決策
 
-- **tab 列列出所有 Space 的 tab**：設計稿 p1 的 tab 列同時有不同 Space 的 tab（以徽章區分），所以 tab 列依 Space 順序列出每個 Space 的 tab，Space 之間留一點間距；點別的 Space 的 tab 會一併切換 Space（`tab.select` 本來就如此）。一個 tab 仍只屬於一個 Space，不做跨 Space 的組合 tab。已收起（settled）的 tab 不顯示，除非正在看它。
+- **tab 列只列出目前 Space 的 tab**（使用者回報，2026-11-04）：沿用上游 Herdr tab 列的做法，只列 active Space 的 tab，以 Space 區分；沒有 active Space 時列表是空的。切換 Space 時列表跟著換（側欄的 Space 清單、`tab.select` 跨 Space 切換不受影響）。徽章仍顯示目前 Space 的色塊與縮寫，tooltip 仍帶 Space 名稱。設計稿 p1 把不同 Space 的 tab 並列在同一條 tab 列，與這個決定不一致，以此條為準。已收起（settled）的 tab 不顯示，除非正在看它。拖曳排序只在同一個 Space 內（列表本來就只有一個 Space）。測試：`render_tests.rs` 的 `yuzora_tab_bar_lists_only_the_current_space`。
 - **右側面板（Files／Changes）**：沿用上游 tab 列的切換鈕與「每個 Space 記住自己的面板」：切換 Space 時恢復該 Space 上次的選擇（沒選過就關閉）。`shared("workspace.panels")` 決定顯示哪幾顆。tab 列的分割鈕只在有 focus 的 model pane 時可用（layout 的終端機區塊有 focus 時停用）。
 - **「＋」與「＋ 新增 pane ▾」**：「＋」開上游的 `new-menu`（新 tab：終端機、agent、新 Space、worktree）。「新增 pane」在目前的 tab 內混合分割：工具 pane（`yuzora:core` 的 `panes()`）用 `pane.split {direction, pane, mod, props}`、終端機用 `pane.split {direction, pane}`、agent 用 `terminal.open {argv, place}`；位置（右側／下方）在選單頂端切換。沒有 focus 的 pane（還沒有 Space，或 focus 在 layout 的終端機 block）時改開新 tab。
 - **blocked 外框**：上游的 pane frame 只有 `border` 與 `focus`。L1 在 `PaneFrame` 加了 `blocked`（`{width, color}`），agent 需要回覆時優先使用（即使該 pane 有 focus，因為那裡需要人）。標頭底色 `#1d1a14` 由 `yuzora-shell-pane` 自己畫。工具 pane 沒有 agent，不會變色。

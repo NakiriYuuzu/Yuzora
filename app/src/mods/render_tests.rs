@@ -827,6 +827,32 @@ fn yuzora_new_pane_menu_shows_its_list_in_a_popup(cx: &mut TestAppContext) {
     assert!(tree.contains("menu.failed") && !tree.contains("menu.no_agents"), "{tree}");
 }
 
+// yuzora(L1): the tab bar lists the tabs of the current Space only, as Herdr's own does (the
+// sidebar is where Spaces are told apart); switching Space swaps the tabs, none active shows none.
+#[gpui::test]
+fn yuzora_tab_bar_lists_only_the_current_space(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let tab = |id: &str, active: bool, settled: bool| json!({"id":id,"index":1,"name":id,"active":active,"status":"idle","panes":1,"zoomed":false,"settled":settled,"settled_at":null,"changed_at":null,"working_since":null});
+    let spaces = |active: Option<&str>| json!([
+        {"id":"s1","index":1,"name":"Local","folder":"/a","machine":null,"branch":null,"active":active==Some("s1"),"status":"idle","tabs":[tab("a-one", true, false), tab("a-two", false, false), tab("a-old", false, true)]},
+        {"id":"s2","index":2,"name":"Remote","folder":"/b","machine":"remote","branch":null,"active":active==Some("s2"),"status":"idle","tabs":[tab("b-one", true, false)]},
+    ]);
+    let shown = |cx: &mut TestAppContext, active: Option<&str>| {
+        let mut values = fixture(true, json!({}), updates("current", "current"));
+        values.insert("spaces".into(), spaces(active));
+        let tree = describe_with_values(cx, &staged, "mods/yuzora-shell-tabs", values, None).unwrap();
+        let ids = ["a-one", "a-two", "a-old", "b-one"].map(|id| tree.contains(&format!("\"tab-{id}\"")));
+        (ids, tree)
+    };
+    let (ids, tree) = shown(cx, Some("s1"));
+    assert_eq!(ids, [true, true, false, false], "{tree}");
+    let (ids, tree) = shown(cx, Some("s2"));
+    assert_eq!(ids, [false, false, false, true], "{tree}");
+    let (ids, tree) = shown(cx, None);
+    assert_eq!(ids, [false; 4], "{tree}");
+}
+
 // yuzora(L1): a picked row closes the menu and goes where the pills say: beside the focused
 // pane, or a new tab when nothing is focused.
 #[gpui::test]

@@ -216,15 +216,15 @@ export default class Tabs extends View {
     const button = (id, child, tip, action, w = 28) => div().id(id).w(w).h(26).flex_none().flex().items_center().justify_center().rounded(6)
       .text_color(th.muted).hover((s) => s.bg(th.hover).text_color(th.foreground)).tooltip(tip)
       .on_mouse_down("left", stop).on_click(action).child(child);
-    const shown = sp.flatMap((s) => s.tabs.filter((c) => !c.settled || (s.active && c.active)).map((c) => ({ s, c })));
-    const item = ({ s, c }, i) => {
+    // Only the current Space's tabs, as Herdr's own tab bar: the sidebar is where Spaces are told apart.
+    const here = sp.find((s) => s.active);
+    const shown = here ? here.tabs.filter((c) => !c.settled || c.active).map((c) => ({ s: here, c })) : [];
+    const item = ({ s, c }) => {
       const on = s.active && c.active;
       const mine = ps.filter((p) => p.tab === c.id);
       const name = tabName(c, mine);
       const badge = badges[s.id];
-      const first = i > 0 && shown[i - 1].s.id !== s.id;
       return h_flex().id(`tab-${c.id}`).h(26).px(8).gap(6).rounded(6).items_center().flex_none().text_size(12.5)
-        .when(first, (el) => el.ml(6))
         .border(1).border_color(on ? th.input : th.chrome).bg(on ? th.raised : th.chrome).text_color(on ? th.foreground : th.muted)
         .when(!on, (el) => el.hover((st) => st.bg(th.hover)))
         .tooltip(`${s.name} · ${name}`)
@@ -254,7 +254,7 @@ export default class Tabs extends View {
     const winIcon = (name, glyph) => (w.platform === "windows" ? svg(`mods/tabs/win-${name}.svg`).size(16) : glyph);
     const panel = find(root, "panel"), body = find(root, "panel-body");
     const enabled = panelsOn(shared("workspace.panels"));
-    this.syncPanel(sp.find((s) => s.active), panel, body, enabled);
+    this.syncPanel(here, panel, body, enabled);
     const panelButton = (id, icon) => {
       const open = panel && !panel.hidden && body?.active === id;
       return h_flex().id(`panel-${id}`).h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12.5)
