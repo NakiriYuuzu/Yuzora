@@ -36,10 +36,12 @@
     "no_rg": "Searching contents on another machine needs ripgrep (rg) there.",
     "truncated": "Showing the first {count} matches.",
     "partial": "Searched the first {count} files only.",
+    "too_long": "That query is too long to search for.",
     "unfiltered": "No git or ripgrep on {machine}: ignored files are included.",
     "skipped": "Some files or folders couldn't be read: results may be incomplete."
   },
   "git": {
+    "failed": "Couldn't read Git status: Git marks are not shown.",
     "untrusted": "Untrusted folder: trust it in the Git sidebar to show Git marks.",
     "truncated": "Too many changes: not every changed file has a Git mark."
   },

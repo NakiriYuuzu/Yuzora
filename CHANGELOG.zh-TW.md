@@ -21,7 +21,7 @@ Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI�
 - MOD 管理：列出內建、已修改、複製與個人的 mods 與 layouts 及其錯誤；可複製、檢查、切換或還原 layout，並在顯示信任警告後從資料夾安裝。Yuzora 自己的介面就是 mods，可以複製後修改。
 - 深色與淺色主題（yuzora-dark、yuzora-light），預設跟隨系統；介面支援英文與繁體中文。
 - 與官方 Herdr 共用 herdr-core：版本不符的畫面改用 Yuzora 的名稱並說明 core 是共用的；core 重新啟動後若變成 Yuzora 不能用的版本，Yuzora 不會接上，並一直顯示原因，恢復後自動重新連線。
-- 更新改由本 repo 的 GitHub Releases 提供：每小時檢查，更新清單的簽章與每個檔案的 SHA-256 都驗過才會下載，重新啟動時套用。beta 版預設走 beta 通道。
+- 更新改由本 repo 的 GitHub Releases 提供：每小時檢查，更新清單的簽章與每個檔案的 SHA-256 都驗過才會下載，重新啟動時套用。beta 版只會更新到正式版（0.1.0 以後），不會更新到其他 beta。
 - 不再傳送任何使用資料；意見回饋改開 GitHub Issue。
 - 命令列程式叫 `yuzora`，不會蓋掉官方 Herdr 的 `herdr-app`。
 
@@ -34,7 +34,7 @@ Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI�
 - beta.1 的資料不會自動搬過來：資料庫連線、SSH 主機與設定需要重新設定；beta.1 的檔案原封不動，回到 beta.1 仍可使用。
 - Git：模式列的 Git 變更數與狀態列的 Git 摘要，要先打開過一次 Git 模式才會開始更新；遠端機器上的 repo 沒有檔案監看，Yuzora 以外的變更約 25 秒內才會反映；信任資料夾只管 Yuzora 自己執行的 Git；終端機裡執行的程式（包括 agent）不受影響。
 - 資料庫還不能經由 SSH tunnel 連線；遠端機器上的檔案在這一版只能瀏覽與唯讀開啟。
-- 更新通道目前只能在 `~/.config/yuzora/yuzora/settings.json` 的 `update.channel` 修改，設定頁還沒有選項。
+- beta 版不提供更新通道設定，只會更新到正式版。（正式版可在 `~/.config/yuzora/yuzora/settings.json` 的 `update.channel` 改成也收 Pre-release，設定頁還沒有選項。）
 - app home 已經有 layout 時（例如用過開發版），不會自動加入新的介面元件（例如右下角的資源用量），要重設 layout 才會出現。
 - 和 Herdr 同時使用時，在任一邊關閉收養來的 Space、tab 或 pane，會結束那邊的終端機；只要任一個 App 開著，`hc server stop` 後 core 會在一秒內重新啟動。
 - Windows 的遠端模板、垃圾桶與 SSH agent，以及 Windows、Linux 上與 Herdr 共用 core 的行為，只通過 CI 編譯與測試，尚未實機驗證。

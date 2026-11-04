@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use futures::StreamExt as _;
 use gpui::{
     AnyElement, App, Context, ElementId, Entity, FontWeight, Hsla, ImageFormat, ImageSource,
     IntoElement, ParentElement as _, Render, RenderImage, SharedString, SharedUri, StyleRefinement,
@@ -144,6 +145,24 @@ fn missing_image() -> ImageSource {
     ImageSource::from(PathBuf::new())
 }
 
+/// What the preview draws for `url`: the checked image, never the path (GPUI
+/// would read an SVG itself), and nothing while there is no answer.
+fn source_of(
+    images: &Mutex<ImageChecks>,
+    url: &str,
+    base: Option<&Path>,
+    remote: bool,
+) -> ImageSource {
+    let path = image_path(url, base).filter(|_| !remote);
+    let image = path.and_then(|path| {
+        images
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .answer(&path)
+    });
+    image.map_or_else(missing_image, |image| image.source())
+}
+
 /// What a look at an image file found.
 enum Found {
     /// The stamp of what is shown: not read again.
@@ -190,6 +209,49 @@ fn read_image(path: &Path, shown: Option<Stamp>, cancel: &Cancel) -> Found {
         Some(picture) => Found::Read { stamp, picture },
         None => Found::Nothing,
     }
+}
+
+/// Images read at once: as many as the SVG children that may run at once.
+const IMAGE_WORKERS: usize = crate::svg::CONCURRENT;
+
+/// Reads each of `wanted` with `read` on up to `workers` threads, handing
+/// every answer to `done` as it is ready. Returns when all are.
+fn read_images<R, D>(
+    wanted: Vec<(PathBuf, Option<Stamp>)>,
+    cancel: &Cancel,
+    workers: usize,
+    read: R,
+    done: D,
+) where
+    R: Fn(&Path, Option<Stamp>, &Cancel) -> Found + Sync,
+    D: Fn(PathBuf, Found) + Sync,
+{
+    // Bitmaps first: they need no child, so none waits behind an SVG that
+    // is slow to draw (the sort is stable).
+    let mut wanted = wanted;
+    wanted.sort_by_key(|(path, _)| is_svg(path));
+    let queue = Mutex::new(std::collections::VecDeque::from(wanted));
+    let next = || queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
+    std::thread::scope(|scope| {
+        for _ in 0..workers.max(1).min(queue_len(&queue)) {
+            scope.spawn(|| {
+                while let Some((path, shown)) = next() {
+                    let found = read(&path, shown, cancel);
+                    done(path, found);
+                }
+            });
+        }
+    });
+}
+
+fn is_svg(path: &Path) -> bool {
+    path.to_str()
+        .and_then(crate::image::format_of)
+        .is_some_and(|f| f == ImageFormat::Svg)
+}
+
+fn queue_len<T>(queue: &Mutex<std::collections::VecDeque<T>>) -> usize {
+    queue.lock().unwrap_or_else(|e| e.into_inner()).len()
 }
 
 /// A path's answer is looked at again after this long.
@@ -395,21 +457,28 @@ impl MarkdownView {
                     }
                     (checks.take_wanted(), checks.cancel.clone())
                 };
-                let answers = docs::blocking(move || {
-                    wanted
-                        .into_iter()
-                        .map(|(path, shown)| {
-                            let found = read_image(&path, shown, &cancel);
-                            (path, found)
-                        })
-                        .collect()
-                })
-                .await
-                .unwrap_or_default();
-                changed |= images
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .record(answers);
+                // Answers come as each image is done, and a few are read at
+                // once (an SVG a child draws is held to its own limits), so
+                // one that times out does not hold the others back.
+                let (tx, mut rx) = futures::channel::mpsc::unbounded();
+                let work = docs::blocking(move || {
+                    read_images(wanted, &cancel, IMAGE_WORKERS, read_image, |path, found| {
+                        let _ = tx.unbounded_send((path, found));
+                    });
+                });
+                let record = async {
+                    while let Some(answer) = rx.next().await {
+                        let now = images
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .record(vec![answer]);
+                        changed |= now;
+                        if now {
+                            let _ = this.update(cx, |_, cx| cx.notify());
+                        }
+                    }
+                };
+                futures::future::join(work, record).await;
             }
             let _ = this.update(cx, |_, cx| {
                 drop_released(&images, cx);
@@ -568,14 +637,7 @@ impl Render for MarkdownView {
                 .style(self.style(cx))
                 .shared_code_block_highlighter(self.highlighter.clone())
                 .image_source(move |uri: &SharedUri| {
-                    let path = image_path(uri.as_ref(), base.as_deref()).filter(|_| !remote);
-                    let image = path.and_then(|path| {
-                        images
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .answer(&path)
-                    });
-                    image.map_or_else(missing_image, |image| image.source())
+                    source_of(&images, uri.as_ref(), base.as_deref(), remote)
                 })
                 .on_link_click(|url, _, _, cx| {
                     if opens_outside(url) {
@@ -656,6 +718,126 @@ mod tests {
             Some(Picture::Bytes(image)) => image,
             _ => panic!("no bytes shown"),
         }
+    }
+
+    #[test]
+    fn the_preview_reads_as_many_images_at_once_as_svgs_may_be_drawn() {
+        assert_eq!(IMAGE_WORKERS, crate::svg::CONCURRENT);
+    }
+
+    /// Runs `read_images` over `names` (each takes `ms(name)`), with the time
+    /// every answer came at, in the order they came.
+    fn timed(
+        names: &[&str],
+        workers: usize,
+        ms: impl Fn(&str) -> u64 + Sync,
+    ) -> Vec<(String, u128)> {
+        let wanted: Vec<_> = names
+            .iter()
+            .map(|n| (PathBuf::from(format!("/x/{n}")), None))
+            .collect();
+        let answers = Mutex::new(Vec::new());
+        let started = Instant::now();
+        read_images(
+            wanted,
+            &Cancel::default(),
+            workers,
+            |path, _, _| {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                std::thread::sleep(Duration::from_millis(ms(&name)));
+                Found::Nothing
+            },
+            |path, _| {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                answers
+                    .lock()
+                    .unwrap()
+                    .push((name, started.elapsed().as_millis()));
+            },
+        );
+        answers.into_inner().unwrap()
+    }
+
+    #[test]
+    fn images_are_read_a_few_at_once_and_answered_as_each_is_done() {
+        let answers = timed(&["0.svg", "1.svg", "2.svg", "3.svg"], IMAGE_WORKERS, |n| {
+            if n == "0.svg" { 800 } else { 100 }
+        });
+        assert_eq!(answers.len(), 4);
+        // Each is answered when it is done, not when all are: the quick ones
+        // are in long before the slow one is.
+        for (name, at) in &answers {
+            if name != "0.svg" {
+                assert!(*at < 600, "{name} waited for the slow one: {answers:?}");
+            }
+        }
+        // And two run at once: one after another it would take 1100 ms.
+        assert!(
+            answers.iter().map(|a| a.1).max().unwrap() < 1000,
+            "{answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_bitmap_is_not_kept_waiting_by_svgs_that_are_slow_to_draw() {
+        let names = [
+            "a.svg", "b.svg", "c.svg", "d.svg", "e.svg", "f.svg", "p.png",
+        ];
+        let answers = timed(&names, IMAGE_WORKERS, |n| {
+            if n.ends_with("svg") { 300 } else { 10 }
+        });
+        let at = |name: &str| answers.iter().find(|a| a.0 == name).unwrap().1;
+        let first_svg = answers
+            .iter()
+            .filter(|a| a.0.ends_with("svg"))
+            .map(|a| a.1)
+            .min()
+            .unwrap();
+        assert!(at("p.png") < first_svg, "{answers:?}");
+    }
+
+    /// Wiring that a unit test of the helpers cannot see (the tests run
+    /// `docs::blocking` inline, so what happens between answers cannot be
+    /// observed): the sources must still be shaped this way.
+    #[test]
+    fn the_preview_is_wired_to_the_checked_helpers() {
+        let src = include_str!("markdown.rs");
+        let code = src.split("#[cfg(test)]\nmod tests {").next().unwrap();
+        for needle in [
+            "read_images(wanted, &cancel, IMAGE_WORKERS, read_image,",
+            "rx.next().await",
+            "source_of(&images, uri.as_ref(), base.as_deref(), remote)",
+        ] {
+            assert_eq!(code.matches(needle).count(), 1, "{needle}");
+        }
+        // The SVG is never handed to GPUI as a path in the view itself.
+        assert!(!code.contains("ImageSource::from(path"), "a path to GPUI");
+    }
+
+    #[test]
+    fn the_preview_never_hands_a_path_to_gpui() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = dir.path().join("a.svg");
+        std::fs::write(&svg, svg_with(RED_RECT)).unwrap();
+        let images = Mutex::new(ImageChecks::default());
+        let is_blank_path = |s: ImageSource| matches!(&s, ImageSource::Resource(gpui::Resource::Path(p)) if p.as_os_str().is_empty());
+        // No answer yet: nothing, not the .svg path.
+        let at = |images: &Mutex<ImageChecks>, remote| {
+            source_of(images, "a.svg", Some(dir.path()), remote)
+        };
+        assert!(is_blank_path(at(&images, false)));
+        // Answered: the drawn pixels.
+        let stamp = fsops::stamp_of(&std::fs::metadata(&svg).unwrap());
+        images.lock().unwrap().record(vec![(
+            svg.clone(),
+            Found::Read {
+                stamp,
+                picture: Picture::Drawn(drawn()),
+            },
+        )]);
+        assert!(matches!(at(&images, false), ImageSource::Render(_)));
+        // A remote document draws nothing from this machine's disk.
+        assert!(is_blank_path(at(&images, true)));
     }
 
     #[gpui::test]
