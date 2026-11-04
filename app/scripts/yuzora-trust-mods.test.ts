@@ -151,6 +151,25 @@ test("Changes: a diff and a commit ask again before they run git", async () => {
   expect(view.note).toContain(`untrusted (${KEYS.join(", ")})`);
 });
 
+// yuzora(L2): a refresh asks once, the diff it opens on its own included (the
+// refresh asked before its own status and diff); a diff the person picks asks again.
+test("Changes: a refresh asks once, a picked diff asks again", async () => {
+  await touch();
+  await ran();
+  const w = world(true);
+  const Changes = await load("changes", "Changes", w.stubs);
+  const view = new Changes();
+  view.init({}, w.cx);
+  await w.settle();
+  expect(view.open).toBe("a.txt");
+  expect(view.rows.length).toBeGreaterThan(0);
+  expect(w.opened).toEqual([[repo, null]]);
+  view.open = null;
+  view.pick("a.txt", w.cx);
+  await w.settle();
+  expect(w.opened).toEqual([[repo, null], [repo, null]]);
+});
+
 test("Files: an untrusted folder lists its files without marks and says why", async () => {
   await touch();
   await ran();

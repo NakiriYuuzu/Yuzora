@@ -147,26 +147,48 @@ pub fn whole(code: i32, stdout: Vec<u8>) -> (i32, Vec<u8>) {
 /// The program keys the repository's own config sets, and its submodules'
 /// (status looks inside them, with their configs), as `path: key`. `run`
 /// runs git with these arguments in the repository's top level and answers
-/// its exit code and stdout, through [`whole`]. A config git can't read
-/// counts as [`UNREADABLE`]. A runner that ran out of time answers
-/// `(-1, [])`, as git failing: the gate stays shut and the person can still
-/// trust the folder. Err only when git couldn't run at all.
+/// its exit code and stdout, through [`whole`]; it's called once (on a
+/// machine, one `hc exec`): [`SCAN_SCRIPT`] reads the repository's own
+/// config first. A config git can't read counts as [`UNREADABLE`]. A runner
+/// that ran out of time answers `(-1, [])`, as git failing: the gate stays
+/// shut and the person can still trust the folder. Err only when git
+/// couldn't run at all.
 pub fn repo_programs<E>(mut run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<Vec<String>, E> {
-    let (code, out) = run(&["config", "--show-scope", "-z", "--get-regexp", PROGRAMS])?;
-    // 1 with nothing printed: no key matched. Anything else: unknown.
-    let mut keys = match code {
-        0 => repo_keys(&out, ""),
-        1 if out.is_empty() => BTreeSet::new(),
-        _ => return Ok(vec![UNREADABLE.into()]),
-    };
-    // The submodules, whatever the repository's own config said.
     let alias = format!("alias.{SCAN}=!{}", SCAN_SCRIPT.replace("@PROGRAMS@", PROGRAMS).replace("@SCAN@", SCAN));
     let (code, out) = run(&["-c", &alias, SCAN])?;
-    if code != 0 || !scanned_to_the_end(&out) {
+    // The config's answer, then the submodules', whatever the config said.
+    let Some((config, config_code, subs)) = config_part(&out) else {
+        return Ok(vec![UNREADABLE.into()]);
+    };
+    // 1 with nothing printed: no key matched. Anything else: unknown.
+    let mut keys = match config_code {
+        0 => repo_keys(config, ""),
+        1 if config.is_empty() => BTreeSet::new(),
+        _ => return Ok(vec![UNREADABLE.into()]),
+    };
+    if code != 0 || !scanned_to_the_end(subs) {
         keys.insert(UNREADABLE.into());
     }
-    keys.extend(repo_keys(&out, "?"));
+    keys.extend(repo_keys(subs, "?"));
     Ok(keys.into_iter().collect())
+}
+
+/// The scan's answer cut where its record of the config's exit code
+/// (`config\0<code>\0`) starts a pair: what `git config` printed before it
+/// (its records start with a scope, never `config`), the code, and the
+/// scan's records after it. None without one: the scan never got that far,
+/// or the config's answer stopped part way (count it unreadable).
+fn config_part(out: &[u8]) -> Option<(&[u8], i32, &[u8])> {
+    let mut at = 0;
+    loop {
+        let first = at + out[at..].iter().position(|b| *b == 0)?;
+        let second = first + 1 + out[first + 1..].iter().position(|b| *b == 0)?;
+        if &out[at..first] == b"config" {
+            let code = std::str::from_utf8(&out[first + 1..second]).ok()?.parse().ok()?;
+            return Some((&out[..at], code, &out[second + 1..]));
+        }
+        at = second + 1;
+    }
 }
 
 /// Whether the scan's answer ends with its last record (`end\0<SCAN>\0`,
@@ -180,7 +202,10 @@ fn scanned_to_the_end(out: &[u8]) -> bool {
 /// level, so any runner of git (here, `hc exec --on`) does in one call.
 const SCAN: &str = "yuzora-trust-scan";
 
-/// Each checked-out gitlink in the index, nested ones too, and its config's
+/// First the repository's config read from the top level, as the gate always
+/// read it: its program keys in all scopes as `git config --show-scope -z`
+/// prints them, then `config\0<its exit code>\0` ([`config_part`]). Then each checked-out
+/// gitlink in the index, nested ones too, and its config's
 /// program keys: `sub\0path\0` then the records, `err\0what\0` when it can't
 /// be read, and `end\0<SCAN>\0` last. It follows git: a gitlink is checked
 /// out when its folder has a `.git`, and git works in it with `GIT_DIR=.git`
@@ -238,6 +263,8 @@ const SCAN: &str = "yuzora-trust-scan";
 const SCAN_SCRIPT: &str = r#"unset CDPATH GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_PREFIX
 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=
 export GIT_NO_LAZY_FETCH GIT_ALLOW_PROTOCOL
+git config --show-scope -z --get-regexp '@PROGRAMS@'
+printf 'config\0%s\0' $?
 tab=$(printf '\t') nl='
 '
 IFS=$nl
@@ -587,35 +614,50 @@ mod tests {
 
     #[test]
     fn records_and_exit_codes_read_as_the_gate_needs() {
-        let answer = |config: (i32, &str), subs: (i32, &str)| {
-            let mut calls = Vec::new();
+        // One call (on a machine, one `hc exec`): the scan's shell answers
+        // what `git config` printed, `config\0<its code>\0`, then the scan's records.
+        let raw = |code: i32, out: &str| {
+            let mut calls = 0;
             let keys = repo_programs(|args| {
-                calls.push(args[0].to_owned());
-                Ok::<_, ()>(if args[0] == "config" { (config.0, config.1.as_bytes().to_vec()) } else { (subs.0, subs.1.as_bytes().to_vec()) })
+                calls += 1;
+                assert_eq!(args[0], "-c");
+                Ok::<_, ()>((code, out.as_bytes().to_vec()))
             })
             .unwrap();
-            (keys, calls)
+            assert_eq!(calls, 1);
+            keys
         };
+        let answer = |config: (i32, &str), subs: (i32, &str)| raw(subs.0, &format!("{}config\0{}\0{}", config.1, config.0, subs.1));
         // The scan's last record: an answer without it was cut short.
         const END: &str = "end\0yuzora-trust-scan\0";
         // No key: nothing pending.
-        assert_eq!(answer((1, ""), (0, END)).0, Vec::<String>::new());
-        // An unreadable config shuts the gate and stops there.
-        assert_eq!(answer((128, ""), (0, "")), (vec![UNREADABLE.to_string()], vec!["config".to_string()]));
+        assert_eq!(answer((1, ""), (0, END)), Vec::<String>::new());
+        // An unreadable config shuts the gate, whatever the scan found.
+        assert_eq!(answer((128, ""), (0, "")), [UNREADABLE]);
+        assert_eq!(answer((128, ""), (0, &format!("sub\0vendor/a\0local\0filter.y.clean\ncat\0{END}"))), [UNREADABLE]);
+        // No word of the config's: git failed before the shell ran, or it
+        // stopped part way (a record cut, so the code's record doesn't start
+        // a pair), or the code isn't one. Never "no key".
+        assert_eq!(raw(128, ""), [UNREADABLE]);
+        assert_eq!(raw(0, END), [UNREADABLE]);
+        assert_eq!(raw(0, &format!("local\0filter.x.clean\ncatconfig\00\0{END}")), [UNREADABLE]);
+        assert_eq!(raw(0, &format!("local\0config\00\0{END}")), [UNREADABLE]);
+        assert_eq!(raw(0, &format!("config\0x\0{END}")), [UNREADABLE]);
+        assert_eq!(raw(0, &format!("config\0{END}")), [UNREADABLE]);
         // Only the repository's own scopes count, and only values that run something.
         let own = "local\0filter.x.clean\nprog\0global\0core.sshcommand\nssh\0worktree\0core.fsmonitor\ntrue\0local\0diff.x.textconv\0";
-        assert_eq!(answer((0, own), (0, END)).0, ["diff.x.textconv", "filter.x.clean"]);
+        assert_eq!(answer((0, own), (0, END)), ["diff.x.textconv", "filter.x.clean"]);
         // Submodules name themselves; one git can't read keeps the gate shut.
         let subs = &format!("sub\0vendor/a\0local\0filter.y.clean\ncat\0sub\0vendor/b\0err\0128\0{END}");
-        assert_eq!(answer((1, ""), (0, subs)).0, ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"], "no key above: the submodules still count");
-        assert_eq!(answer((0, "global\0core.askpass\nx\0"), (0, subs)).0, ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"]);
+        assert_eq!(answer((1, ""), (0, subs)), ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"], "no key above: the submodules still count");
+        assert_eq!(answer((0, "global\0core.askpass\nx\0"), (0, subs)), ["vendor/a: filter.y.clean", "vendor/b: (unreadable config)"]);
         // Remote files beside a config, the top's and a submodule's.
         let legacy = &format!("sub\0\0legacy\0.git/remotes\0sub\0vendor/a\0legacy\0.git/branches\0{END}");
-        assert_eq!(answer((1, ""), (0, legacy)).0, [".git/remotes", "vendor/a: .git/branches"]);
-        assert!(answer((0, ""), (2, "")).0.contains(&UNREADABLE.to_string()));
+        assert_eq!(answer((1, ""), (0, legacy)), [".git/remotes", "vendor/a: .git/branches"]);
+        assert!(answer((0, ""), (2, "")).contains(&UNREADABLE.to_string()));
         // A scan that stopped part way (exit 0, records missing) keeps it shut.
-        assert_eq!(answer((1, ""), (0, "")).0, [UNREADABLE]);
-        assert_eq!(answer((1, ""), (0, "sub\0vendor/a\0local\0filter.y.clean\ncat\0")).0, [UNREADABLE, "vendor/a: filter.y.clean"]);
+        assert_eq!(answer((1, ""), (0, "")), [UNREADABLE]);
+        assert_eq!(answer((1, ""), (0, "sub\0vendor/a\0local\0filter.y.clean\ncat\0")), [UNREADABLE, "vendor/a: filter.y.clean"]);
     }
 
     #[test]
