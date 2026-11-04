@@ -69,5 +69,16 @@
   "trust.status": "未信任的資料夾",
   "trust.refused": "這個資料夾還沒有信任：請先在 Git 側欄信任它（{keys}）。",
   "path.lossy": "{path}：這個名稱不是 UTF-8，Yuzora 無法把它原樣交給 git，請改用終端機處理。",
-  "tab.diff": "差異"
+  "tab.diff": "差異",
+  "repo.none": "沒有 repo",
+  "repo.follow": "跟隨焦點",
+  "repo.followTip": "顯示焦點 pane 所在的 repo。按一下可替這個 Space 釘選一個 repo",
+  "repo.pinnedTip": "這個 Space 已釘選這個 repo。按一下可更換",
+  "repo.here": "這個 Space 的資料夾",
+  "repo.trusted": "已信任",
+  "repo.loading": "正在尋找 repo…",
+  "repo.empty": "這個 Space 裡沒有 repo。",
+  "repo.truncated": "只列出前 {count} 個。",
+  "repo.gone": "{name} 已不是 repo，改回跟隨焦點",
+  "repo.opensAbove": "git 在這裡打開的是 {root}：這個 repo 的 .git 目前無法使用"
 }

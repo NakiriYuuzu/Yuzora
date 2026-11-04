@@ -62,6 +62,11 @@ fn trusted() -> BTreeSet<String> {
     git_trust::trusted_from(&file())
 }
 
+/// The trusted folders' ids (`<machine>:<top level>`), for a list that can't run git.
+pub fn trusted_ids() -> BTreeSet<String> {
+    trusted()
+}
+
 /// What keeps git from running on its own in this repo, unless the folder
 /// is trusted (empty: nothing does): its program keys (a partial clone's
 /// too: [`git_trust::names_program`]), and the remote helpers git kept out
