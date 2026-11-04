@@ -45,6 +45,7 @@ yuzora-git-settings ┘
   - `diffOpenIn: "pane"`：直接開在「保留」會放的位置。
   - 「保留」：依 `diffKeepIn`，`split`（預設）在焦點 pane 右側 `pane.split {direction: "right", mod, props}`，沒有焦點 pane 或設成 `tab` 時 `tab.new`；新 pane 帶著 modal 裡的檢視（並排／合併、空白、context），然後關閉 modal。`run()` 只把指令排進佇列、不回傳錯誤，所以 split 或 `tab.new` 失敗時 modal 照樣關閉，pane 也不會出現。
 - 即時更新：`changed(repo, since)` 在 repo 的 generation 變了（watcher 或我們自己的寫入）時 resolve；遠端 repo 沒有 watcher，約 25 秒逾時一次，呼叫端藉此輪詢。本機 repo 的 watcher 啟動失敗時（例如系統的監看數用完），等待逾時就把整個 repo 與 refs 視為已變更，generation 前進，各 pane 照常重讀。逾時由一條共用的計時執行緒負責，不靠 watcher 的 tick（只在有人等待時存在）。
+- `changes(repo, since)`：同 `changed`，另外回傳這段期間變動的路徑（`{generation, paths}`）。路徑來自 watcher 看到的工作樹，以及我們自己的 stage／unstage／discard 指定的路徑；無法判斷時 `paths` 是 `null`，包括 git 自己寫的 index 或 refs、rescan、整個 status 失效，以及一次超過 1000 個路徑，或已經超出保留範圍（repo 保留最近 256 個 generation；每個 generation 的路徑去重）。diff pane 只在變動可能碰到它的檔案時重讀：檔案本身、改名前的檔案、上層資料夾（`.` 是頂層）、檔案底下的路徑（submodule）、任何 `.gitattributes`。watcher、git 與 pathspec 對同一個檔案的寫法可能不同，所以兩邊都先換成同一種寫法再比對：`\` 當成 `/`（watcher 在每個系統上都這樣寫）、不分大小寫、轉成 NFC（macOS 交出的是磁碟上的名稱，常是 NFD；git 存的是 NFC）、去掉開頭的 `./` 與結尾的 `/`。含 `~` 加數字的路徑可能是 Windows 的 8.3 短檔名（watcher 可能回報長或短的名稱），和 `paths` 是 `null` 一樣一律重讀。staged diff 也會因為同一個檔案的工作樹變動重讀：watcher 回報的路徑分不出是工作樹還是 index。commit 的 diff 不跟隨。
 - 跨 lane：`yuzora.badge.git`＝變更檔案數（乾淨時 `null`），`yuzora.status.git`＝`{text: "⎇ main ↑2 · 4 變更", tone}`，tone：衝突 `blocked`、操作中或執行中 `working`、有變更 `accent`、乾淨 `muted`。
 
 ### virtual list 的限制
@@ -418,3 +419,13 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - F1：Changes 的 Commit 與單檔 diff、Worktree 對話框的 Enter 用的是 refresh 或對話框開啟時的信任答案。之後 repo 設定若多了程式（例如 `git lfs install --local` 加上 clean／smudge filter），仍會照跑。現在三處在執行 git 前都再問一次 `yuzora:git`。測試先建一個沒有程式的 repo，讀過答案後把答案改成「等信任」，三處都不再執行 git；Worktree 也不會關掉對話框。拿掉任一處重新判斷，測試都會失敗。
 - F2：計數守衛只數 `exec("git", …)`，透過 mod 既有的 `git()` helper 新增的呼叫數不到（reviewer 在 Worktree 的 Escape 加了 `status`，測試照樣通過）。現在連 helper 的呼叫數一起守住，那個 mutant 會讓測試失敗；守不到的範圍寫在上面〈測試〉。
 - F3：git.md 的「判斷方式」與「已知限制」各有一句與實作不符，依實作逐句核對後改正：「已信任的資料夾」改成「沒有待信任的項目時」，並寫明遠端 machine 沒有 watcher；信任掃描除了啟動時，Linux 每次重新掃描資料夾也會再跑，20 萬筆的時間重新實測。
+
+## 互不相依的讀取一起發出（beta.3 效能）
+
+在另一台機器上，每個 git 或檔案讀取都是一次 `hc exec` 往返（WSL 上還要啟動 `wsl.exe`）。下面三處原本循序、彼此不相依的讀取，現在用 `thread::scope` 同時發出，每個呼叫仍各自走 `exec::run`（trust guard、逾時、輸出上限、取消都不變），結果依原本的順序判斷（同一個錯誤先被回報）：
+
+- `DiffSession::load`：index 項目、HEAD／commit 那一側、工作樹、mode 比對一起發出。**index 那一側例外**：等 index 項目回來之後，用它的 object id 讀（`cat-file --filters --path=<path> <oid>`），不用 `:path`，這樣 session 裡的內容和之後 `check_index` 檢查的 id 是同一份快照（另一個 git client 在兩次讀取之間 `git add` 時，不會拿到舊 id 配新內容而蓋掉對方 stage 的東西）。unstaged 遠端 5 輪 → 2 輪。unstaged 在 index 沒有該檔時不要左側，這時就算 `cat-file` 那一路出錯也不算（原本根本不會跑）。
+- `log::read_refs`：`for-each-ref`、`symbolic-ref`、`rev-parse`。3 輪 → 1 輪。`rev-parse`／`symbolic-ref` 非零（unborn）仍不是錯誤。
+- `status::full` 的 `operation()`（遠端要 `ls .git`，rebase 中還有逐檔 `cat`）搬進第一輪的平行區，少一輪。
+
+`exec::spawn_scoped` 讓測試用的 `TEST_ENV`（thread-local）也傳給這些執行緒。測試用記錄開始／結束的 `git` 替身（`repo::testing::timed_git`）證明同時在跑的數量，並證明任何一路失敗都不會被當成答案。

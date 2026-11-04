@@ -1290,7 +1290,7 @@ fn reveal_impl(path: &str) -> io::Result<()> {
 fn reveal_impl(path: &str) -> io::Result<()> {
     use std::os::windows::process::CommandExt;
     spawn_quiet(
-        Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.replace('/', "\\"))),
+        Command::new("explorer").raw_arg(yuzora_core::paths::explorer_select_arg(path)),
     )
     .map(detach)
 }
@@ -1435,9 +1435,11 @@ mod tests {
         let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
         let args = ["--ignored", "--exact", "fsops::tests::console_probe", "--nocapture", "--test-threads=1"];
         let by_hand = std::process::Command::new(&exe).args(args).output().unwrap();
-        assert!(String::from_utf8_lossy(&by_hand.stdout).contains("CONSOLE=some"), "control: {by_hand:?}");
+        let shared = |out: &str| -> Option<u32> { out.split("CONSOLE_SHARED=").nth(1)?.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok() };
+        assert!(shared(&String::from_utf8_lossy(&by_hand.stdout)).is_some_and(|n| n >= 2), "control: {by_hand:?}");
         let out = run(ExecRequest::new(exe, args)).unwrap();
-        assert!(out.stdout_text().contains("CONSOLE=none"), "{}", out.stdout_text());
+        // A console of its own with only itself on it: not shared, not none.
+        assert_eq!(shared(&out.stdout_text()), Some(1), "{}", out.stdout_text());
     }
 
     /// The child of the test above.
@@ -1452,8 +1454,8 @@ mod tests {
             let mut list = [0u32; 4];
             // SAFETY: a buffer of the length it is given.
             // CREATE_NO_WINDOW gives the child a console of its own, with only itself on it.
-            let attached = unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) } > 1;
-            println!("CONSOLE={}", if attached { "some" } else { "none" });
+            let shared = unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) };
+            println!("CONSOLE_SHARED={shared}");
         }
     }
 

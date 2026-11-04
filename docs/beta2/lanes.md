@@ -127,4 +127,4 @@ env -i HOME="$HOME" USER="$USER" TMPDIR="$TMPDIR" TERM=xterm-256color LANG=zh_TW
 
 ## CI
 
-`.github/workflows/app-ci.yml` 對 base 為 `beta2/integration`、改到 `app/**` 的 PR，在 Linux（ubuntu-22.04）與 macOS（macos-15，aarch64）執行建置與 `cargo test --locked`（Linux 上 `shipped_initial_descriptions` 會以 headless 渲染每個內建 mod）。macOS 另跑 yuzora crates 測試、`scripts/yuzora/check-mods`（check 會開隱藏視窗，需要視窗伺服器）與 shot_pixels；Linux 另跑 packaging 與文件檢查。固定的狀態名稱是 `App (build · test)`。只改 `app/**` 與 `docs/beta2/**` 的 PR 不會觸發 Tauri 的 `ci.yml`。
+`.github/workflows/app-ci.yml` 對 base 為 `beta2/integration`、改到 `app/**` 的 PR，在 Linux（ubuntu-22.04）與 macOS（macos-15，aarch64）執行建置與 `cargo test --locked`（Linux 上 `shipped_initial_descriptions` 會以 headless 渲染每個內建 mod）。macOS 另跑 yuzora crates 測試、`scripts/yuzora/check-mods`（check 會開隱藏視窗，需要視窗伺服器）與 shot_pixels；Linux 另跑 packaging 與文件檢查；windows-2022 另有一個 job 只跑 `cfg(windows)` 的 console 視窗測試（`yuzora-core spawn::`、`yuzora-git exec::`、`yuzora-files fsops::tests::run_starts`，`--test-threads=1`；整個 workspace 的測試在 Windows 上有既有的失敗，不跑），也納入 aggregator。固定的狀態名稱是 `App (build · test)`。只改 `app/**` 與 `docs/beta2/**` 的 PR 不會觸發 Tauri 的 `ci.yml`。

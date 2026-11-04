@@ -21,6 +21,12 @@ pub const WAIT_LIMIT: Duration = Duration::from_secs(25);
 /// until the next call (views wait on `changed` all the time they are open).
 pub const IDLE: Duration = Duration::from_secs(120);
 
+/// How many generations' changes a repo keeps ([`Repo::changed_paths`]).
+pub const KEEP_CHANGES: usize = 256;
+
+/// A change of more paths than this is kept as one that could be anything.
+pub const KEEP_PATHS: usize = 1000;
+
 pub struct Repo {
     pub id: String,
     pub place: Place,
@@ -29,6 +35,9 @@ pub struct Repo {
     /// Absolute common git dir (refs, objects, config).
     pub common_dir: String,
     generation: AtomicU64,
+    /// What each of the latest generations changed: its paths, or none when
+    /// it could be anything (all of the status, refs, the index git wrote).
+    changes: Mutex<std::collections::VecDeque<(u64, Option<Vec<String>>)>>,
     /// Moves when refs, HEAD or the operation in progress changed (the log reloads).
     refs_generation: AtomicU64,
     /// Each with the time it is answered by.
@@ -59,6 +68,7 @@ impl Repo {
             git_dir,
             common_dir,
             generation: AtomicU64::new(1),
+            changes: Mutex::default(),
             refs_generation: AtomicU64::new(1),
             waiters: Mutex::default(),
             wait_limit: AtomicU64::new(WAIT_LIMIT.as_millis() as u64),
@@ -88,7 +98,26 @@ impl Repo {
 
     /// Something changed: every waiter hears the new generation.
     pub fn bump(&self) -> u64 {
-        let g = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.bump_for(None)
+    }
+
+    /// [`bump`](Self::bump) for a change to these paths (none: anything).
+    fn bump_for(&self, paths: Option<Vec<String>>) -> u64 {
+        let g = {
+            let mut log = self.changes.lock().unwrap_or_else(|e| e.into_inner());
+            let g = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            // A file system often tells of one write more than once.
+            let paths = paths.map(|mut p| {
+                p.sort_unstable();
+                p.dedup();
+                p
+            });
+            log.push_back((g, paths.filter(|p| p.len() <= KEEP_PATHS)));
+            while log.len() > KEEP_CHANGES {
+                log.pop_front();
+            }
+            g
+        };
         let waiters = std::mem::take(&mut *self.waiters.lock().unwrap_or_else(|e| e.into_inner()));
         for (_, tx) in waiters {
             let _ = tx.try_send(g);
@@ -108,8 +137,26 @@ impl Repo {
 
     /// The status is stale (all of it, or these paths) and listeners hear it.
     pub fn invalidate(&self, scope: crate::status::Scope) {
+        let paths = match &scope {
+            crate::status::Scope::Paths(p) => Some(p.clone()),
+            crate::status::Scope::All => None,
+        };
         self.status.lock().unwrap_or_else(|e| e.into_inner()).dirty(scope);
-        self.bump();
+        self.bump_for(paths);
+    }
+
+    /// The paths changed after generation `since`, up to `upto`: none when
+    /// one of those changes could be anything, or is no longer kept.
+    pub fn changed_paths(&self, since: u64, upto: u64) -> Option<Vec<String>> {
+        let log = self.changes.lock().unwrap_or_else(|e| e.into_inner());
+        let mut paths = Vec::new();
+        let mut kept = 0;
+        for (_, p) in log.iter().filter(|(g, _)| *g > since && *g <= upto) {
+            paths.extend(p.as_ref()?.iter().cloned());
+            kept += 1;
+        }
+        // Each generation is kept once, in order: all of these are, or the oldest aren't.
+        (kept == upto.saturating_sub(since)).then_some(paths)
     }
 
     /// Resolves once the generation is past `since`, or after `wait_limit`.
@@ -593,6 +640,39 @@ pub mod testing {
         }
     }
 
+    /// A repo whose `git` is a stand-in that notes when each call starts and
+    /// ends, takes a moment, and runs the real one (`fail`: exits 7 for that command).
+    #[cfg(unix)]
+    pub fn timed_git(s: &Scratch, fail: Option<&str>) -> (Arc<Repo>, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = s.dir.path().join("shim");
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls.log");
+        let real = String::from_utf8(std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap().stdout).unwrap().trim().to_owned();
+        let body = "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = \"FAIL\" ] && exit 7; done\necho s >> 'LOG'\nsleep 0.4\necho e >> 'LOG'\nexec 'REAL' \"$@\"\n".replace("FAIL", fail.unwrap_or("--no-such-argument")).replace("LOG", &log.display().to_string()).replace("REAL", &real);
+        let shim = dir.join("git");
+        std::fs::write(&shim, body).unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let place = Place { git: shim.to_string_lossy().into_owned(), ..s.repo.place.clone() };
+        let git_dir = s.repo.git_dir.clone();
+        (Arc::new(Repo::new(s.repo.id.clone(), place, git_dir.clone(), git_dir)), log)
+    }
+
+    /// How many of the calls in the log ran at the same time at most.
+    #[cfg(unix)]
+    pub fn most_at_once(log: &std::path::Path) -> usize {
+        let (mut now, mut most) = (0usize, 0usize);
+        for l in std::fs::read_to_string(log).unwrap_or_default().lines() {
+            if l == "s" {
+                now += 1;
+                most = most.max(now);
+            } else {
+                now = now.saturating_sub(1);
+            }
+        }
+        most
+    }
+
     /// An empty repo on branch `main` with a fixed identity; not watched.
     pub fn scratch() -> Scratch {
         let dir = tempfile::tempdir().unwrap();
@@ -662,6 +742,58 @@ rm -f "$out" "$err"
 pub(crate) mod tests {
     use super::testing::scratch;
     use super::*;
+
+    // What a diff pane asks: which paths changed after its generation.
+    #[test]
+    fn a_repo_keeps_which_paths_each_change_touched() {
+        use crate::status::Scope;
+        let s = scratch();
+        let paths = |p: &[&str]| Some(p.iter().map(|p| p.to_string()).collect::<Vec<_>>());
+        let since = s.repo.generation();
+        assert_eq!(s.repo.changed_paths(0, since), None, "the repo's first generation isn't a change kept");
+        s.repo.invalidate(Scope::Paths(vec!["a.txt".into()]));
+        s.repo.invalidate(Scope::Paths(vec!["b/c.txt".into(), "d".into()]));
+        let now = s.repo.generation();
+        assert_eq!(s.repo.changed_paths(since, now), paths(&["a.txt", "b/c.txt", "d"]));
+        assert_eq!(s.repo.changed_paths(since + 1, now), paths(&["b/c.txt", "d"]));
+        assert_eq!(s.repo.changed_paths(since, since + 1), paths(&["a.txt"]), "only up to the generation answered");
+        assert_eq!(s.repo.changed_paths(now, now), paths(&[]));
+        // Yuzora's own staging and unstaging name their paths.
+        s.write("a.txt", "1\n");
+        for op in [crate::ops::stage, crate::ops::unstage] {
+            let since = s.repo.generation();
+            op(&s.repo, &["a.txt".into()]).unwrap();
+            assert_eq!(s.repo.changed_paths(since, s.repo.generation()), paths(&["a.txt"]));
+        }
+        // Anything: all of the status, refs (the index or refs git wrote).
+        let (everything, refs) = (|| s.repo.invalidate(Scope::All), || s.repo.invalidate_refs());
+        for all in [&everything as &dyn Fn(), &refs] {
+            let since = s.repo.generation();
+            s.repo.invalidate(Scope::Paths(vec!["a.txt".into()]));
+            all();
+            assert_eq!(s.repo.changed_paths(since, s.repo.generation()), None);
+            assert_eq!(s.repo.changed_paths(since, since + 1), paths(&["a.txt"]));
+        }
+        // Each path once.
+        let since = s.repo.generation();
+        s.repo.invalidate(Scope::Paths(vec!["b".into(), "a".into(), "b".into()]));
+        assert_eq!(s.repo.changed_paths(since, s.repo.generation()), paths(&["a", "b"]));
+        let since = s.repo.generation();
+        s.repo.invalidate(Scope::Paths(vec!["a".into(); KEEP_PATHS + 1]));
+        assert_eq!(s.repo.changed_paths(since, s.repo.generation()), paths(&["a"]), "one path, told often");
+        // More paths in one change than are kept.
+        let since = s.repo.generation();
+        s.repo.invalidate(Scope::Paths((0..=KEEP_PATHS).map(|i| format!("f{i}")).collect()));
+        assert_eq!(s.repo.changed_paths(since, s.repo.generation()), None);
+        // Changes no longer kept.
+        let since = s.repo.generation();
+        for _ in 0..=KEEP_CHANGES {
+            s.repo.invalidate(Scope::Paths(vec!["x".into()]));
+        }
+        let now = s.repo.generation();
+        assert_eq!(s.repo.changed_paths(since, now), None);
+        assert_eq!(s.repo.changed_paths(now - KEEP_CHANGES as u64, now).map(|p| p.len()), Some(KEEP_CHANGES));
+    }
 
     #[test]
     fn opening_finds_the_root_from_a_subfolder_and_shares_the_repo() {

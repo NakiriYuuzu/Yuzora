@@ -130,12 +130,14 @@ fn local_entry(path: &Path) -> Option<Entry> {
 fn list_local(path: &str, home: &Path) -> Result<Listing> {
     let dir = match path.trim() {
         "" | "~" => home.to_path_buf(),
-        p => match p.strip_prefix("~/") {
+        // `~\` is home too on Windows (a backslash is a name's own character elsewhere).
+        p => match p.strip_prefix("~/").or_else(|| if cfg!(windows) { p.strip_prefix("~\\") } else { None }) {
             Some(rest) => home.join(rest),
             None => PathBuf::from(p),
         },
     };
-    let dir = std::fs::canonicalize(&dir).map_err(SshError::io)?;
+    // What people see is `C:\…`, not the `\\?\C:\…` canonicalize gives on Windows.
+    let dir = yuzora_core::paths::plain(&std::fs::canonicalize(&dir).map_err(SshError::io)?);
     let mut entries: Vec<Entry> = std::fs::read_dir(&dir).map_err(SshError::io)?.filter_map(|e| e.ok()).filter_map(|e| local_entry(&e.path())).collect();
     sort(&mut entries);
     Ok(Listing { path: dir.to_string_lossy().into_owned(), parent: dir.parent().map(|p| p.to_string_lossy().into_owned()), entries })
@@ -336,6 +338,33 @@ mod tests {
         assert_eq!(l.entries[3].size, 5);
         assert_eq!(l.entries[0].kind, "dir");
         assert_eq!(list_local("~", &dir).unwrap().path, l.path);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Elsewhere a backslash is a name's own character: `~\x` is not under home.
+    #[cfg(unix)]
+    #[test]
+    fn a_backslash_after_the_tilde_is_not_home_off_windows() {
+        let dir = std::env::temp_dir().join(format!("yuzora-ssh-tilde-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("x")).unwrap();
+        assert!(list_local(r"~\x", &dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // A Windows person sees `C:\…`, not the `\\?\C:\…` `canonicalize` gives, and `~\` is home too.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_listing_shows_plain_paths_and_knows_the_backslash_home() {
+        let dir = std::env::temp_dir().join(format!("yuzora-ssh-win-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub dir")).unwrap();
+        let top = list_local(dir.to_str().unwrap(), &dir).unwrap();
+        assert!(!top.path.starts_with(r"\\?\"), "{}", top.path);
+        assert!(top.parent.as_deref().is_some_and(|p| !p.starts_with(r"\\?\")), "{:?}", top.parent);
+        let sub = list_local(r"~\sub dir", &dir).unwrap();
+        assert_eq!(sub.path, format!(r"{}\sub dir", top.path));
+        assert_eq!(list_local("~/sub dir", &dir).unwrap().path, sub.path);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
