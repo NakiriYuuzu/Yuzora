@@ -92,3 +92,4 @@ cd app && cargo test --locked -p yuzora-ssh
 - 未支援：`Match exec`／`localnetwork`／`tagged` 等條件（視為不成立）、`CertificateFile`／host 憑證（`@cert-authority`）、`CanonicalizeHostname`、`ControlMaster`、`${ENV}` 展開、SFTP 斷點續傳的內容比對（僅以大小判斷，同 OpenSSH）。
 - ProxyJump 的第一段照它自己的設定（包含它自己的 ProxyJump），後續各段忽略自己的 ProxyJump／ProxyCommand（同 OpenSSH `-J`）。
 - Windows：agent 走 `\\.\pipe\openssh-ssh-agent`／Pageant；整合測試只在 Unix 跑，Windows 未實機驗證。
+- Windows 上的 ProxyCommand 必須是非互動的（key 或 agent）：它以 `CREATE_NO_WINDOW` 啟動，跳板機的密碼或 host key 確認沒有地方可以輸入，會一直等到連線逾時才失敗（macOS／Linux 的 GUI app 沒有 controlling tty，同樣不能互動，只是立刻失敗）。

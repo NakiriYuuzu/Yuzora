@@ -144,12 +144,57 @@ jobs:
           bun test scripts/docs.test.ts
           bun scripts/docs.ts check
 
+  # Not the workspace's tests (some fail on Windows today): only the ones that
+  # start programs and look at the console they get, which no other job can see.
+  # They are the `cfg(windows)` tests of the spawn guard (yuzora-core/src/spawn.rs).
+  windows-console:
+    name: App windows-x86_64 (console windows)
+    runs-on: windows-2022
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: &win-cache-paths |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            app/target
+          key: app-ci-v1-windows-console-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', '.github/workflows/app-ci.yml') }}
+          restore-keys: app-ci-v1-windows-console-${{ env.RUST_TOOLCHAIN }}-
+      # One thread: each test makes the test binary hold a console of its own.
+      - name: yuzora-core (spawn)
+        run: 'cargo test --locked -p yuzora-core spawn:: -- --test-threads=1'
+      - name: yuzora-git (exec)
+        if: always()
+        run: 'cargo test --locked -p yuzora-git exec:: -- --test-threads=1'
+      - name: yuzora-files (fsops run)
+        if: always()
+        run: 'cargo test --locked -p yuzora-files fsops::tests::run_starts -- --test-threads=1'
+      - name: Save build cache
+        if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: *win-cache-paths
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
   # One stable name for every platform.
   app:
     name: App (build · test)
-    needs: platform-tests
+    needs: [platform-tests, windows-console]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: '[ "${{ needs.platform-tests.result }}" = success ]'
+      - run: '[ "${{ needs.platform-tests.result }}" = success ] && [ "${{ needs.windows-console.result }}" = success ]'
