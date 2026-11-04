@@ -103,8 +103,11 @@ pub fn blob(repo: &Repo, spec: &str) -> GitResult<Option<Vec<u8>>> {
 
 /// The index's text of `path` as `oid` names it (the entry [`index_entry`] read), with
 /// the work tree's conversions for that path, as `cat-file --filters :path` gives.
-fn blob_by_id(repo: &Repo, path: &str, oid: &str) -> GitResult<Option<Vec<u8>>> {
-    let out = repo.run(Git::read(["cat-file", "--filters"]).arg(format!("--path={path}")).arg(oid).max_output(MAX_SIDE + 1))?;
+fn blob_by_id(repo: &Repo, path: &str, mode: &str, oid: &str) -> GitResult<Option<Vec<u8>>> {
+    // A link's text is its target, as it is: `:path` knows the entry is a link and converts nothing;
+    // an id alone doesn't say, so (as `write_index` does) no conversion is asked for.
+    let cmd = if mode == "120000" { Git::read(["cat-file", "blob"]).arg(oid) } else { Git::read(["cat-file", "--filters"]).arg(format!("--path={path}")).arg(oid) };
+    let out = repo.run(cmd.max_output(MAX_SIDE + 1))?;
     Ok(out.ok().then_some(out.stdout))
 }
 
@@ -195,9 +198,9 @@ impl DiffSession {
             });
             let entry = joined(entry);
             // Nothing in the index (or no look at it): there is no index side to read.
-            if let Ok(Some((_, oid))) = &entry {
-                let oid = oid.clone();
-                let from_index = Some(crate::exec::spawn_scoped(s, move || blob_by_id(repo, path, &oid)));
+            if let Ok(Some((entry_mode, oid))) = &entry {
+                let (entry_mode, oid) = (entry_mode.clone(), oid.clone());
+                let from_index = Some(crate::exec::spawn_scoped(s, move || blob_by_id(repo, path, &entry_mode, &oid)));
                 match &mode {
                     Mode::Unstaged => left = from_index,
                     Mode::Staged => right = from_index,
@@ -982,6 +985,31 @@ exec 'REAL' "$@"
             assert_eq!(s.git(&["cat-file", "blob", &oid]), "one\n", "the entry is the one from before the other client staged");
             assert_eq!(side.as_deref(), Some(&b"one\n"[..]), "the session holds text that is not the entry's");
         }
+    }
+
+    /// A link and a submodule entry read as they did with `:path`: a link is not
+    /// converted by `.gitattributes` (eol, filters), a gitlink prints its commit object.
+    #[cfg(unix)]
+    #[test]
+    fn links_and_submodule_entries_show_no_false_difference() {
+        let s = scratch();
+        s.write(".gitattributes", "* eol=crlf\n");
+        std::os::unix::fs::symlink("target\nline", std::path::Path::new(s.root()).join("lnk")).unwrap();
+        s.git(&["add", "."]);
+        s.git(&["commit", "-q", "-m", "link"]);
+        for mode in [Mode::Unstaged, Mode::Staged] {
+            let d = DiffSession::load(s.repo.clone(), "lnk".into(), None, mode).unwrap();
+            assert_eq!(d.left.as_deref(), Some(&b"target\nline"[..]));
+            assert_eq!(d.right.as_deref(), Some(&b"target\nline"[..]), "the link's target was converted: a difference that is not there");
+            assert!(d.changes.is_empty());
+        }
+        // A submodule entry: the index side is what `:sub` gave before (git prints the commit object).
+        let head = s.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        s.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{head},sub")]);
+        let d = DiffSession::load(s.repo.clone(), "sub".into(), None, Mode::Staged).unwrap();
+        assert!(d.right.is_some());
+        assert_eq!(d.right, blob(&s.repo, ":sub").unwrap());
+        assert!(d.index_entry.as_ref().is_some_and(|e| e.0 == "160000"));
     }
 
     #[cfg(unix)]
