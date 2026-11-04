@@ -293,27 +293,71 @@ mod tests {
 
     // yuzora(L1): the keys.json examples in the docs and in the guide users' agents read must load:
     // one wrong action (a `:` where the mod's command has a `.`) makes the whole file fail.
+    // Every `"<modifier>-…": "<action>"` is matched on its own, so a stray quote or a missing
+    // space elsewhere in the file can't hide one.
+    //
+    // Which files are checked isn't a list in this test: it walks every *.md and *.d.ts under
+    // app/defaults and docs/ plus the root and app docs below, so a new document is covered
+    // without anyone remembering to add it, and deleting a line here can't drop a file. The
+    // examples that must be found are a separate table, and every file on it must have been
+    // walked. The files are read when the test runs (not include_str!), so cargo does not rebuild
+    // the tests when a document changes: `cargo test` still runs this one every time, but it reads
+    // whatever is on disk then.
     #[test]
     fn keys_examples_in_the_docs_load() {
-        let docs = [
-            ("defaults/AGENTS.md", include_str!("../defaults/AGENTS.md")),
-            ("docs/beta2/shell.md", include_str!("../../docs/beta2/shell.md")),
+        use std::path::{Path, PathBuf};
+        // Not documents of ours: dependencies, build output, screenshots, git.
+        const SKIP_DIRS: &[&str] = &["node_modules", "target", "vendor", "evidence", ".git"];
+        const ROOT_DOCS: &[&str] = &[
+            "README.md", "README.zh-TW.md", "AGENTS.md", "CLAUDE.md", "CHANGELOG.md", "CHANGELOG.zh-TW.md",
+            "app/CHANGELOG.md", "app/CHANGELOG.zh-TW.md", "app/AGENTS.md", "app/README.md",
         ];
-        let mut found = 0;
-        for (name, text) in docs {
-            // `"key": "action"` pairs whose key starts with a modifier.
-            let parts: Vec<&str> = text.split('"').collect();
-            for i in (1..parts.len().saturating_sub(2)).step_by(2) {
-                let key = parts[i];
-                let is_key = ["ctrl-", "alt-", "cmd-", "shift-"].iter().any(|m| key.starts_with(m));
-                if is_key && parts[i + 1] == ": " {
-                    let one = serde_json::json!({ "global": { key: parts[i + 2].replace("\\u001b", "\u{1b}") } });
-                    assert_eq!(super::parse(&one.to_string()).err(), None, "{name}: {key} -> {}", parts[i + 2]);
-                    found += 1;
+        // (file from the repo root, key, action) that must be found: each is a document users or
+        // their agents read.
+        const MUST_FIND: &[(&str, &str, &str)] = &[
+            ("app/defaults/AGENTS.md", "ctrl-shift-t", "tab.new"),
+            ("app/defaults/AGENTS.md", "alt-n", "yuzora-shell-tabs.new-pane"),
+            ("docs/beta2/shell.md", "alt-n", "yuzora-shell-tabs.new-pane"),
+            ("app/defaults/herdr.d.ts", "alt-s", "<mod>.<command>"),
+        ];
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    if !SKIP_DIRS.contains(&name.as_str()) {
+                        walk(&path, out);
+                    }
+                } else if name.ends_with(".md") || name.ends_with(".d.ts") {
+                    out.push(path);
                 }
             }
         }
-        assert!(found >= 6, "the scan found only {found} examples");
+        let app = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = app.parent().unwrap();
+        let mut files = Vec::new();
+        walk(&app.join("defaults"), &mut files);
+        walk(&root.join("docs"), &mut files);
+        files.extend(ROOT_DOCS.iter().map(|f| root.join(f)).filter(|p| p.is_file()));
+        let rel = |p: &Path| p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+
+        let pair = fancy_regex::Regex::new(r#""((?:ctrl|alt|cmd|shift)-[^"\n]*)"\s*:\s*"([^"\n]*)""#).unwrap();
+        let mut found = Vec::new(); // (file, key, action)
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            for caps in pair.captures_iter(text.as_str()) {
+                let caps = caps.unwrap();
+                let (key, action) = (caps[1].to_owned(), caps[2].replace("\\u001b", "\u{1b}"));
+                let one = serde_json::json!({ "global": { key.clone(): action.clone() } });
+                assert_eq!(super::parse(&one.to_string()).err(), None, "{}: {key} -> {action}", rel(file));
+                found.push((rel(file), key, action));
+            }
+        }
+        for (file, key, action) in MUST_FIND {
+            assert!(files.iter().any(|f| rel(f) == *file), "{file} was not walked ({} files)", files.len());
+            assert!(found.iter().any(|(f, k, a)| f == file && k == key && a == action), "{file}: example {key} -> {action} not found");
+        }
     }
 
     #[test]
