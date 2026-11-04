@@ -293,27 +293,30 @@ mod tests {
 
     // yuzora(L1): the keys.json examples in the docs and in the guide users' agents read must load:
     // one wrong action (a `:` where the mod's command has a `.`) makes the whole file fail.
+    // Every `"<modifier>-…": "<action>"` is matched on its own, so a stray quote or a missing
+    // space elsewhere in the file can't hide one.
     #[test]
     fn keys_examples_in_the_docs_load() {
+        let pair = fancy_regex::Regex::new(r#""((?:ctrl|alt|cmd|shift)-[^"\n]*)"\s*:\s*"([^"\n]*)""#).unwrap();
+        // (file, text, examples that must be found in it)
         let docs = [
-            ("defaults/AGENTS.md", include_str!("../defaults/AGENTS.md")),
-            ("docs/beta2/shell.md", include_str!("../../docs/beta2/shell.md")),
+            ("defaults/AGENTS.md", include_str!("../defaults/AGENTS.md"), &[("ctrl-shift-t", "tab.new"), ("alt-n", "yuzora-shell-tabs.new-pane")][..]),
+            ("docs/beta2/shell.md", include_str!("../../docs/beta2/shell.md"), &[("alt-n", "yuzora-shell-tabs.new-pane")][..]),
+            ("defaults/herdr.d.ts", include_str!("../defaults/herdr.d.ts"), &[("alt-s", "<mod>.<command>")][..]),
         ];
-        let mut found = 0;
-        for (name, text) in docs {
-            // `"key": "action"` pairs whose key starts with a modifier.
-            let parts: Vec<&str> = text.split('"').collect();
-            for i in (1..parts.len().saturating_sub(2)).step_by(2) {
-                let key = parts[i];
-                let is_key = ["ctrl-", "alt-", "cmd-", "shift-"].iter().any(|m| key.starts_with(m));
-                if is_key && parts[i + 1] == ": " {
-                    let one = serde_json::json!({ "global": { key: parts[i + 2].replace("\\u001b", "\u{1b}") } });
-                    assert_eq!(super::parse(&one.to_string()).err(), None, "{name}: {key} -> {}", parts[i + 2]);
-                    found += 1;
-                }
+        for (name, text, expected) in docs {
+            let mut found = Vec::new();
+            for caps in pair.captures_iter(text) {
+                let caps = caps.unwrap();
+                let (key, action) = (&caps[1], caps[2].replace("\\u001b", "\u{1b}"));
+                let one = serde_json::json!({ "global": { key: action.clone() } });
+                assert_eq!(super::parse(&one.to_string()).err(), None, "{name}: {key} -> {action}");
+                found.push((key.to_owned(), action));
+            }
+            for (key, action) in expected {
+                assert!(found.iter().any(|(k, a)| k == key && a == action), "{name}: example {key} -> {action} not found in {found:?}");
             }
         }
-        assert!(found >= 6, "the scan found only {found} examples");
     }
 
     #[test]
