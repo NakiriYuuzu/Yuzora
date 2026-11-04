@@ -348,28 +348,41 @@ fn install_planned(token: &str) -> Value {
     install_outcome(mods::write(&planned, &yuzora_core::paths::app_home()).map(|()| planned))
 }
 
+/// The file manager, told to show `p`: the file selected in its folder where it can.
+fn file_manager(p: &std::path::Path, path: &str) -> std::process::Command {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = path;
+        let mut c = std::process::Command::new("/usr/bin/open");
+        if p.is_file() {
+            c.arg("-R");
+        }
+        c.arg(p);
+        c
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut c = std::process::Command::new("explorer");
+        // One raw `/select,"C:\a b\c.txt"` (backslashes, quoted), the same as the Files sidebar's.
+        if p.is_file() { c.raw_arg(yuzora_core::paths::explorer_select_arg(path)) } else { c.arg(path.replace('/', "\\")) };
+        c
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = path;
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(if p.is_file() { p.parent().unwrap_or(p) } else { p });
+        c
+    }
+}
+
 fn reveal(path: &str) -> Result<(), HostError> {
     let p = std::path::Path::new(path);
     if !p.exists() {
         return Err(error(format!("{path} doesn't exist")));
     }
-    let mut cmd = if cfg!(target_os = "macos") {
-        let mut c = std::process::Command::new("/usr/bin/open");
-        if p.is_file() {
-            c.arg("-R");
-        }
-        c
-    } else if cfg!(windows) {
-        let mut c = std::process::Command::new("explorer");
-        if p.is_file() {
-            c.arg("/select,");
-        }
-        c
-    } else {
-        std::process::Command::new("xdg-open")
-    };
-    let target = if !cfg!(any(target_os = "macos", windows)) && p.is_file() { p.parent().unwrap_or(p) } else { p };
-    let mut child = cmd.arg(target).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map_err(error)?;
+    let mut child = file_manager(p, path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map_err(error)?;
     // Reap it off the UI thread; the file manager itself outlives it.
     std::thread::spawn(move || child.wait());
     Ok(())
@@ -517,5 +530,14 @@ mod tests {
     #[test]
     fn reveal_refuses_a_missing_path() {
         assert!(call("reveal", vec![json!("/definitely/not/here/yuzora")]).is_err());
+    }
+
+    /// Needs a desktop: `YUZORA_REVEAL_PATH` is shown in Explorer, then a script reads what is selected.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs an interactive desktop"]
+    fn reveal_selects_the_file_in_explorer() {
+        let path = std::env::var("YUZORA_REVEAL_PATH").expect("YUZORA_REVEAL_PATH");
+        call("reveal", vec![json!(path)]).unwrap();
     }
 }

@@ -224,7 +224,7 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 ### 仍延後（等 Windows CI）
 
 - Windows 存檔保留 ACL 與其他屬性：目前 rename 換檔後只保留唯讀屬性，ACL 變成資料夾繼承的。改用 `ReplaceFileW`（保留 DACL、屬性、建立時間），失敗時（`ERROR_UNABLE_TO_MOVE_REPLACEMENT`）要把暫存檔放回原位，不能刪；需要 CI 在 Windows 編譯並測試 app（第 24 輪）。
-- Windows 上 `doc-pane.js` 的 `parent` 只認 `/`：原生路徑（`C:\…`）的檔案不會即時 watch，只靠 15 秒一次的檢查重新載入；watch 回報的路徑也要用和 `within()` 相同的方式比對（第 23 輪修 agent 判斷時發現）。
+- ~~Windows 上 `doc-pane.js` 的 `parent` 只認 `/`~~ **已處理（beta.3 win-misc PR）**。Windows CI（windows-2022，run 41770056432）驗證：`watchFolder` 本身 1 秒內有收到變更，但 `next_change` 的 `canonicalize` 讓回報的路徑帶 `\\?\`，永遠和 JS 的 `C:\…` 不相等；`parent`、圖片標題 `split("/")` 也只認 `/`。修正：`next_change` 回傳 `yuzora_core::paths::plain` 後的路徑（`app/src/files.rs`，`// yuzora(L5):`）；編輯器、Markdown、圖片三個 mod 的 `isWin`／`parent`／`isRoot`／`baseName`／`samePath`（Windows 兩種斜線、不分大小寫；其他平台只認 `/`），測試 `the_panes_follow_files_by_windows_paths_too`（QuickJS）與 app 的 `a_watched_windows_folder_reports_plain_paths_within_a_second`（Windows）。
 
 ### 已處理（follow-up PR）
 

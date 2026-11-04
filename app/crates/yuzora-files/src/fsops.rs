@@ -1290,7 +1290,7 @@ fn reveal_impl(path: &str) -> io::Result<()> {
 fn reveal_impl(path: &str) -> io::Result<()> {
     use std::os::windows::process::CommandExt;
     spawn_quiet(
-        Command::new("explorer").raw_arg(format!("/select,\"{}\"", path.replace('/', "\\"))),
+        Command::new("explorer").raw_arg(yuzora_core::paths::explorer_select_arg(path)),
     )
     .map(detach)
 }

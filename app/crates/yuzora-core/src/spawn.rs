@@ -473,7 +473,8 @@ mod tests {
     /// A function that starts one more, or fewer, fails the scan.
     const ALLOWED: &[(&str, &str, usize, &str)] = &[
         // GUI programs open a window of their own, not a console.
-        ("yuzora-settings/src/lib.rs", "reveal", 3, "open / explorer / xdg-open: file managers"),
+        ("yuzora-settings/src/lib.rs", "file_manager", 3, "open / explorer / xdg-open: file managers"),
+        ("yuzora-ssh/src/js.rs", "spawn_notepad", 1, "notepad.exe: a GUI program (opens the downloaded remote file)"),
         ("yuzora-files/src/fsops.rs", "reveal_impl", 4, "open / explorer / xdg-open / dbus-send: file managers"),
         ("app/src/links.rs", "open", 1, "explorer.exe / open / xdg-open: the default browser (upstream)"),
         // Never run on Windows (the upstream's own files are in the same list: a new spawn there shows up here).

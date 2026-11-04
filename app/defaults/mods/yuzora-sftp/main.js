@@ -10,7 +10,7 @@ import { theme, props, exec, window, openOverlay, notify, shared, setShared } fr
 import { t, getSetting, setSetting } from "yuzora:core";
 import {
   hosts, connect, list, mkdir, rename, remove, transfer, transfers, cancelTransfer, retryTransfer, clearTransfers,
-  openRemote, edits, stopEdit, overwriteEdit, prompts, claimPrompt, localHome, status,
+  openRemote, openInNotepad, edits, stopEdit, overwriteEdit, prompts, claimPrompt, localHome, status,
 } from "yuzora:ssh";
 
 const I = (name) => `mods/yuzora-sidebar-ssh/icons/${name}.svg`;
@@ -28,7 +28,8 @@ const RUNNABLE = /\.(desktop|sh|bash|zsh|fish|py|pl|rb|php|js|mjs|html?|xhtml|xm
 async function openInEditor(path) {
   const platform = window()?.platform;
   if (platform === "macos") return exec("open", ["-t", path]).catch(() => null);
-  if (platform === "windows") return exec("notepad", [path]).catch(() => null);
+  // Not `exec`: it waits for the program and stops it after 30 s, Notepad's window with it.
+  if (platform === "windows") return Promise.resolve().then(() => openInNotepad(path)).catch(() => null);
   const mime = (await exec("xdg-mime", ["query", "filetype", path]).catch(() => null))?.stdout?.trim() ?? "";
   if (PLAIN.has(mime) && !RUNNABLE.test(path)) return exec("xdg-open", [path]).catch(() => null);
   notify({ title: t("edit.openYourself", { path }) });
