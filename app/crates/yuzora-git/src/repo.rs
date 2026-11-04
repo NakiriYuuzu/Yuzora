@@ -498,7 +498,7 @@ pub fn get(id: &str) -> GitResult<Arc<Repo>> {
 /// The repo holding `cwd` (here, or on machine `on`), opened once and shared.
 pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
     // No program named: each call runs the git the settings name then.
-    let probe = Place { root: cwd.to_owned(), on: on.map(str::to_owned).filter(|m| !m.is_empty()), git: String::new(), write_lock: Arc::default() };
+    let probe = Place { root: cwd.to_owned(), on: on.map(str::to_owned).filter(|m| !m.is_empty()), git: String::new(), top: false, write_lock: Arc::default() };
     let out = exec::run(&probe, Git::read(["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"]))?;
     if !out.ok() {
         return Err(GitError::Other(not_a_repo(&out.stderr_text())));
@@ -527,7 +527,7 @@ pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
         r.used();
         return Ok(r);
     }
-    let place = Place { root: root.to_owned(), on: probe.on.clone(), git: String::new(), write_lock: Arc::default() };
+    let place = Place { root: root.to_owned(), on: probe.on.clone(), git: String::new(), top: true, write_lock: Arc::default() };
     let repo = Arc::new(Repo::new(id.clone(), place, git_dir.to_owned(), common.to_owned()));
     all.insert(id, repo.clone());
     drop(all);
@@ -678,7 +678,8 @@ pub mod testing {
         let dir = tempfile::tempdir().unwrap();
         // The real path: macOS temp dirs sit behind a /var → /private/var link.
         let root = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().into_owned();
-        let place = Place::local(&root);
+        // As `open` gives it: git stays in this repo.
+        let place = Place { top: true, ..Place::local(&root) };
         let init = exec::run(&place, Git::write(["init", "-q", "-b", "main"])).unwrap();
         assert!(init.ok(), "{}", init.stderr_text());
         for (k, v) in [("user.name", "Yuzora Test"), ("user.email", "test@yuzora.dev"), ("commit.gpgSign", "false"), ("core.autocrlf", "false")] {
@@ -793,6 +794,42 @@ pub(crate) mod tests {
         let now = s.repo.generation();
         assert_eq!(s.repo.changed_paths(since, now), None);
         assert_eq!(s.repo.changed_paths(now - KEEP_CHANGES as u64, now).map(|p| p.len()), Some(KEEP_CHANGES));
+    }
+
+    // An open repo is its top level only. With its `.git` gone and a repo around it, git fails,
+    // here and on a machine, rather than reading or writing that repo under this one's name:
+    // status has none of its branch or files (the trust gate can't read this repo's config, so
+    // it asks, or git says there's no repo), a commit fails. Opening the folder now finds the
+    // repo around it, as git looks.
+    #[test]
+    fn a_repo_whose_git_is_gone_runs_nothing_in_the_repo_around_it() {
+        let outer = scratch();
+        let head = outer.commit("a.txt", "a", "outer");
+        let inner = format!("{}/inner", outer.root());
+        std::fs::create_dir_all(&inner).unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&inner).status().unwrap().success());
+        let repo = open(&inner, None).unwrap();
+        assert_eq!(repo.place.root, inner);
+        let mut repos = vec![("here", repo.clone())];
+        #[cfg(unix)]
+        {
+            let _ = super::testing::on_machine(&outer);
+            let place = Place { on: Some("test-machine".into()), write_lock: Arc::default(), ..repo.place.clone() };
+            repos.push(("on a machine", Arc::new(Repo::new(repo_id(Some("test-machine"), &inner), place, repo.git_dir.clone(), repo.common_dir.clone()))));
+        }
+        std::fs::rename(format!("{inner}/.git"), format!("{inner}/.git-away")).unwrap();
+        for (where_, repo) in repos {
+            let status = crate::status::read(&repo, true);
+            let none = match &status {
+                Err(e) => e.to_string().contains("not a git repository"),
+                Ok(st) => st["branch"]["head"].is_null() && st["trust"].as_array().is_some_and(|t| !t.is_empty()),
+            };
+            assert!(none, "{where_}: status {status:?}");
+            let commit = repo.run(Git::write(["commit", "--allow-empty", "-q", "-m", "inner"])).unwrap();
+            assert!(!commit.ok(), "{where_}: committed");
+        }
+        assert_eq!(outer.git(&["rev-parse", "HEAD"]).trim(), head, "the repo around it got a commit");
+        assert_eq!(open(&inner, None).unwrap().place.root, outer.root());
     }
 
     #[test]
