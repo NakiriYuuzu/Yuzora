@@ -174,6 +174,6 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 
 `yuzora-shell/src/git.rs` 的 `status()` 原本循序跑 3 個 `git`（`symbolic-ref`、`config --get-regexp`、`for-each-ref`），每個在 Windows 都付 `remote::run` 約 52 ms 的輪詢下限，遠端則各是一次 `hc exec` 往返。現在：
 
-- **遠端（`machine` 有值）**：三步合成一個 `sh -c` 在那台機器上依序跑（選項、順序、停止條件與 `--no-lazy-fetch` 都和逐步版相同：不是 repo 或 detached 就停、promisor 才加 `--no-lazy-fetch`），一次往返。那台機器沒有 `sh`（或沒回應）就退回逐步版；逾時照樣當逾時。
-- **本機與退回路徑**：`symbolic-ref` 與 `config` 互不相依，改成並行（3 輪變 2 輪）。
+- **遠端（`machine` 有值）**：三步合成一個 `sh -c` 在那台機器上依序跑（選項、順序、停止條件與 `--no-lazy-fetch` 都和逐步版相同：不是 repo 或 detached 就停、promisor 才加 `--no-lazy-fetch`），一次往返。script 的每個 `git` 都直接寫出 `--no-optional-locks -c core.fsmonitor=false`（不經過未加引號的變數，所以 zsh 原生模式之類不拆字的 shell 也不會走偏）。只有 `rc=0`（分支）、`1`（detached）、`128`（不是 repo）算答案；輸出被截斷、格式不完整、或其他 rc（沒有 git、shell 沒照寫法執行）都退回逐步版。那台機器沒有 `sh`（或沒回應）同樣退回；逾時照樣當逾時，不重試。
+- **本機與退回路徑**：`symbolic-ref` 與 `config` 互不相依，改成並行（3 輪變 2 輪）。代價：detached 或資料夾不是 repo 時，本機現在會多跑 1 個 `config`（只讀，不執行程式；等待時間沒有增加）。
 - 安全條件不變（L1 #197）：只讀 refs 與 config，不讀 index 或 work tree，不執行 filter、fsmonitor；測試守著（`a_machines_repo_filter_never_runs`、`a_machines_partial_clone_is_not_fetched_either`）。

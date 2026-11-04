@@ -123,14 +123,13 @@ fn status_with(cwd: &str, machine: Option<String>, run: &(dyn Fn(&ExecRequest) -
 /// `$1` is [`PROMISOR`], `$2` [`UPSTREAM`]. It stops where [`status`] would
 /// (not a repo, detached), and walks to the upstream with `--no-lazy-fetch`
 /// when a remote is a promisor one. Ref names hold no line feed.
-const REMOTE_SCRIPT: &str = r#"b="--no-optional-locks -c core.fsmonitor=false"
-h=$(git $b symbolic-ref -q HEAD); rc=$?
+const REMOTE_SCRIPT: &str = r#"h=$(git --no-optional-locks -c core.fsmonitor=false symbolic-ref -q HEAD); rc=$?
 printf 'rc=%s\n' "$rc"
 [ "$rc" = 0 ] || exit 0
 printf 'head=%s\n' "$h"
-git $b config --get-regexp "$1" >/dev/null; p=$?
+git --no-optional-locks -c core.fsmonitor=false config --get-regexp "$1" >/dev/null; p=$?
 printf 'promisor=%s\n' "$p"
-if [ "$p" = 1 ]; then git $b for-each-ref "$2" "$h"; else git $b --no-lazy-fetch for-each-ref "$2" "$h"; fi
+if [ "$p" = 1 ]; then git --no-optional-locks -c core.fsmonitor=false for-each-ref "$2" "$h"; else git --no-optional-locks -c core.fsmonitor=false --no-lazy-fetch for-each-ref "$2" "$h"; fi
 printf '\nfe=%s\n' "$?"
 "#;
 
@@ -142,13 +141,18 @@ fn parse_script(out: &ExecOutput) -> Option<Option<Summary>> {
     match rc {
         "0" => {}
         "1" => return Some(Some(s)), // detached
-        _ => return Some(None),
+        // git's "not a git repository"; anything else (a shell that didn't run it
+        // as written, no git there) is not an answer: the steps ask.
+        "128" => return Some(None),
+        _ => return None,
     }
     let (head, rest) = rest.strip_prefix("head=")?.split_once('\n')?;
     s.branch = Some(head.strip_prefix("refs/heads/").unwrap_or(head).to_owned());
     let (_promisor, rest) = rest.strip_prefix("promisor=")?.split_once('\n')?;
     let (body, fe) = rest.rsplit_once("\nfe=")?;
-    if fe.trim_end() == "0" {
+    // The exit code is a whole line: a cut one is not an answer.
+    let fe: i32 = fe.strip_suffix('\n')?.parse().ok()?;
+    if fe == 0 {
         (s.upstream, s.ahead, s.behind) = parse_upstream(body);
     }
     Some(Some(s))
@@ -440,6 +444,151 @@ mod tests {
         dir.write("a.txt", "3\n");
         status_with(&dir.path(), Some("m".into()), &on_this_computer(&Default::default())).unwrap().unwrap();
         assert!(!marker.exists());
+    }
+
+    /// A `git` that records its arguments (one line per call, fields joined by
+    /// U+001F) and then runs the real one; its folder goes first in PATH.
+    #[cfg(unix)]
+    fn argv_shim(dir: &Scratch) -> (PathBuf, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let real = String::from_utf8(std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap().stdout).unwrap().trim().to_owned();
+        let bin = dir.0.join("shim-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = dir.0.join("argv.log");
+        let shim = bin.join("git");
+        let body = "#!/bin/sh\ns=\nfor a in \"$@\"; do s=\"$s$a\u{1f}\"; done\nprintf '%s\\n' \"$s\" >> 'LOG'\nexec 'REAL' \"$@\"\n";
+        std::fs::write(&shim, body.replace("LOG", &log.display().to_string()).replace("REAL", &real)).unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        (log, path)
+    }
+
+    #[cfg(unix)]
+    fn recorded(log: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_owned).collect();
+        v.sort();
+        v
+    }
+
+    /// Runs `req` here with `path` first in PATH, `on` cleared.
+    #[cfg(unix)]
+    fn here_with(path: &str, req: &ExecRequest) -> Result<ExecOutput, ExecError> {
+        let mut r = ExecRequest { on: None, ..req.clone() };
+        r.env.push(("PATH".into(), path.to_owned()));
+        yuzora_core::remote::run(&r)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_script_runs_git_with_the_same_arguments_as_the_steps() {
+        if !git_here() {
+            return;
+        }
+        for promisor in [false, true] {
+            let dir = repo_with_upstream("m-argv");
+            if promisor {
+                dir.git(&["config", "remote.origin.promisor", "true"]);
+            }
+            let (log, path) = argv_shim(&dir);
+            let script = status_with(&dir.path(), Some("m".into()), &|r| here_with(&path, r)).unwrap();
+            let by_script = recorded(&log);
+            std::fs::remove_file(&log).unwrap();
+            let nosh = |r: &ExecRequest| if r.program == "sh" { Err(ExecError::Remote("no sh".into())) } else { here_with(&path, r) };
+            let steps = status_with(&dir.path(), Some("m".into()), &nosh).unwrap();
+            assert_eq!(script, steps);
+            assert_eq!(by_script, recorded(&log), "promisor {promisor}");
+            assert_eq!(by_script.len(), 3, "{by_script:?}");
+            assert!(by_script.iter().all(|l| l.starts_with("--no-optional-locks\u{1f}-c\u{1f}core.fsmonitor=false\u{1f}")), "{by_script:?}");
+            assert_eq!(by_script.iter().filter(|l| l.contains("--no-lazy-fetch")).count(), usize::from(promisor), "{by_script:?}");
+        }
+    }
+
+    #[test]
+    fn half_an_answer_is_not_an_answer() {
+        let whole = "rc=0\nhead=refs/heads/main\npromisor=1\norigin/main\0ahead 1\n\nfe=0\n";
+        let out = |text: &str| ExecOutput { code: 0, stdout: text.as_bytes().to_vec(), stderr: Vec::new() };
+        assert_eq!(parse_script(&out(whole)).unwrap().unwrap().ahead, 1);
+        for cut in [
+            "rc=0\nhead=refs/heads/main\npromisor=1\norigin/main\0ahead 1\n",      // no fe line
+            "rc=0\nhead=refs/heads/main\npromisor=1\norigin/main\0ahead 1\n\nfe=", // fe cut
+            "rc=0\nhead=refs/heads/main\n",                                        // ends at head
+            "rc=0\nhead=refs/heads/ma",                                             // cut inside head
+            "banner\nrc=0\nhead=refs/heads/main\npromisor=1\n\nfe=0\n",            // not the start
+            "rc=129\n",                                                             // a shell that did not run it as written
+            "rc=127\n",                                                             // no git there
+            "",
+        ] {
+            assert_eq!(parse_script(&out(cut)), None, "{cut:?}");
+        }
+        assert_eq!(parse_script(&out("rc=128\n")), Some(None));
+        assert_eq!(parse_script(&out("rc=1\n")), Some(Some(Summary::default())));
+    }
+
+    #[test]
+    fn a_cut_answer_sends_the_status_bar_to_the_steps() {
+        if !git_here() {
+            return;
+        }
+        let repo = repo_with_upstream("m-cut");
+        let calls = std::sync::Mutex::new(Vec::new());
+        let run = |req: &ExecRequest| {
+            calls.lock().unwrap().push(req.program.clone());
+            if req.program == "sh" {
+                return Ok(ExecOutput { code: 0, stdout: b"rc=0\nhead=refs/heads/feat/dock\npromisor=1\n".to_vec(), stderr: Vec::new() });
+            }
+            yuzora_core::remote::run(&ExecRequest { on: None, ..req.clone() })
+        };
+        let s = status_with(&repo.path(), Some("m".into()), &run).unwrap().unwrap();
+        assert_eq!((s.upstream.as_deref(), s.ahead, s.behind), (Some("base"), 1, 1));
+        assert_eq!(calls.lock().unwrap().iter().filter(|p| *p == "git").count(), 3);
+    }
+
+    #[test]
+    fn only_the_script_timing_out_is_the_answer_and_it_is_asked_once() {
+        if !git_here() {
+            return;
+        }
+        let repo = repo_with_upstream("m-slow");
+        let calls = std::sync::Mutex::new(Vec::new());
+        let run = |req: &ExecRequest| {
+            calls.lock().unwrap().push(req.program.clone());
+            if req.program == "sh" {
+                return Err(ExecError::TimedOut { seconds: 20.0, machine: Some("m".into()) });
+            }
+            yuzora_core::remote::run(&ExecRequest { on: None, ..req.clone() })
+        };
+        assert!(matches!(status_with(&repo.path(), Some("m".into()), &run), Err(ExecError::TimedOut { .. })));
+        assert_eq!(*calls.lock().unwrap(), vec!["sh".to_owned()]);
+    }
+
+    /// A shell that does not split `$b`-style words (zsh's own mode) made git
+    /// fail with 129, which read as "not a repo".
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_that_does_not_run_the_script_as_written_is_not_believed() {
+        if !git_here() {
+            return;
+        }
+        let repo = repo_with_upstream("m-zsh");
+        let zsh = std::process::Command::new("zsh").arg("--version").output().is_ok_and(|o| o.status.success());
+        for native in [false, true] {
+            if native && !zsh {
+                continue;
+            }
+            let run = |req: &ExecRequest| {
+                let mut r = ExecRequest { on: None, ..req.clone() };
+                if req.program == "sh" {
+                    r.program = if native { "zsh".into() } else { "/bin/sh".into() };
+                    if !native {
+                        // A stand-in for it: git said 129 to the one word it was given.
+                        r.args = vec!["-c".into(), "printf 'rc=129\\n'".into()];
+                    }
+                }
+                yuzora_core::remote::run(&r)
+            };
+            let s = status_with(&repo.path(), Some("m".into()), &run).unwrap().unwrap();
+            assert_eq!((s.branch.as_deref(), s.upstream.as_deref(), s.ahead, s.behind), (Some("feat/dock"), Some("base"), 1, 1), "native zsh: {native}");
+        }
     }
 
     /// Round trips through a real `hc` machine (set `YUZORA_PERF_MACHINE`):
