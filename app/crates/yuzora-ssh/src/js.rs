@@ -354,6 +354,22 @@ mod tests {
         assert!(err.to_string().contains("not-an-edit-copy"), "{err}");
     }
 
+    // Returns at once with Notepad still running, past `exec`'s 30 s, and kills nothing.
+    #[cfg(windows)]
+    #[test]
+    fn notepad_opens_without_being_waited_for() {
+        let file = std::env::temp_dir().join(format!("yuzora notepad {}.txt", std::process::id()));
+        std::fs::write(&file, "x").unwrap();
+        let started = std::time::Instant::now();
+        open_in_notepad(file.to_str().unwrap()).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(33));
+        let listed = std::process::Command::new("tasklist").args(["/FI", "IMAGENAME eq notepad.exe"]).output().unwrap();
+        let alive = String::from_utf8_lossy(&listed.stdout).contains("notepad.exe");
+        let _ = std::process::Command::new("taskkill").args(["/IM", "notepad.exe", "/F"]).output();
+        assert!(alive, "Notepad should still be open after 33 s");
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn notepad_is_windows_only() {
