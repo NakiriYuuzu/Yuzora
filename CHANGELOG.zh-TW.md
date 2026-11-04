@@ -2,7 +2,7 @@
 
 <samp><a href="CHANGELOG.md">English</a> · 繁體中文</samp>
 
-## [0.1.0-beta.2] - 未發布
+## [0.1.0-beta.2] - 2026-11-04
 
 Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI、libghostty、QuickJS mods）為基底重寫成原生 App。終端機與 agent 改由 herdr-core（`hc`）執行，關掉視窗也會繼續；介面依新設計重做。
 
@@ -12,7 +12,7 @@ Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI�
 - 新增 Space 時先選資料夾（遠端機器輸入路徑並在那台機器上確認），Space 以資料夾命名；同一個資料夾已有 Space 時直接切換過去。
 - 混合分割：「＋ 新增 pane」把工具 pane、終端機或 agent 放在目前 pane 的右側或下方，同一個 tab 裡可以混排；tab 列每個 tab 帶 Space 徽章與狀態，agent 需要回覆時 pane 邊框與標頭轉為琥珀色。
 - 狀態列顯示 pane／Space／agent 數、需要回覆數、目前分支 ↑↓ 與 HERDR 版本；右下角顯示這台電腦上 Yuzora 的 CPU 與記憶體用量（App、herdr-core 的終端機與 agent、Yuzora 啟動的工具），點擊展開明細。
-- Git 以 IntelliJ IDEA Community 為基準、採 staging area 模式：側欄的變更、暫存與 commit，可逐塊與逐行暫存的 diff（開在對話框裡，按「保留」移到 pane），提交紀錄與分支圖、分支、push、三方合併、互動式 rebase、annotate，以及 stash、tag、remote、worktree、submodule、patch。repo 自己的 Git 設定會執行程式的資料夾，在你信任之前，Yuzora 不執行任何可能啟動那些程式的 Git（Git 模式、檔案樹與 Spaces 清單都一樣）。
+- Git 以 IntelliJ IDEA Community 為基準、採 staging area 模式：側欄的變更、暫存與 commit，可逐塊與逐行暫存的 diff（開在對話框裡，按「保留」移到 pane），提交紀錄與分支圖、分支、push、三方合併、互動式 rebase、annotate，以及 stash、tag、remote、worktree、submodule、patch。repo 自己的 Git 設定會執行程式的資料夾，在你信任之前，Yuzora 不執行任何可能啟動那些程式的 Git（Git 模式、檔案樹與 Spaces 清單都一樣）。（信任前，Yuzora 自動執行的讀取維持離線；背景 fetch 與你自己按下的 fetch、pull、push 只用 Git 內建的傳輸，不用 remote helper，在設定會執行程式的資料夾也要等信任。背景 fetch 不跑 hook；你自己執行的 Git（例如 commit、push）一般 hook 照常執行。）
 - 檔案與編輯器：跟著目前 pane 的 repo 的檔案樹，有 Git 標記與檔案 icon，可以新增、重新命名、刪除到垃圾桶、複製路徑、在 Finder 中顯示；檔名與內容搜尋；14 種語言 tree-sitter 上色的程式碼編輯器（存檔前檢查衝突、尋找與取代、磁碟上的變更即時跟上，有 agent 在改同一個檔案時會提示）；跟著編輯器即時更新的 Markdown 預覽；圖片與 SVG 檢視。repo 的 SVG 在獨立的行程裡畫，有時間與記憶體上限；畫不出來時，圖片 pane 顯示佔位圖和原因，Markdown 預覽顯示佔位圖。
 - 資料庫：PostgreSQL、SQL Server、SQLite 連線（密碼存在系統鑰匙圈）、資料庫切換與 schema 樹；資料表 pane 有資料（虛擬捲動表格、排序、複製、編輯儲存格並在單一交易內寫回）、結構（欄位、索引、外鍵、DDL）與 SQL 分頁；SQL pane 可執行多個結果集、取消與查看歷史紀錄。
 - SSH／SFTP：列出 `~/.ssh/config`、Yuzora 自建主機與 herdr machines，顯示連線狀態與延遲；首次連線以指紋確認主機金鑰，金鑰變更時警告；SFTP 雙欄傳輸可以拖放、取消、重試、續傳，並保留權限與時間；遠端檔案可用本機文字編輯器開啟，存檔時自動上傳。
@@ -21,7 +21,7 @@ Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI�
 - MOD 管理：列出內建、已修改、複製與個人的 mods 與 layouts 及其錯誤；可複製、檢查、切換或還原 layout，並在顯示信任警告後從資料夾安裝。Yuzora 自己的介面就是 mods，可以複製後修改。
 - 深色與淺色主題（yuzora-dark、yuzora-light），預設跟隨系統；介面支援英文與繁體中文。
 - 與官方 Herdr 共用 herdr-core：版本不符的畫面改用 Yuzora 的名稱並說明 core 是共用的；core 重新啟動後若變成 Yuzora 不能用的版本，Yuzora 不會接上，並一直顯示原因，恢復後自動重新連線。
-- 更新改由本 repo 的 GitHub Releases 提供：每小時檢查，更新清單的簽章與每個檔案的 SHA-256 都驗過才會下載，重新啟動時套用。beta 版只會更新到正式版（0.1.0 以後），不會更新到其他 beta。
+- 更新改由本 repo 的 GitHub Releases 提供：每小時檢查，更新清單的簽章與 SHA-256 都通過才會安裝，重新啟動時套用。beta 版只會更新到正式版（0.1.0 以後），不會更新到其他 beta。
 - 不再傳送任何使用資料；意見回饋改開 GitHub Issue。
 - 命令列程式叫 `yuzora`，不會蓋掉官方 Herdr 的 `herdr-app`。
 
@@ -41,7 +41,7 @@ Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust、GPUI�
 
 ### 安裝說明
 
-- macOS App 僅支援 Apple Silicon，只有 ad-hoc 簽章，沒有 Apple Developer ID 簽章或公證，所以第一次開啟會被 Gatekeeper 擋下：到「系統設定 › 隱私權與安全性」按「仍要打開」。每次更新後 macOS 可能會再詢問一次麥克風、相機或資料夾權限。
+- macOS App 僅支援 Apple Silicon，只有 ad-hoc 簽章，沒有 Apple Developer ID 簽章或公證，所以第一次開啟會被 Gatekeeper 擋下：到「系統設定 › 隱私權與安全性」按「強制打開」（或執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`）。每次更新後 macOS 可能會再詢問一次麥克風、相機或資料夾權限。
 - Windows 改用免系統管理員權限的 NSIS 安裝程式 `Yuzora_<version>_x64-setup.exe`（安裝到 `%LOCALAPPDATA%\Programs\Yuzora`），不再出 MSI；安裝完會詢問是否移除 beta.1 的全機安裝。Authenticode 尚未啟用，可能出現 SmartScreen 提示。
 - Linux（實驗性）提供 x86_64 與 aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`，解開後執行 `yuzora/install`；目前只通過 CI，尚未在實機上驗證。
 - 需要 herdr-core 0.1.11 以上；沒有安裝時，第一次開啟的畫面會提供安裝。

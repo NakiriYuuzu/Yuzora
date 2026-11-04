@@ -139,7 +139,6 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 
 | 檔案 | 內容 |
 | --- | --- |
-| `l1-workspace.png` | 本機＋lab-01 的樹、scope chips、需要注意、模式列徽章、tab 列、pane 標頭、狀態列（含其他 lane 的狀態） |
 | `l1-new-space-remote.png` | 在 lab-01 新增 Space：路徑輸入框（由人執行的 `space.new {machine: "lab-01"}` 開啟） |
 | `l1-new-space-existing.png` | 本機再選同一個資料夾（經 symlink）：切回 `alpha-app` 並提示，沒有新增 |
 | `l1-new-space-errors.png` | lab-01 找不到資料夾的錯誤，以及同一台機器的對話框已開著時的提示 |
