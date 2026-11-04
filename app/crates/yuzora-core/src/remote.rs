@@ -25,7 +25,8 @@ const REMOTE_GRACE: Duration = Duration::from_secs(5);
 /// After the program exits, how long its output may take to arrive. Anything
 /// it started in the background can keep the pipes open for good.
 const PIPE_GRACE: Duration = Duration::from_millis(500);
-/// How often an idle reader looks whether it should let go of its pipe.
+/// How often an idle reader looks whether it should let go of its pipe (Unix; on Windows it is cancelled).
+#[cfg(unix)]
 const READ_CHECK: Duration = Duration::from_millis(50);
 
 type FindHc = Box<dyn Fn() -> PathBuf + Send + Sync>;
@@ -224,6 +225,8 @@ fn command(req: &ExecRequest) -> Command {
     let mut cmd = Command::new(&req.program);
     cmd.args(&req.args).envs(req.env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.current_dir(req.cwd.as_ref().map(PathBuf::from).unwrap_or_else(crate::paths::home_dir));
+    // The app has no console on Windows: without this every call opens a window.
+    crate::spawn::no_window(&mut cmd);
     // Its own process group, so a timeout can end everything it started.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
@@ -235,18 +238,16 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     let mut child = cmd.spawn().map_err(|e| ExecError::Spawn(format!("cannot run {}: {e}", req.program)))?;
     let out = Drain::start(child.stdout.take().expect("piped stdout"), req.max_output);
     let err = Drain::start(child.stderr.take().expect("piped stderr"), req.max_output);
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) if start.elapsed() > req.timeout => {
-                kill_tree(&mut child);
-                let _ = child.wait();
-                return Err(ExecError::TimedOut { seconds: req.timeout.as_secs_f64(), machine: None });
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(e) => return Err(ExecError::Spawn(e.to_string())),
+    // yuzora(perf): no 10 ms polling: the answer comes the moment it exits. The `Child` stays here
+    // the whole time (see `kill_tree` for why).
+    let status = match wait_for_exit(&mut child, req.timeout) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            kill_tree(&mut child);
+            let _ = child.wait();
+            return Err(ExecError::TimedOut { seconds: req.timeout.as_secs_f64(), machine: None });
         }
+        Err(e) => return Err(ExecError::Spawn(e.to_string())),
     };
     // What the program wrote is already in the pipes; whatever it left running
     // in the background may hold them open, so don't wait for that (the
@@ -255,8 +256,76 @@ fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     Ok(ExecOutput { code: status.code().unwrap_or(-1), stdout: out.finish(until), stderr: err.finish(until) })
 }
 
+/// Waits for the program to end, up to `timeout` (None: still running). The program is not
+/// reaped until the caller says so, so its id cannot be handed to another process meanwhile.
+#[cfg(windows)]
+fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::io::Result<Option<std::process::ExitStatus>> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn WaitForSingleObject(handle: *mut std::ffi::c_void, ms: u32) -> u32;
+    }
+    const WAIT_OBJECT_0: u32 = 0;
+    const WAIT_TIMEOUT: u32 = 0x102;
+    // Just under INFINITE (u32::MAX), in the pieces a `u32` of milliseconds allows.
+    let end = Instant::now().checked_add(timeout);
+    loop {
+        let left = end.map_or(Duration::from_millis(u64::from(u32::MAX - 1)), |e| e.saturating_duration_since(Instant::now()));
+        let ms = u32::try_from(left.as_millis().min(u128::from(u32::MAX - 1))).unwrap_or(u32::MAX - 1);
+        // SAFETY: the process handle `child` owns, open for the whole call.
+        match unsafe { WaitForSingleObject(std::os::windows::io::AsRawHandle::as_raw_handle(child), ms) } {
+            WAIT_OBJECT_0 => return child.wait().map(Some),
+            WAIT_TIMEOUT if end.is_some_and(|e| Instant::now() >= e) => return Ok(None),
+            WAIT_TIMEOUT => {}
+            _ => return Err(std::io::Error::last_os_error()),
+        }
+    }
+}
+
+/// Same, on Unix: a thread watches for the exit with `waitid(WNOWAIT)` (it does not reap),
+/// so `child` stays here, unreaped, until this thread has what it needs.
+#[cfg(unix)]
+fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::io::Result<Option<std::process::ExitStatus>> {
+    let pid = child.id() as libc::id_t;
+    let (seen, exited) = mpsc::channel();
+    std::thread::spawn(move || {
+        loop {
+            // SAFETY: an all-zero siginfo is the "nothing yet" value waitid fills in.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: waits for one child of this process without reaping it.
+            let r = unsafe { libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT) };
+            if r == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                let _ = seen.send(r == 0);
+                return;
+            }
+        }
+    });
+    let end = Instant::now().checked_add(timeout);
+    if exited.recv_timeout(timeout).is_err() {
+        return Ok(None);
+    }
+    // The watcher answered: it exited, or (macOS reports a stopped child too, SIGSTOP or a
+    // SIGTTIN from reading the terminal) it did not, or waitid could not watch. Only `try_wait`
+    // says; a plain `wait` would wait for ever on a stopped program. Not exited: look again
+    // until the time is up (the watcher would only answer at once again).
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if end.is_some_and(|e| Instant::now() >= e) {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Ends the program and everything it started: its process group on Unix
 /// (`process_group(0)` above), its process tree on Windows.
+///
+/// It takes the `Child`, not a process id, on purpose. A process id is free to be handed to
+/// another process once the program is reaped (Windows: once the last handle is closed), and a
+/// kill by a bare id then lands on whatever got it, possibly another git of this app. While
+/// `child` is alive here its id is ours: `taskkill /PID` and `child.kill()` (TerminateProcess on
+/// the handle) cannot hit anything else.
 fn kill_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     if let Ok(group) = libc::pid_t::try_from(child.id()) {
@@ -275,6 +344,7 @@ fn kill_tree(child: &mut std::process::Child) {
             .creation_flags(CREATE_NO_WINDOW)
             .status();
     }
+    // The program itself, by its handle.
     let _ = child.kill();
 }
 
@@ -304,22 +374,46 @@ fn readable(r: &impl Pipe, wait: Duration) -> std::io::Result<bool> {
     }
 }
 
-/// Whether `r` has something to read, or has ended, within `wait`.
+/// yuzora(perf): on Windows the reader blocks in `read` (no polling with a sleep: the bytes
+/// are taken the moment they arrive) and is cancelled from outside when it must let go.
 #[cfg(windows)]
-fn readable(r: &impl Pipe, wait: Duration) -> std::io::Result<bool> {
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn PeekNamedPipe(pipe: *mut std::ffi::c_void, buf: *mut std::ffi::c_void, size: u32, read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
+mod blocking {
+    use std::sync::{Arc, Mutex};
+
+    /// A pipe handle that can be told to stop a read pending on it, for as long as it is open.
+    #[derive(Clone)]
+    pub struct Cancel {
+        handle: usize,
+        open: Arc<Mutex<bool>>,
     }
-    let mut available = 0u32;
-    // SAFETY: the pipe `r` owns and one out-parameter, alive for the whole call.
-    let ok = unsafe { PeekNamedPipe(r.as_raw_handle(), std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut available, std::ptr::null_mut()) };
-    // Failing means the pipe ended (the read then says so).
-    if ok == 0 || available > 0 {
-        return Ok(true);
+
+    impl Cancel {
+        pub fn new(handle: *mut std::ffi::c_void) -> Self {
+            Cancel { handle: handle as usize, open: Arc::new(Mutex::new(true)) }
+        }
+
+        /// The pipe is about to be closed: no cancel reaches a handle that is not this one any more.
+        pub fn closed(&self) {
+            *self.open.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        }
+
+        pub fn is_open(&self) -> bool {
+            *self.open.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        /// Ends a read pending on the pipe (it fails with "aborted").
+        pub fn cancel(&self) {
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn CancelIoEx(file: *mut std::ffi::c_void, overlapped: *mut std::ffi::c_void) -> i32;
+            }
+            let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+            if *open {
+                // SAFETY: the handle is still open (the reader marks it closed, under this lock, before it drops it).
+                unsafe { CancelIoEx(self.handle as *mut std::ffi::c_void, std::ptr::null_mut()) };
+            }
+        }
     }
-    std::thread::sleep(wait);
-    Ok(false)
 }
 
 /// One output stream read on its own thread, up to a limit (the rest is
@@ -330,6 +424,8 @@ struct Drain {
     buf: Arc<Mutex<Vec<u8>>>,
     ended: mpsc::Receiver<()>,
     stop: Arc<AtomicBool>,
+    #[cfg(windows)]
+    cancel: blocking::Cancel,
 }
 
 impl Drain {
@@ -339,10 +435,15 @@ impl Drain {
         let (tx, ended) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let (into, stopped) = (buf.clone(), stop.clone());
+        #[cfg(windows)]
+        let cancel = blocking::Cancel::new(std::os::windows::io::AsRawHandle::as_raw_handle(&r));
+        #[cfg(windows)]
+        let reader_cancel = cancel.clone();
         std::thread::spawn(move || {
             let mut chunk = [0u8; 16 << 10];
             // Until the stream ends or the Drain is dropped; the pipe closes with `r`.
             while !stopped.load(Ordering::Relaxed) {
+                #[cfg(unix)]
                 match readable(&r, READ_CHECK) {
                     Ok(true) => {}
                     Ok(false) => continue,
@@ -359,9 +460,17 @@ impl Drain {
                     Err(_) => break,
                 }
             }
+            #[cfg(windows)]
+            reader_cancel.closed();
             let _ = tx.send(());
         });
-        Drain { buf, ended, stop }
+        Drain {
+            buf,
+            ended,
+            stop,
+            #[cfg(windows)]
+            cancel,
+        }
     }
 
     /// Everything read once the stream ends, or what was read by `until`.
@@ -374,6 +483,21 @@ impl Drain {
 impl Drop for Drain {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        // A reader blocked in `read` (a program's background child holds the other end)
+        // is told to stop; if it was not in `read` yet, the next tries find it.
+        #[cfg(windows)]
+        if self.cancel.is_open() {
+            let cancel = self.cancel.clone();
+            std::thread::spawn(move || {
+                for _ in 0..50 {
+                    cancel.cancel();
+                    std::thread::sleep(Duration::from_millis(20));
+                    if !cancel.is_open() {
+                        break;
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -495,6 +619,125 @@ mod tests {
         let out = run(&ExecRequest::new("sh", ["-c", "printf done; printf warn >&2; sleep 4 & exit 0"]).timeout(Duration::from_secs(30))).unwrap();
         assert_eq!((out.code, out.stdout_text().as_str(), out.stderr_text().as_str()), (0, "done", "warn"));
         assert!(started.elapsed() < Duration::from_secs(3), "waited {:?}", started.elapsed());
+    }
+
+    /// A program that ends only when asked to (about `secs` seconds), on any Windows: `ping`.
+    #[cfg(windows)]
+    fn waits(ip: &str, secs: u32) -> String {
+        format!("ping -n {} {ip} > nul", secs + 1)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_local_runs_capture_output_and_stop_at_the_timeout() {
+        let out = run(&ExecRequest::new("cmd", ["/c", "echo out& echo err 1>&2& exit 3"])).unwrap();
+        assert_eq!((out.code, out.stdout_text().trim(), out.stderr_text().trim()), (3, "out", "err"));
+        let capped = run(&ExecRequest::new("cmd", ["/c", "echo 0123456789"]).max_output(4)).unwrap();
+        assert_eq!(capped.stdout_text(), "0123");
+        let started = Instant::now();
+        let slow = run(&ExecRequest::new("cmd", ["/c", waits("127.0.0.71", 20).as_str()]).timeout(Duration::from_millis(300)));
+        assert!(matches!(slow, Err(ExecError::TimedOut { .. })));
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+        assert!(matches!(run(&ExecRequest::new("yuzora-no-such-program", Vec::<String>::new())), Err(ExecError::Spawn(_))));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_a_timeout_ends_what_the_program_started() {
+        let ip = "127.0.0.77";
+        let slow = run(&ExecRequest::new("cmd", ["/c", waits(ip, 60).as_str()]).timeout(Duration::from_millis(500)));
+        assert!(matches!(slow, Err(ExecError::TimedOut { .. })));
+        let check = format!("@(Get-CimInstance Win32_Process -Filter \"Name='PING.EXE'\" | Where-Object {{ $_.CommandLine -like '*{ip}*' }}).Count");
+        let gone = (0..50).any(|_| {
+            let n = run(&ExecRequest::new("powershell", ["-NoProfile", "-Command", check.as_str()])).unwrap().stdout_text();
+            let gone = n.trim() == "0";
+            if !gone {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            gone
+        });
+        assert!(gone, "the ping outlived the timeout");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_a_background_child_holding_the_pipes_does_not_hold_the_answer() {
+        // `ping` inherits stdout and stderr and outlives the shell by seconds.
+        let started = Instant::now();
+        let out = run(&ExecRequest::new("cmd", ["/c", "start /b ping -n 6 127.0.0.78 > nul & echo done"]).timeout(Duration::from_secs(30))).unwrap();
+        assert_eq!((out.code, out.stdout_text().trim()), (0, "done"));
+        assert!(started.elapsed() < Duration::from_secs(3), "waited {:?}", started.elapsed());
+    }
+
+    /// A program is ended through the `Child` it was started as, never by a bare process id (which
+    /// may belong to another process by then): no `OpenProcess(pid)`, no `kill(pid)` by number.
+    /// This guards only that way of writing it, not the order of reaping (reaping the child and
+    /// then killing it would pass); the order is kept by reading `run_local` and `wait_for_exit`.
+    /// A program that stops itself (SIGSTOP; a child reading the terminal gets SIGTTIN alike) is not
+    /// "exited": macOS reports a stopped child to a `waitid` that watches for the exit. The run still
+    /// ends at its timeout, and what it started is gone.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_that_stops_itself_is_timed_out_not_waited_for_ever() {
+        let pid_file = std::env::temp_dir().join(format!("yuzora-exec-stopped-{}", std::process::id()));
+        let script = format!("echo $$ > '{}'; kill -STOP $$", pid_file.display());
+        let (done, answer) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(run(&ExecRequest::new("sh", ["-c", script.as_str()]).timeout(Duration::from_millis(500))));
+        });
+        let got = answer.recv_timeout(Duration::from_secs(3));
+        assert!(matches!(got, Ok(Err(ExecError::TimedOut { .. }))), "{got:?}");
+        let pid: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        let _ = std::fs::remove_file(&pid_file);
+        let gone = (0..100).any(|_| {
+            // SAFETY: signal 0 only asks whether the process exists.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            if alive {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            !alive
+        });
+        assert!(gone, "the stopped program {pid} outlived the timeout");
+    }
+
+    #[test]
+    fn a_program_is_ended_by_its_child_not_by_a_process_id() {
+        let src = include_str!("remote.rs");
+        // (Line ends differ between checkouts: cut at the module, not at a line.)
+        let code = src.split("mod tests {").next().unwrap();
+        for bare in [concat!("Open", "Process("), concat!("fn kill_tree(", "pid"), concat!("libc::", "kill(")] {
+            assert!(!code.contains(bare), "{bare} is back: a process id can be someone else's by now");
+        }
+        assert!(code.contains("fn kill_tree(child: &mut std::process::Child)"));
+    }
+
+    /// The real path of a letting-go: a program's own stdout (what `run` reads) held open by a
+    /// program that is still running and says nothing.
+    #[cfg(windows)]
+    #[test]
+    fn windows_a_reader_of_a_childs_stdout_lets_go_while_the_child_still_runs() {
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", "Start-Sleep 20"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        crate::spawn::no_window(&mut cmd);
+        let mut child = cmd.spawn().unwrap();
+        let drain = Drain::start(child.stdout.take().unwrap(), 64);
+        let cancel = drain.cancel.clone();
+        assert!(cancel.is_open());
+        let started = Instant::now();
+        assert!(drain.finish(Instant::now() + Duration::from_millis(300)).is_empty());
+        // finish gave up waiting and dropped the Drain: the blocked read is cancelled, the pipe closed.
+        let let_go = (0..100).any(|_| {
+            let closed = !cancel.is_open();
+            if !closed {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            closed
+        });
+        let took = started.elapsed();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(let_go, "the reader still holds the child's stdout");
+        assert!(took < Duration::from_secs(5), "{took:?}");
     }
 
     #[test]

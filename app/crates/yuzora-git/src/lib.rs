@@ -72,6 +72,8 @@ export function status(repo: string, options?: { force?: boolean }): Promise<Sta
 export function trust(repo: string): Promise<Outcome>;
 /** Resolves with the repo's generation once it is past `since` (at most ~25 s). */
 export function changed(repo: string, since: number): Promise<number>;
+/** As `changed`, with the work tree paths changed since (`git add` by Yuzora names its paths too); null when that can't be told (the index or refs git wrote, a rescan, more than is kept). */
+export function changes(repo: string, since: number): Promise<{ generation: number; paths: string[] | null }>;
 /** git add -A of paths (all when empty). */
 export function stage(repo: string, paths: string[]): Promise<Outcome>;
 /** Paths back out of the index (all when empty). */
@@ -301,6 +303,15 @@ pub fn host_module() -> HostModule {
             let since = a.number(1).unwrap_or(0.0) as u64;
             let wait = repo.wait(since);
             Ok(async move { Ok(HostValue::Number(wait.await as f64)) })
+        })
+        .async_function("changes", |a| {
+            let repo = repo::get(a.string(0)?).map_err(err)?;
+            let since = a.number(1).unwrap_or(0.0) as u64;
+            let wait = repo.wait(since);
+            Ok(async move {
+                let generation = wait.await;
+                Ok(to_host(&json!({ "generation": generation, "paths": repo.changed_paths(since, generation) })))
+            })
         })
         .function("cancel", |a| {
             if let Some(c) = cancels().lock().unwrap_or_else(|e| e.into_inner()).get(a.string(0)?) {
@@ -620,4 +631,26 @@ mod tests {
         call("stage", json!(["a.txt", "."])).unwrap();
         repo::close(&r.id);
     }
+    // `changes` answers every path changed after `since`, up to the generation it answers
+    // with: a pane that was loading meanwhile asks once for all of it. A repo on a machine
+    // has no watcher: only these changes move it.
+    #[cfg(unix)]
+    #[test]
+    fn changes_answers_every_change_since() {
+        let s = crate::repo::testing::scratch();
+        s.commit("a.txt", "1\n", "first");
+        crate::repo::testing::on_machine(&s);
+        let r = repo::open(s.root(), Some("test-machine")).unwrap();
+        let m = host_module();
+        let changes = |since: u64| json_of(&crate::repo::tests::futures_lite_block(m.begin("changes", &HostArguments::new([HostValue::Str(r.id.clone()), HostValue::Number(since as f64)])).unwrap()).unwrap());
+        let since = r.generation();
+        r.invalidate(status::Scope::Paths(vec!["a.txt".into()]));
+        r.invalidate(status::Scope::Paths(vec!["b.txt".into()]));
+        assert_eq!(changes(since), json!({ "generation": since + 2, "paths": ["a.txt", "b.txt"] }));
+        assert_eq!(changes(since + 1), json!({ "generation": since + 2, "paths": ["b.txt"] }));
+        r.invalidate(status::Scope::All);
+        assert_eq!(changes(since + 2), json!({ "generation": since + 3, "paths": null }));
+        repo::close(&r.id);
+    }
+
 }

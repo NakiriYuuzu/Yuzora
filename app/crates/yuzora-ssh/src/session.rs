@@ -527,12 +527,15 @@ fn spawn_proxy(command: &str) -> std::io::Result<(impl AsyncRead + AsyncWrite + 
     #[cfg(windows)]
     let mut cmd = {
         let mut c = tokio::process::Command::new("cmd");
+        // No console on Windows: without this the ProxyCommand opens a window.
+        yuzora_core::spawn::no_window(c.as_std_mut());
         c.args(["/C", command]);
         c
     };
     #[cfg(not(windows))]
     let mut cmd = {
         let mut c = tokio::process::Command::new("/bin/sh");
+        yuzora_core::spawn::no_window(c.as_std_mut());
         c.args(["-c", &format!("exec {command}")]);
         c
     };

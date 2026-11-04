@@ -302,6 +302,18 @@ thread_local! {
     pub static TEST_ENV: std::cell::RefCell<Vec<(String, String)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// A scoped thread that starts its commands the way the calling thread would
+/// (tests: with that thread's [`TEST_ENV`]).
+pub fn spawn_scoped<'scope, 'env, T: Send + 'scope>(s: &'scope std::thread::Scope<'scope, 'env>, f: impl FnOnce() -> T + Send + 'scope) -> std::thread::ScopedJoinHandle<'scope, T> {
+    #[cfg(test)]
+    let env = TEST_ENV.with(|t| t.borrow().clone());
+    s.spawn(move || {
+        #[cfg(test)]
+        TEST_ENV.with(|t| *t.borrow_mut() = env);
+        f()
+    })
+}
+
 /// The environment every call carries; the command's own entries win.
 pub fn environment(kind: Kind, remote: bool, own: &[(String, String)]) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = vec![
@@ -704,6 +716,8 @@ fn run_remote(place: &Place, cmd: &Git, sink: Option<&mut dyn FnMut(&[u8]) -> bo
 fn run_hc(local: &Place, call: &Git) -> GitResult<Output> {
     let mut c = Command::new(&local.git);
     c.args(&call.args).current_dir(&local.root);
+    // No console on Windows: without this every call opens a window.
+    yuzora_core::spawn::no_window(&mut c);
     c.stdin(if call.stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = c.spawn().map_err(|e| GitError::Spawn(format!("cannot run {}: {e}", local.git)))?;
     if let Some(input) = call.stdin.clone() {
@@ -878,6 +892,56 @@ mod tests {
         assert_eq!(stopped, Err(GitError::Cancelled));
         std::thread::sleep(Duration::from_millis(3500));
         assert!(!dir.path().join("late.txt").exists(), "what git started outlived the cancel");
+    }
+
+    /// `run_hc` (a remote repository's git, through `hc`) starts its program
+    /// without a console window: here the program is this test binary asking
+    /// whether it has one. The control starts it by hand and must see ours.
+    #[cfg(windows)]
+    #[test]
+    fn run_hc_starts_its_program_without_a_console_window() {
+        unsafe extern "system" {
+            fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+            fn AllocConsole() -> i32;
+        }
+        // The runner may have no console (CI): give it one, to hand on.
+        let attached = || {
+            let mut list = [0u32; 4];
+            // SAFETY: a buffer of the length it is given.
+            unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) != 0 }
+        };
+        if !attached() {
+            // SAFETY: no arguments.
+            unsafe { AllocConsole() };
+        }
+        assert!(attached(), "this process has no console to hand on");
+        let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        let args = ["--ignored", "--exact", "exec::tests::console_probe", "--nocapture", "--test-threads=1"];
+        let by_hand = Command::new(&exe).args(args).output().unwrap();
+        let shared = |out: &str| -> Option<u32> { out.split("CONSOLE_SHARED=").nth(1)?.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok() };
+        assert!(shared(&String::from_utf8_lossy(&by_hand.stdout)).is_some_and(|n| n >= 2), "control: {by_hand:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let local = Place { git: exe, ..Place::local(dir.path().to_string_lossy()) };
+        let out = run_hc(&local, &Git::read(args)).unwrap();
+        // A console of its own with only itself on it: not shared, not none.
+        assert_eq!(shared(&String::from_utf8_lossy(&out.stdout)), Some(1), "{:?}", String::from_utf8_lossy(&out.stdout));
+    }
+
+    /// The child of the test above.
+    #[test]
+    #[ignore = "a child process of run_hc_starts_its_program_without_a_console_window"]
+    fn console_probe() {
+        #[cfg(windows)]
+        {
+            unsafe extern "system" {
+                fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+            }
+            let mut list = [0u32; 4];
+            // SAFETY: a buffer of the length it is given.
+            // CREATE_NO_WINDOW gives the child a console of its own, with only itself on it.
+            let shared = unsafe { GetConsoleProcessList(list.as_mut_ptr(), 4) };
+            println!("CONSOLE_SHARED={shared}");
+        }
     }
 
     #[cfg(windows)]
