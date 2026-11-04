@@ -323,7 +323,8 @@ export default class extends View {
 }
 
 // A diff follows its repo only for a change that may touch its file: another file's leaves it;
-// its own, a folder above it, anything inside it (a submodule), the file it was renamed from,
+// its own, a folder above it, anything inside it (a submodule), the file it was renamed from (a
+// `\` in its name the watcher writes as `/`),
 // attributes, and a change that can't be told (the index or refs git wrote) load it again. A
 // commit's diff never follows. The shipped mod with its imports stubbed; `changes` answers in turn.
 #[gpui::test]
@@ -360,7 +361,7 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
         let mut module = HostModule::new("fixture");
         for (name, value) in [
             ("theme", json!({"background": "#101010", "foreground": "#e0e0e0", "border": "#303030", "raised": "#202020", "dim": "#808080", "muted": "#a0a0a0", "accent": "#4080ff", "selected": "#304050", "hover": "#282828", "ansi1": "#f08a8a", "ansi2": "#86d17a"})),
-            ("props", json!({"cwd": "/r", "on": null, "path": "src/a.txt", "orig": "old/a.txt", "mode": mode, "rev": "HEAD", "at": 1})),
+            ("props", json!({"cwd": "/r", "on": null, "path": "src/a.txt", "orig": "old\\a.txt", "mode": mode, "rev": "HEAD", "at": 1})),
             ("tokens", json!({"diff": {}})),
             ("open", json!({"id": "repo"})),
             ("diffView", json!({"id": "d1", "rows": [], "hunks": [], "stageable": true, "add": 0, "del": 0, "leftExists": true, "rightExists": true, "identical": true})),
