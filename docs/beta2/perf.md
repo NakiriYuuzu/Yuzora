@@ -145,3 +145,4 @@ popover 由 `herdr-app do yuzora-perf.toggle` 打開。排序切換與關閉按�
   - Linux 本來就用 git 修剪被忽略的資料夾，不變。
   - 限制：只讀被監看資料夾自己的規則，子資料夾的 `.gitignore` 與全域 ignore 不算（少濾，方向安全）。被 ignore 的資料夾裡的變動（例如在檔案樹展開 `node_modules/`）不會有 watcher 事件，靠檔案側欄原本的 10 秒計時器反映，與 Linux 修剪被忽略資料夾的行為一致。
 - **檔案側欄的 10 秒計時器維持不變**：信任之後、linked worktree 的 git 操作（非 Linux 的 watcher 看不到 gitdir）、Git 失敗重試，watcher 都看不到，不能拉長。信任快取合併後它的成本就會降低；要拉長得先讓非 Linux 也監看 `.git` 檔案 `gitdir:` 指向的資料夾（beta.4 候選）。
+- **`remote::run` 不再輪詢**（`yuzora-core/src/remote.rs`）：原本 Windows 讀 pipe 用 `PeekNamedPipe`＋`sleep(50 ms)`，等行程結束用 `try_wait`＋`sleep(10 ms)`，每次呼叫牆鐘有 ~52 ms 的下限。現在 Windows 的讀取緒直接阻塞在 `read`（資料一到就拿走），需要放手時（背景子行程握著 pipe）從外面用 `CancelIoEx` 取消，取消前先在鎖內確認 handle 還沒關；等行程結束改由一條緒 `wait()`，逾時才 `kill_tree`（Windows 先 `taskkill /T /F`，失敗再 `TerminateProcess`）。Unix 的讀取仍是 `poll`，只換掉 10 ms 的等待輪詢。逾時、輸出上限、背景子行程握 pipe 不卡答案的行為不變，測試涵蓋（Unix 與 Windows 各一組）。
