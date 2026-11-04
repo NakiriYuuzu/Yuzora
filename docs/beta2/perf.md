@@ -138,10 +138,10 @@ popover 由 `herdr-app do yuzora-perf.toggle` 打開。排序切換與關閉按�
 
 已做：
 
-- **資料夾 watcher**（`app/src/files.rs`）：macOS 與 Windows 的 watcher 遞迴監看整個資料夾，build 寫 `target/`、`node_modules/` 會一直喚醒側欄與 panel。現在位在**被 ignore 的資料夾裡**的事件，會先用根目錄的 `.gitignore` 與 `.git/info/exclude` 過濾掉（只讀檔，不執行任何程式，所以不需要資料夾信任）。
+- **資料夾 watcher**（`app/src/files.rs`）：macOS 與 Windows 的 watcher 遞迴監看整個資料夾，build 寫 `target/`、`node_modules/` 會一直喚醒側欄與 panel。現在位在**被 ignore 的資料夾裡**的事件，會先用被監看的資料夾自己的 `.gitignore` 與 `.git/info/exclude` 過濾掉（監看 `repo/src` 不會讀 `repo/.gitignore`）（只讀檔，不執行任何程式，所以不需要資料夾信任）。
   - 被 ignore 的**單一檔案本身**（`.env`、`build.log`）照常回報：編輯器、Markdown、圖片檢視器用 `watchFolder(檔案所在資料夾)` 監看，根目錄的 `.env` 被外部改了也要知道，檔案樹新增 `.env.local` 也要馬上出現。
   - `.gitignore` 本身、`.git/` 底下的事件不過濾；watcher 掉事件（rescan）不過濾；規則檔改變後下一批就重讀。
   - 規則的讀法比照 git：`.gitignore` 蓋過 `info/exclude`；符號連結的 `.gitignore` 不讀（git 2.32 之後也不讀）；符號連結的 `info/exclude` git 會讀、這裡跳過（少濾，方向安全）；大小寫不分（沒有讀 `core.ignorecase`，以平台預設為準；在 `core.ignorecase=false` 的 repo，規則 `build/` 也會濾掉實際資料夾 `Build/` 裡的事件，最多延後到 10 秒計時器）。
   - Linux 本來就用 git 修剪被忽略的資料夾，不變。
-  - 限制：只讀根目錄的規則，子資料夾的 `.gitignore` 與全域 ignore 不算（少濾，方向安全）。被 ignore 的資料夾裡的變動（例如在檔案樹展開 `node_modules/`）不會有 watcher 事件，靠檔案側欄原本的 10 秒計時器反映，與 Linux 修剪被忽略資料夾的行為一致。
+  - 限制：只讀被監看資料夾自己的規則，子資料夾的 `.gitignore` 與全域 ignore 不算（少濾，方向安全）。被 ignore 的資料夾裡的變動（例如在檔案樹展開 `node_modules/`）不會有 watcher 事件，靠檔案側欄原本的 10 秒計時器反映，與 Linux 修剪被忽略資料夾的行為一致。
 - **檔案側欄的 10 秒計時器維持不變**：信任之後、linked worktree 的 git 操作（非 Linux 的 watcher 看不到 gitdir）、Git 失敗重試，watcher 都看不到，不能拉長。信任快取合併後它的成本就會降低；要拉長得先讓非 Linux 也監看 `.git` 檔案 `gitdir:` 指向的資料夾（beta.4 候選）。
