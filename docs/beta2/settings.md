@@ -109,7 +109,7 @@ herdr-core 的模板：`<config>/herdr-core/templates/<name>.md`，`<config>` �
 
 - macOS：`/usr/bin/trash`（macOS 15 起內建），沒有時用 Finder（osascript，會跳自動化權限）。
 - Windows：PowerShell `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(…, SendToRecycleBin)`，路徑經環境變數傳入。windows-2022 CI 驗證：`canonicalize` 的 `\\?\D:\…` 會被 `DeleteFile` 拒絕（"The specified path is invalid."），一般路徑可以；所以先經 `yuzora_core::paths::plain`（保留 `trash` crate 以外的做法，沿用 PowerShell，改動最小）。
-- 「在檔案總管中顯示」：同一驗證中，含 `/` 的路徑（`C:/…`）Explorer 會開到別處，反斜線路徑正常；設定頁改用和 Files 側欄相同的 `yuzora_core::paths::explorer_select_arg`（`/select,"C:\a b\c.txt"` 一個 raw 引數，`/` 換成 `\`）。選取項目在 CI 讀不出來（`Shell.Application` 的 `SelectedItems` 都是空的），只證明了視窗位置。
+- 「在檔案總管中顯示」：同一驗證中，含 `/` 的路徑（`C:/…`）Explorer 會開到別處，反斜線路徑正常；設定頁改用和 Files 側欄相同的 `yuzora_core::paths::explorer_select_arg`（`/select,"C:\a b\c.txt"` 一個 raw 引數，`/` 換成 `\`）。最終驗證 4 個案例都開對資料夾；選取項目在 2 個案例（含 `/` 的路徑）讀到正確的檔案，另外 2 個讀出來是空的（`Shell.Application` 讀取的時機，不是 Explorer 沒選）。
 - Linux 與其他：freedesktop Trash（`$XDG_DATA_HOME/Trash`），同名時加 `.2`、`.3`。
 
 不另加 `trash` crate，避免新依賴與 `Cargo.lock`／notices 變動。

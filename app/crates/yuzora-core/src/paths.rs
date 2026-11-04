@@ -71,10 +71,11 @@ pub fn plain_str(path: &str) -> String {
     let odd = plain.split('\\').any(|c| {
         let stem = c.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
         let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
-            || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit());
+            || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.chars().count() == 4 && stem.chars().last().is_some_and(|d| d.is_ascii_digit() || matches!(d, '¹' | '²' | '³')));
         c.ends_with('.') || c.ends_with(' ') || device
     });
-    if plain.len() >= MAX_PATH || odd { path.to_owned() } else { plain }
+    // MAX_PATH counts UTF-16 units, as Windows does, not the bytes of UTF-8 (a Chinese name is 3 bytes, 1 unit).
+    if plain.encode_utf16().count() >= MAX_PATH || odd { path.to_owned() } else { plain }
 }
 
 /// What Explorer takes to show a file selected: `explorer /select,"C:\a b\c.txt"`, as one
@@ -119,6 +120,13 @@ mod tests {
         // Too long for the usual form to work.
         let long = format!(r"\\?\C:\{}", "a".repeat(300));
         assert_eq!(plain_str(&long), long);
+        // Length is in UTF-16 units: 100 Chinese characters are 300 bytes but 100 units, so they fit;
+        // 300 units (ASCII or not) do not. Superscript digits end device names too.
+        let zh = format!(r"\\?\C:\{}", "文".repeat(100));
+        assert_eq!(plain_str(&zh), zh.strip_prefix(r"\\?\").unwrap());
+        let zh_long = format!(r"\\?\C:\{}", "文".repeat(300));
+        assert_eq!(plain_str(&zh_long), zh_long);
+        assert_eq!(plain_str(r"\\?\C:\a\COM¹.txt"), r"\\?\C:\a\COM¹.txt");
         #[cfg(windows)]
         assert_eq!(plain(Path::new(r"\\?\C:\x")), PathBuf::from(r"C:\x"));
         #[cfg(not(windows))]

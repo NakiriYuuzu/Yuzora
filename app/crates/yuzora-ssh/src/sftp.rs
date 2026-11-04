@@ -341,6 +341,17 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    // Elsewhere a backslash is a name's own character: `~\x` is not under home.
+    #[cfg(unix)]
+    #[test]
+    fn a_backslash_after_the_tilde_is_not_home_off_windows() {
+        let dir = std::env::temp_dir().join(format!("yuzora-ssh-tilde-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("x")).unwrap();
+        assert!(list_local(r"~\x", &dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     // A Windows person sees `C:\…`, not the `\\?\C:\…` `canonicalize` gives, and `~\` is home too.
     #[cfg(windows)]
     #[test]
