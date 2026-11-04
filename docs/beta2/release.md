@@ -38,7 +38,7 @@
 
 - **ad-hoc 簽章**（`codesign --force --sign -`），不用 Developer ID、不公證、不 staple（AGENTS.md「Release platform support」）。沒有 hardened runtime，所以 QuickJS 的 MAP_JIT 不需要 entitlement。
 - DMG 只用 `hdiutil`（UDZO），不用上游的 `create-dmg`／Finder AppleScript，在 headless runner 上也一樣能做。沒有背景圖與圖示位置；上游的背景是 Herdr 的美術，不沿用（待辦）。
-- **Gatekeeper**：從瀏覽器下載的 DMG 帶 quarantine，第一次開啟會被擋（「無法驗證開發者」）。macOS 15 以後要到「系統設定 › 隱私權與安全性」按「仍要打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。README 要寫（見 §9）。
+- **Gatekeeper**：從瀏覽器下載的 DMG 帶 quarantine，第一次開啟會被擋（「無法驗證開發者」）。macOS 15 以後要到「系統設定 › 隱私權與安全性」按「強制打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。README 要寫（見 §9）。
 - **App 內更新不會再觸發 Gatekeeper**：更新由 `curl` 下載、`tar` 解開，不帶 quarantine。
 - **TCC 權限**：ad-hoc 簽章的 designated requirement 是 cdhash，每個版本都不同，所以每次更新後 macOS 可能再問一次麥克風、相機、資料夾等權限。這是不用 Developer ID 的代價，Tauri 版一樣如此。
 - 上游更新程式對 ad-hoc bundle 會在 Info.plist 的 `LSEnvironment` 加 `PATH` 再重新 ad-hoc 簽章（`prepare_macos_bundle`），所以範本保留空的 `LSEnvironment`。Yuzora 找 `hc` 不靠它（`core_bin::fill_path()`）。
@@ -208,7 +208,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
    | `changelog.md`、`changelog.zh-TW.md` | ✓ | ✓ |
    | `Yuzora_<version>_aarch64.dmg`、`Yuzora_<version>_x64-setup.exe`（版本化） | ✓ | ✓ |
    | `Yuzora-macos-aarch64.dmg`、`Yuzora-windows-x64-setup.exe`（固定別名） | ✗ | ✓ |
-   | `latest.json`＋兩個 `.sig`（帶 beta.1） | ✗（不附，既定決定） | 不要（stable 的 `latest.json` 會被 0.0.19 的 stable 通道讀到） |
+   | `latest.json`＋兩個 `.sig`（帶 beta.1） | ✗（不附，既定決定） | 0.1.0 Stable 要附（decisions §10）：0.0.19 與 beta.1 靠它帶到新 App，搭配 §5 的 Tauri 簽章流程 |
 
 5. 驗證 asset 清單完整（缺任一平台或簽章就不發布）、`yuzora-update.json.sig` 能用 `TRUSTED_KEYS` 驗過，再 publish。
 
@@ -278,7 +278,7 @@ L0 PR #187 最後一次成功的執行（run 41480446879）：
   - macOS 下載仍是 `Yuzora-macos-aarch64.dmg`（不變）。
   - Windows 由 `Yuzora-windows-x64.msi` 改為 `Yuzora-windows-x64-setup.exe`（`site/index.html`、`site/downloads.js`、`tests/site-downloads.test.js`）。
   - 新增 Linux 下載（`yuzora-<version>-linux-x86_64.tar.gz`／`aarch64`；沒有固定別名，或新增一個）。
-  - Gatekeeper 說明改成 macOS 15 的「仍要打開」流程。
+  - Gatekeeper 說明改成 macOS 15 的「強制打開」流程。
 - **README**：安裝方式（DMG、NSIS、Linux tar.gz＋`install`）、Gatekeeper、SmartScreen、`yuzora` CLI、從 beta.1 升級的說明（資料遷移狀態）。L7 區塊已寫入摘要。
 - **`docs/operations.md`**：
   - §4 簽章邊界：beta.2 不再用 Tauri updater 的 bundle，改為簽 `yuzora-update.json`；同一把金鑰的新用途要寫進供應鏈敏感清單（`app/scripts/yuzora/manifest.ts`、`app/src/yuzora/release/manifest.rs` 的 `TRUSTED_KEYS`、`.github/workflows/app-package.yml`）。

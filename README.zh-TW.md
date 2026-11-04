@@ -83,7 +83,7 @@ v0.0.19：DMG 是 Tauri 版，Windows 的連結會 404（v0.0.19 的檔名是 `Y
 pre-release 頁面下載。
 
 - **macOS 沒有 Apple Developer ID 簽章，也沒有公證**（只有 ad-hoc 簽章）。第一次開啟會被 Gatekeeper 擋下：到
-  「系統設定 › 隱私權與安全性」按「仍要打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。
+  「系統設定 › 隱私權與安全性」按「強制打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。
   只對從本 repo Releases 下載的 DMG 這樣做。更新之後，macOS 可能會再詢問一次麥克風、相機或資料夾的存取權限。
 - **Windows 沒有 Authenticode 簽章。** SmartScreen 可能出現警告，請點「其他資訊 › 仍要執行」。
 - **Linux 是實驗性的。** tar.gz 與 `install` 目前只通過 CI，尚未在實機上驗證。

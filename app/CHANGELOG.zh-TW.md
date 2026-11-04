@@ -17,8 +17,8 @@
 - SFTP 雙欄傳輸：本機 ↔ 主機各自瀏覽，→／← 或拖放傳輸，佇列顯示進度與速度，可取消、重試並從中斷處續傳，可保留權限與時間；遠端檔案可在本機文字編輯器開啟，存檔時自動上傳。
 - 主機快速動作：開啟 SFTP、新終端機、HERDR Session、已知主機管理。資料庫還不能經由 SSH tunnel 連線。
 - 視窗右下角顯示這台電腦上 Yuzora 的 CPU 與記憶體用量（App 本體、herdr-core 的終端機與 Agent、Yuzora 啟動的工具），點擊展開各類明細；取樣出問題時顯示 ⚠。
-- App 改由 Yuzora 的 GitHub Releases 自我更新：每小時檢查，更新清單的簽章與每個檔案的 SHA-256 都驗過才會下載，下次重新啟動時套用。beta 版只會更新到正式版（0.1.0 以後），不會更新到其他 beta，beta 請手動下載。
-- 安裝檔：macOS 是 `Yuzora-macos-aarch64.dmg`（僅 Apple Silicon，ad-hoc 簽章，第一次開啟要在「隱私權與安全性」按「仍要打開」）、Windows 是免系統管理員權限的 `Yuzora-windows-x64-setup.exe`、Linux 是 tar.gz 加 `install`。命令列程式叫 `yuzora`。
+- App 改由 Yuzora 的 GitHub Releases 自我更新：每小時檢查，更新清單的簽章與 SHA-256 都通過才會安裝，下次重新啟動時套用。beta 版只會更新到正式版（0.1.0 以後），不會更新到其他 beta，beta 請手動下載。
+- 安裝檔：macOS 是 `Yuzora_<version>_aarch64.dmg`（僅 Apple Silicon，ad-hoc 簽章，第一次開啟要在「隱私權與安全性」按「強制打開」）、Windows 是免系統管理員權限的 `Yuzora_<version>_x64-setup.exe`、Linux 是 tar.gz 加 `install`。命令列程式叫 `yuzora`。
 - 設定改從 Yuzora 的「一般」頁開啟，並新增「Yuzora」分組列出各功能的設定頁；隱私頁說明 Yuzora 不收集也不傳送任何資料。
 - 一般設定：語系（跟隨系統、English、繁體中文）、主題、字型與大小、縮放、終端機剪貼簿寫入。
 - Agent 模板：在設定裡管理各台機器的 herdr-core 模板（表單編輯、存檔前檢查、移到垃圾桶），並能「從模板啟動」到指定的 Space 與 tab。
@@ -28,6 +28,6 @@
 - 程式碼編輯器：14 種語言的 tree-sitter 上色、存檔衝突檢查、搜尋與取代；檔案在磁碟上被修改時自動重新載入，有 Agent 在改同一個檔案時會提示。
 - Markdown 預覽（與編輯器即時同步，可切換原始碼）與圖片／SVG 檢視。repo 的 SVG 在獨立的行程裡畫，有時間與記憶體上限，超過時顯示佔位圖，圖片檢視會說明原因（Markdown 預覽只有佔位圖）。遠端 Space 的檔案可以瀏覽與唯讀開啟。
 - Git（以 IntelliJ IDEA 為基準）：側欄 Git 模式可暫存、提交（amend、sign-off、略過 hooks、訊息歷史與範本）、推送；diff pane 可暫存或捨棄單一 hunk 或選取的行；提交紀錄與分支圖、篩選與右鍵操作；分支 popup（smart checkout、merge、rebase、比較）；三方合併解衝突；互動式 rebase；Annotate；stash、tag、remote、worktree、patch 管理；Git 設定頁。
-- Git 會先問是否信任資料夾：信任前，Git 在那裡離線執行，不執行任何會啟動 repo 自己的設定指定的程式（filter、SSH 指令、remote helper）的 Git 指令，包括 Git 為還沒 checkout 的 submodule 留在 `.git/modules` 裡、或從那裡指向的 git 資料夾的設定，push（branch 或 tag）也要等信任後才會檢查或推送 submodule；partial clone 也會先問，因為它讀取時會向 remote 抓缺少的物件（Linux 上 Files 面板的資料夾監看也會等信任）。上述離線與「不執行程式」的限制針對自動讀取與背景 fetch，它們也不跑 hook；你自己按下的 fetch、pull、push 用 Git 內建的傳輸，一般 hook 照常執行。
+- Git 會先問是否信任資料夾：信任前，Git 在那裡離線執行，不執行任何會啟動 repo 自己的設定指定的程式（filter、SSH 指令、remote helper）的 Git 指令，包括 Git 為還沒 checkout 的 submodule 留在 `.git/modules` 裡、或從那裡指向的 git 資料夾的設定，push（branch 或 tag）也要等信任後才會檢查或推送 submodule；partial clone 也會先問，因為它讀取時會向 remote 抓缺少的物件（Linux 上 Files 面板的資料夾監看也會等信任）。信任前，Yuzora 自動執行的讀取維持離線；背景 fetch 與你自己按下的 fetch、pull、push 只用 Git 內建的傳輸，不用 remote helper，在設定會執行程式的資料夾也要等信任。背景 fetch 不跑 hook；你自己執行的 Git（例如 commit、push）一般 hook 照常執行。
 - 未信任的資料夾：在 Git 模式信任資料夾之前，Yuzora 不會在那裡執行任何可能啟動 repo 自己設定的程式（filter、fsmonitor hook）的 Git 指令。Changes 與 Files 面板、worktree 對話框會顯示資料夾還沒有信任，Spaces 清單只從 refs 讀取分支與 ↑↓；Linux 上監看這類資料夾時，也不再向 Git 查詢被忽略的資料夾。
 - 同步 herdr-app 上游到 f6fe216（v0.1.12 之後）：可選用終端機字型連字（`settings.json` 的 `font_ligatures`，預設關閉）、快捷鍵說明再按一次就關閉，並修正 pane 程式的啟動尺寸、焦點框與控制鍵別名等問題。
