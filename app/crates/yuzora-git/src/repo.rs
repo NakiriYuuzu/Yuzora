@@ -106,6 +106,12 @@ impl Repo {
         let g = {
             let mut log = self.changes.lock().unwrap_or_else(|e| e.into_inner());
             let g = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            // A file system often tells of one write more than once.
+            let paths = paths.map(|mut p| {
+                p.sort_unstable();
+                p.dedup();
+                p
+            });
             log.push_back((g, paths.filter(|p| p.len() <= KEEP_PATHS)));
             while log.len() > KEEP_CHANGES {
                 log.pop_front();
@@ -734,6 +740,13 @@ pub(crate) mod tests {
             assert_eq!(s.repo.changed_paths(since, s.repo.generation()), None);
             assert_eq!(s.repo.changed_paths(since, since + 1), paths(&["a.txt"]));
         }
+        // Each path once.
+        let since = s.repo.generation();
+        s.repo.invalidate(Scope::Paths(vec!["b".into(), "a".into(), "b".into()]));
+        assert_eq!(s.repo.changed_paths(since, s.repo.generation()), paths(&["a", "b"]));
+        let since = s.repo.generation();
+        s.repo.invalidate(Scope::Paths(vec!["a".into(); KEEP_PATHS + 1]));
+        assert_eq!(s.repo.changed_paths(since, s.repo.generation()), paths(&["a"]), "one path, told often");
         // More paths in one change than are kept.
         let since = s.repo.generation();
         s.repo.invalidate(Scope::Paths((0..=KEEP_PATHS).map(|i| format!("f{i}")).collect()));

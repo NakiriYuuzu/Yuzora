@@ -331,18 +331,27 @@ function sides(rows) {
 }
 
 // Whether changed paths may touch the diff's file: the file, the one it was renamed from, a
-// folder above either, anything inside one (a submodule), or attributes (how git diffs it).
-// Without case: a file system that ignores it may name the file otherwise; with `\` as `/`,
-// as the watcher writes it. Paths null (the index or refs git wrote, a rescan): it can't be
-// told, so they may.
+// folder above either (the top too: `.`), anything inside one (a submodule), or attributes
+// (how git diffs it). Compared as [`plain`] writes them. A part with `~` and a digit may be
+// a Windows short name for any file, and paths null (the index or refs git wrote, a rescan)
+// may be anything: it can't be told, so they may.
 function touches(paths, spec) {
   if (!paths) return true;
-  const plain = (p) => p.replaceAll("\\", "/").toLowerCase();
   const mine = [spec.path, spec.orig].filter(Boolean).map(plain);
   return paths.some((p) => {
     const q = plain(p);
-    return q === ".gitattributes" || q.endsWith("/.gitattributes") || mine.some((m) => m === q || m.startsWith(`${q}/`) || q.startsWith(`${m}/`));
+    return q === "" || q === "." || /~\d/.test(q) || q === ".gitattributes" || q.endsWith("/.gitattributes") || mine.some((m) => m === q || m.startsWith(`${q}/`) || q.startsWith(`${m}/`));
   });
+}
+
+// A path as the watcher, git and a pathspec may each write it, one way: `\` as `/` (the
+// watcher's), without case (a file system that ignores it), in NFC (macOS hands names as
+// they are on disk, often NFD; git keeps them NFC), no `./` before or `/` after.
+function plain(p) {
+  let q = p.replaceAll("\\", "/").toLowerCase().normalize("NFC");
+  while (q.startsWith("./")) q = q.slice(2);
+  while (q.endsWith("/")) q = q.slice(0, -1);
+  return q;
 }
 
 // A diff pane beside the focused pane, or in a tab of its own (Git settings).

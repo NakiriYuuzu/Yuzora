@@ -631,4 +631,26 @@ mod tests {
         call("stage", json!(["a.txt", "."])).unwrap();
         repo::close(&r.id);
     }
+    // `changes` answers every path changed after `since`, up to the generation it answers
+    // with: a pane that was loading meanwhile asks once for all of it. A repo on a machine
+    // has no watcher: only these changes move it.
+    #[cfg(unix)]
+    #[test]
+    fn changes_answers_every_change_since() {
+        let s = crate::repo::testing::scratch();
+        s.commit("a.txt", "1\n", "first");
+        crate::repo::testing::on_machine(&s);
+        let r = repo::open(s.root(), Some("test-machine")).unwrap();
+        let m = host_module();
+        let changes = |since: u64| json_of(&crate::repo::tests::futures_lite_block(m.begin("changes", &HostArguments::new([HostValue::Str(r.id.clone()), HostValue::Number(since as f64)])).unwrap()).unwrap());
+        let since = r.generation();
+        r.invalidate(status::Scope::Paths(vec!["a.txt".into()]));
+        r.invalidate(status::Scope::Paths(vec!["b.txt".into()]));
+        assert_eq!(changes(since), json!({ "generation": since + 2, "paths": ["a.txt", "b.txt"] }));
+        assert_eq!(changes(since + 1), json!({ "generation": since + 2, "paths": ["b.txt"] }));
+        r.invalidate(status::Scope::All);
+        assert_eq!(changes(since + 2), json!({ "generation": since + 3, "paths": null }));
+        repo::close(&r.id);
+    }
+
 }

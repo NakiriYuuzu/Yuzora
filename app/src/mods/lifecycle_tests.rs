@@ -322,10 +322,11 @@ export default class extends View {
     window.update(cx, |_, window, _| window.remove_window()).unwrap();
 }
 
-// A diff follows its repo only for a change that may touch its file: another file's leaves it;
-// its own, a folder above it, anything inside it (a submodule), the file it was renamed from (a
-// `\` in its name the watcher writes as `/`),
-// attributes, and a change that can't be told (the index or refs git wrote) load it again. A
+// yuzora(L2): a diff follows its repo only for a change that may touch its file: another file's leaves it;
+// its own (in another case, as macOS's NFD, after `./`), a folder above it (`.` the top, `src/`),
+// anything inside it (a submodule), the file it was renamed from (a `\` in its name the watcher
+// writes as `/`), attributes, a Windows short name, and a change that can't be told (the index
+// or refs git wrote) load it again. A
 // commit's diff never follows. The shipped mod with its imports stubbed; `changes` answers in turn.
 #[gpui::test]
 fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut TestAppContext) {
@@ -340,15 +341,22 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
     let answers = [
         // The first answer only says where the repo is.
         (json!(null), false),
-        (json!(["src/b.txt", "src/a.txt.bak", "sr", "src/a", "old/a.txt2", "a.gitattributes"]), false),
-        (json!(["src/a.txt"]), true),
-        (json!(["SRC/A.TXT"]), true),
+        (json!(["src/b.txt", "src/\u{30C7}.txt.bak", "sr", "src/\u{30C7}", "old/a.txt2", "a.gitattributes", "src/a~b.txt"]), false),
+        (json!(["src/\u{30C7}.txt"]), true),
+        (json!(["SRC/\u{30C7}.TXT"]), true),
+        // As macOS hands it from the disk: デ as テ and ゛ (NFD); git and the pane have it NFC.
+        (json!(["src/\u{30C6}\u{3099}.txt"]), true),
         (json!(null), true),
         (json!(["docs/.gitattributes"]), true),
         (json!([".gitattributes"]), true),
         (json!(["src"]), true),
-        (json!(["src/a.txt/m"]), true),
+        (json!(["src/\u{30C7}.txt/m"]), true),
         (json!(["old/a.txt"]), true),
+        (json!(["SRC~1/X.TXT"]), true),
+        // Pathspecs Yuzora's own stage, unstage and discard may name.
+        (json!(["."]), true),
+        (json!(["src/"]), true),
+        (json!(["./src/\u{30C7}.txt"]), true),
     ];
     let reloads = answers.iter().filter(|(_, again)| *again).count();
     for (mode, loads) in [("unstaged", 1 + reloads), ("staged", 1 + reloads), ("commit", 1)] {
@@ -361,7 +369,7 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
         let mut module = HostModule::new("fixture");
         for (name, value) in [
             ("theme", json!({"background": "#101010", "foreground": "#e0e0e0", "border": "#303030", "raised": "#202020", "dim": "#808080", "muted": "#a0a0a0", "accent": "#4080ff", "selected": "#304050", "hover": "#282828", "ansi1": "#f08a8a", "ansi2": "#86d17a"})),
-            ("props", json!({"cwd": "/r", "on": null, "path": "src/a.txt", "orig": "old\\a.txt", "mode": mode, "rev": "HEAD", "at": 1})),
+            ("props", json!({"cwd": "/r", "on": null, "path": "src/\u{30C7}.txt", "orig": "old\\a.txt", "mode": mode, "rev": "HEAD", "at": 1})),
             ("tokens", json!({"diff": {}})),
             ("open", json!({"id": "repo"})),
             ("diffView", json!({"id": "d1", "rows": [], "hunks": [], "stageable": true, "add": 0, "del": 0, "leftExists": true, "rightExists": true, "identical": true})),
