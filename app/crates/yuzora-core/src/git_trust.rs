@@ -32,9 +32,10 @@
 //! `git rev-parse --show-toplevel` prints it there. The trusted ids live in
 //! `<app home>/yuzora/git/trusted.json`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime};
 
 use crate::remote::{self, ExecRequest};
 
@@ -153,24 +154,300 @@ pub fn whole(code: i32, stdout: Vec<u8>) -> (i32, Vec<u8>) {
 /// that ran out of time answers `(-1, [])`, as git failing: the gate stays
 /// shut and the person can still trust the folder. Err only when git
 /// couldn't run at all.
-pub fn repo_programs<E>(mut run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<Vec<String>, E> {
+pub fn repo_programs<E>(run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<Vec<String>, E> {
+    scan_answer(run).map(|(keys, _)| keys)
+}
+
+/// [`repo_programs`], and the repository's git dir and common dir when the
+/// scan found it plain ([`plain_layout`]): what [`programs_here_at`] needs
+/// to keep the answer.
+fn scan_answer<E>(mut run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<(Vec<String>, Option<Dirs>), E> {
     let alias = format!("alias.{SCAN}=!{}", SCAN_SCRIPT.replace("@PROGRAMS@", PROGRAMS).replace("@SCAN@", SCAN));
     let (code, out) = run(&["-c", &alias, SCAN])?;
     // The config's answer, then the submodules', whatever the config said.
     let Some((config, config_code, subs)) = config_part(&out) else {
-        return Ok(vec![UNREADABLE.into()]);
+        return Ok((vec![UNREADABLE.into()], None));
     };
     // 1 with nothing printed: no key matched. Anything else: unknown.
     let mut keys = match config_code {
         0 => repo_keys(config, ""),
         1 if config.is_empty() => BTreeSet::new(),
-        _ => return Ok(vec![UNREADABLE.into()]),
+        _ => return Ok((vec![UNREADABLE.into()], None)),
     };
-    if code != 0 || !scanned_to_the_end(subs) {
+    let whole = code == 0 && scanned_to_the_end(subs);
+    if !whole {
         keys.insert(UNREADABLE.into());
     }
     keys.extend(repo_keys(subs, "?"));
-    Ok(keys.into_iter().collect())
+    let layout = if whole { plain_layout(subs) } else { None };
+    Ok((keys.into_iter().collect(), layout))
+}
+
+/// The top's git dir and common dir from the scan's `dirs` record, when its
+/// records say the repository is plain: the top's own records only (its
+/// `sub`, its remote files, `dirs`) and the end. A submodule, a git dir under
+/// `modules/`, a gitlink in the index (`links`, checked out or not: one may
+/// be checked out later) or anything git couldn't read isn't.
+fn plain_layout(subs: &[u8]) -> Option<Dirs> {
+    let text = std::str::from_utf8(subs).ok()?;
+    let parts: Vec<&str> = text.split('\0').collect();
+    let mut top = false;
+    let mut dirs = None;
+    for c in parts.chunks(2).filter(|c| c.len() == 2) {
+        match (c[0], c[1]) {
+            ("sub", "") if !top => top = true,
+            ("legacy", _) if top => {}
+            ("dirs", d) if top && dirs.is_none() => dirs = Some(d.split_once('\n')?),
+            ("end", SCAN) => {}
+            _ => return None,
+        }
+    }
+    dirs.map(|(git_dir, common)| (git_dir.to_owned(), common.to_owned()))
+}
+
+/// A git dir and its common dir.
+type Dirs = (String, String);
+
+/// [`repo_programs`] for a repository on this computer at `top`, kept while
+/// nothing it was read from changes: a later call looks at those files'
+/// metadata ([`read_from`]; no git runs) and scans again only when one of
+/// them changed or can't be looked at. `key` tells apart callers, and the
+/// git they run. Kept only for a plain repository ([`plain_layout`],
+/// [`read_from`]), and only when none of those files changed within
+/// [`RACY`] before the scan began: a coarse file system clock could give a
+/// later change the same time.
+pub fn repo_programs_here<E>(key: &str, top: &str, run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>) -> Result<Vec<String>, E> {
+    programs_here_at(key, top, run, SystemTime::now())
+}
+
+/// [`repo_programs_here`] with the scan beginning at `began`.
+fn programs_here_at<E>(key: &str, top: &str, run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>, began: SystemTime) -> Result<Vec<String>, E> {
+    let id = format!("{key}\0{top}");
+    if let Some(keys) = kept_answer(&id, top) {
+        return Ok(keys);
+    }
+    let (keys, layout) = scan_answer(run)?;
+    if let Some((git_dir, common)) = layout
+        && let Some(read) = read_from(&git_dir, &common)
+        && read.latest.is_none_or(|t| began.duration_since(t).is_ok_and(|d| d >= RACY))
+    {
+        let mut all = kept().lock().unwrap_or_else(|e| e.into_inner());
+        if all.len() >= KEEP_AT_MOST {
+            all.clear();
+        }
+        all.insert(id, Kept { dirs: read.dirs, stamps: read.stamps, keys: keys.clone() });
+    }
+    Ok(keys)
+}
+
+/// How long before a scan the files it read must have last changed for its
+/// answer to be kept: more than a coarse clock's step (FAT's is 2 s).
+const RACY: Duration = Duration::from_secs(3);
+
+/// How many folders' answers are kept at most; past that, all are dropped.
+const KEEP_AT_MOST: usize = 64;
+
+/// A folder's kept answer: the git dir and common dir git found from the
+/// top, and the files it was read from, as they were.
+struct Kept {
+    dirs: (PathBuf, PathBuf),
+    stamps: Vec<(PathBuf, Look, Stamp)>,
+    keys: Vec<String>,
+}
+
+fn kept() -> &'static Mutex<HashMap<String, Kept>> {
+    static KEPT: OnceLock<Mutex<HashMap<String, Kept>>> = OnceLock::new();
+    KEPT.get_or_init(Mutex::default)
+}
+
+/// The kept answer for `id` if the top still leads to the same git dir and
+/// common dir, and every file it was read from is as it was; else none,
+/// and it's dropped.
+fn kept_answer(id: &str, top: &str) -> Option<Vec<String>> {
+    let mut all = kept().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = all.get(id)?;
+    if found_dirs(Path::new(top)).as_ref() == Some(&entry.dirs) && entry.stamps.iter().all(|(path, look, was)| stamp(path, *look).as_ref() == Some(was)) {
+        return Some(entry.keys.clone());
+    }
+    all.remove(id);
+    None
+}
+
+/// The files a plain repository's answer came from, as they are now, and the
+/// latest time one of them changed; none when the answer can't be kept.
+///
+/// - Which repository git finds from the top: a later look reads the top's
+///   `.git` (a folder, a gitfile, a link) and the git dir's `commondir`
+///   again ([`found_dirs`]; a link on the way may change while both files
+///   stay as they were), which must lead to these dirs; and git takes that
+///   git dir only with its `HEAD`, and the common dir's `objects/` and
+///   `refs/` (`is_git_directory`), else it looks further up.
+/// - Its own config, the scopes the gate counts: the common dir's `config`
+///   and the git dir's `config.worktree`. Neither may name an `include` (any
+///   `include` in them, as bytes, whatever case): an included file could be
+///   anywhere and change unseen.
+/// - The index (`ls-files -s`; a gitlink in it already isn't plain), the
+///   common dir's `remotes/` and `branches/` (their listing too), and no
+///   `modules/` in either dir.
+///
+/// The person's own config (global, system, from the environment) isn't
+/// here: the gate counts only the repository's scopes, which those can't
+/// add to; at most they make git fail to read the repository, and then
+/// every git command there fails too.
+fn read_from(git_dir: &str, common: &str) -> Option<Read> {
+    let dirs = (std::fs::canonicalize(git_dir).ok()?, std::fs::canonicalize(common).ok()?);
+    let (git_dir, common) = (dirs.0.as_path(), dirs.1.as_path());
+    let files = [
+        (git_dir.join("HEAD"), Look::Whole),
+        (git_dir.join("config.worktree"), Look::Whole),
+        (git_dir.join("index"), Look::Whole),
+        (git_dir.join("modules"), Look::Whole),
+        (common.join("config"), Look::Whole),
+        (common.join("objects"), Look::Kind),
+        (common.join("refs"), Look::Kind),
+        (common.join("remotes"), Look::Whole),
+        (common.join("branches"), Look::Whole),
+        (common.join("modules"), Look::Whole),
+    ];
+    let mut read = Read { dirs: dirs.clone(), stamps: Vec::new(), latest: None };
+    for (path, look) in files {
+        let (stamp, changed) = stamp_and_time(&path, look)?;
+        read.latest = read.latest.max(changed);
+        read.stamps.push((path, look, stamp));
+    }
+    let missing = |path: PathBuf| read.stamps.iter().any(|(p, _, s)| *p == path && *s == Stamp::Missing);
+    if !missing(git_dir.join("modules")) || !missing(common.join("modules")) {
+        return None;
+    }
+    for config in [common.join("config"), git_dir.join("config.worktree")] {
+        match std::fs::read(&config) {
+            Ok(bytes) if bytes.windows(7).any(|w| w.eq_ignore_ascii_case(b"include")) => return None,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+    }
+    Some(read)
+}
+
+/// The git dir and common dir the top's `.git` leads to, as git reads them
+/// (real paths): the folder (or what a link leads to), or the git dir a
+/// gitfile names (`gitdir: <path>`); then that git dir's `commondir` (a
+/// path), or the git dir itself without one. A path in either file counts
+/// from that file's folder unless absolute, line ends dropped. None when
+/// they aren't there or can't be read.
+fn found_dirs(top: &Path) -> Option<(PathBuf, PathBuf)> {
+    let dot = top.join(".git");
+    let git_dir = if std::fs::metadata(&dot).ok()?.is_dir() { std::fs::canonicalize(&dot).ok()? } else { named_in(&dot, b"gitdir: ", top)? };
+    let common = match std::fs::symlink_metadata(git_dir.join("commondir")) {
+        Ok(_) => named_in(&git_dir.join("commondir"), b"", &git_dir)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => git_dir.clone(),
+        Err(_) => return None,
+    };
+    Some((git_dir, common))
+}
+
+/// The real path named in `file` after `prefix`, from `from` unless absolute.
+fn named_in(file: &Path, prefix: &[u8], from: &Path) -> Option<PathBuf> {
+    let text = std::fs::read(file).ok()?;
+    let named = text.strip_prefix(prefix)?;
+    let end = named.iter().rposition(|b| *b != b'\n' && *b != b'\r')? + 1;
+    let named = Path::new(std::str::from_utf8(&named[..end]).ok()?);
+    std::fs::canonicalize(if named.is_absolute() { named.to_owned() } else { from.join(named) }).ok()
+}
+
+struct Read {
+    dirs: (PathBuf, PathBuf),
+    stamps: Vec<(PathBuf, Look, Stamp)>,
+    latest: Option<SystemTime>,
+}
+
+/// How much of a file [`stamp`] looks at.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Look {
+    /// Which file it is, its size and its times: any change shows.
+    Whole,
+    /// A folder: which one it is (it's there, and the same one); else as `Whole`.
+    Kind,
+}
+
+/// What a file is, as far as a later look can tell it changed: missing, or
+/// its metadata (a link's, and what it leads to).
+#[derive(Clone, PartialEq, Debug)]
+enum Stamp {
+    Missing,
+    Seen(Vec<i128>),
+}
+
+/// The file's [`Stamp`], or none when it can't be looked at.
+fn stamp(path: &Path, look: Look) -> Option<Stamp> {
+    stamp_and_time(path, look).map(|(stamp, _)| stamp)
+}
+
+/// [`stamp`], and the latest time the file (or what a link leads to)
+/// changed, as far as the stamp covers it.
+fn stamp_and_time(path: &Path, look: Look) -> Option<(Stamp, Option<SystemTime>)> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some((Stamp::Missing, None)),
+        Err(_) => return None,
+    };
+    let (mut facts, mut latest) = metadata_facts(&meta, look)?;
+    if meta.file_type().is_symlink() {
+        match std::fs::metadata(path) {
+            Ok(to) => {
+                let (more, changed) = metadata_facts(&to, look)?;
+                facts.extend(more);
+                latest = latest.max(changed);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => facts.push(-1),
+            Err(_) => return None,
+        }
+    }
+    Some((Stamp::Seen(facts), latest))
+}
+
+/// The numbers that tell a file apart from what it was: which file it is
+/// (type, mode, owner, device, inode) and, unless `look` is `Kind` and it's
+/// a folder, its size and change times (`mtime`, `ctime`, to the
+/// nanosecond); with the latest of those times.
+#[cfg(unix)]
+fn metadata_facts(meta: &std::fs::Metadata, look: Look) -> Option<(Vec<i128>, Option<SystemTime>)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut facts = vec![i128::from(meta.mode()), i128::from(meta.uid()), i128::from(meta.dev()), i128::from(meta.ino())];
+    if look == Look::Kind && meta.is_dir() {
+        return Some((facts, None));
+    }
+    let (modified, changed) = (since_1970(meta.mtime(), meta.mtime_nsec())?, since_1970(meta.ctime(), meta.ctime_nsec())?);
+    facts.extend([i128::from(meta.size()), i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()), i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec())]);
+    Some((facts, Some(modified.max(changed))))
+}
+
+/// A time as `SystemTime`, from seconds and nanoseconds since 1970.
+#[cfg(unix)]
+fn since_1970(s: i64, ns: i64) -> Option<SystemTime> {
+    let ns = Duration::from_nanos(u64::try_from(ns).ok()?);
+    let secs = Duration::from_secs(s.unsigned_abs());
+    if s >= 0 { SystemTime::UNIX_EPOCH.checked_add(secs)?.checked_add(ns) } else { SystemTime::UNIX_EPOCH.checked_sub(secs)?.checked_add(ns) }
+}
+
+/// Windows has no inode or change time in std: the attributes and creation
+/// time say which file it is; the size and last write time, what's in it.
+#[cfg(windows)]
+fn metadata_facts(meta: &std::fs::Metadata, look: Look) -> Option<(Vec<i128>, Option<SystemTime>)> {
+    use std::os::windows::fs::MetadataExt;
+    let mut facts = vec![i128::from(meta.file_attributes()), i128::from(meta.creation_time())];
+    if look == Look::Kind && meta.is_dir() {
+        return Some((facts, None));
+    }
+    facts.extend([i128::from(meta.file_size()), i128::from(meta.last_write_time())]);
+    Some((facts, Some(meta.modified().ok()?)))
+}
+
+/// Elsewhere nothing is kept.
+#[cfg(not(any(unix, windows)))]
+fn metadata_facts(_: &std::fs::Metadata, _: Look) -> Option<(Vec<i128>, Option<SystemTime>)> {
+    None
 }
 
 /// The scan's answer cut where its record of the config's exit code
@@ -207,7 +484,12 @@ const SCAN: &str = "yuzora-trust-scan";
 /// prints them, then `config\0<its exit code>\0` ([`config_part`]). Then each checked-out
 /// gitlink in the index, nested ones too, and its config's
 /// program keys: `sub\0path\0` then the records, `err\0what\0` when it can't
-/// be read, and `end\0<SCAN>\0` last. It follows git: a gitlink is checked
+/// be read, and `end\0<SCAN>\0` last. The top's own records also say
+/// where its repository is, `dirs\0<git dir>\n<common dir>\0`, and
+/// `links\0\0` when its index has a gitlink ([`plain_layout`]). git sets
+/// `GIT_DIR` for the alias when the top's `.git` is a gitfile (a linked
+/// worktree, a submodule as the top): the config is read through it, the
+/// repository git found; past the top the script unsets it. It follows git: a gitlink is checked
 /// out when its folder has a `.git`, and git works in it with `GIT_DIR=.git`
 /// (never a repo further up), so its config is read that way, and its own
 /// gitlinks are where its work tree is (its `core.worktree`, from its config
@@ -288,6 +570,7 @@ scan() {
     *) links= ;;
   esac
   [ -n "$links" ] || { printf 'sub\0%s\0err\0index\0' "${1:-.}"; return; }
+  [ "$2" -gt 0 ] || [ "$links" = '160000 #end' ] || printf 'links\0\0'
   for line in $links; do
     [ "$line" = '160000 #end' ] || enter "$1" "$2" "${4%/}" "${line#*"$tab"}" "$5"
   done
@@ -371,6 +654,7 @@ legacy() {
   c=$("$@" rev-parse --path-format=absolute --git-common-dir --absolute-git-dir && echo .) || c=
   case "$c" in *"$nl"*"$nl"*"$nl"*) printf 'err\0commondir\0'; return ;; ?*"$nl"?*"$nl.") c=${c%"$nl."} ;; *) printf 'err\0commondir\0'; return ;; esac
   g=${c#*"$nl"} c=${c%%"$nl"*}
+  [ -n "$p" ] || printf 'dirs\0%s\0' "$g$nl$c"
   files "$c"
   queue "$p" "$c" "$g"
 }
@@ -464,10 +748,10 @@ pub fn programs_in(machine: Option<&str>, top: &str) -> Result<Vec<String>, Stri
     programs_within(machine, top, TIMEOUT)
 }
 
-/// [`programs_in`] within `timeout`.
+/// [`programs_in`] within `timeout`; here, kept ([`repo_programs_here`]).
 fn programs_within(machine: Option<&str>, top: &str, timeout: Duration) -> Result<Vec<String>, String> {
     let machine = machine.filter(|m| !m.is_empty());
-    repo_programs(|args| {
+    let run = |args: &[&str]| {
         let req = ExecRequest::new("git", READ_FLAGS.iter().copied().chain(args.iter().copied())).on(machine).cwd(Some(top)).timeout(timeout).max_output(ANSWER_CAP as u64 + 1);
         match remote::run(&req) {
             Ok(o) => Ok(whole(o.code, o.stdout)),
@@ -475,7 +759,8 @@ fn programs_within(machine: Option<&str>, top: &str, timeout: Duration) -> Resul
             Err(remote::ExecError::TimedOut { .. }) => Ok((-1, Vec::new())),
             Err(e) => Err(e.to_string()),
         }
-    })
+    };
+    if machine.is_some() { repo_programs(run) } else { repo_programs_here("yuzora-core:git", top, run) }
 }
 
 /// A folder's id: `<machine>:<top>`, machine empty here.
@@ -1737,5 +2022,319 @@ mod tests {
         // Cut anywhere, a record may end whole and the filter go unseen: a
         // cut answer is never read as a whole one.
         assert_eq!(got, Ok(vec![UNREADABLE.to_string()]));
+    }
+
+    /// The scan of `top` kept under `key` ([`programs_here_at`]) as if it
+    /// began at `began`, with the git here; and how many times git ran.
+    fn kept_scan(key: &str, top: &str, began: SystemTime) -> (Vec<String>, usize) {
+        let mut runs = 0;
+        let keys = programs_here_at(
+            key,
+            top,
+            |args| {
+                runs += 1;
+                let out = std::process::Command::new("git").args(READ_FLAGS).args(args).current_dir(top).output()?;
+                Ok::<_, std::io::Error>(whole(out.status.code().unwrap_or(-1), out.stdout))
+            },
+            began,
+        )
+        .unwrap();
+        (keys, runs)
+    }
+
+    /// Well after any file a test just wrote ([`RACY`]).
+    fn later() -> SystemTime {
+        SystemTime::now() + Duration::from_secs(60)
+    }
+
+    fn keys(k: &[&str]) -> Vec<String> {
+        k.iter().map(|k| k.to_string()).collect()
+    }
+
+    /// A scratch repo with a commit, its answer kept under `name`.
+    #[cfg(unix)]
+    fn kept_repo(name: &str) -> (PathBuf, String, impl Fn(&str, &[&str]) -> String) {
+        let (dir, top, git) = scratch_dir(name);
+        git("", &["init", "-q"]);
+        std::fs::write(Path::new(&top).join("f"), "x\n").unwrap();
+        git("", &["add", "f"]);
+        git("", &["commit", "-qm", "s"]);
+        assert_eq!(kept_scan(name, &top, later()), (keys(&[]), 1));
+        assert_eq!(kept_scan(name, &top, later()), (keys(&[]), 0), "kept");
+        (dir, top, git)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_kept_answer_holds_while_nothing_it_was_read_from_changes() {
+        let (dir, top, _git) = kept_repo("kept-holds");
+        // The work tree isn't read.
+        std::fs::write(Path::new(&top).join("g"), "y\n").unwrap();
+        assert_eq!(kept_scan("kept-holds", &top, later()), (keys(&[]), 0));
+        // Another caller, or another git, scans for itself.
+        assert_eq!(kept_scan("kept-holds-other", &top, later()), (keys(&[]), 1));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_repos_own_config_changing_is_scanned_again() {
+        let k = "kept-config";
+        let (dir, top, git) = kept_repo(k);
+        git("", &["config", "core.sshCommand", "true"]);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1));
+        assert_eq!(kept_scan(k, &top, later()).1, 0);
+        // The worktree's own, once the repo reads it.
+        git("", &["config", "extensions.worktreeConfig", "true"]);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1));
+        git("", &["config", "--worktree", "diff.external", "true"]);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand", "diff.external"]), 1));
+        assert_eq!(kept_scan(k, &top, later()).1, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_config_changed_in_place_or_behind_a_link_is_scanned_again() {
+        let k = "kept-in-place";
+        let (dir, top, _git) = kept_repo(k);
+        let config = Path::new(&top).join(".git/config");
+        let text = std::fs::read_to_string(&config).unwrap() + "[core]\n\tsshCommand = a\n";
+        std::fs::write(&config, &text).unwrap();
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1));
+        // The same file, the same size, its time set back: only its change
+        // time tells.
+        let was = std::fs::metadata(&config).unwrap().modified().unwrap();
+        std::fs::write(&config, text.replace("sshCommand = a", "fsmonitor  = a")).unwrap();
+        std::fs::File::options().write(true).open(&config).unwrap().set_modified(was).unwrap();
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.fsmonitor"]), 1));
+        // Behind a link: what it leads to changes, the link doesn't.
+        let real = dir.join("real-config");
+        std::fs::rename(&config, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &config).unwrap();
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.fsmonitor"]), 1));
+        assert_eq!(kept_scan(k, &top, later()).1, 0);
+        std::io::Write::write_all(&mut std::fs::File::options().append(true).open(&real).unwrap(), b"[diff]\n\texternal = x\n").unwrap();
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.fsmonitor", "diff.external"]), 1));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_files_changing_are_scanned_again() {
+        let k = "kept-remotes";
+        let (dir, top, _git) = kept_repo(k);
+        for d in ["remotes", "branches"] {
+            let file = Path::new(&top).join(".git").join(d).join("o");
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            kept_scan(k, &top, later());
+            std::fs::write(&file, "URL: x\n").unwrap();
+            assert_eq!(kept_scan(k, &top, later()), (vec![format!(".git/{d}")], 1));
+            assert_eq!(kept_scan(k, &top, later()).1, 0);
+            std::fs::remove_file(&file).unwrap();
+            assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // A gitlink not checked out has nothing to read, but may be checked out
+    // any time: the index changing scans again, and one there is never kept.
+    #[cfg(unix)]
+    #[test]
+    fn a_gitlink_in_the_index_is_scanned_again_and_never_kept() {
+        let k = "kept-link";
+        let (dir, top, git) = kept_repo(k);
+        git("sub", &["init", "-q"]);
+        std::fs::write(Path::new(&top).join("sub/f"), "x\n").unwrap();
+        git("sub", &["add", "f"]);
+        git("sub", &["commit", "-qm", "s"]);
+        git("sub", &["config", "core.sshCommand", "true"]);
+        let head = git("sub", &["rev-parse", "HEAD"]);
+        let away = dir.join("away");
+        std::fs::rename(Path::new(&top).join("sub"), &away).unwrap();
+        git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{head},sub")]);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1), "kept with a gitlink in the index");
+        std::fs::rename(&away, Path::new(&top).join("sub")).unwrap();
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["sub: core.sshcommand"]), 1));
+        git("", &["update-index", "--force-remove", "sub"]);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, later()).1, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // git takes a `.git` only with a `HEAD` it can read, `objects/` and
+    // `refs/`; else it goes on to a repo further up.
+    #[cfg(unix)]
+    #[test]
+    fn a_git_dir_git_stops_taking_is_scanned_again() {
+        let k = "kept-up";
+        let (dir, outer, git) = scratch_dir(k);
+        git("", &["init", "-q"]);
+        git("", &["config", "core.sshCommand", "true"]);
+        git("in", &["init", "-q"]);
+        std::fs::write(Path::new(&outer).join("in/f"), "x\n").unwrap();
+        git("in", &["add", "f"]);
+        git("in", &["commit", "-qm", "s"]);
+        let top = format!("{outer}/in");
+        let g = Path::new(&top).join(".git");
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+        let head = std::fs::read(g.join("HEAD")).unwrap();
+        std::fs::write(g.join("HEAD"), "not a ref\n").unwrap();
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1), "a HEAD git can't read");
+        std::fs::write(g.join("HEAD"), head).unwrap();
+        for d in ["objects", "refs"] {
+            assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+            assert_eq!(kept_scan(k, &top, later()).1, 0);
+            std::fs::rename(g.join(d), g.join("away")).unwrap();
+            assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1), "no {d}");
+            std::fs::rename(g.join("away"), g.join(d)).unwrap();
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_top_whose_git_dir_leads_elsewhere_is_scanned_again() {
+        let k = "kept-lead";
+        let (dir, base, git) = scratch_dir(k);
+        git("wt", &["init", "-q", "--separate-git-dir", &format!("{base}/a.git")]);
+        std::fs::write(Path::new(&base).join("wt/f"), "x\n").unwrap();
+        git("wt", &["add", "f"]);
+        git("wt", &["commit", "-qm", "s"]);
+        assert!(std::process::Command::new("cp").args(["-R", &format!("{base}/a.git"), &format!("{base}/b.git")]).status().unwrap().success());
+        git("", &["config", "--file", &format!("{base}/b.git/config"), "core.sshCommand", "true"]);
+        let top = format!("{base}/wt");
+        let gitfile = Path::new(&top).join(".git");
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, later()).1, 0);
+        std::fs::write(&gitfile, format!("gitdir: {base}/b.git\n")).unwrap();
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1), "a gitfile naming another git dir");
+        // A link on the way: the gitfile stays as it was.
+        let link = Path::new(&base).join("link");
+        std::os::unix::fs::symlink(format!("{base}/a.git"), &link).unwrap();
+        std::fs::write(&gitfile, "gitdir: ../link\n").unwrap();
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, later()).1, 0);
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(format!("{base}/b.git"), &link).unwrap();
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1), "a link on the way to the git dir");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // A linked worktree: its git dir names the common dir in `commondir`,
+    // and each keeps its own `modules/`.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_worktree_is_kept_until_its_common_dir_leads_elsewhere() {
+        let k = "kept-common";
+        let (dir, base, git) = scratch_dir(k);
+        git("main", &["init", "-q"]);
+        std::fs::write(Path::new(&base).join("main/f"), "x\n").unwrap();
+        git("main", &["add", "f"]);
+        git("main", &["commit", "-qm", "s"]);
+        git("main", &["worktree", "add", "-q", &format!("{base}/lw")]);
+        let top = format!("{base}/lw");
+        let (common, g) = (Path::new(&base).join("main/.git"), Path::new(&base).join("main/.git/worktrees/lw"));
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "kept");
+        for modules in [g.join("modules"), common.join("modules")] {
+            std::fs::create_dir(&modules).unwrap();
+            assert_eq!(kept_scan(k, &top, later()).1, 1);
+            assert_eq!(kept_scan(k, &top, later()).1, 1, "kept with {}", modules.display());
+            std::fs::remove_dir(&modules).unwrap();
+            kept_scan(k, &top, later());
+        }
+        assert!(std::process::Command::new("cp").args(["-R", &common.to_string_lossy(), &format!("{base}/other.git")]).status().unwrap().success());
+        git("", &["config", "--file", &format!("{base}/other.git/config"), "core.sshCommand", "true"]);
+        let link = Path::new(&base).join("clink");
+        std::os::unix::fs::symlink(&common, &link).unwrap();
+        std::fs::write(g.join("commondir"), format!("{}\n", link.display())).unwrap();
+        assert_eq!(kept_scan(k, &top, later()).0, keys(&[]));
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "the same common dir");
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(format!("{base}/other.git"), &link).unwrap();
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1), "a link on the way to the common dir");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn what_could_change_unseen_is_never_kept() {
+        let k = "kept-never";
+        let (dir, top, git) = kept_repo(k);
+        let twice = |why: &str| {
+            assert_eq!(kept_scan(k, &top, later()).1, 1, "{why}");
+            assert_eq!(kept_scan(k, &top, later()).1, 1, "kept with {why}");
+        };
+        // What an include names could be anywhere, whatever its case.
+        let config = Path::new(&top).join(".git/config");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(&config, format!("{text}[Include]\n\tpath = elsewhere\n")).unwrap();
+        twice("an include");
+        std::fs::write(&config, &text).unwrap();
+        git("", &["config", "extensions.worktreeConfig", "true"]);
+        assert_eq!(kept_scan(k, &top, later()).1, 1);
+        assert_eq!(kept_scan(k, &top, later()).1, 0, "kept");
+        std::fs::write(Path::new(&top).join(".git/config.worktree"), "[includeIf \"gitdir:/\"]\n\tpath = elsewhere\n").unwrap();
+        twice("an include in config.worktree");
+        std::fs::remove_file(Path::new(&top).join(".git/config.worktree")).unwrap();
+        // A submodule not checked out keeps its git dir there.
+        std::fs::create_dir(Path::new(&top).join(".git/modules")).unwrap();
+        twice("modules/");
+        std::fs::remove_dir(Path::new(&top).join(".git/modules")).unwrap();
+        // A scan git didn't finish.
+        for _ in 0..2 {
+            let mut runs = 0;
+            let got = programs_here_at(
+                k,
+                &top,
+                |args| {
+                    runs += 1;
+                    let out = std::process::Command::new("git").args(READ_FLAGS).args(args).current_dir(&top).output()?;
+                    Ok::<_, std::io::Error>((1, out.stdout))
+                },
+                later(),
+            );
+            assert_eq!((got.unwrap(), runs), (keys(&[UNREADABLE]), 1));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // A coarse clock could give a later change the same time.
+    #[cfg(unix)]
+    #[test]
+    fn an_answer_from_files_changed_just_before_is_never_kept() {
+        let k = "kept-racy";
+        let (dir, top, git) = scratch_dir(k);
+        git("", &["init", "-q"]);
+        assert_eq!(kept_scan(k, &top, SystemTime::now()), (keys(&[]), 1));
+        assert_eq!(kept_scan(k, &top, SystemTime::now()), (keys(&[]), 1), "kept though its files changed a moment ago");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Kept here, under this caller's key; never for a machine.
+    #[cfg(unix)]
+    #[test]
+    fn a_repo_here_is_kept_and_one_on_a_machine_never() {
+        let (dir, top, git) = scratch_dir("kept-wired");
+        git("", &["init", "-q"]);
+        std::thread::sleep(RACY + Duration::from_millis(200));
+        assert_eq!(programs_within(None, &top, TIMEOUT), Ok(Vec::new()));
+        assert!(kept().lock().unwrap().contains_key(&format!("yuzora-core:git\0{top}")));
+        assert_ne!(programs_within(Some("yuzora-test-no-such-machine"), &top, Duration::from_secs(5)), Ok(Vec::new()), "a machine's answer from what's kept here");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_the_tops_own_records_make_a_plain_layout() {
+        let plain = |extra: &str| plain_layout(format!("sub\0\0legacy\0.git/remotes\0dirs\0/g\n/c\0{extra}end\0{SCAN}\0").as_bytes());
+        assert_eq!(plain(""), Some(("/g".into(), "/c".into())));
+        for extra in ["links\0\0", "sub\0x\0", "sub\0.\0err\0index\0", "err\0commondir\0", "dirs\0/g\n/c\0", "local\0core.x\0"] {
+            assert_eq!(plain(extra), None, "{extra:?}");
+        }
+        assert_eq!(plain_layout(b"sub\0\0end\0yuzora-trust-scan\0"), None, "no dirs");
+        assert_eq!(plain_layout(b"legacy\0x\0dirs\0/g\n/c\0end\0yuzora-trust-scan\0"), None, "not the top's");
+        assert_eq!(plain_layout(b"sub\0\0dirs\0/g\0end\0yuzora-trust-scan\0"), None, "one dir");
     }
 }

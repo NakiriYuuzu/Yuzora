@@ -41,14 +41,16 @@ pub fn repo_programs(repo: &Repo) -> GitResult<Vec<String>> {
     within(repo, crate::exec::READ_TIMEOUT)
 }
 
-/// [`repo_programs`] within `timeout`.
+/// [`repo_programs`] within `timeout`; on this computer, kept for the git
+/// the repo runs ([`git_trust::repo_programs_here`]).
 fn within(repo: &Repo, timeout: std::time::Duration) -> GitResult<Vec<String>> {
-    git_trust::repo_programs(|args| match repo.run(Git::read(args.iter().copied()).max_output(git_trust::ANSWER_CAP + 1).timeout(timeout)) {
+    let run = |args: &[&str]| match repo.run(Git::read(args.iter().copied()).max_output(git_trust::ANSWER_CAP + 1).timeout(timeout)) {
         Ok(out) => Ok(git_trust::whole(out.code, out.stdout)),
         // Out of time: unreadable, which the person may still trust.
         Err(GitError::TimedOut { .. }) => Ok((-1, Vec::new())),
         Err(e) => Err(e),
-    })
+    };
+    if repo.place.is_remote() { git_trust::repo_programs(run) } else { git_trust::repo_programs_here(&format!("yuzora-git:{}", repo.place.program()), &repo.place.root, run) }
 }
 
 /// `trusted.json` (`git_trust::trusted_file` outside tests).
@@ -217,6 +219,38 @@ mod tests {
         let before = crate::repo::testing::hc_calls_in(s.root());
         assert_eq!(repo_programs(&there).unwrap(), ["filter.evil.clean"]);
         assert_eq!(crate::repo::testing::hc_calls_in(s.root()) - before, 1);
+    }
+
+    // Here the scan is kept until a file it read changes, for each git a
+    // repo may run; on a machine, never (a look there is a round trip too).
+    #[test]
+    fn a_repo_here_is_scanned_again_only_once_its_files_change() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "one");
+        let log = s.dir.path().join("scans");
+        let counting = s.dir.path().join("counting-git");
+        std::fs::write(&counting, format!("#!/bin/sh\ncase \"$*\" in *yuzora-trust-scan*) echo >> '{}' ;; esac\nexec git \"$@\"\n", log.display())).unwrap();
+        std::fs::set_permissions(&counting, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let place = Place { git: counting.to_string_lossy().into_owned(), write_lock: Default::default(), ..s.repo.place.clone() };
+        let counted = Repo::new(s.repo.id.clone(), place, s.repo.git_dir.clone(), s.repo.common_dir.clone());
+        let scans = || std::fs::read_to_string(&log).map(|t| t.lines().count()).unwrap_or(0);
+        // Files changed just before a scan aren't kept on.
+        std::thread::sleep(std::time::Duration::from_millis(3200));
+        assert!(repo_programs(&s.repo).unwrap().is_empty());
+        assert!(repo_programs(&counted).unwrap().is_empty());
+        assert_eq!(scans(), 1, "another git scans for itself");
+        assert!(repo_programs(&counted).unwrap().is_empty());
+        assert_eq!(scans(), 1, "kept");
+        s.git(&["config", "filter.evil.clean", "cat"]);
+        assert_eq!(repo_programs(&counted).unwrap(), ["filter.evil.clean"]);
+        assert_eq!(scans(), 2);
+        std::thread::sleep(std::time::Duration::from_millis(3200));
+        let there = crate::repo::testing::on_machine(&s);
+        let before = crate::repo::testing::hc_calls_in(s.root());
+        for _ in 0..2 {
+            assert_eq!(repo_programs(&there).unwrap(), ["filter.evil.clean"]);
+        }
+        assert_eq!(crate::repo::testing::hc_calls_in(s.root()) - before, 2, "kept for a machine");
     }
 
     #[test]
