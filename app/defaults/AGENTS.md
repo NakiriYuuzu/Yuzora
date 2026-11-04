@@ -164,8 +164,9 @@ the highlighted line shows where it will land.
 
 ## Layouts: `layouts/<name>.json`
 
-Each file is one whole window. `layout.switch` (`ctrl-shift-l`) cycles
-through them, `layout.switch {name}` picks one; `shared("layout")` is the
+Each file is one whole window. `layout.switch` cycles through them (no
+key is bound to it by default, and the command palette has no "Next layout":
+in Yuzora it would leave for Herdr's own layout), `layout.switch {name}` picks one; `shared("layout")` is the
 shown one's name. Herdr ships `main` ("Herdr": spaces by machine and the
 agents list on the left, `workspace-chrome`; tabs as pills with a + menu
 that starts a terminal or any installed agent, `new-menu`; panes as cards
@@ -434,8 +435,8 @@ folder on GitHub):
 4. A mod's `keys.json`: merge it into the person's. Add its sections and
    keys, and ask before replacing a key they already use.
 5. `herdr-app check` each mod; for a layout, then `layout.switch {name}`.
-   The person's own layout stays as it was; `ctrl-shift-l` switches back,
-   and deleting the files removes it.
+   The person's own layout stays as it was; `layout.switch {name}` (or Settings > Mods > Layouts)
+   switches back, and deleting the files removes it.
 
 To share one: put that folder in a public GitHub repo (one folder each if
 there are several), write its `RECIPE.md`, save a screenshot of it as
@@ -1029,11 +1030,6 @@ with these differences.
   `zh-TW.json` and shows them with `t("key", {name: value})`. The language is
   `general.locale` in `yuzora/settings.json`: `"system"` (the default), `"en"`
   or `"zh-TW"`. A mod you write for Yuzora fills both files.
-- The tab bar has no new-pane or split buttons. The new-pane menu opens with
-  the command `yuzora-shell-tabs.new-pane` (bind it in `keys.json`, or
-  `herdr-app do yuzora-shell-tabs.new-pane`); a pane splits from the buttons
-  in its header or with `pane.split`. The sidebar's tools menu has no "next
-  layout" row: switch layouts in Settings > Mods > Layouts.
 - A mod offers itself as a tool pane (the new-pane menu) or a settings page
   in its own `mod.json`: `"yuzora": {"pane": {"title": "pane.title"}}`,
   `"yuzora": {"settings": {"title": "settings.title", "section": "git"}}`.
@@ -1048,9 +1044,12 @@ with these differences.
 <!-- yuzora:lane:L1:start -->
 ### The workspace shell
 
-- The tab bar is `yuzora-shell-tabs`: the current Space's tabs only (the sidebar tells Spaces apart), each with its Space's badge. Its "New pane" menu puts
+- The tab bar is `yuzora-shell-tabs`: the current Space's tabs only (the sidebar tells Spaces apart), each with its Space's badge. It has no new-pane or
+  split buttons: a pane splits from the buttons in its header or with `pane.split`. The new-pane menu opens with the
+  command `yuzora-shell-tabs.new-pane` (bind it in `keys.json`, or `herdr-app do yuzora-shell-tabs.new-pane`) and puts
   a tool pane, a terminal or an agent right of or below the focused pane (`pane.split {direction, pane, mod, props}`).
   A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
+  The sidebar's tools menu has no "next layout" row: switch layouts in Settings > Mods > Layouts.
 - A person's `space.new` with no arguments but `machine` (a key, a click, a menu, a mod's `run()`) opens the
   `yuzora-new-space` dialog to pick the folder and answers `{"asked": "folder"}`; no Space exists yet. A folder
   that is already a Space's root on that machine selects that Space. Scripts (`herdr-app do`) and calls with

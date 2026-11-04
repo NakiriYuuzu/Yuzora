@@ -60,6 +60,8 @@ struct Calls {
     unexpected: Vec<String>,
     effects: Vec<(String, Vec<Value>)>,
     shared: BTreeMap<String, Value>,
+    // Commands nextCommand() hands out, in order; with none left it never returns.
+    commands: Vec<String>,
 }
 
 fn updates(app: &str, core: &str) -> Value {
@@ -151,9 +153,20 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
     module = module.async_function("feedbackPickImages", |_| Ok(async { Ok(HostValue::Array(vec![])) }));
     module = module.async_function("knownAgents", |_| Ok(async { Ok(HostValue::Array(vec![])) }));
     module = module.async_function("pickFolder", |_| Ok(async { Ok(HostValue::Null) }));
-    for name in ["nextCommand", "watchFolder"] {
-        module = module.async_function(name, |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
-    }
+    module = module.async_function("watchFolder", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
+    let queued = calls.clone();
+    module = module.async_function("nextCommand", move |_| {
+        let next = {
+            let mut calls = queued.borrow_mut();
+            (!calls.commands.is_empty()).then(|| calls.commands.remove(0))
+        };
+        Ok(async move {
+            match next {
+                Some(command) => Ok(HostValue::from(command)),
+                None => std::future::pending::<gpui_shell::HostResult>().await,
+            }
+        })
+    });
     for name in ["exec", "hc", "readTextFile", "writeTextFile", "sendFeedback"] {
         let calls = calls.clone();
         module = module.async_function(name, move |a| {
@@ -642,6 +655,12 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
         let expected = if query == "settings" { "Settings" } else { "Nothing matches" };
         assert!(tree.contains(expected), "palette query {query}: {tree}");
     }
+    // yuzora(L1): the palette has no "Next layout" or any other entry for a bare layout.switch
+    // (it lands in Herdr's own layout from the yuzora one); "Layout: <name>" for a named one stays.
+    for (query, listed) in [("next layout", false), ("switch layout", false), ("layout: herdr", true)] {
+        let tree = describe(cx, &staged, "frame/palette", true, props(), updates("current", "current"), Some(&format!("this.query = {query:?};"))).unwrap();
+        assert_eq!(!tree.contains("Nothing matches"), listed, "palette query {query}: {tree}");
+    }
     // Reviewed overlay contract table, not extracted from arbitrary JS call sites.
     let scenarios = [
         ("mods/menu", json!({"tab":"pane","target":{"pane":"p1","terminal":"t1"}})),
@@ -877,6 +896,43 @@ fn yuzora_tab_bar_has_no_new_pane_or_split_buttons(cx: &mut TestAppContext) {
         }
         assert!(tree.contains("\"tab-new\""), "the + button stays: {tree}");
     }
+}
+
+// yuzora(L1): with the buttons gone the command is the only way to the new-pane menu: it opens
+// the menu as a centered dialog of this mod.
+#[gpui::test]
+fn yuzora_new_pane_command_opens_the_menu(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let open = |cx: &mut TestAppContext, command: &str| {
+        let calls = Rc::new(RefCell::new(Calls::default()));
+        calls.borrow_mut().commands.push(command.into());
+        let values = fixture(true, json!({}), updates("current", "current"));
+        let policy = Policy::new()
+            .with_storage_path(staged.0.join("store-command.json"))
+            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+            .with_host_module(module(values, calls.clone()))
+            .unwrap();
+        let policy = crate::yuzora::with_modules(policy, "");
+        let root = staged.0.join("mods/yuzora-shell-tabs");
+        let window = cx.add_window(|_, _| Empty);
+        let session = window.update(cx, |_, window, cx| {
+            let mut session = DescriptionSession::load(ShellRuntime::new_isolated().unwrap(), root, policy, window, cx).unwrap();
+            session.describe(window, cx).unwrap();
+            session
+        }).unwrap();
+        cx.run_until_parked();
+        drop(session);
+        window.update(cx, |_, window, _| window.remove_window()).unwrap();
+        let calls = calls.borrow();
+        assert!(calls.unexpected.is_empty(), "{:?}", calls.unexpected);
+        calls.effects.iter().filter(|(n, _)| n == "openOverlay").map(|(_, a)| json!(a)).collect::<Vec<Value>>()
+    };
+    assert_eq!(
+        open(cx, "new-pane"),
+        [json!([{"mod": "yuzora-shell-tabs", "kind": "dialog", "width": 280, "props": {"menu": "pane"}}])]
+    );
+    assert!(open(cx, "something-else").is_empty(), "other commands open nothing");
 }
 
 // yuzora(L1): a picked row closes the menu and goes where the pills say: beside the focused

@@ -20,6 +20,12 @@ use std::rc::Rc;
 use gpui_shell::action::ShellAction;
 use std::collections::BTreeMap;
 
+/// yuzora(L1): where the shipped keys used to bind `layout.switch` (next layout).
+#[cfg(target_os = "macos")]
+const OLD_NEXT_LAYOUT_KEY: &str = "cmd-shift-l";
+#[cfg(not(target_os = "macos"))]
+const OLD_NEXT_LAYOUT_KEY: &str = "ctrl-shift-l";
+
 /// The reserved shortcut that restores the default layout and keys.
 pub const ESCAPE_HATCH: &str = "ctrl-alt-shift-escape";
 
@@ -134,6 +140,11 @@ pub fn parse(text: &str) -> Result<Vec<KeyBinding>, String> {
             if gone_mod(action) {
                 continue;
             }
+            // yuzora(L1): the old default "next layout" key is dropped from keys.json files written
+            // before it was removed (keys.json is only written once); another key for it stays.
+            if section == "global" && action == "layout.switch" && keys == OLD_NEXT_LAYOUT_KEY {
+                continue;
+            }
             if !valid_action(action) {
                 problems.push(format!("{section}.{keys}: unknown action {action:?}"));
                 continue;
@@ -242,6 +253,26 @@ mod tests {
             .collect::<serde_json::Map<_, _>>();
         let bindings = super::parse(&serde_json::json!({ "global": help }).to_string()).unwrap();
         assert!(bindings.iter().any(|binding| binding.match_keystrokes(&[event.clone()]) == Some(false)));
+    }
+
+    // yuzora(L1): no default key switches layout (from the yuzora layout it lands in Herdr's own),
+    // and a keys.json written earlier loses that one default binding but keeps any other.
+    #[test]
+    fn next_layout_has_no_default_key_and_the_old_one_is_dropped() {
+        for keys in [include_str!("../defaults/keys.json"), include_str!("../defaults/keys.macos.json")] {
+            let value: serde_json::Value = serde_json::from_str(keys).unwrap();
+            for (section, bound) in value.as_object().unwrap() {
+                for (key, action) in bound.as_object().unwrap() {
+                    assert_ne!(action.as_str().unwrap().split(':').next(), Some("layout.switch"), "{section}.{key}");
+                }
+            }
+        }
+        let old = super::OLD_NEXT_LAYOUT_KEY;
+        let count = |text: String| super::parse(&text).unwrap().len();
+        let with = |bound: serde_json::Value| serde_json::json!({ "global": bound }).to_string();
+        assert_eq!(count(with(serde_json::json!({ old: "layout.switch" }))), 0, "the old default is dropped");
+        assert_eq!(count(with(serde_json::json!({ "ctrl-alt-l": "layout.switch" }))), 1, "another key stays");
+        assert_eq!(count(with(serde_json::json!({ old: "layout.switch:main" }))), 1, "a named layout stays");
     }
 
     #[test]

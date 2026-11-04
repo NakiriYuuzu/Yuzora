@@ -39,7 +39,7 @@ the same window.
 - **Spaces and agents.** A Space is a folder on this computer or on a herdr machine reached over SSH. The workspace
   sidebar lists machines → Spaces → worktrees → agents, shows each agent's state by color and shape (working, needs a
   reply, done, idle) and keeps the agents that need you in a "Needs attention" list.
-- **Mixed splits.** "+ New pane" puts a tool pane (Git, editor, database, SFTP…), a terminal or an agent right of or
+- **Mixed splits.** The new-pane menu (command `yuzora-shell-tabs.new-pane`) puts a tool pane (Git, editor, database, SFTP…), a terminal or an agent right of or
   below the focused pane, in the same tab.
 - **Git** modeled on IntelliJ IDEA Community, with the staging area: changes and commits in the sidebar, a diff pane
   that stages hunks and lines, the log with its branch graph, branches, push, three-way merge, interactive rebase
@@ -153,7 +153,7 @@ beta.2 is built in parallel lanes, each owning its own directories and its secti
 ### L1 · Shell and workspace
 
 The workspace sidebar (machines → Spaces → worktrees → agents, needs attention, scope chips per machine), the mode
-bar with each mode's badge, the tab bar whose "+ New pane" menu mixes tool panes, terminals and agents into one tab,
+bar with each mode's badge, the tab bar (the new-pane menu, opened with the `yuzora-shell-tabs.new-pane` command, mixes tool panes, terminals and agents into one tab),
 pane headers (amber while an agent needs a reply) and the status bar. A new Space starts by picking its folder; on a
 remote machine you type the path, checked on that machine. `yuzora:shell` (`app/crates/yuzora-shell`) holds the
 sidebar's model, Space badges and a small Git summary. Details: [docs/beta2/shell.md](docs/beta2/shell.md).
