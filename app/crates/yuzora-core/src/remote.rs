@@ -299,11 +299,22 @@ fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::io:
             }
         }
     });
-    match exited.recv_timeout(timeout) {
-        Ok(true) => child.wait().map(Some),
-        // waitid could not watch it: ask the plain way (it ends or the timeout does).
-        Ok(false) => child.wait().map(Some),
-        Err(_) => Ok(None),
+    let end = Instant::now().checked_add(timeout);
+    if exited.recv_timeout(timeout).is_err() {
+        return Ok(None);
+    }
+    // The watcher answered: it exited, or (macOS reports a stopped child too, SIGSTOP or a
+    // SIGTTIN from reading the terminal) it did not, or waitid could not watch. Only `try_wait`
+    // says; a plain `wait` would wait for ever on a stopped program. Not exited: look again
+    // until the time is up (the watcher would only answer at once again).
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if end.is_some_and(|e| Instant::now() >= e) {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -660,6 +671,35 @@ mod tests {
 
     /// A program is ended through the `Child` it was started as, never by a bare process id (which
     /// may belong to another process by then): no `OpenProcess(pid)`, no `kill(pid)` by number.
+    /// This guards only that way of writing it, not the order of reaping (reaping the child and
+    /// then killing it would pass); the order is kept by reading `run_local` and `wait_for_exit`.
+    /// A program that stops itself (SIGSTOP; a child reading the terminal gets SIGTTIN alike) is not
+    /// "exited": macOS reports a stopped child to a `waitid` that watches for the exit. The run still
+    /// ends at its timeout, and what it started is gone.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_that_stops_itself_is_timed_out_not_waited_for_ever() {
+        let pid_file = std::env::temp_dir().join(format!("yuzora-exec-stopped-{}", std::process::id()));
+        let script = format!("echo $$ > '{}'; kill -STOP $$", pid_file.display());
+        let (done, answer) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(run(&ExecRequest::new("sh", ["-c", script.as_str()]).timeout(Duration::from_millis(500))));
+        });
+        let got = answer.recv_timeout(Duration::from_secs(3));
+        assert!(matches!(got, Ok(Err(ExecError::TimedOut { .. }))), "{got:?}");
+        let pid: libc::pid_t = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        let _ = std::fs::remove_file(&pid_file);
+        let gone = (0..100).any(|_| {
+            // SAFETY: signal 0 only asks whether the process exists.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            if alive {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            !alive
+        });
+        assert!(gone, "the stopped program {pid} outlived the timeout");
+    }
+
     #[test]
     fn a_program_is_ended_by_its_child_not_by_a_process_id() {
         let src = include_str!("remote.rs");
