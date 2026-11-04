@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { archiveName, channelOf, checkVersion, downloadsFor, tauriManifest, yuzoraManifest } from "./manifest";
@@ -81,5 +81,17 @@ describe("latest.json for the Tauri app", () => {
     expect(() => tauriManifest(dist({ [mac]: "m", [`${mac}.sig`]: tauriSig }), "0.1.0-beta.2", "n")).toThrow("Yuzora-windows-x64-setup.exe is missing");
     expect(() => tauriManifest(dist({ [mac]: "m", "Yuzora-windows-x64-setup.exe": "w", "Yuzora-windows-x64-setup.exe.sig": tauriSig }), "0.1.0-beta.2", "n")).toThrow(`${mac}.sig is missing`);
     expect(() => tauriManifest(dist({ [mac]: "m", [`${mac}.sig`]: "untrusted comment: x", "Yuzora-windows-x64-setup.exe": "w", "Yuzora-windows-x64-setup.exe.sig": tauriSig }), "0.1.0-beta.2", "n")).toThrow("not a Tauri updater signature");
+  });
+
+  test("the Windows installer's old-app prompt matches the current migration status", () => {
+    const nsi = readFileSync(join(import.meta.dir, "../../distribution/yuzora/windows/yuzora.nsi"), "utf8");
+    const en = nsi.match(/^LangString OldApp \$\{LANG_ENGLISH\} "(.*)"$/m)?.[1] ?? "";
+    const zh = nsi.match(/^LangString OldApp \$\{LANG_TRADCHINESE\} "(.*)"$/m)?.[1] ?? "";
+    expect(en).toContain("does not delete your old data");
+    expect(en).toContain("does not bring connections and settings over automatically yet");
+    expect(en).not.toContain("can bring it over");
+    expect(zh).toContain("不會刪掉舊版資料");
+    expect(zh).toContain("目前還不會自動帶入連線與設定");
+    expect(zh).not.toContain("可以把它帶過來");
   });
 });
