@@ -11,6 +11,7 @@
 - 未信任的資料夾：Changes 面板的 diff 與 Commit、worktree 對話框的 Enter，在執行 Git 前會再確認一次資料夾是否信任（面板上次讀取之後，設定可能多了程式）；Files 面板執行的 Git 不連任何 remote（包括本機的），所以 2.44 以前的 Git 也不會替 partial clone 去抓物件。
 - 信任檢查：repo 設定和 submodule 掃描在同一個 shell 裡讀，每次檢查只要一次 git 呼叫（遠端一次 `hc exec`），回答裡沒有設定的 exit code 時當成讀不到；Changes 面板 refresh 自動開啟的 diff 不再多問一次。
 - Files：macOS 與 Windows 上，根目錄 `.gitignore` 或 `.git/info/exclude` 忽略的資料夾（build 的 `target/`、`node_modules/`）裡的變動，不再喚醒 Files 側欄與面板。
+- Files（Windows）：寫入被 ignore 的資料夾，不再被當成資料夾本身的變動回報（原本每批 build 都讓面板重載一次）；資料夾被建立、刪除或改名時仍會回報。
 - 狀態列：Git 分支資訊在遠端機器上只要一次來回（原本三次），本機則兩項讀取並行。
 - 遠端 Git 讀取：diff 中彼此不相依的讀取（index 項目、blob、種類、HEAD、modes）、log 的 refs 與 repo 的進行中操作狀態改成同時發出，不再循序（unstaged diff 5 → 2 輪、staged 4 → 2 輪、refs 3 → 1 輪）；diff 的 index 側改用該項目的 object id 讀取，內容與檢查過的項目是同一份。
 - Windows：安裝程式詢問移除舊版全機安裝時，改為說明舊版資料會保留、但目前尚不會自動帶入連線與設定。
