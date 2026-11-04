@@ -53,7 +53,8 @@ pub fn mod_dir(name: &str) -> PathBuf {
 /// The `canonicalize` of a Windows path comes back as `\\?\C:\…` (or `\\?\UNC\host\share\…`):
 /// what to show people and to compare with the paths other programs give. This is
 /// that path in its usual form, `C:\…` (`\\host\share\…`). Left alone when it
-/// is not a drive or UNC path, or too long (260 characters) for the usual form.
+/// is not a drive or UNC path, too long (260 characters), or has a name the usual form
+/// would read as another (a trailing `.` or space, a device name).
 pub fn plain_str(path: &str) -> String {
     const MAX_PATH: usize = 260;
     let Some(rest) = path.strip_prefix(r"\\?\") else { return path.to_owned() };
@@ -65,7 +66,15 @@ pub fn plain_str(path: &str) -> String {
     } else {
         return path.to_owned();
     };
-    if plain.len() >= MAX_PATH { path.to_owned() } else { plain }
+    // The usual form re-reads a name that ends in `.` or a space, or is a device name
+    // (`CON`, `NUL`, `COM1`…), as another one: those keep the prefix that switches that off.
+    let odd = plain.split('\\').any(|c| {
+        let stem = c.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
+        let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+            || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit());
+        c.ends_with('.') || c.ends_with(' ') || device
+    });
+    if plain.len() >= MAX_PATH || odd { path.to_owned() } else { plain }
 }
 
 /// What Explorer takes to show a file selected: `explorer /select,"C:\a b\c.txt"`, as one
@@ -102,6 +111,11 @@ mod tests {
         for same in [r"\\?\Volume{1234}\x", r"\\?\C:", r"\\?\UNC\", r"C:\x", r"\\srv\share", "/home/a", ""] {
             assert_eq!(plain_str(same), same);
         }
+        // Names the usual form would read as other ones.
+        for odd in [r"\\?\C:\data\reports.", r"\\?\C:\data\x \y", r"\\?\C:\NUL", r"\\?\C:\a\com1.txt", r"\\?\UNC\srv\share\lpt9"] {
+            assert_eq!(plain_str(odd), odd);
+        }
+        assert_eq!(plain_str(r"\\?\C:\data\console.txt"), r"C:\data\console.txt");
         // Too long for the usual form to work.
         let long = format!(r"\\?\C:\{}", "a".repeat(300));
         assert_eq!(plain_str(&long), long);

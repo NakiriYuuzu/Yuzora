@@ -327,18 +327,18 @@ pub fn host_module() -> HostModule {
         .function("closeTunnel", |a| Ok(HostValue::Bool(manager().tunnels.close(id(a, 0)?))))
 }
 
-/// Notepad on `path`, not waited for: no shell is involved (the name is a file name, not
-/// command text), and nothing runs the file. A thread reaps it when the person closes it.
-fn open_in_notepad(path: &str) -> std::io::Result<()> {
+/// Notepad on `path`: no shell is involved (the name is a file name, not command text),
+/// and nothing runs the file.
+fn spawn_notepad(path: &str) -> std::io::Result<std::process::Child> {
     if !cfg!(windows) {
         return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Notepad is for Windows"));
     }
-    let mut child = std::process::Command::new("notepad.exe")
-        .arg(path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
+    std::process::Command::new("notepad.exe").arg(path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()
+}
+
+/// Notepad on `path`, not waited for: a thread reaps it when the person closes it.
+fn open_in_notepad(path: &str) -> std::io::Result<()> {
+    let mut child = spawn_notepad(path)?;
     std::thread::spawn(move || child.wait());
     Ok(())
 }
@@ -361,12 +361,12 @@ mod tests {
         let file = std::env::temp_dir().join(format!("yuzora notepad {}.txt", std::process::id()));
         std::fs::write(&file, "x").unwrap();
         let started = std::time::Instant::now();
-        open_in_notepad(file.to_str().unwrap()).unwrap();
+        let mut child = spawn_notepad(file.to_str().unwrap()).unwrap();
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         std::thread::sleep(std::time::Duration::from_secs(33));
-        let listed = std::process::Command::new("tasklist").args(["/FI", "IMAGENAME eq notepad.exe"]).output().unwrap();
-        let alive = String::from_utf8_lossy(&listed.stdout).contains("notepad.exe");
-        let _ = std::process::Command::new("taskkill").args(["/IM", "notepad.exe", "/F"]).output();
+        // Only the one this test started.
+        let alive = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
         assert!(alive, "Notepad should still be open after 33 s");
     }
 
