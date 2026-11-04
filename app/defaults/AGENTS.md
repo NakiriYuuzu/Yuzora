@@ -1038,7 +1038,7 @@ with these differences.
 <!-- yuzora:lane:L1:start -->
 ### The workspace shell
 
-- The tab bar is `yuzora-shell-tabs`: every Space's tabs, each with its Space's badge. Its "New pane" menu puts
+- The tab bar is `yuzora-shell-tabs`: the current Space's tabs only (the sidebar tells Spaces apart), each with its Space's badge. Its "New pane" menu puts
   a tool pane, a terminal or an agent right of or below the focused pane (`pane.split {direction, pane, mod, props}`).
   A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
 - A person's `space.new` with no arguments but `machine` (a key, a click, a menu, a mod's `run()`) opens the
