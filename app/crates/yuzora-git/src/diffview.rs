@@ -90,6 +90,11 @@ pub struct DiffSession {
     pub changes: Vec<Change>,
 }
 
+/// Joins a scoped read; a panic there is an error here, not a second panic.
+fn joined<T>(h: std::thread::ScopedJoinHandle<'_, GitResult<T>>) -> GitResult<T> {
+    h.join().unwrap_or_else(|_| Err(GitError::Other("a diff read panicked".into())))
+}
+
 /// `git cat-file --filters <spec>`, or None when it doesn't exist there.
 pub fn blob(repo: &Repo, spec: &str) -> GitResult<Option<Vec<u8>>> {
     let out = repo.run(Git::read(["cat-file", "--filters", spec]).max_output(MAX_SIDE + 1))?;
@@ -145,15 +150,50 @@ fn is_link(repo: &Repo, path: &str, index_mode: Option<&str>) -> bool {
 impl DiffSession {
     pub fn load(repo: Arc<Repo>, path: String, orig: Option<String>, mode: Mode) -> GitResult<DiffSession> {
         let before = orig.clone().unwrap_or_else(|| path.clone());
-        let index_entry = index_entry(&repo, &path)?;
+        // yuzora(perf): the reads don't depend on each other, so they go out together: on a
+        // machine each is a round trip, here each a process. They are judged in the order
+        // they used to run in (a failed index look first), so the same one fails.
+        let (index_entry, left, right, modes) = std::thread::scope(|s| {
+            let repo = &*repo;
+            let path = path.as_str();
+            let entry = crate::exec::spawn_scoped(s, move || index_entry(repo, path));
+            let blob_of = |spec: String| crate::exec::spawn_scoped(s, move || blob(repo, &spec));
+            let (left, right) = match &mode {
+                Mode::Unstaged => (blob_of(format!(":{path}")), crate::exec::spawn_scoped(s, move || Ok(worktree(repo, path)))),
+                Mode::Staged => (blob_of(format!("HEAD:{before}")), blob_of(format!(":{path}"))),
+                Mode::Commit(rev) => (blob_of(format!("{rev}^1:{before}")), blob_of(format!("{rev}:{path}"))),
+                Mode::Compare(a, b) => (blob_of(format!("{a}:{before}")), match b {
+                    Some(b) => blob_of(format!("{b}:{path}")),
+                    None => crate::exec::spawn_scoped(s, move || Ok(worktree(repo, path))),
+                }),
+            };
+            enum Mine {
+                Modes(bool),
+                HeadMode(String),
+            }
+            let want = match (&mode, &orig) {
+                (Mode::Unstaged, _) => Some(Mine::Modes(false)),
+                // A rename: HEAD's mode of the old path against the index's of the new.
+                (Mode::Staged, Some(o)) => Some(Mine::HeadMode(o.clone())),
+                (Mode::Staged, None) => Some(Mine::Modes(true)),
+                _ => None,
+            };
+            let modes = want.map(|w| match w {
+                Mine::Modes(staged) => crate::exec::spawn_scoped(s, move || changed_modes(repo, path, staged)),
+                Mine::HeadMode(o) => crate::exec::spawn_scoped(s, move || head_mode(repo, &o).map(|m| m.map(|m| (m, String::new())))),
+            });
+            (joined(entry), joined(left), joined(right), modes.map(joined))
+        });
+        let index_entry = index_entry?;
         let (left, right) = match &mode {
-            Mode::Unstaged => (if index_entry.is_some() { blob(&repo, &format!(":{path}"))? } else { None }, worktree(&repo, &path)),
-            Mode::Staged => (blob(&repo, &format!("HEAD:{before}"))?, blob(&repo, &format!(":{path}"))?),
-            Mode::Commit(rev) => (blob(&repo, &format!("{rev}^1:{before}"))?, blob(&repo, &format!("{rev}:{path}"))?),
-            Mode::Compare(a, b) => (blob(&repo, &format!("{a}:{before}"))?, match b {
-                Some(b) => blob(&repo, &format!("{b}:{path}"))?,
-                None => worktree(&repo, &path),
-            }),
+            // Nothing in the index: there is no left side to read, whatever it said.
+            Mode::Unstaged => (if index_entry.is_some() { left? } else { None }, right?),
+            _ => (left?, right?),
+        };
+        let modes = match (&mode, &orig, modes) {
+            (_, _, None) => None,
+            (Mode::Staged, Some(_), Some(m)) => m?.map(|(head, _)| head).zip(index_entry.as_ref().map(|e| e.0.clone())).filter(|(a, b)| a != b),
+            (_, _, Some(m)) => m?,
         };
         let too_large = [&left, &right].iter().any(|s| s.as_deref().is_some_and(is_too_large));
         let binary = !too_large && [&left, &right].iter().any(|s| s.as_ref().is_some_and(|b| b[..b.len().min(8000)].contains(&0)));
@@ -162,13 +202,6 @@ impl DiffSession {
         } else {
             let (l, r) = (left.as_deref().unwrap_or_default(), right.as_deref().unwrap_or_default());
             diff::diff_lines(&diff::lines(l), &diff::lines(r), Whitespace::Exact)
-        };
-        let modes = match (&mode, &orig) {
-            (Mode::Unstaged, _) => changed_modes(&repo, &path, false)?,
-            // A rename: HEAD's mode of the old path against the index's of the new.
-            (Mode::Staged, Some(o)) => head_mode(&repo, o)?.zip(index_entry.as_ref().map(|e| e.0.clone())).filter(|(a, b)| a != b),
-            (Mode::Staged, None) => changed_modes(&repo, &path, true)?,
-            _ => None,
         };
         static NEXT: AtomicU64 = AtomicU64::new(1);
         Ok(DiffSession { id: NEXT.fetch_add(1, Ordering::SeqCst), repo, path, orig, mode, left, right, index_entry, binary, too_large, modes, changes })
@@ -571,6 +604,8 @@ pub fn get(id: u64) -> GitResult<Arc<DiffSession>> {
 mod tests {
     use super::*;
     use crate::repo::testing::scratch;
+    #[cfg(unix)]
+    use crate::repo::testing::{most_at_once, timed_git};
 
     fn sel_all(h: &[usize]) -> Selection {
         Selection { hunks: h.iter().map(|h| (*h, None)).collect() }
@@ -870,5 +905,41 @@ mod tests {
         open(Mode::Unstaged).discard(&sel_all(&[0])).unwrap();
         assert_eq!(std::fs::metadata(&abs).unwrap().permissions().mode() & 0o111, 0, "discarding left it a program");
         assert_eq!(s.git(&["status", "--porcelain"]), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_diff_reads_its_sides_and_modes_together() {
+        let s = scratch();
+        s.commit("f.txt", "a\nb\n", "base");
+        s.write("f.txt", "a\nB\n");
+        // unstaged: the index look, the left side and the modes
+        let (repo, log) = timed_git(&s, None);
+        let d = DiffSession::load(repo, "f.txt".into(), None, Mode::Unstaged).unwrap();
+        assert_eq!((d.left.as_deref(), d.right.as_deref()), (Some(&b"a\nb\n"[..]), Some(&b"a\nB\n"[..])));
+        assert_eq!(most_at_once(&log), 3, "the reads ran one after the other");
+        // staged: the index look, both sides and the modes
+        s.git(&["add", "f.txt"]);
+        let (repo, log) = timed_git(&s, None);
+        let d = DiffSession::load(repo, "f.txt".into(), None, Mode::Staged).unwrap();
+        assert_eq!((d.left.as_deref(), d.right.as_deref()), (Some(&b"a\nb\n"[..]), Some(&b"a\nB\n"[..])));
+        assert_eq!(most_at_once(&log), 4, "the reads ran one after the other");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_read_is_not_an_answer() {
+        let s = scratch();
+        s.commit("f.txt", "a\n", "base");
+        s.write("f.txt", "b\n");
+        for (fail, mode) in [("ls-files", Mode::Unstaged), ("diff", Mode::Unstaged), ("ls-files", Mode::Staged)] {
+            let (repo, _) = timed_git(&s, Some(fail));
+            assert!(DiffSession::load(repo, "f.txt".into(), None, mode).is_err(), "{fail} failed and the diff was shown anyway");
+        }
+        // Nothing in the index: the left side is not asked for, and not missed.
+        s.write("new.txt", "x\n");
+        let (repo, _) = timed_git(&s, Some("cat-file"));
+        let d = DiffSession::load(repo, "new.txt".into(), None, Mode::Unstaged).unwrap();
+        assert_eq!((d.left, d.right.as_deref()), (None, Some(&b"x\n"[..])));
     }
 }

@@ -364,7 +364,9 @@ fn full(repo: &Repo) -> GitResult<()> {
     let cap = cap();
     // The reads don't depend on each other (and take no lock): side by side,
     // a full refresh costs its slowest command rather than their sum.
-    let (st, untracked, ignored_dirs, gitlinks) = std::thread::scope(|s| {
+    let (st, untracked, ignored_dirs, gitlinks, operation) = std::thread::scope(|s| {
+        // yuzora(perf): what is in progress (a machine: one more round trip) is read with the rest.
+        let operation = s.spawn(|| crate::repo::operation(repo));
         let untracked = s.spawn(|| -> GitResult<(BTreeSet<String>, Vec<String>)> {
             let out = whole(repo.run(untracked_cmd(cap))?, cap)?;
             Ok((split_z(&out).collect(), lossy_z(&out).collect()))
@@ -379,8 +381,9 @@ fn full(repo: &Repo) -> GitResult<()> {
         });
         let links = s.spawn(|| gitlinks(repo, cap));
         let st = repo.run(status_cmd(repo, cap)).and_then(|o| whole(o, cap)).map(|o| parse_porcelain_v2(&o));
-        (st, joined(untracked), joined(ignored), links.join().unwrap_or_default())
+        (st, joined(untracked), joined(ignored), links.join().unwrap_or_default(), operation.join())
     });
+    let operation = operation.map_err(|_| GitError::Other("a status read panicked".into()))?;
     let (st, (untracked, untracked_lossy), ignored_dirs) = (st?, untracked?, ignored_dirs?);
     let changed = st.entries.len();
     let (staged, unstaged, skipped) = if changed > NUMSTAT_LIMIT {
@@ -393,7 +396,6 @@ fn full(repo: &Repo) -> GitResult<()> {
         (staged?, unstaged?, false)
     };
     let lines = count_untracked(repo, untracked.iter());
-    let operation = crate::repo::operation(repo);
     let mut c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
     c.gitlinks = gitlinks;
     c.lossy = st.lossy.into_iter().chain(untracked_lossy).collect();

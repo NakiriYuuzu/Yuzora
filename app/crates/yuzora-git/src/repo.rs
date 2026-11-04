@@ -592,6 +592,39 @@ pub mod testing {
         }
     }
 
+    /// A repo whose `git` is a stand-in that notes when each call starts and
+    /// ends, takes a moment, and runs the real one (`fail`: exits 7 for that command).
+    #[cfg(unix)]
+    pub fn timed_git(s: &Scratch, fail: Option<&str>) -> (Arc<Repo>, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = s.dir.path().join("shim");
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls.log");
+        let real = String::from_utf8(std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap().stdout).unwrap().trim().to_owned();
+        let body = "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = \"FAIL\" ] && exit 7; done\necho s >> 'LOG'\nsleep 0.4\necho e >> 'LOG'\nexec 'REAL' \"$@\"\n".replace("FAIL", fail.unwrap_or("--no-such-argument")).replace("LOG", &log.display().to_string()).replace("REAL", &real);
+        let shim = dir.join("git");
+        std::fs::write(&shim, body).unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let place = Place { git: shim.to_string_lossy().into_owned(), ..s.repo.place.clone() };
+        let git_dir = s.repo.git_dir.clone();
+        (Arc::new(Repo::new(s.repo.id.clone(), place, git_dir.clone(), git_dir)), log)
+    }
+
+    /// How many of the calls in the log ran at the same time at most.
+    #[cfg(unix)]
+    pub fn most_at_once(log: &std::path::Path) -> usize {
+        let (mut now, mut most) = (0usize, 0usize);
+        for l in std::fs::read_to_string(log).unwrap_or_default().lines() {
+            if l == "s" {
+                now += 1;
+                most = most.max(now);
+            } else {
+                now = now.saturating_sub(1);
+            }
+        }
+        most
+    }
+
     /// An empty repo on branch `main` with a fixed identity; not watched.
     pub fn scratch() -> Scratch {
         let dir = tempfile::tempdir().unwrap();
