@@ -95,7 +95,7 @@ mod tests {
     fn remote_run_starts_programs_without_a_console_window() {
         probe::own_console();
         let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
-        let seen = |out: String| out.lines().find_map(|l| l.strip_prefix("CONSOLE=").map(str::to_owned));
+        let seen = |out: String| ["some", "none"].into_iter().find(|v| out.contains(&format!("CONSOLE={v}"))).map(str::to_owned);
         let by_hand = Command::new(&exe).args(probe::ARGS).output().unwrap();
         assert_eq!(seen(String::from_utf8_lossy(&by_hand.stdout).into_owned()).as_deref(), Some("some"), "control: {by_hand:?}");
         let out = crate::remote::run(&crate::remote::ExecRequest::new(exe, probe::ARGS)).unwrap();
