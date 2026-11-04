@@ -123,3 +123,21 @@ popover 由 `herdr-app do yuzora-perf.toggle` 打開。排序切換與關閉按�
 - popover 約 640px 高（zoom 1.0）。視窗比這更矮時，popover 會貼齊視窗上緣，下半部可能蓋到 chip。
 - 已經有 layout 的 app home 不會自動出現 chip（見「放置」）。
 - 一個行程被 re-parent 離開它的樹（Windows 的 re-parent、自己 daemon 化的輔助程式）就不會再被計入。
+
+## Windows 效能（beta.3）
+
+2026-11-04 在 GitHub `windows-2022` 實測（git 2.56，每項 20 次的中位數）。數字與探針在 `.yuzora-lanes/beta2-research/perf-a-notes.md`。
+
+| 項目 | 實測 |
+| --- | --- |
+| `git --version`／300 檔 repo 的 `git status` | 15 ms／20 ms |
+| 同樣的呼叫經 `yuzora_core::remote::run` | 52 ms／52 ms（pipe 輪詢下限） |
+| `git_trust` 信任掃描 | 256–306 ms |
+| Job Object＋執行緒快照（每個本機 git） | 6 ms |
+| PowerShell 列一個資料夾（冷啟動） | 227 ms |
+
+已做：
+
+- **檔案側欄**（`yuzora-sidebar-files`）：資料夾有 watcher 時，10 秒計時器改成每 60 秒才完整重讀一次（只當安全網）；沒有 watcher（遠端、home、`/`）仍是 10 秒。
+- **資料夾 watcher**（`app/src/files.rs`）：macOS 與 Windows 的 watcher 遞迴監看整個資料夾，build 寫 `target/`、`node_modules/` 會一直喚醒側欄與 panel。現在事件會先用根目錄的 `.gitignore` 與 `.git/info/exclude` 過濾（只讀檔，不執行任何程式，所以不需要資料夾信任）。`.gitignore` 本身、`.git/` 底下的事件不過濾；watcher 掉事件（rescan）不過濾；規則檔改變後下一批就重讀。Linux 本來就用 git 修剪被忽略的資料夾，不變。
+  - 限制：只讀根目錄的規則，子資料夾的 `.gitignore` 與全域 ignore 不算。被 `.gitignore` 列出但已被 git 追蹤的檔案，變動不會觸發 watcher 事件，最多 60 秒後由安全網計時器反映（Linux 的 `git ls-files --others` 會區分，這裡不做）。

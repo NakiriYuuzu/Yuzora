@@ -13,6 +13,8 @@ import { readGit } from "./git-state.js";
 
 const ME = "yuzora-sidebar-files";
 const PER_FOLDER = 2000, ROWS = 20000;
+// yuzora(perf): with a live watch the full re-read comes this seldom.
+const WATCHED_RELOAD_MS = 60000;
 const REQUEST = "yuzora.files.request", REFRESH = "yuzora.files.refresh";
 
 // Where the tree is: the focused pane's folder, on its space's machine. A tool
@@ -53,7 +55,7 @@ export default class FilesSidebar extends View {
     this.here = null;
     this.relocate(cx);
     this.countUnsaved();
-    cx.timer.every(10000, cx => { this.reload(cx, true); this.countUnsaved(); });
+    cx.timer.every(10000, cx => { this.tick(cx); this.countUnsaved(); });
   }
 
   // The mode bar's badge: unsaved documents. The editor panes keep it current;
@@ -87,6 +89,15 @@ export default class FilesSidebar extends View {
     return this.here === here;
   }
 
+  // The 10 s timer. A folder with a live watch is read again on its events;
+  // the timer is only the safety net (a tracked file that .gitignore also names
+  // is not watched on macOS and Windows), so it comes slowly there.
+  tick(cx) {
+    const here = this.here;
+    if (here?.root && this.watching === here.root && Date.now() - (here.loadedAt ?? 0) < WATCHED_RELOAD_MS) return;
+    this.reload(cx, true);
+  }
+
   // `timed`: the 10 s timer's, which a watched folder doesn't need for search.
   reload(cx, timed = false) {
     const here = this.here;
@@ -107,7 +118,7 @@ export default class FilesSidebar extends View {
           if (folder && !this.open.has(folder)) continue;
           await this.loadFolder(folder, here).catch(e => { if (!folder) throw e; this.open.delete(folder); });
         }
-        here.error = null;
+        here.error = null; here.loadedAt = Date.now();
         // An open search follows the files too (the new root's, after a move).
         if (this.searching && !(timed && this.watching === here.root)) this.search(cx, !timed);
         this.watch(here, cx);
