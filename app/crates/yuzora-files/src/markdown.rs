@@ -725,75 +725,110 @@ mod tests {
         assert_eq!(IMAGE_WORKERS, crate::svg::CONCURRENT);
     }
 
-    /// Runs `read_images` over `names` (each takes `ms(name)`), with the time
-    /// every answer came at, in the order they came.
-    fn timed(
+    /// A door the test opens by what it sees happen, never by the clock; a
+    /// reader held at it gives up after `GATE_LIMIT`, which only a bug reaches.
+    struct Gate(Mutex<bool>, std::sync::Condvar);
+
+    const GATE_LIMIT: Duration = Duration::from_secs(10);
+
+    impl Gate {
+        fn new() -> Self {
+            Gate(Mutex::new(false), std::sync::Condvar::new())
+        }
+        fn open(&self) {
+            *self.0.lock().unwrap() = true;
+            self.1.notify_all();
+        }
+        /// True when it was opened, false when it gave up.
+        fn pass(&self) -> bool {
+            let (open, _) = self
+                .1
+                .wait_timeout_while(self.0.lock().unwrap(), GATE_LIMIT, |open| !*open)
+                .unwrap();
+            *open
+        }
+    }
+
+    /// Runs `read_images` over `names`. A reader of a name `held` says yes to
+    /// waits at the gate (and notes whether it was let through); `done` sees
+    /// every answer, in order, and may open the gate.
+    fn gated(
         names: &[&str],
         workers: usize,
-        ms: impl Fn(&str) -> u64 + Sync,
-    ) -> Vec<(String, u128)> {
+        held: impl Fn(&str) -> bool + Sync,
+        done: impl Fn(&str, usize, &Gate) + Sync,
+    ) -> (Vec<String>, Vec<(String, bool)>) {
         let wanted: Vec<_> = names
             .iter()
             .map(|n| (PathBuf::from(format!("/x/{n}")), None))
             .collect();
-        let answers = Mutex::new(Vec::new());
-        let started = Instant::now();
+        let (gate, answers, passed) = (Gate::new(), Mutex::new(Vec::new()), Mutex::new(Vec::new()));
+        let name_of = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
         read_images(
             wanted,
             &Cancel::default(),
             workers,
             |path, _, _| {
-                let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                std::thread::sleep(Duration::from_millis(ms(&name)));
+                let name = name_of(path);
+                if held(&name) {
+                    let let_through = gate.pass();
+                    passed.lock().unwrap().push((name, let_through));
+                }
                 Found::Nothing
             },
             |path, _| {
-                let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                answers
-                    .lock()
-                    .unwrap()
-                    .push((name, started.elapsed().as_millis()));
+                let name = name_of(&path);
+                let mut answers = answers.lock().unwrap();
+                answers.push(name.clone());
+                done(&name, answers.len(), &gate);
             },
         );
-        answers.into_inner().unwrap()
+        (answers.into_inner().unwrap(), passed.into_inner().unwrap())
     }
 
     #[test]
     fn images_are_read_a_few_at_once_and_answered_as_each_is_done() {
-        let answers = timed(&["0.svg", "1.svg", "2.svg", "3.svg"], IMAGE_WORKERS, |n| {
-            if n == "0.svg" { 800 } else { 100 }
-        });
-        assert_eq!(answers.len(), 4);
-        // Each is answered when it is done, not when all are: the quick ones
-        // are in long before the slow one is.
-        for (name, at) in &answers {
-            if name != "0.svg" {
-                assert!(*at < 600, "{name} waited for the slow one: {answers:?}");
-            }
-        }
-        // And two run at once: one after another it would take 1100 ms.
-        assert!(
-            answers.iter().map(|a| a.1).max().unwrap() < 1000,
-            "{answers:?}"
+        // The slow one is let through only once the three quick ones have been
+        // answered: that needs a second reader (workers) and each answer given
+        // as it is read, not after all are.
+        let (answers, passed) = gated(
+            &["0.svg", "1.svg", "2.svg", "3.svg"],
+            IMAGE_WORKERS,
+            |n| n == "0.svg",
+            |_, count, gate| {
+                if count == 3 {
+                    gate.open();
+                }
+            },
         );
+        assert_eq!(passed, [("0.svg".to_owned(), true)], "{answers:?}");
+        assert_eq!(answers.len(), 4);
+        assert_eq!(answers[3], "0.svg");
     }
 
     #[test]
     fn a_bitmap_is_not_kept_waiting_by_svgs_that_are_slow_to_draw() {
+        // Every SVG is held until the bitmap has been answered: with the
+        // bitmap behind them, both readers would be stuck and it never is.
         let names = [
             "a.svg", "b.svg", "c.svg", "d.svg", "e.svg", "f.svg", "p.png",
         ];
-        let answers = timed(&names, IMAGE_WORKERS, |n| {
-            if n.ends_with("svg") { 300 } else { 10 }
-        });
-        let at = |name: &str| answers.iter().find(|a| a.0 == name).unwrap().1;
-        let first_svg = answers
-            .iter()
-            .filter(|a| a.0.ends_with("svg"))
-            .map(|a| a.1)
-            .min()
-            .unwrap();
-        assert!(at("p.png") < first_svg, "{answers:?}");
+        let (answers, passed) = gated(
+            &names,
+            IMAGE_WORKERS,
+            |n| n.ends_with("svg"),
+            |name, _, gate| {
+                if name == "p.png" {
+                    gate.open();
+                }
+            },
+        );
+        assert_eq!(answers[0], "p.png", "{answers:?}");
+        assert!(
+            passed.iter().all(|(_, let_through)| *let_through),
+            "{passed:?}"
+        );
+        assert_eq!(passed.len(), 6);
     }
 
     /// Wiring that a unit test of the helpers cannot see (the tests run
