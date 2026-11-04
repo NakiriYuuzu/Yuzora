@@ -3946,6 +3946,7 @@ dependencies = [
  "gpui-pre-wgpu",
  "gpui-pre-windows",
  "gpui-shell",
+ "ignore",
  "image",
  "libc",
  "minisign-verify",
