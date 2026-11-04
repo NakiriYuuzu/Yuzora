@@ -101,6 +101,13 @@ pub fn blob(repo: &Repo, spec: &str) -> GitResult<Option<Vec<u8>>> {
     Ok(out.ok().then_some(out.stdout))
 }
 
+/// The index's text of `path` as `oid` names it (the entry [`index_entry`] read), with
+/// the work tree's conversions for that path, as `cat-file --filters :path` gives.
+fn blob_by_id(repo: &Repo, path: &str, oid: &str) -> GitResult<Option<Vec<u8>>> {
+    let out = repo.run(Git::read(["cat-file", "--filters"]).arg(format!("--path={path}")).arg(oid).max_output(MAX_SIDE + 1))?;
+    Ok(out.ok().then_some(out.stdout))
+}
+
 /// The modes on each side of an unstaged (index → work tree) or staged
 /// (HEAD → index) diff, when git sees them differ (`core.fileMode` too).
 fn changed_modes(repo: &Repo, path: &str, staged: bool) -> GitResult<Option<(String, String)>> {
@@ -150,21 +157,25 @@ fn is_link(repo: &Repo, path: &str, index_mode: Option<&str>) -> bool {
 impl DiffSession {
     pub fn load(repo: Arc<Repo>, path: String, orig: Option<String>, mode: Mode) -> GitResult<DiffSession> {
         let before = orig.clone().unwrap_or_else(|| path.clone());
-        // yuzora(perf): the reads don't depend on each other, so they go out together: on a
+        // yuzora(perf): the reads that don't depend on each other go out together: on a
         // machine each is a round trip, here each a process. They are judged in the order
         // they used to run in (a failed index look first), so the same one fails.
+        // The index side is the exception: it is read by the object id the index entry
+        // named, so the text and the id staging later checks are one snapshot (a
+        // `:path` read next to the entry could meet another client's `git add` between).
         let (index_entry, left, right, modes) = std::thread::scope(|s| {
             let repo = &*repo;
             let path = path.as_str();
             let entry = crate::exec::spawn_scoped(s, move || index_entry(repo, path));
-            let blob_of = |spec: String| crate::exec::spawn_scoped(s, move || blob(repo, &spec));
-            let (left, right) = match &mode {
-                Mode::Unstaged => (blob_of(format!(":{path}")), crate::exec::spawn_scoped(s, move || Ok(worktree(repo, path)))),
-                Mode::Staged => (blob_of(format!("HEAD:{before}")), blob_of(format!(":{path}"))),
+            let blob_of = |spec: String| Some(crate::exec::spawn_scoped(s, move || blob(repo, &spec)));
+            let worktree_of = || Some(crate::exec::spawn_scoped(s, move || Ok(worktree(repo, path))));
+            let (mut left, mut right) = match &mode {
+                Mode::Unstaged => (None, worktree_of()),
+                Mode::Staged => (blob_of(format!("HEAD:{before}")), None),
                 Mode::Commit(rev) => (blob_of(format!("{rev}^1:{before}")), blob_of(format!("{rev}:{path}"))),
                 Mode::Compare(a, b) => (blob_of(format!("{a}:{before}")), match b {
                     Some(b) => blob_of(format!("{b}:{path}")),
-                    None => crate::exec::spawn_scoped(s, move || Ok(worktree(repo, path))),
+                    None => worktree_of(),
                 }),
             };
             enum Mine {
@@ -182,14 +193,22 @@ impl DiffSession {
                 Mine::Modes(staged) => crate::exec::spawn_scoped(s, move || changed_modes(repo, path, staged)),
                 Mine::HeadMode(o) => crate::exec::spawn_scoped(s, move || head_mode(repo, &o).map(|m| m.map(|m| (m, String::new())))),
             });
-            (joined(entry), joined(left), joined(right), modes.map(joined))
+            let entry = joined(entry);
+            // Nothing in the index (or no look at it): there is no index side to read.
+            if let Ok(Some((_, oid))) = &entry {
+                let oid = oid.clone();
+                let from_index = Some(crate::exec::spawn_scoped(s, move || blob_by_id(repo, path, &oid)));
+                match &mode {
+                    Mode::Unstaged => left = from_index,
+                    Mode::Staged => right = from_index,
+                    _ => {}
+                }
+            }
+            let side = |h: Option<std::thread::ScopedJoinHandle<'_, GitResult<Option<Vec<u8>>>>>| h.map_or(Ok(None), joined);
+            (entry, side(left), side(right), modes.map(joined))
         });
         let index_entry = index_entry?;
-        let (left, right) = match &mode {
-            // Nothing in the index: there is no left side to read, whatever it said.
-            Mode::Unstaged => (if index_entry.is_some() { left? } else { None }, right?),
-            _ => (left?, right?),
-        };
+        let (left, right) = (left?, right?);
         let modes = match (&mode, &orig, modes) {
             (_, _, None) => None,
             (Mode::Staged, Some(_), Some(m)) => m?.map(|(head, _)| head).zip(index_entry.as_ref().map(|e| e.0.clone())).filter(|(a, b)| a != b),
@@ -917,13 +936,52 @@ mod tests {
         let (repo, log) = timed_git(&s, None);
         let d = DiffSession::load(repo, "f.txt".into(), None, Mode::Unstaged).unwrap();
         assert_eq!((d.left.as_deref(), d.right.as_deref()), (Some(&b"a\nb\n"[..]), Some(&b"a\nB\n"[..])));
-        assert_eq!(most_at_once(&log), 3, "the reads ran one after the other");
+        assert_eq!(most_at_once(&log), 2, "the reads ran one after the other");
         // staged: the index look, both sides and the modes
         s.git(&["add", "f.txt"]);
         let (repo, log) = timed_git(&s, None);
         let d = DiffSession::load(repo, "f.txt".into(), None, Mode::Staged).unwrap();
         assert_eq!((d.left.as_deref(), d.right.as_deref()), (Some(&b"a\nb\n"[..]), Some(&b"a\nB\n"[..])));
-        assert_eq!(most_at_once(&log), 4, "the reads ran one after the other");
+        assert_eq!(most_at_once(&log), 3, "the reads ran one after the other");
+    }
+
+    /// Another client stages the file between the index look and the index text:
+    /// what the session holds must still be one snapshot (the text of the entry's id).
+    #[cfg(unix)]
+    #[test]
+    fn the_index_text_is_the_entrys_even_when_another_client_stages_in_between() {
+        use std::os::unix::fs::PermissionsExt;
+        for mode in [Mode::Unstaged, Mode::Staged] {
+            let s = scratch();
+            s.commit("f.txt", "head\n", "base");
+            s.write("f.txt", "one\n");
+            s.git(&["add", "f.txt"]);
+            s.write("f.txt", "two\n");
+            let dir = s.dir.path().join("race");
+            std::fs::create_dir_all(&dir).unwrap();
+            let real = String::from_utf8(std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap().stdout).unwrap().trim().to_owned();
+            // After `ls-files` has answered, the other client stages "two"; the text read waits for that.
+            let body = r#"#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    ls-files) 'REAL' "$@" > "$0.out"; 'REAL' -C 'ROOT' add f.txt; cat "$0.out"; exit 0 ;;
+    cat-file) sleep 0.5 ;;
+  esac
+done
+exec 'REAL' "$@"
+"#;
+            let shim = dir.join("git");
+            std::fs::write(&shim, body.replace("REAL", &real).replace("ROOT", s.root())).unwrap();
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let place = crate::exec::Place { git: shim.to_string_lossy().into_owned(), ..s.repo.place.clone() };
+            let git_dir = s.repo.git_dir.clone();
+            let repo = Arc::new(Repo::new(s.repo.id.clone(), place, git_dir.clone(), git_dir));
+            let d = DiffSession::load(repo, "f.txt".into(), None, mode).unwrap();
+            let oid = d.index_entry.as_ref().unwrap().1.clone();
+            let side = if matches!(d.mode, Mode::Unstaged) { &d.left } else { &d.right };
+            assert_eq!(s.git(&["cat-file", "blob", &oid]), "one\n", "the entry is the one from before the other client staged");
+            assert_eq!(side.as_deref(), Some(&b"one\n"[..]), "the session holds text that is not the entry's");
+        }
     }
 
     #[cfg(unix)]

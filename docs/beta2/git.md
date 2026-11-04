@@ -423,7 +423,7 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 
 在另一台機器上，每個 git 或檔案讀取都是一次 `hc exec` 往返（WSL 上還要啟動 `wsl.exe`）。下面三處原本循序、彼此不相依的讀取，現在用 `thread::scope` 同時發出，每個呼叫仍各自走 `exec::run`（trust guard、逾時、輸出上限、取消都不變），結果依原本的順序判斷（同一個錯誤先被回報）：
 
-- `DiffSession::load`：index 項目、左右兩側（`cat-file`／工作樹）、mode 比對。unstaged 遠端 5 輪 → 1 輪。unstaged 在 index 沒有該檔時不要左側，這時就算 `cat-file` 那一路出錯也不算（原本根本不會跑）。
+- `DiffSession::load`：index 項目、HEAD／commit 那一側、工作樹、mode 比對一起發出。**index 那一側例外**：等 index 項目回來之後，用它的 object id 讀（`cat-file --filters --path=<path> <oid>`），不用 `:path`，這樣 session 裡的內容和之後 `check_index` 檢查的 id 是同一份快照（另一個 git client 在兩次讀取之間 `git add` 時，不會拿到舊 id 配新內容而蓋掉對方 stage 的東西）。unstaged 遠端 5 輪 → 2 輪。unstaged 在 index 沒有該檔時不要左側，這時就算 `cat-file` 那一路出錯也不算（原本根本不會跑）。
 - `log::read_refs`：`for-each-ref`、`symbolic-ref`、`rev-parse`。3 輪 → 1 輪。`rev-parse`／`symbolic-ref` 非零（unborn）仍不是錯誤。
 - `status::full` 的 `operation()`（遠端要 `ls .git`，rebase 中還有逐檔 `cat`）搬進第一輪的平行區，少一輪。
 
