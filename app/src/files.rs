@@ -223,6 +223,60 @@ fn collect_event(event: notify::Event, root: &Path, directories: &HashSet<PathBu
     refresh
 }
 
+/// yuzora(perf): what the work tree's own `.gitignore` and `.git/info/exclude`
+/// say is not worth a reload: whatever lies inside an ignored folder (a build
+/// writing `target/` or `node_modules/`). Ignored files themselves still count.
+/// Only files are read, no program runs, so it needs no trust. FSEvents and
+/// Windows watch the whole tree; Linux prunes ignored folders instead.
+struct Ignores(Option<ignore::gitignore::Gitignore>);
+
+/// Whether the ignore rules may be different now: a rules file was named, or the
+/// backend says it lost events (a rescan), so one may have changed unseen.
+fn rules_may_have_changed(event: &notify::Event) -> bool {
+    event.need_rescan() || event.paths.iter().any(|p| p.file_name().is_some_and(|n| n == ".gitignore" || n == "exclude"))
+}
+
+impl Ignores {
+    fn read(root: &Path) -> Self {
+        if cfg!(target_os = "linux") {
+            return Self(None);
+        }
+        let mut b = ignore::gitignore::GitignoreBuilder::new(root);
+        // Git's own defaults on these platforms (core.ignorecase is not read).
+        let _ = b.case_insensitive(true);
+        let mut any = false;
+        // The later file wins: .gitignore over info/exclude, as in git. A link is not
+        // followed (git 2.32 and later doesn't read one in the work tree).
+        for file in [root.join(".git").join("info").join("exclude"), root.join(".gitignore")] {
+            if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+                any |= b.add(file).is_none();
+            }
+        }
+        Self(if any { b.build().ok() } else { None })
+    }
+
+    fn is_ignored(&self, path: &Path) -> bool {
+        let Some(g) = &self.0 else { return false };
+        // The rules themselves and anything in .git still count: panels read them.
+        if path.components().any(|c| c.as_os_str() == ".git") || path.file_name().is_some_and(|n| n == ".gitignore") {
+            return false;
+        }
+        // Only what lies inside an ignored folder (target/, node_modules/), as on Linux:
+        // an ignored file itself (.env, build.log) is still reported, for the editor
+        // that watches its folder and the tree that lists it.
+        path.starts_with(g.path()) && path.parent().is_some_and(|dir| dir.starts_with(g.path()) && dir != g.path() && g.matched_path_or_any_parents(dir, true).is_ignore())
+    }
+
+    /// The event without the paths that are ignored; None when none is left.
+    fn keep(&self, mut event: notify::Event) -> Option<notify::Event> {
+        if self.0.is_none() || event.need_rescan() {
+            return Some(event);
+        }
+        event.paths.retain(|p| !self.is_ignored(p));
+        (!event.paths.is_empty()).then_some(event)
+    }
+}
+
 fn start_folder(root: &Path) -> Result<std::sync::mpsc::Sender<()>, String> {
     let mut directories = watch_directories(root).inspect_err(|e| tracing::warn!("{e}"))?;
     let (tx, events) = std::sync::mpsc::sync_channel(1024);
@@ -241,6 +295,7 @@ fn start_folder(root: &Path) -> Result<std::sync::mpsc::Sender<()>, String> {
         watcher.watch(path, folder_watch_mode()).map_err(|e| format!("cannot watch {}: {e}", path.display()))?;
     }
     let root = root.to_path_buf();
+    let mut ignores = Ignores::read(&root);
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
         'watching: loop {
@@ -251,12 +306,17 @@ fn start_folder(root: &Path) -> Result<std::sync::mpsc::Sender<()>, String> {
             let mut pending = HashSet::new();
             let mut refresh = false;
             let mut removed = HashSet::new();
+            let mut reread = false;
             while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
                 match events.recv_timeout(left) {
                     Ok(Ok(event)) => {
+                        // yuzora(perf): the rules changed: read them again after this batch.
+                        reread |= rules_may_have_changed(&event);
+                        let Some(event) = ignores.keep(event) else { continue };
                         refresh |= collect_event(event, &root, &directories, &mut pending, &mut removed);
                     }
                     Ok(Err(_)) => {
+                        reread = true;
                         removed.extend(directories.iter().cloned());
                         refresh = true;
                         pending.clear();
@@ -266,10 +326,15 @@ fn start_folder(root: &Path) -> Result<std::sync::mpsc::Sender<()>, String> {
                 }
             }
             if overflow.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                // Events were lost: the rules may be among what changed.
+                reread = true;
                 removed.extend(directories.iter().cloned());
                 refresh = true;
                 pending.clear();
                 pending.insert(root.to_string_lossy().into_owned());
+            }
+            if reread {
+                ignores = Ignores::read(&root);
             }
             if cfg!(target_os = "linux") && refresh {
                 // Rescan off the notify callback thread: adding watches blocks on it.
@@ -404,6 +469,147 @@ mod tests {
                 return;
             }
         }
+    }
+
+    /// yuzora(perf): a build writing into folders .gitignore names must not
+    /// wake the panels on macOS and Windows; everything else still does.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn ignored_paths_do_not_reach_the_panels_but_their_rules_and_git_do() {
+        let root = test_repo("ignores-keep");
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n*.log\n").unwrap();
+        let ig = Ignores::read(&root);
+        let ev = |paths: &[&str]| notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Any)).add_path(under(&root, paths[0]));
+        assert!(ig.keep(ev(&["target/debug/app"])).is_none());
+        assert!(ig.keep(ev(&["target"])).is_some());
+        // An ignored file is reported: an editor watching the folder has it open.
+        assert!(ig.keep(ev(&["build.log"])).is_some());
+        assert!(ig.keep(ev(&[".env"])).is_some());
+        assert!(ig.keep(ev(&["src/main.rs"])).is_some());
+        assert!(ig.keep(ev(&[".gitignore"])).is_some());
+        assert!(ig.keep(ev(&[".git/HEAD"])).is_some());
+        // Without rules, or when the watcher lost events, nothing is dropped.
+        let none = Ignores(None);
+        assert!(none.keep(ev(&["target/debug/app"])).is_some());
+        let lost = notify::Event::new(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan);
+        assert!(ig.keep(lost).is_some());
+    }
+
+    /// `rel` ("a/b") below `root`, one component at a time (a `/` is not a separator everywhere).
+    #[cfg(not(target_os = "linux"))]
+    fn under(root: &Path, rel: &str) -> PathBuf {
+        rel.split('/').fold(root.to_path_buf(), |p, part| p.join(part))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn kept(root: &Path, ig: &Ignores, rel: &str) -> bool {
+        ig.keep(notify::Event::new(notify::EventKind::Modify(notify::event::ModifyKind::Any)).add_path(under(root, rel))).is_some()
+    }
+
+    /// yuzora(perf): rules that would hide too much are read the way git reads them.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn ignore_rules_hide_only_what_git_would_hide() {
+        let root = test_repo("ignores-rules");
+        for d in ["src", "gen", ".venv/lib"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        // `*` (a venv's own .gitignore): the folder's direct files still count.
+        std::fs::write(root.join(".gitignore"), "*\n").unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, "pyvenv.cfg"));
+        assert!(!kept(&root, &ig, ".venv/lib/x.py"));
+        // An ignored file below the root is a file, not a folder: reported.
+        std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, "src/debug.log"));
+        // `.*` names .git too, but what git writes there is what panels read.
+        std::fs::write(root.join(".gitignore"), ".*\n").unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, ".git/index"));
+        assert!(!kept(&root, &ig, ".venv/lib/x.py"));
+        // .gitignore wins over info/exclude, as in git.
+        std::fs::write(root.join(".git/info/exclude"), "gen/\n").unwrap();
+        std::fs::write(root.join(".gitignore"), "!gen/\n").unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, "gen/a.txt"));
+        // Case follows the platform's default for core.ignorecase.
+        std::fs::write(root.join(".gitignore"), "/*\n!/Src/\n").unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, "src/a.rs"));
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn a_linked_gitignore_is_not_read() {
+        let root = test_repo("ignores-link");
+        std::fs::create_dir_all(root.join("gen")).unwrap();
+        let rules = root.join("rules-elsewhere");
+        std::fs::write(&rules, "gen/\n").unwrap();
+        std::os::unix::fs::symlink(&rules, root.join(".gitignore")).unwrap();
+        let ig = Ignores::read(&root);
+        assert!(kept(&root, &ig, "gen/a.txt"));
+    }
+
+    /// Editing .gitignore changes what is skipped from the next batch on.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn new_rules_apply_once_gitignore_is_edited() {
+        let root = test_repo("ignores-reread");
+        std::fs::create_dir_all(root.join("gen")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        install_watch(&root);
+        std::thread::sleep(BATCH * 3);
+        std::fs::write(root.join(".gitignore"), "gen/\n").unwrap();
+        wait_for_change(&root, &root.join(".gitignore"));
+        std::thread::sleep(BATCH * 3);
+        std::fs::write(root.join("gen/a.txt"), "x").unwrap();
+        std::fs::write(root.join("src/a.rs"), "x").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut seen = Vec::new();
+        while !invalidates(&seen, &root.join("src/a.rs")) {
+            seen.extend(block_on_until(next_change(root.to_string_lossy().into_owned()), deadline).unwrap());
+        }
+        assert!(!seen.iter().any(|p| p.contains("gen")), "{seen:?}");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn the_rules_are_read_again_when_events_were_lost_or_a_rules_file_changed() {
+        let ev = |kind| notify::Event::new(kind);
+        let any = notify::EventKind::Modify(notify::event::ModifyKind::Any);
+        assert!(rules_may_have_changed(&ev(notify::EventKind::Other).set_flag(notify::event::Flag::Rescan)));
+        assert!(rules_may_have_changed(&ev(any).add_path(PathBuf::from("/r/.gitignore"))));
+        assert!(rules_may_have_changed(&ev(any).add_path(PathBuf::from("/r/.git/info/exclude"))));
+        assert!(!rules_may_have_changed(&ev(any).add_path(PathBuf::from("/r/src/a.rs"))));
+    }
+
+    /// yuzora(perf): through the real watcher, a burst into an ignored folder
+    /// is never reported, and a change that follows it still is.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn a_build_in_an_ignored_folder_is_not_reported_but_ignored_files_are() {
+        let root = test_repo("ignores-live");
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n.env\n*.log\n").unwrap();
+        install_watch(&root);
+        std::thread::sleep(BATCH * 3);
+        for i in 0..20 {
+            std::fs::write(root.join(format!("target/o{i}")), "x").unwrap();
+        }
+        std::fs::write(root.join("src/a.rs"), "x").unwrap();
+        // Ignored files in the watched folder itself: an editor on .env is told.
+        std::fs::write(root.join(".env"), "x").unwrap();
+        std::fs::write(root.join("x.log"), "x").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut seen = Vec::new();
+        while !(invalidates(&seen, &root.join("src/a.rs")) && invalidates(&seen, &root.join(".env")) && invalidates(&seen, &root.join("x.log"))) {
+            seen.extend(block_on_until(next_change(root.to_string_lossy().into_owned()), deadline).unwrap());
+        }
+        assert!(!seen.iter().any(|p| p.contains("target")), "{seen:?}");
     }
 
     #[cfg(target_os = "linux")]

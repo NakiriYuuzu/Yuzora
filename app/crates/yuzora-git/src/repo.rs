@@ -664,6 +664,7 @@ while [ $# -gt 0 ] && [ "$1" != -- ]; do
   esac
 done
 shift
+printf '%s\n' "$cwd" >> "$0.calls"
 out=$(mktemp) err=$(mktemp)
 if [ "$stdin" = 1 ]; then (cd "$cwd" && "$@") >"$out" 2>"$err"; else (cd "$cwd" && "$@") </dev/null >"$out" 2>"$err"; fi
 code=$?
@@ -678,6 +679,14 @@ rm -f "$out" "$err"
         yuzora_core::remote::set_hc_program(move || hc.clone());
         let place = Place { on: Some("test-machine".into()), write_lock: Arc::default(), ..s.repo.place.clone() };
         Arc::new(Repo::new(repo_id(Some("test-machine"), &place.root), place, s.repo.git_dir.clone(), s.repo.common_dir.clone()))
+    }
+
+    /// How many `hc exec` calls [`on_machine`]'s stand-in has answered in
+    /// `cwd` so far (each is a round trip to the machine).
+    #[cfg(unix)]
+    pub fn hc_calls_in(cwd: &str) -> usize {
+        let log = std::env::temp_dir().join(format!("yuzora-git-test-hc-{}.calls", std::process::id()));
+        std::fs::read_to_string(log).map(|t| t.lines().filter(|l| *l == cwd).count()).unwrap_or(0)
     }
 }
 
