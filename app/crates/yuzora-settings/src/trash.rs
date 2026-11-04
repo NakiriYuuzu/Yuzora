@@ -206,6 +206,8 @@ mod tests {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
+    // The freedesktop trash is Unix's; its record holds a `/` path (Windows paths use `\`).
+    #[cfg(unix)]
     #[test]
     fn freedesktop_trash_keeps_both_of_two_same_names() {
         let d = std::env::temp_dir().join(format!("yuzora-trash-{}", std::process::id()));
