@@ -9,7 +9,7 @@ const SKIP = new Set(["vendor", "target", "node_modules", ".git", "dist"]);
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
-    if (SKIP.has(name)) continue;
+    if (SKIP.has(name) || name.startsWith(".")) continue; // dotfiles (.DS_Store…) are not shipped
     const path = join(dir, name);
     if (statSync(path).isDirectory()) walk(path, out);
     else out.push(path);
@@ -31,14 +31,13 @@ test("an i18n/ folder holds en.json and nothing else", () => {
   expect(["defaults", "src", "crates"].flatMap((d) => walk(join(app, d))).filter((f) => f.endsWith("zh-TW.json"))).toEqual([]);
 });
 
-test("no Yuzora mod offers or reads a language", () => {
+test("no mod or frame offers or reads a language", () => {
   const mods = join(app, "defaults/mods");
-  const yuzora = readdirSync(mods).filter((m) => m.startsWith("yuzora-"));
-  expect(yuzora.length).toBeGreaterThan(30);
-  for (const mod of yuzora) {
-    for (const file of walk(join(mods, mod)).filter((f) => f.endsWith(".js"))) {
-      expect(readFileSync(file, "utf8"), file).not.toMatch(/setLocale|\blocale\(\)|zh-TW/);
-    }
+  expect(readdirSync(mods).filter((m) => m.startsWith("yuzora-")).length).toBeGreaterThan(30);
+  const files = [...walk(mods), ...walk(join(app, "defaults/frame"))].filter((f) => f.endsWith(".js"));
+  expect(files.length).toBeGreaterThan(50);
+  for (const file of files) {
+    expect(readFileSync(file, "utf8"), file).not.toMatch(/setLocale|\blocale\(\)|zh-TW/);
   }
   const en = JSON.parse(readFileSync(join(mods, "yuzora-settings-general/i18n/en.json"), "utf8"));
   expect(Object.keys(en)).not.toContain("language");
