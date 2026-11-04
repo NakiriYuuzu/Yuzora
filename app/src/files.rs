@@ -384,7 +384,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         assert!(std::process::Command::new("git").arg("init").arg("-q").arg(&root).status().unwrap().success());
-        root.canonicalize().unwrap()
+        // yuzora(L5): the key `next_change` files a folder under has no `\\?\`.
+        yuzora_core::paths::plain(&root.canonicalize().unwrap())
     }
 
     // Backends may invalidate a parent rather than name every changed child.
@@ -648,7 +649,7 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
         assert!(changes.iter().any(|c| *c == want), "wanted {want} in {changes:?}");
         assert!(changes.iter().all(|c| !c.starts_with(r"\\?\")), "{changes:?}");
-        folders().remove(&dir.canonicalize().unwrap());
+        folders().remove(&yuzora_core::paths::plain(&dir.canonicalize().unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
