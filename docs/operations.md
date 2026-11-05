@@ -79,7 +79,7 @@ Required CI checks：
 | Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、macOS 無 Apple 簽章／公證建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
 | Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR（`release/*` PR 只由 CI 呼叫，不重複觸發）、手動 dispatch、CI／Release reusable call | 五平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
 | Companion gateway | `.github/workflows/companion.yml` | 手動 dispatch；`src-tauri/companion/**`、`src-tauri/companion-net/**`、`src-tauri/host/**`、tiberius vendor 或自身變更的 pull request（無 push 觸發，也不是 required check） | Gateway 三平台 fmt、clippy `-D warnings`、tests 與原生 TLS 依賴拒絕檢查；cargo-deny／cargo-audit；Companion 網路 sidecar 三平台 `gofmt -l`（須無輸出）、`go vet`、`go test`、固定版本的 `govulncheck`（fail-closed） |
-| Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生官網角色與中英文 SEO 頁面、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
+| Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生中英文 SEO 頁面，再將完整 `site/` 部署到 GitHub Pages |
 
 Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
 
@@ -95,7 +95,7 @@ Pages 由成功的 `main` push `CI` workflow 觸發，部署 job 會以 `workflo
 - Clippy 採 exact baseline；warning 新增、消失、搬移或文字改變都會使 CI 失敗。
 - Database integration 在 Linux 使用 Docker 啟動 SQLite、PostgreSQL 與 MSSQL fixture，並執行 `database_integration` 與 `database_workbench` 的 ignored 測試。
 - PostgreSQL 暫停第一頁的記憶體回歸測試先暖機並固定 helper PIDs，再限制查詢造成的 RSS 增量小於 64 MiB；不以跨平台差異很大的程序總 RSS 判斷是否保留未讀資料。128 MiB 結果的舊無界讀取負向驗證必須仍超限。
-- Frontend checks（lint、typecheck、build）與 3 個 test shards 平行；固定 required-check 名稱的 Frontend aggregator 僅在全部成功時通過。checks／每個 shard 均先執行 `site:companions`、`site:seo` 與 `demo:build`，驗證乾淨 checkout 的 Pages/demo artifacts；Demo Vite 設定也納入 typecheck。Vitest 的 node project 使用 `src/test/nodeTests.json` 精確 allowlist，其餘／新增測試回到 jsdom。此 build check 不代表瀏覽器互動驗收。
+- Frontend checks（lint、typecheck、build）與 3 個 test shards 平行；固定 required-check 名稱的 Frontend aggregator 僅在全部成功時通過。checks／每個 shard 均先執行 `site:seo` 與 `demo:build`，驗證乾淨 checkout 的 Pages artifacts 與 Demo 建置（Demo 不再部署）；Demo Vite 設定也納入 typecheck。Vitest 的 node project 使用 `src/test/nodeTests.json` 精確 allowlist，其餘／新增測試回到 jsdom。此 build check 不代表瀏覽器互動驗收。
 - `release/*` PR 額外建置未發布的 macOS／Windows candidate installers，僅上傳為保留 14 天的 Actions artifacts，供使用者在 merge 前驗證；Linux 只作為 CI／測試 host，不是桌面發佈平台。
 - 同一 ref 上被新 commit 取代的 CI run 會由 concurrency 設定取消；HERDR compatibility 的 PR run 與 Host helper 的直接 PR run（依 target）也會被新 push 取消。
 - 建置速度：Host helper 以 `Swatinem/rust-cache`（固定 SHA）依 target 快取，Release 呼叫時只會還原 `main` 範圍的快取；CI 透過 `caller: ci` 呼叫 Host helper，`release/*` PR 不再另跑一份直接觸發的五平台建置。Rust 編譯／測試 jobs 設定 `CARGO_PROFILE_DEV_DEBUG=line-tables-only`，失敗時仍保存快取；macOS 不另跑 `cargo check`，由同樣 `--locked --all-targets` 的 exact Clippy baseline 承擔編譯檢查（任何編譯錯誤都使其失敗）。
@@ -253,7 +253,6 @@ Remove-Item Env:GITHUB_REF_NAME
 bun install --frozen-lockfile
 bun run lint
 bun run typecheck
-bun run site:companions
 bun run site:seo
 bun run demo:build
 bun run test
@@ -621,20 +620,20 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 ### 來源與觸發
 
 - 沿用 GitHub Actions 部署，Pages source 維持 `build_type=workflow`，不建立 `gh-pages` 分支。
-- Deploy artifact 是完整 `site/` 目錄，包含靜態官網 `index.html`、`styles.css`、`app.js`、`i18n.js`、`downloads.js`、`assets/`，以及建置後的 `en/`、`sitemap.xml` 與 `demo/`。網站 PNG favicon fallback 與桌面 app 圖示由同一品牌來源生成；inline SVG Logo 跟隨頁面主題。
+- Deploy artifact 是完整 `site/` 目錄，包含靜態官網 `index.html`、`styles.css`、`app.js`、`i18n.js`、`downloads.js`、`assets/`，以及建置後的 `en/` 與 `sitemap.xml`。網站 PNG favicon fallback 與桌面 app 圖示由同一品牌來源生成；inline SVG Logo 跟隨頁面主題。
 - `CI` 成功的 `main` push 會觸發 Pages 部署，也可從 Actions 手動 dispatch `Deploy Pages`；兩條路徑都必須先通過同一 `head_sha` 的成功 CI 查證。
 - Deploy job 以已查證的 exact SHA 建置完整 `site/` artifact。這個 gate 只驗證 CI 與來源一致性，仍不取代瀏覽器 smoke test。
-- Workflow 使用 Bun `1.4.2` 與 Node `24.21.0`，依序執行 `bun install --frozen-lockfile`、`bun run site:companions`、`bun run site:seo` 與 `bun run demo:build`，然後由 `actions/upload-pages-artifact`／`actions/deploy-pages` 上傳與部署。Demo 使用相對 asset URL，支援 `/Yuzora/demo/` repository subpath；`site/demo/` 是忽略的建置產物，不提交。
-- 官網保持靜態 ES module；Demo 由 Vite bundle。兩者皆不得在發布頁面引用 `node_modules` runtime path。`site:companions` 會更新官網角色 markup 與 `assets/brand/companions.css`，來源是 App 的 SpaceCharacter。
-- `site-remotion/` 是影片原始碼，不包含在 Pages artifact。
+- Workflow 使用 Bun `1.4.2` 與 Node `24.21.0`，依序執行 `bun install --frozen-lockfile` 與 `bun run site:seo`，然後由 `actions/upload-pages-artifact`／`actions/deploy-pages` 上傳與部署。互動 Demo 已不部署；CI 仍執行 `demo:build` 檢查 `src/demo/` 能建置，產物 `site/demo/` 被忽略、不提交。
+- 官網保持靜態 ES module，不得在發布頁面引用 `node_modules` runtime path。
+- `site-remotion/` 是舊版功能影片的原始碼，產品頁已改用截圖、不再引用；不包含在 Pages artifact。
 
 ### 產品頁維護邊界
 
-- 產品頁是靜態 HTML／CSS／ES module；`site:seo` 產生可獨立索引的中英文頁面；`app.js` 負責語言連結、light/dark theme、section reveal、active navigation、影片 viewport lifecycle、GitHub star badge 與 command palette，平台下載仍由 `downloads.js` 負責。Demo 入口沿用目前語言與主題。
-- `src/demo/` 使用正式 AppShell 與隔離的記憶體 transport，範例終端機、檔案、Git 與 SQL 不連接真實 host；桌面 entry 不引用 Demo。不可把 Demo 擴充成公開的原生 IPC／主機代理。
-- 中文首頁與 `/en/` 各有 canonical、hreflang、社群預覽及 SoftwareApplication JSON-LD。語言切換使用真實連結，不以 localStorage 覆寫網址的語言。新增 markup key 時，`site/i18n.js` 的 `zh-Hant` 與 `en` dictionaries 必須同時提供，中文 HTML 也須同步；`site:seo` 在建置時轉換英文 still、video、poster 與可及性標籤。詳見 [SEO 維護與搜尋收錄](seo.md)。
+- 產品頁是靜態 HTML／CSS／ES module；`site:seo` 產生可獨立索引的中英文頁面；`app.js` 負責語言連結、light/dark theme、section reveal、active navigation、GitHub star badge 與 command palette，平台下載仍由 `downloads.js` 負責。
+- `src/demo/`（Tauri 版的互動 Demo，已不部署）使用正式 AppShell 與隔離的記憶體 transport，範例終端機、檔案、Git 與 SQL 不連接真實 host；桌面 entry 不引用 Demo。不可把 Demo 擴充成公開的原生 IPC／主機代理。
+- 中文首頁與 `/en/` 各有 canonical、hreflang、社群預覽及 SoftwareApplication JSON-LD。語言切換使用真實連結，不以 localStorage 覆寫網址的語言。新增 markup key 時，`site/i18n.js` 的 `zh-Hant` 與 `en` dictionaries 必須同時提供，中文 HTML 也須同步；`site:seo` 在建置時轉換英文截圖與可及性標籤。詳見 [SEO 維護與搜尋收錄](seo.md)。
 - Theme 遵循系統偏好並保存至 `yuzora-theme`；no-JS、mobile 與 `prefers-reduced-motion` 必須保持內容可讀，不得依賴動畫才能看見主要資訊。
-- Hero、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 是現行資訊架構；已移除的 Exploded View、Agent Inspector still 與 model showcase 不得重新被 Pages 引用。
+- Hero、四段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 是現行資訊架構；已移除的 Exploded View、Agent Inspector still 與 model showcase 不得重新被 Pages 引用。
 - `#primary-download`、`#download-device-note`、platform rows 與 recommended badges 是 `downloads.js` 的穩定 contract。
 - 現行無 GSAP 或其他 Pages runtime dependency；不要以 smooth-scroll library 取代 native scrolling。
 - beta.2 期間產品頁維持 Tauri 版（下載仍是 v0.0.19），0.1.0 Stable 才換成介紹 beta.2 的產品頁（2026-11-03 使用者決定：安裝方式不同，新版本等 Stable 再提供；beta.2 也不附 `latest.json`，舊版 App 內更新不會提供 beta.2，見 §7.3）。新產品頁在 draft PR [#209](https://github.com/NakiriYuuzu/Yuzora/pull/209)：影片與 poster 改成靜態截圖、移除互動 Demo、不列 Linux。
@@ -642,44 +641,30 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 ### 產品頁 smoke test
 
 - 中英文 canonical URL 可開啟，HTTP 正確導向 HTTPS；`/Yuzora/sitemap.xml` 只列出兩個正式語言網址。
-- Hero、三步工作流、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 可讀。
-- 中文／英文切換後，全部 still、poster、video source、placeholder、meta content 與 accessibility labels 正確。
+- Hero、三步工作流、四段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 可讀。
+- 中文／英文切換後，全部截圖、placeholder、meta content 與 accessibility labels 正確。
 - Light/dark theme 初始值、手動切換與 persistence 正確；mobile 沒有水平捲軸，no-JS 與 reduced motion 不會隱藏主要內容。
-- Feature videos 進入 viewport 時播放、離開時 pause；分頁離開後不應持續播放或消耗資源。
 - 裝置偵測只推薦支援的平台與架構，主要下載 CTA 指向固定檔名 Release assets。
 - 未支援的 mobile、ChromeOS、Linux、ARM／32-bit Windows 不會收到錯誤的桌面下載推薦。
-- `/Yuzora/demo/` 與相對 assets 可載入；官網的語言／主題會帶入 Demo，範例 terminal、editor、Git、database 與 appearance 可操作，重新整理恢復範例資料。
 
 截至 2026-09-10，GitHub Pages API 回報 `build_type=workflow`、頁面 URL 為 `http://github.yuuzu.net/Yuzora/`、`https_enforced=false`。外層 Cloudflare 的 HTTPS 導向沿用先前設定，當日未重新驗證 DNS／規則。DNS、Cloudflare 規則、canonical URL 與監控方式應由 maintainer 另行保管；Cloudflare challenge 可能讓單純的無瀏覽器 `curl` smoke test 回傳 403，不能直接等同於頁面部署失敗。
 
-### 功能影片與 still 重製
+### 產品頁截圖
 
-原始碼位於 `site-remotion/`；render commands 與 composition 規則見 `site-remotion/README.md`，實際 media naming 以 `site-remotion/src/Root.tsx`、`site/app.js` 與 `tests/site-page.test.js` 為準。
+Hero 與四段 feature 都是 beta.2 App 的靜態截圖，中英文各一張：`site/assets/yuzora-workspace-{zh,en}.png`（Hero，也是社群預覽圖）與 `feature-{spaces-agents,files,database,git}-{zh,en}.png`。尺寸一律 1600×1025，與 `<img>` 的 `width`／`height` 及 `og:image:width`／`height` 相同（`tests/site-page.test.js`、`tests/site-seo.test.js` 會讀 PNG 檔頭比對）。
 
-README 圖片與動畫使用新版 AppShell Demo 錄製素材，與 Pages 共用 Remotion compositions；不可沿用舊手繪 Hero。更新錄製後，在 repo root 依序執行 `bun scripts/render-site-media.ts` 與 `bun scripts/render-readme-media.ts`，重新產生六張 README PNG、兩個 21 秒 GIF，並同步 Pages posters。抽查中英文的終端機、Git diff 與 SQL 結果畫面，確認圖片沒有落在對話框或操作過渡幀。
+重拍時照 AGENTS.md 的隔離規則執行 `herdr-app`，不得碰到真實的 app home、herdr-core session 或 repo：
 
-```bash
-cd site-remotion
-bun install
+1. `env -i` 只帶 `HOME`、`USER`、`TMPDIR`、`TERM`、`PATH` 與語系 `LANG`（`zh_TW.UTF-8`／`en_US.UTF-8`），另設暫存的 `YUZORA_APP_HOME`、`HC_SESSION`、`XDG_STATE_HOME`／`XDG_CONFIG_HOME`／`XDG_RUNTIME_DIR`，以及 `HERDR_APP_NO_SOUND=1`、`YUZORA_DB_SECRETS=memory`。
+2. 素材全部放在暫存目錄：一個有分支、tag、merge 與已暫存／未暫存／未追蹤變更的 Git repo，一個 SQLite 資料庫，再加兩個空 repo 當其他 Space。作者、email 與資料都用虛構內容。
+3. 啟動前在 app home 寫入 `shared.json` 的 `"frame.welcomed": "skipped"`，以及 `yuzora/settings.json` 的 `general.locale`（`zh-TW`／`en`）、`git.diffMode: "unified"`（窄 pane 的並排 diff 只看得到舊版）與 SQLite 連線。
+4. 新 home 第一次啟動會出現「已更新到新版」提示：先 `do space.new` 建好三個 Space（argv 用假 agent，`printf '\033]7501;state=<working|blocked|done>:app=<claude|codex|pi>\033\\'` 後 `sleep`），`do app.quit` 後再啟動一次。
+5. 側欄會顯示本機 hostname。第二次啟動後，只在這個隔離 home 的 `mods/yuzora-sidebar-workspace/main.js` 把 `this.host = hostname();` 換成固定名稱，等熱載入後再拍。檔案樹的資料夾要點開才會展開；Files 截圖同樣只在隔離 home 的 `mods/yuzora-sidebar-files/main.js` 把 `this.open` 的初始值設成 `["src"]`。
+6. 用 `do space.select`、`do pane.split --mod <mod> --props …`、`do layout.select '{"stack":"yuzora-sidebar","child":"yuzora-sidebar-<模式>"}'` 排出畫面，等幾秒讓資料載完後 `shot <png>`。
+7. 每個 locale 拍完 `do app.quit`，並對該隔離 `HC_SESSION` 執行 `hc server stop`。
+8. `shot` 輸出 2560×1640，以 `sips -Z 1600` 縮成 1600×1025 後覆寫 `site/assets/`。中英文要逐張檢查：沒有提示 toast、沒有真實 hostname、使用者名稱或路徑。
 
-for c in ade-herdr-zh ade-herdr-en remote-db-zh remote-db-en terminal-git-zh terminal-git-en; do
-  bunx remotion render "$c" "../site/assets/$c.mp4" --scale=2
-done
-
-for lang in zh en; do
-  bunx remotion still "ade-herdr-${lang}" \
-    "../site/assets/ade-herdr-runtime-${lang}.png" \
-    --frame=148 --scale=2
-  bunx remotion still "terminal-git-${lang}" \
-    "../site/assets/terminal-git-${lang}.png" \
-    --frame=270 --scale=1
-  bunx remotion still "remote-db-${lang}" \
-    "../site/assets/remote-db-${lang}.png" \
-    --frame=210 --scale=1
-done
-```
-
-ADE/HERDR runtime、remote database 與 terminal/git poster stills 必須使用同語言的真實 Remotion frame；Agent Inspector still 已移除。預覽使用 `bun run dev`（Remotion Studio，不自動開啟 browser）；`bun run build` 可驗證並產生 Remotion bundle。Browser visual QA 仍需當次明確授權，不能以靜態檢查取代。影片與頁面變更應透過同一個 PR review，merge 後才由 Pages workflow 部署。
+改動畫面內容時同步 `site/index.html` 的 `alt` 與 `site/i18n.js` 的 `media.*`／`hero.alt`。Browser visual QA 仍需當次明確授權，不能以靜態檢查取代。
 
 ---
 

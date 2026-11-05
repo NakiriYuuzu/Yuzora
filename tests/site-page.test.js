@@ -36,7 +36,8 @@ describe("GitHub Pages product page", () => {
 
   it("contains the current product narrative and download surfaces", () => {
     expect(page.querySelectorAll(".loop-card")).toHaveLength(3)
-    expect(page.querySelectorAll("video[data-vstem]")).toHaveLength(3)
+    expect(page.querySelectorAll("img[data-imgstem]")).toHaveLength(5)
+    expect(page.querySelector("video")).toBeNull()
     expect(page.querySelectorAll(".bento-card")).toHaveLength(5)
     expect(page.querySelectorAll(".flow-node")).toHaveLength(2)
     expect(page.querySelectorAll("[data-platform-download]")).toHaveLength(2)
@@ -113,25 +114,16 @@ describe("GitHub Pages product page", () => {
     }
   })
 
-  it("ships every dynamically selected zh/en video and still", () => {
-    const videoStems = [...page.querySelectorAll("video[data-vstem]")].map(
-      (video) => video.dataset.vstem,
-    )
-    const stillStems = new Set([
-      ...[...page.querySelectorAll("img[data-imgstem]")].map((image) => image.dataset.imgstem),
-      ...[...page.querySelectorAll("video[data-poster-stem]")].map(
-        (video) => video.dataset.posterStem,
-      ),
+  it("ships every zh/en screenshot at the size its markup reserves", () => {
+    const images = [...page.querySelectorAll("img[data-imgstem]")]
+    expect(images.map((image) => image.dataset.imgstem)).toEqual([
+      "yuzora-workspace", "feature-spaces-agents", "feature-files", "feature-database", "feature-git",
     ])
-    expect(videoStems).toEqual(["ade-herdr", "remote-db", "terminal-git"])
-    expect([...stillStems]).not.toContain("ade-herdr-inspector")
-
-    for (const lang of ["zh", "en"]) {
-      for (const stem of videoStems) {
-        expect(existsSync(resolve(root, `site/assets/${stem}-${lang}.mp4`))).toBe(true)
-      }
-      for (const stem of stillStems) {
-        expect(existsSync(resolve(root, `site/assets/${stem}-${lang}.png`))).toBe(true)
+    for (const image of images) {
+      const size = [Number(image.getAttribute("width")), Number(image.getAttribute("height"))]
+      for (const lang of ["zh", "en"]) {
+        const png = readFileSync(resolve(root, `site/assets/${image.dataset.imgstem}-${lang}.png`))
+        expect([png.readUInt32BE(16), png.readUInt32BE(20)], `${image.dataset.imgstem}-${lang}`).toEqual(size)
       }
     }
   })
@@ -150,19 +142,12 @@ describe("GitHub Pages product page", () => {
     expect(page.title).toBe(I18N["zh-Hant"]["meta.title"])
     expect(page.querySelector('meta[name="description"]').content).toBe(I18N["zh-Hant"]["meta.description"])
     expect(page.querySelector('meta[property="og:image"]').content).toMatch(/^https:\/\//)
-    expect(page.querySelectorAll("video[data-i18n-aria-label]")).toHaveLength(3)
+    expect(page.querySelectorAll("img[data-imgstem][data-i18n-alt]")).toHaveLength(5)
     expect(page.querySelector("#gh-stars[data-i18n-aria-label='github.stars']")).not.toBeNull()
     expect(appSource).toContain('I18N[currentLang]["github.stars"]')
     expect(appSource).toContain('replace("{{count}}", starsNum.textContent)')
     expect(page.querySelector("nav.site-nav[data-i18n-aria-label='a11y.primaryNav']")).not.toBeNull()
     expect(page.querySelector("nav.footer-links[data-i18n-aria-label='a11y.footerNav']")).not.toBeNull()
-  })
-
-  it("keeps videos bounded by viewport and document visibility", () => {
-    expect(appSource).toContain('dataset.inView = String(entry.isIntersecting)')
-    expect(appSource).toContain('document.addEventListener("visibilitychange", syncVideoPlayback)')
-    expect(appSource).toContain("!document.hidden")
-    expect(appSource).toContain("prefers-reduced-motion: reduce")
   })
 
   it("keeps the actionable palette result keyboard-operable", () => {
@@ -180,7 +165,7 @@ describe("GitHub Pages product page", () => {
     expect(page.querySelector("[data-platform-download='linux']")).toBeNull()
   })
 
-  it("removes retired exploded-view, showcase, model-lab, and inspector artifacts", () => {
+  it("removes retired exploded-view, showcase, model-lab, inspector, video and Demo artifacts", () => {
     const retired = [
       "site/exploded-view.js",
       "site/exploded-view-model.js",
@@ -193,10 +178,15 @@ describe("GitHub Pages product page", () => {
       "site/grok-4.6/index.html",
       "site/assets/ade-herdr-inspector-zh.png",
       "site/assets/ade-herdr-inspector-en.png",
+      "site/assets/brand/companions.css",
+      ...["ade-herdr", "remote-db", "terminal-git"].flatMap((stem) =>
+        ["zh", "en"].map((lang) => `site/assets/${stem}-${lang}.mp4`),
+      ),
     ]
     for (const path of retired) {
       expect(existsSync(resolve(root, path)), path).toBe(false)
     }
     expect(htmlSource).not.toMatch(/Agent Inspector|exploded-view|site\/showcase/)
+    expect(htmlSource).not.toMatch(/<video|data-demo-link|demo\/|site-companions/)
   })
 })
