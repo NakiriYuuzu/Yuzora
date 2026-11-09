@@ -16,7 +16,7 @@
 
 ### 修正
 
-- Git：開著的 repo 的 `.git` 不見、而且上一層路徑含 `:` 或 `;` 時，fetch、push、status 等任何 Git 指令都不會再跑到外層的 repo；其他情況由 `GIT_CEILING_DIRECTORIES` 擋住往上搜尋，Git hook 也不會多繼承 `GIT_DIR`。
+- Git：開著的 repo 的 `.git` 不見時，fetch、push、status 等 Git 指令不會再往上找到外層的 repo 並在那裡執行。往上搜尋由 `GIT_CEILING_DIRECTORIES` 擋住；上一層路徑含 `:` 或 `;`、無法設定 ceiling 時，每個指令執行前會先問 Git 找到的是哪個 repo，不是這個就拒絕。Git hook 不會多繼承 `GIT_DIR`。
 - Git Log：極長的 commit 訊息在較慢的機器上，不會再被 render 時間上限中斷（改成每個段落一個文字元素）。
 
 ### 已知限制

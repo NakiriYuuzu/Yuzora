@@ -12,7 +12,7 @@
 - **Synced with the official herdr-app v0.1.14.** A herdr-core connection error now shows its reason and a retry, terminal search (Cmd/Ctrl+F) and scroll commands, a scrollbar on panes, `pane.swap` for mods, and Add machine now tells you the command to run. The herdr-core requirement is unchanged (0.1.11 or newer, generation 1).
 
 ### Fixed
-- Git: when an open repository's `.git` is gone and the path above it contains `:` or `;`, fetch, push, status and every other Git command no longer run in an outer repository. In other cases `GIT_CEILING_DIRECTORIES` stops the search, and Git hooks no longer inherit an extra `GIT_DIR`.
+- Git: when an open repository's `.git` goes missing, Git commands (fetch, push, status and the rest) no longer fall through to a repository around it and run there. `GIT_CEILING_DIRECTORIES` stops the search; where the path above contains `:` or `;` and no ceiling can hold, each command first asks Git which repository it found and is refused unless it is this one. Hooks get no extra `GIT_DIR`.
 - Git Log: a very long commit message can no longer be cut off by the render time limit on a slow machine (each paragraph is now a single text element).
 
 ## [0.1.0-beta.3] - 2026-11-05
