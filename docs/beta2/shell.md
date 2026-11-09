@@ -98,13 +98,15 @@ L1 讀的 key：
 
 ## 上游改動
 
-全部以 `// yuzora(L1):` 註記：
+全部以 `// yuzora(L1):` 註記；右側 dock（lane 名稱 `dock`，beta.4 PR-1，設計見 `specs/right-dock-spec.md`）的改動以 `// yuzora(dock):` 註記，列在表中標有「dock」的列：
 
 | 檔案 | 改動 |
 | --- | --- |
 | `app/src/layout.rs` | `PaneFrame` 新增 `blocked: Option<Line>` 欄位 |
+| `app/src/layout.rs`（dock） | `Node` 新增 root 欄位 `yuzora: Option<Value>`（個別 layout 的 `"yuzora": {"dock": "auto" \| "drawer" \| "off"}`；沒有欄位的話 `text_of` 重寫檔案時會把它丟掉）與 `Node::new` 的一行 |
+| `app/src/window.rs`（dock） | 5 處、各一行（`yuzora(dock)`）：`load_layout` 在 `keep_ids`／`fill_ids` 之後、`file_chrome = chrome.clone()` 之前 `dock::inject`（H1）；`check_layout_file` 在 `keep_ids` 之後 `dock::inject`（H2）；`save` 寫檔前 `dock::strip`（H3）；`layout.set` 的 shipped 分支 `dock::ensure`（H4，順手把 `let n` 改成 `let mut n`）；`layout.set` 的個人分支 `dock::ensure` 後寫檔前 `dock::strip`（H5）。`RIGHT_DOCK` 為 false 時 inject 只做 strip、ensure 不做事 |
 | `app/src/window.rs` | `frame_pane` 多一行：呼叫 `crate::yuzora::shell::frame_line` 決定邊框；`run_as` 在 `space.new` 前多一段：人執行的 bare `space.new`（以及沒有 Space 時的 bare `tab.new`）改開資料夾對話框 |
-| `app/src/yuzora/mod.rs` | 加一行 `pub mod shell;`（lanes.md 允許的改動） |
+| `app/src/yuzora/mod.rs` | 加一行 `pub mod shell;`（lanes.md 允許的改動）；dock 再加一行 `pub mod dock;` |
 | `app/src/mods/render_tests.rs` | welcome 第一頁的標題改為 Yuzora；新增 `yuzora_new_pane_menu_*` 兩個測試（新增 pane 選單在無固定高度的 overlay 裡的版面、點選後的指令）與 `yuzora_herdr_panels_start_off`（Herdr panel 預設關閉、設定頁開關） |
 | `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 改用 `appHome()` 組出實際路徑（`YUZORA_APP_HOME`／`XDG_CONFIG_HOME` 改過時也正確）；`panels()` 沒有設定時視為沒有 panel |
 | `app/defaults/frame/whatsnew/main.js` | 標題與圖示 |
