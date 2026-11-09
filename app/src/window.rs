@@ -5901,6 +5901,14 @@ export default class Probe extends View {
         let back: crate::layout::Node = serde_json::from_str(&written).unwrap();
         assert!(matches!(&back.find("panel-body").unwrap().kind, crate::layout::Kind::Stack { active, .. } if active.as_deref() == Some("files")), "the stack is back on the file's own choice");
         view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some()));
+
+        // A tree built without the dock (a script, not layout()) is shown with it all the same.
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            let tree = serde_json::to_value(crate::yuzora::dock::strip(&this.chrome, None)).unwrap();
+            this.run("layout.set", json!({ "layout": tree }), window, cx);
+        }));
+        assert!(!layout_file().contains("yuzora-dock"));
+        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some() && this.file_chrome.find("yuzora-dock-bar").is_some()));
     }
 
     #[test]
