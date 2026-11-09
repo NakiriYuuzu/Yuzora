@@ -32,6 +32,8 @@ fn setup_words_in(c: &Catalog, need: &Need, place: &str, install: &str, app: &st
             c.t("setup.install.body", &[]),
             c.t("setup.install.foot", &[("place", place.into()), ("install", install.into())]),
         ),
+        // The error is the core's own words (and its recovery hint): shown as they are.
+        Need::Connect(error) => (c.t("setup.connect.title", &[]), error.clone(), c.t("setup.connect.foot", &[])),
         Need::Fix(Mismatch::TooOld { have, need }) => (
             c.t("setup.old.title", &[]),
             c.t("setup.old.body", &[("have", have.clone()), ("need", need.clone()), shared]),
@@ -116,6 +118,7 @@ mod tests {
     fn every_core_screen_says_yuzora_and_that_the_core_is_shared() {
         let needs = [
             Need::Install,
+            Need::Connect("the core pipe cannot be accessed".into()),
             Need::Fix(Mismatch::TooOld { have: "0.1.9".into(), need: "0.1.11".into() }),
             Need::Fix(Mismatch::Missing(vec!["doc.set".into()])),
             Need::Fix(Mismatch::Newer { generation: 2 }),
@@ -126,14 +129,14 @@ mod tests {
                 let all = format!("{title} {body} {foot}");
                 assert!(title.contains("Yuzora"), "{title}");
                 assert!(!all.contains('{') && !all.contains("this Herdr") && !all.contains("Herdr needs") && !all.contains("Update Herdr"), "{all}");
-                if !matches!(need, Need::Install) {
+                if !matches!(need, Need::Install | Need::Connect(_)) {
                     assert!(body.contains("Herdr"), "names the app it shares the core with: {body}");
                 }
             }
-            let (_, body, foot) = setup_words_in(c, &needs[3], "", "", "https://releases");
+            let (_, body, foot) = setup_words_in(c, &needs[4], "", "", "https://releases");
             assert!(body.contains('2') && body.contains(&GENERATION.to_string()), "{body}");
             assert!(foot.contains("https://releases"));
-            let (_, body, _) = setup_words_in(c, &needs[1], "", "", "");
+            let (_, body, _) = setup_words_in(c, &needs[2], "", "", "");
             assert!(body.contains("0.1.9") && body.contains("0.1.11"), "{body}");
         }
     }
