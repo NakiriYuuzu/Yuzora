@@ -2,6 +2,19 @@
 
 <!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
 <!-- yuzora(L7): each Yuzora entry here has its Traditional Chinese twin in CHANGELOG.zh-TW.md: add a line to both. -->
+## [0.1.0-beta.4] - 2026-11-11
+
+### New
+- **Right-hand dock.** A layout with a side panel (main, and the default yuzora) gets a 40px mode bar next to the panel with Files, Git, Database and SSH. A layout without one (terminals, win98, your own) gets a drawer on the right edge, and a mode you click opens in a window. The open mode stays put when you switch Spaces, and changing the layout no longer makes Yuzora's tools disappear.
+- **Herdr's own Spaces and Agents on the left.** The default yuzora layout now uses Herdr's native Spaces and Agents lists (the top left reads "Herdr"), and Files, Git, Database and SSH moved to the right-hand dock. The Space color set in Yuzora shows on the avatar in the left list. If you edited `yuzora.json`, your copy is kept as `yuzora-edited`; an unedited one is replaced automatically.
+- **A dock setting for each layout, and one for startup.** Settings › Mods › Layouts lets each layout set its right-hand dock to Auto, Drawer or Off, which takes priority over the layout file's own setting. Settings › General › When Yuzora opens picks whether the dock opens in Files, Git, Database or SSH, or stays collapsed.
+- **`Cmd+Alt+B` (macOS) / `Ctrl+Alt+B` toggles the right-hand dock.** An unedited beta.2 or beta.3 `keys.json` is updated to the new defaults automatically (this includes Herdr's terminal search, Cmd/Ctrl+F). An edited one is left alone: add `"cmd-alt-b": "yuzora-modebar.toggle"` (or `ctrl-alt-b`) yourself.
+- **Synced with the official herdr-app v0.1.14.** A herdr-core connection error now shows its reason and a retry, terminal search (Cmd/Ctrl+F) and scroll commands, a scrollbar on panes, `pane.swap` for mods, and Add machine now tells you the command to run. The herdr-core requirement is unchanged (0.1.11 or newer, generation 1).
+
+### Fixed
+- Git: when an open repository's `.git` is gone and the path above it contains `:` or `;`, fetch, push, status and every other Git command no longer run in an outer repository. In other cases `GIT_CEILING_DIRECTORIES` stops the search, and Git hooks no longer inherit an extra `GIT_DIR`.
+- Git Log: a very long commit message can no longer be cut off by the render time limit on a slow machine (each paragraph is now a single text element).
+
 ## [0.1.0-beta.3] - 2026-11-05
 
 ### New

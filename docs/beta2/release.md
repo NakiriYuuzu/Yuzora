@@ -190,7 +190,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 
 ### 不可行時的退路
 
-**既定決定（2026-11-03，使用者）**：beta.2 release **不附 `latest.json`**，beta.1 就不會看到它（也不會報錯）；release notes 與 README 提示手動下載 DMG／NSIS 安裝程式。新 App 自己的更新也一樣只收 Stable（§3，2026-11-04）。beta.3 同樣是手動下載的 Pre-release（draft 先給使用者在 Windows 試過再發布），不附 `latest.json`、`yuzora-update.json` 與固定別名檔名；README 與 release notes 已指向 `v0.1.0-beta.3`。
+**既定決定（2026-11-03，使用者）**：beta.2 release **不附 `latest.json`**，beta.1 就不會看到它（也不會報錯）；release notes 與 README 提示手動下載 DMG／NSIS 安裝程式。新 App 自己的更新也一樣只收 Stable（§3，2026-11-04）。beta.3 同樣是手動下載的 Pre-release（draft 先給使用者在 Windows 試過再發布），不附 `latest.json`、`yuzora-update.json` 與固定別名檔名；README 與 release notes 已指向 `v0.1.0-beta.3`。beta.4 比照辦理（beta.3 → beta.4 也是手動下載、不附 `latest.json`），README 與 release notes 指向 `v0.1.0-beta.4`。
 
 ## 6. 發布流程（未實作，需使用者授權）
 

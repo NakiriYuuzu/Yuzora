@@ -1,6 +1,19 @@
 # Yuzora 更新說明
 
 <!-- yuzora(L7): CHANGELOG.md 裡 Yuzora 每一筆的繁體中文版，版本、### New／### Fixed 標題與項目數都要一樣（App 依標題判斷 Fixed）。這裡沒有的版本，App 會改顯示 CHANGELOG.md 的英文。 -->
+## [0.1.0-beta.4] - 2026-11-11
+
+### New
+- **右側 dock。** 有側邊 panel 的 layout（main，以及預設的 yuzora）會在 panel 旁多一條 40px 的模式列，放 Files、Git、Database、SSH；沒有 panel 的 layout（terminals、win98、自訂）則在右緣有抽屜，點模式就在 window 裡開啟。切換 Space 時，開著的模式保持不動；換 layout 也不會再讓 Yuzora 的功能消失。
+- **左側改用 Herdr 原生的 Spaces 與 Agents。** 預設的 yuzora layout 左側現在是 Herdr 原生的 Spaces 與 Agents 清單（左上角顯示「Herdr」），Files、Git、Database、SSH 移到右側 dock。在 Yuzora 設定的 Space 顏色會顯示在左側清單的頭像上。改過 `yuzora.json` 的使用者會保留舊版並命名為 `yuzora-edited`；沒改過的會自動換成新版。
+- **每個 layout 可設定 dock，啟動時也可指定。** 設定 › Mods › Layouts 可讓每個 layout 把右側 dock 設為 Auto、Drawer 或 Off，優先於 layout 檔自己的設定。設定 › General › When Yuzora opens 可指定啟動時 dock 開在 Files、Git、Database 或 SSH，或維持收起。
+- **`Cmd+Alt+B`（macOS）／`Ctrl+Alt+B` 開關右側 dock。** 沒改過的 beta.2、beta.3 `keys.json` 會自動更新成新的預設（包含 Herdr 的終端搜尋 Cmd/Ctrl+F）；改過的不會動，請自行加上 `"cmd-alt-b": "yuzora-modebar.toggle"`（或 `ctrl-alt-b`）。
+- **同步官方 herdr-app v0.1.14。** herdr-core 連線錯誤會顯示原因並可重試、新增終端搜尋（Cmd/Ctrl+F）與捲動指令、pane 有捲軸、mod 可用 `pane.swap`，Add machine 也改為告知要執行的指令。herdr-core 的需求不變（0.1.11 以上、generation 1）。
+
+### Fixed
+- Git：開著的 repo 的 `.git` 不見、而且上一層路徑含 `:` 或 `;` 時，fetch、push、status 等任何 Git 指令都不會再跑到外層的 repo；其他情況由 `GIT_CEILING_DIRECTORIES` 擋住往上搜尋，Git hook 也不會多繼承 `GIT_DIR`。
+- Git Log：極長的 commit 訊息在較慢的機器上，不會再被 render 時間上限中斷（改成每個段落一個文字元素）。
+
 ## [0.1.0-beta.3] - 2026-11-05
 
 ### New
