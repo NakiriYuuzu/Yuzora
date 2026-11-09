@@ -120,6 +120,11 @@ fn personal_in(shell: &Value, name: &str) -> Option<Choice> {
 }
 
 fn personal(name: &str) -> Option<Choice> {
+    // A test that did not turn the dock on (so it runs in the shared process, with the developer's real home) never reads their settings.
+    #[cfg(test)]
+    if !FORCED.load(std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
     personal_in(&yuzora_core::settings::section(SHELL), name)
 }
 
@@ -429,16 +434,16 @@ mod tests {
 
     #[test]
     fn the_switch_the_app_runs_with_is_on() {
-        // main and a layout with no panel get the dock through the public entry the hooks call; yuzora (the new one) is a Panel and a beta.3 clone keeps its own modes.
+        // main and a layout with no panel get the dock with the switch the hooks run under (no personal choice: tests never read the real settings); yuzora (the new one) is a Panel and a beta.3 clone keeps its own modes.
         for (text, want) in [(MAIN, Placed::Panel), (TERMINALS, Placed::Drawer), (WIN98, Placed::Drawer), (YUZORA, Placed::Panel), (YUZORA_BETA3, Placed::Own)] {
             let mut n = parse(text);
-            assert_eq!(inject(&mut n, "x"), want);
+            assert_eq!(inject_with(&mut n, enabled(), None), want);
             let mut shown = n.clone();
-            ensure(&mut shown, "x", None);
+            ensure_with(&mut shown, enabled(), None, None);
             assert_eq!(shown, n, "a tree that has the dock keeps it");
         }
         let mut bare = parse(MAIN);
-        ensure(&mut bare, "a-layout-nobody-has-chosen-for", None);
+        ensure_with(&mut bare, enabled(), None, None);
         assert!(bare.find("yuzora-dock-bar").is_some(), "a tree built without the dock gets it");
     }
 
