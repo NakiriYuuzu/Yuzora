@@ -230,7 +230,7 @@ export default class Modebar extends View {
   }
 
   head() {
-    const th = theme(), tk = tokens();
+    const th = theme();
     const stop = (_e, cx) => cx.stop_propagation();
     const mode = props()?.mode;
     const tab = (m) => {

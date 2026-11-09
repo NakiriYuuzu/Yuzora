@@ -269,15 +269,20 @@ fn ensure_with(n: &mut Node, on: bool, personal: Option<Choice>, fallback: Optio
 /// dock part `chrome` doesn't show now: the person chose `off` or `drawer` for
 /// this layout since, and the clicks on the part that isn't shown (the panel's
 /// mode, the bar, the drawer's place) must outlive that until it is back. A
-/// click `state` already has (made on what shows now) is not replaced.
+/// click `state` already has (made on what shows now) is not replaced. A panel
+/// the person opened themselves meanwhile (`state` shows it open, and no dock
+/// mode is in the chrome to have opened it) is theirs: the mode doesn't come
+/// back over their Files.
 pub fn keep_clicks(state: &mut State, before: &State, chrome: &Node) {
     let shown = reserved_ids(chrome);
+    let own_panel = state.nodes.get("panel").and_then(|p| p.hidden) == Some(false);
     let gone = |id: &str| reserved(id) && !shown.iter().any(|s| s == id);
     for (id, click) in &before.nodes {
         if gone(id) {
             state.nodes.entry(id.clone()).or_insert_with(|| click.clone());
         } else if let Some(mode) = click.active.as_ref().filter(|a| gone(a))
             && chrome.find(id).is_some()
+            && !own_panel
         {
             state.nodes.entry(id.clone()).or_default().active.get_or_insert_with(|| mode.clone());
             // The panel was opened for that mode: its visibility goes with it (see `without_panel_click`).
@@ -683,7 +688,7 @@ mod tests {
         let plain = without_panel_click(&before, &file);
         assert_eq!(plain.nodes["panel"].hidden, None);
         assert_eq!(plain.nodes["panel-body"], before.nodes["panel-body"]);
-        // The person's own Files panel (the stack names no dock mode) stays.
+        // The person's own Files panel (the stack names no dock mode) stays (a save keeps it too: see below).
         let mut files = State::default();
         files.nodes.entry("panel".into()).or_default().hidden = Some(false);
         assert_eq!(without_panel_click(&files, &file), files);
@@ -691,6 +696,11 @@ mod tests {
         let mut state = State::between(&file, &file);
         keep_clicks(&mut state, &before, &file);
         assert_eq!(state.nodes["panel"].hidden, Some(false));
+        // But not over a panel the person opened themselves meanwhile (their Files): the mode stays out of it.
+        let mut state = files.clone();
+        keep_clicks(&mut state, &before, &file);
+        assert_eq!(state.nodes["panel"], files.nodes["panel"]);
+        assert!(!state.nodes.contains_key("panel-body"), "the dock's mode stays out");
     }
 
     #[test]

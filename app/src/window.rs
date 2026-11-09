@@ -1033,7 +1033,7 @@ impl AppWindow {
                 // What the file now sets on purpose wins over a click on it.
                 // Coming back from a broken file, the clicks are the saved ones
                 // (what showed meanwhile was only the shipped stand-in).
-                let mut state = if was_broken {
+                let mut state = if was_broken { // yuzora(dock): mut, for keep_clicks below
                     let mut s = read_state(&self.layout_name);
                     s.forget_since_saved(&n);
                     s
@@ -6328,11 +6328,83 @@ export default class Probe extends View {
             edited["children"].as_array_mut().unwrap().push(json!({ "id": format!("extra-{off}"), "type": "block", "content": { "mod": "unused" } }));
             std::fs::write(super::layout_path("test"), edited.to_string()).unwrap();
             cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
+            assert!(view.update(cx, |this, _| this.chrome.find("panel").unwrap().hidden), "{off}: the panel opened for the dock stays shut after the edit");
             choose("auto");
             switch(cx);
             assert_eq!(view.update(cx, |this, _| dock_view(&this.chrome)), before, "{off}: the clicks survive an edit of the file meanwhile");
             std::fs::write(super::layout_path("test"), panel_layout().to_string()).unwrap();
             cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
+        }
+    }
+
+    // The person's own panel (the tab bar's Files / Changes button) opened while the dock is off or a drawer outlives a file edit and a reload.
+    #[test]
+    fn a_panel_the_person_opened_while_the_dock_is_hidden_stays_open() {
+        in_own_process("dock_own_panel_while_hidden");
+    }
+
+    #[gpui::test]
+    fn dock_own_panel_while_hidden(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("dock_own_panel_while_hidden") {
+            return;
+        }
+        crate::yuzora::dock::force_for_tests();
+        let (view, cx) = open_window(cx, "unused", "", panel_layout());
+        std::fs::write(super::layout_path("other"), json!({ "id": "root", "type": "column", "children": [ { "id": "main", "type": "block", "content": { "tab": "active" } } ] }).to_string()).unwrap();
+        let choose = |w: &str| yuzora_core::settings::set_section(crate::yuzora::dock::SHELL, json!({ "dock": { "layouts": { "test": w } } })).unwrap();
+        let switch = |cx: &mut gpui::VisualTestContext, name: &str| {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.switch", json!({ "name": name }), window, cx)));
+            cx.run_until_parked();
+        };
+        let panel = |cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |this, _| {
+                let active = match &this.chrome.find("panel-body").unwrap().kind {
+                    crate::layout::Kind::Stack { active, .. } => active.clone(),
+                    _ => None,
+                };
+                (active, this.chrome.find("panel").unwrap().hidden)
+            })
+        };
+        for mode in ["off", "drawer"] {
+            for pick in ["files", "changes"] {
+                for how in ["edit", "reload"] {
+                    let at = format!("{mode}/{pick}/{how}");
+                    std::fs::write(super::layout_path("test"), panel_layout().to_string()).unwrap();
+                    cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
+                    choose("auto");
+                    switch(cx, "test");
+                    cx.update(|window, cx| view.update(cx, |this, cx| {
+                        this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx);
+                        this.run("layout.show", json!({ "id": "panel" }), window, cx);
+                    }));
+                    choose(mode);
+                    switch(cx, "test");
+                    assert!(panel(cx).1, "{at}: the dock's panel is shut while it is hidden");
+                    // The person's own click: the tab bar's button.
+                    cx.update(|window, cx| view.update(cx, |this, cx| {
+                        this.run("layout.select", json!({ "stack": "panel-body", "child": pick }), window, cx);
+                        this.run("layout.show", json!({ "id": "panel" }), window, cx);
+                        this.save();
+                    }));
+                    cx.run_until_parked();
+                    assert_eq!(panel(cx), (Some(pick.to_string()), false), "{at}: opened");
+                    if how == "edit" {
+                        let mut edited = panel_layout();
+                        edited["children"].as_array_mut().unwrap().push(json!({ "id": "extra", "type": "block", "content": { "mod": "unused" } }));
+                        std::fs::write(super::layout_path("test"), edited.to_string()).unwrap();
+                        cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
+                    } else {
+                        switch(cx, "other");
+                        switch(cx, "test");
+                    }
+                    cx.run_until_parked();
+                    assert_eq!(panel(cx), (Some(pick.to_string()), false), "{at}: still the person's panel after the {how}");
+                    choose("auto");
+                    switch(cx, "test");
+                    assert_eq!(panel(cx), (Some(pick.to_string()), false), "{at}: back to auto it shows what the person chose");
+                }
+            }
         }
     }
 
