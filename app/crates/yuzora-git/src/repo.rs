@@ -498,8 +498,8 @@ pub fn get(id: &str) -> GitResult<Arc<Repo>> {
 /// The repo holding `cwd` (here, or on machine `on`), opened once and shared.
 pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
     // No program named: each call runs the git the settings name then.
-    let probe = Place { root: cwd.to_owned(), on: on.map(str::to_owned).filter(|m| !m.is_empty()), git: String::new(), top: false, write_lock: Arc::default() };
-    let out = exec::run(&probe, Git::read(["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"]))?;
+    let probe = Place { root: cwd.to_owned(), on: on.map(str::to_owned).filter(|m| !m.is_empty()), git: String::new(), top: false, git_dir: String::new(), write_lock: Arc::default() };
+    let out = exec::run(&probe, Git::read(["rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"]))?;
     if !out.ok() {
         return Err(GitError::Other(not_a_repo(&out.stderr_text())));
     }
@@ -511,7 +511,7 @@ pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
         text.split_terminator('\n').map(str::to_owned).collect()
     } else {
         let mut each = Vec::new();
-        for flag in ["--show-toplevel", "--git-dir", "--git-common-dir"] {
+        for flag in ["--show-toplevel", "--absolute-git-dir", "--git-common-dir"] {
             let one = exec::run(&probe, Git::read(["rev-parse", "--path-format=absolute", flag]))?.text()?;
             each.push(one.strip_suffix('\n').unwrap_or(&one).to_owned());
         }
@@ -527,7 +527,7 @@ pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
         r.used();
         return Ok(r);
     }
-    let place = Place { root: root.to_owned(), on: probe.on.clone(), git: String::new(), top: true, write_lock: Arc::default() };
+    let place = Place { root: root.to_owned(), on: probe.on.clone(), git: String::new(), top: true, git_dir: git_dir.to_owned(), write_lock: Arc::default() };
     let repo = Arc::new(Repo::new(id.clone(), place, git_dir.to_owned(), common.to_owned()));
     all.insert(id, repo.clone());
     drop(all);

@@ -83,12 +83,17 @@ pub struct Place {
     /// and writing the repo around it under this one's name. Off where a repo
     /// is looked for from a folder in it (`open`).
     pub top: bool,
+    /// For a [`top`](Self::top) place: the repo's git dir as `open` had git say it
+    /// (`--absolute-git-dir`: a linked worktree's `.git/worktrees/<n>`, a submodule's
+    /// `.git/modules/<n>`). [`check_top`] compares it with git's answer, so a repo
+    /// that only reaches this folder through its `core.worktree` is not this one.
+    pub git_dir: String,
     pub write_lock: Arc<Mutex<()>>,
 }
 
 impl Place {
     pub fn local(root: impl Into<String>) -> Self {
-        Self { root: root.into(), on: None, git: "git".into(), top: false, write_lock: Arc::default() }
+        Self { root: root.into(), on: None, git: "git".into(), top: false, git_dir: String::new(), write_lock: Arc::default() }
     }
 
     /// What keeps git in this place's repo, for a [`top`](Self::top) one: the
@@ -421,32 +426,61 @@ pub fn run_streaming(place: &Place, cmd: Git, sink: Option<&mut dyn FnMut(&[u8])
     Ok(out)
 }
 
-/// Asks git (`rev-parse --show-toplevel`, the same folder and environment, here or on the
-/// machine, with the command's own cancel and timeout) which repository it finds at `place.root`,
-/// and refuses the command unless that is the folder itself: git skips a `.git` it doesn't take
-/// for a repository (empty, no `HEAD`, no `objects`) and goes on up, so only git's own answer
-/// tells. `rev-parse` runs no program a repository names: it reads the config for paths and
-/// never the index, filters, hooks or a transport.
+/// Asks git (`rev-parse --show-toplevel --absolute-git-dir`, the same folder and environment,
+/// here or on the machine, with the command's own cancel and timeout) which repository it finds
+/// at `place.root`, and refuses the command unless that is this one: its work tree is the folder
+/// itself and its git dir is the one `open` recorded. git skips a `.git` it doesn't take for a
+/// repository (empty, no `HEAD`, no `objects`) and goes on up, so only git's own answer tells;
+/// and the top level alone doesn't: a repository around the folder whose `core.worktree` names
+/// it (absolute, relative, in any case) answers with the folder, and would run the command with
+/// its own refs, index and hooks. `rev-parse` runs no program a repository names: it reads the
+/// config for paths and never the index, filters, hooks or a transport.
 fn check_top(place: &Place, cmd: &Git) -> GitResult<()> {
-    let mut probe = Git::read(["rev-parse", "--show-toplevel"]);
-    probe.timeout = cmd.timeout.min(READ_TIMEOUT);
-    probe.cancel = cmd.cancel.clone();
-    probe.max_output = 64 << 10;
-    let out = if place.is_remote() { run_remote(place, &probe, None) } else { run_local(place, &probe, None) }?;
+    let ask = |flags: &[&str]| -> GitResult<Output> {
+        let mut probe = Git::read(std::iter::once("rev-parse").chain(flags.iter().copied()));
+        probe.timeout = cmd.timeout.min(READ_TIMEOUT);
+        probe.cancel = cmd.cancel.clone();
+        probe.max_output = 64 << 10;
+        if place.is_remote() { run_remote(place, &probe, None) } else { run_local(place, &probe, None) }
+    };
+    let out = ask(&["--show-toplevel", "--absolute-git-dir"])?;
     let text = out.stdout_text();
-    // One line, whose own line feeds are part of the name.
-    let found = text.strip_suffix('\n').unwrap_or(&text);
-    if out.ok() && same_folder(found, &place.root, place.is_remote()) {
+    // A path a line, unless one has a line feed in it (git prints it as it is): then each alone.
+    let found: Option<(String, String)> = if !out.ok() {
+        None
+    } else if text.matches('\n').count() == 2 {
+        text.split_once('\n').map(|(top, gd)| (top.to_owned(), gd.strip_suffix('\n').unwrap_or(gd).to_owned()))
+    } else {
+        let mut each = Vec::new();
+        for flag in ["--show-toplevel", "--absolute-git-dir"] {
+            let one = ask(&[flag])?;
+            if !one.ok() {
+                return Err(not_here(place, one.stderr_text().trim()));
+            }
+            let one = one.stdout_text();
+            each.push(one.strip_suffix('\n').unwrap_or(&one).to_owned());
+        }
+        let git_dir = each.pop().unwrap_or_default();
+        Some((each.pop().unwrap_or_default(), git_dir))
+    };
+    let Some((top, git_dir)) = found else {
+        return Err(not_here(place, out.stderr_text().trim()));
+    };
+    if same_folder(&top, &place.root, place.is_remote()) && same_folder(&git_dir, &place.git_dir, place.is_remote()) {
         return Ok(());
     }
-    let seen = if out.ok() { format!("the repository at {found}") } else { out.stderr_text().trim().to_owned() };
-    Err(GitError::Other(format!("git finds no repository at {} ({seen}): git is not run there (a repository around it would get the change)", place.root)))
+    Err(not_here(place, &format!("the repository at {top}, git dir {git_dir}")))
 }
 
-/// Whether git's `found` and `root` are the same folder: by real path here; on a machine as
-/// written (git gave both). Drive letters, `\\?\`, `\` and a trailing `/` don't tell
-/// folders apart, nor does case: `found` is the folder itself or one above it, which no
-/// difference of case alone can make of one.
+fn not_here(place: &Place, seen: &str) -> GitError {
+    GitError::Other(format!("git finds no repository at {} ({seen}): git is not run there (a repository around it would get the change)", place.root))
+}
+
+/// Whether git's `found` and `root` are the same folder: by real path here (which also gives a
+/// folder the case it has on disk); on a machine as written (git gave both). Drive letters,
+/// `\\?\`, `\` and a trailing `/` don't tell folders apart. Case tells them apart for a unix path:
+/// `/srv/Repo` and `/srv/repo` are two folders where the file system tells them apart, and
+/// nothing here can say whether it does; a Windows path (a drive or `//host`) is the same in any case.
 fn same_folder(found: &str, root: &str, remote: bool) -> bool {
     let norm = |p: &str| -> String {
         let p = if remote { p.to_owned() } else { std::fs::canonicalize(p).map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| p.to_owned()) };
@@ -455,9 +489,10 @@ fn same_folder(found: &str, root: &str, remote: bool) -> bool {
         let p = if win { p.replace('\\', "/") } else { p };
         let kept = p.trim_end_matches('/');
         // `/` and `C:/` are their own folder.
-        (if kept.is_empty() || kept.ends_with(':') { p.as_str() } else { kept }).to_lowercase()
+        let p = if kept.is_empty() || kept.ends_with(':') { p.as_str() } else { kept };
+        if win { p.to_lowercase() } else { p.to_owned() }
     };
-    !found.is_empty() && norm(found) == norm(root)
+    !found.is_empty() && !root.is_empty() && norm(found) == norm(root)
 }
 
 fn lock<'a>(m: &'a Mutex<()>, cancel: Option<&Cancel>) -> GitResult<std::sync::MutexGuard<'a, ()>> {
@@ -784,7 +819,7 @@ fn run_remote(place: &Place, cmd: &Git, sink: Option<&mut dyn FnMut(&[u8]) -> bo
     let hc = hc_program().to_string_lossy().into_owned();
     // hc answers with both streams base64'd (4/3 the size), whole.
     let answer = cmd.max_output.saturating_mul(3).saturating_add(64 << 10);
-    let local = Place { root: yuzora_core::paths::home_dir().to_string_lossy().into_owned(), on: None, git: hc, top: false, write_lock: Arc::default() };
+    let local = Place { root: yuzora_core::paths::home_dir().to_string_lossy().into_owned(), on: None, git: hc, top: false, git_dir: String::new(), write_lock: Arc::default() };
     let call = Git {
         args: hc_args(place, cmd),
         stdin: cmd.stdin.clone(),
@@ -913,7 +948,7 @@ mod tests {
     // first asks git which repo it finds there. Windows paths keep the ceiling, here or on a machine.
     #[test]
     fn a_top_place_is_kept_in_its_repo_whichever_git_runs() {
-        let at = |root: &str, on: Option<&str>| Place { root: root.into(), on: on.map(Into::into), git: "git".into(), top: true, write_lock: Arc::default() };
+        let at = |root: &str, on: Option<&str>| Place { root: root.into(), on: on.map(Into::into), git: "git".into(), top: true, git_dir: String::new(), write_lock: Arc::default() };
         let ceiling = |above: &str| vec![("GIT_CEILING_DIRECTORIES".to_owned(), above.to_owned())];
         for on in [None, Some("lab")] {
             for (root, above) in [("/srv/repo", "/srv"), ("/repo", "/"), ("C:/Users/x/repo", "C:/Users/x"), ("C:/repo", "C:/"), ("//host/share/repo", "//host/share"), ("/srv/repo/", "/srv"), ("/srv/re\\po", "/srv"), ("/srv/a/re\\po/", "/srv/a")] {
@@ -1061,7 +1096,7 @@ mod tests {
     }
 
     // A linked worktree and a submodule (their `.git` is a file) are open repos like any: git
-    // works there with the ceiling, and under a `:` with the write's look at the `.git`.
+    // works there with the ceiling, and under a `:` with git's own answer to the check.
     #[test]
     fn a_linked_worktree_and_a_submodule_work_with_and_without_a_ceiling() {
         use crate::repo::open;
@@ -1203,6 +1238,86 @@ mod tests {
         assert!(plain_git(&d, &["log", "-1", "--format=%s"]).starts_with("outer2"), "the repo around it got a commit");
     }
 
+    // The repo around the folder names it as its work tree (`core.worktree`: absolute, relative
+    // to its git dir, in another case): git then answers the folder itself for the top level, and
+    // the command would run in the outer repo (its HEAD, its pre-commit hook). So does a `.git`
+    // swapped for a gitfile naming the outer git dir. Only the git dir tells them from this repo.
+    #[cfg(unix)]
+    #[test]
+    fn a_repo_around_that_names_the_folder_as_its_work_tree_gets_no_command() {
+        use crate::repo::open;
+        for how in ["absolute", "relative", "other case", "gitfile"] {
+            let dir = tempfile::tempdir().unwrap();
+            let marks = tempfile::tempdir().unwrap();
+            let d = std::path::PathBuf::from(real(dir.path()));
+            let m_hook = marks.path().join("hook");
+            plain_git(&d, &["init", "-q", "-b", "main"]);
+            plain_git(&d, &["commit", "--allow-empty", "-q", "-m", "outer"]);
+            let head = plain_git(&d, &["rev-parse", "HEAD"]);
+            script(&d.join(".git/hooks/pre-commit"), &format!("touch '{}'", m_hook.display()));
+            let inner = d.join("a:b/inner");
+            std::fs::create_dir_all(&inner).unwrap();
+            plain_git(&inner, &["init", "-q", "-b", "main"]);
+            plain_git(&inner, &["commit", "--allow-empty", "-q", "-m", "inner"]);
+            let repo = open(&real(&inner), None).unwrap();
+            let there = on_a_machine(&repo);
+            assert!(repo.place.needs_git_check() && !repo.place.git_dir.is_empty());
+            for r in [&repo, &there] {
+                crate::trust::trust(r).unwrap();
+                assert!(commit_of(r, "inner").unwrap().ok(), "{how}: the open repo works");
+            }
+            match how {
+                "absolute" => plain_git(&d, &["config", "core.worktree", &repo.place.root]),
+                "relative" => plain_git(&d, &["config", "core.worktree", "../a:b/inner"]),
+                "other case" => plain_git(&d, &["config", "core.worktree", &repo.place.root.replace("/inner", "/INNER")]),
+                _ => String::new(),
+            };
+            std::fs::rename(inner.join(".git"), inner.join(".git-away")).unwrap();
+            if how == "gitfile" {
+                std::fs::write(inner.join(".git"), format!("gitdir: {}\n", d.join(".git").display())).unwrap();
+            }
+            for (where_, r) in [("here", &repo), ("on a machine", &there)] {
+                for kind in [Kind::Write, Kind::Read] {
+                    let cmd = if kind == Kind::Write { Git::write(["commit", "--allow-empty", "-q", "-m", "landed"]) } else { Git::read(["status", "--porcelain=v2"]) };
+                    let out = r.run(cmd);
+                    assert!(out.as_ref().is_err_and(|e| e.to_string().contains(NOT_THERE)), "{how} {where_} {kind:?}: {out:?}");
+                }
+                assert_eq!(plain_git(&d, &["rev-parse", "HEAD"]), head, "{how} {where_}: the repo around it got a commit");
+                assert!(!m_hook.exists(), "{how} {where_}: its hook ran");
+            }
+        }
+    }
+
+    // A write asks git which repo it finds only once it holds the repo's write lock: another
+    // write (ours) may be what moves the `.git` away, and an answer taken before waiting for it
+    // would be stale by the time the command runs. (What the lock can't order: a removal from
+    // outside, between the check and the command.)
+    #[cfg(unix)]
+    #[test]
+    fn a_write_asks_git_which_repo_it_finds_only_after_it_has_the_write_lock() {
+        use crate::repo::{Repo, open};
+        let dir = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let inner = std::path::PathBuf::from(real(dir.path())).join("a:b/inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        plain_git(&inner, &["init", "-q", "-b", "main"]);
+        let base = open(&real(&inner), None).unwrap();
+        crate::trust::trust(&base).unwrap();
+        let (log, wrapper) = (tools.path().join("log"), tools.path().join("git"));
+        script(&wrapper, &format!("printf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"", log.display()));
+        let place = Place { git: wrapper.to_string_lossy().into_owned(), ..base.place.clone() };
+        let repo = Arc::new(Repo::new(base.id.clone(), place.clone(), base.git_dir.clone(), base.common_dir.clone()));
+        let asked = || std::fs::read_to_string(&log).unwrap_or_default().lines().filter(|l| l.contains("rev-parse")).count();
+        let held = place.write_lock.lock().unwrap();
+        let r2 = repo.clone();
+        let writer = std::thread::spawn(move || r2.run(Git::write(["status"])));
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(asked(), 0, "git was asked before the write lock was held");
+        drop(held);
+        assert!(writer.join().unwrap().unwrap().ok());
+        assert_eq!(asked(), 1);
+    }
+
     // The `.git` is there but git doesn't take it for a repository (`HEAD` empty or gone, no
     // `objects` or `refs`, a folder with nothing in it, a half done `rm -rf`) and goes up: only
     // git's own answer says so.
@@ -1304,13 +1419,13 @@ mod tests {
     // as written on a machine, with Windows' forms (`\\?\`, `\`, case, `C:/`) the same one.
     #[test]
     fn the_folder_git_found_is_the_folder_or_it_is_not() {
-        for (found, root) in [("/srv/repo", "/srv/repo"), ("/srv/repo", "/srv/repo/"), ("/Srv/Repo", "/srv/repo"), ("/", "/"), ("C:/x/repo", "C:/x/repo"), ("C:/x/repo", r"C:\x\repo"), ("c:/x/repo", "C:/X/Repo"), (r"\\?\C:\x\repo", "C:/x/repo"), ("C:/", "C:/"), ("C:/", r"C:\"), ("//host/share/repo", r"\\host\share\repo")] {
+        for (found, root) in [("/srv/repo", "/srv/repo"), ("/srv/repo", "/srv/repo/"), ("/", "/"), ("C:/x/repo", "C:/x/repo"), ("C:/x/repo", r"C:\x\repo"), ("c:/x/repo", "C:/X/Repo"), (r"\\?\C:\x\repo", "C:/x/repo"), ("C:/", "C:/"), ("C:/", r"C:\"), ("//host/share/repo", r"\\host\share\repo")] {
             assert!(same_folder(found, root, true), "{found} = {root}");
         }
-        for (found, root) in [("/srv", "/srv/repo"), ("", "/srv/repo"), ("", ""), ("/srv/repo/sub", "/srv/repo"), ("C:/", "C:/x"), ("/", "/srv"), ("/srv/re/po", r"/srv/re\po"), ("/srv/repo2", "/srv/repo")] {
+        for (found, root) in [("/srv", "/srv/repo"), ("", "/srv/repo"), ("", ""), ("/srv/repo/sub", "/srv/repo"), ("C:/", "C:/x"), ("/", "/srv"), ("/srv/re/po", r"/srv/re\po"), ("/srv/repo2", "/srv/repo"), ("/Srv/Repo", "/srv/repo"), ("/srv/a:b/Repo", "/srv/a:b/repo"), ("/srv/a:b/INNER", "/srv/a:b/inner")] {
             assert!(!same_folder(found, root, true), "{found} != {root}");
         }
-        // Here: by real path.
+        // Here: by real path, and a unix path keeps its case.
         let dir = tempfile::tempdir().unwrap();
         let real_dir = std::fs::canonicalize(dir.path()).unwrap();
         std::fs::create_dir(real_dir.join("repo")).unwrap();
@@ -1323,11 +1438,21 @@ mod tests {
             assert!(same_folder(&found, &real_dir.join("link").to_string_lossy(), false), "a link to it");
             assert!(!same_folder(&found, &real_dir.join("link").to_string_lossy(), true), "on a machine: as written");
         }
+        // A file system that ignores case gives the case it has on disk (what the work tree of
+        // a repo around spelled differently comes to); one that doesn't, two folders.
+        std::fs::create_dir(real_dir.join("Case")).unwrap();
+        let other = real_dir.join("case");
+        if other.exists() {
+            assert_eq!(std::fs::canonicalize(&other).unwrap(), real_dir.join("Case"));
+            assert!(same_folder(&other.to_string_lossy(), &real_dir.join("Case").to_string_lossy(), false), "one folder, spelled in two cases");
+        } else {
+            assert!(!same_folder(&other.to_string_lossy(), &real_dir.join("Case").to_string_lossy(), false), "two folders");
+        }
     }
 
     #[test]
     fn remote_commands_go_through_hc_exec() {
-        let place = Place { root: "/srv/repo".into(), on: Some("lab-01".into()), git: "git".into(), top: false, write_lock: Arc::default() };
+        let place = Place { root: "/srv/repo".into(), on: Some("lab-01".into()), git: "git".into(), top: false, git_dir: String::new(), write_lock: Arc::default() };
         let a = hc_args(&place, &Git::read(["status", "-z"]).stdin(b"x".to_vec()).timeout(Duration::from_secs(9000)));
         assert_eq!(&a[..8], ["exec", "--json", "--on", "lab-01", "--timeout", "600", "--cwd", "/srv/repo"]);
         assert!(a.windows(2).any(|w| w == ["--env", "GIT_OPTIONAL_LOCKS=0"]));
