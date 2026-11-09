@@ -17,6 +17,7 @@ beta.2 改以 [herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)（Rust
 
 - 指令：`git subtree add --prefix=app https://github.com/herdrdev/herdr-app.git master --squash`。
 - 上游 commit：`9c678b0fc84625b57ba7be4f56319802ee366765`（herdr-app v0.1.12 之後的 master）。squash commit `32fd5c6f`、merge commit `b486feb0` 帶有 `git-subtree-dir: app`／`git-subtree-split` metadata。
+- 最近一次同步（beta.4）：上游正式 tag **v0.1.14**（`2405bf38`，`distribution/core-version` 仍是 0.1.11、`hc::GENERATION` 仍是 1）。squash commit `f33087e0`、merge commit `15b4426d`。之前停在 `f6fe216e`（v0.1.12 之後）。
 - ghostty 是上游的 submodule。subtree 只帶進 gitlink（`app/vendor/ghostty` → `291fd050b9e9c293c8adb6a140742649b7e42d3a`），所以 root `.gitmodules` 另外登記同一個 URL：
 
   ```bash
