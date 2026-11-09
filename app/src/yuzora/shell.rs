@@ -32,7 +32,7 @@ pub fn new_space_dialog(machine: Option<String>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{Content, HeaderContent, Node};
+    use crate::layout::{Content, HeaderContent, Node, Size};
 
     fn shipped() -> Node {
         serde_json::from_str(include_str!("../../defaults/layouts/yuzora.json")).unwrap()
@@ -99,6 +99,30 @@ mod tests {
         for m in &mods {
             assert!(defaults.join(m).join("main.js").is_file(), "{m} ships in defaults/mods");
         }
+    }
+
+    // The left side is Herdr's own (v0.1.14 main.json): only the sizes differ (248 wide, a 40px top row, on purpose).
+    // `min` 44 is what lets the collapse button shrink it, `window_drag` makes the top row move the window, and the
+    // footer prop is what makes the second workspace-chrome copy a footer.
+    #[test]
+    fn the_left_side_is_the_upstream_one_but_for_its_sizes() {
+        fn sidebar(layout: &str) -> Node {
+            let root: Node = serde_json::from_str(layout).unwrap();
+            root.find("sidebar").expect("a sidebar").clone()
+        }
+        let mut ours = sidebar(include_str!("../../defaults/layouts/yuzora.json"));
+        let mut theirs = sidebar(include_str!("../../defaults/layouts/main.json"));
+        assert_eq!(ours.size, Some(Size::Px { px: 248.0 }));
+        assert_eq!(ours.find("brand").unwrap().size, Some(Size::Px { px: 40.0 }));
+        assert_eq!(ours.min, Some(44.0), "the collapse button needs room to shrink to");
+        assert!(ours.find("brand").unwrap().window_drag, "the top row moves the window");
+        assert!(matches!(ours.find("sidebar-footer").unwrap().content(),
+            Some(Content::Mod { props, .. }) if props["footer"] == json!(true)), "the footer prop makes the second copy a footer");
+        for side in [&mut ours, &mut theirs] {
+            side.size = None;
+            side.find_mut("brand").unwrap().size = None;
+        }
+        assert_eq!(ours, theirs, "everything else is the upstream sidebar's");
     }
 
     #[test]

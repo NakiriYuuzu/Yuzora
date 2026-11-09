@@ -58,7 +58,7 @@ L1 寫的 key：
 | `yuzora.dock.last` | 右側 dock 上次開的模式（`files`／`git`／`database`／`ssh`），`yuzora-modebar.toggle` 用它 |
 | `yuzora.dock.open` | 抽屜的 window 現在開的是哪個（`{id, mode, session}`），由 window 標頭寫入；關閉鈕與標頭的 `close()`（換 layout、結束 App；只在自己的 id 還是這個值時）清成 null。`session` 是 `yuzora:core` 的 `session()`（每次執行不同）：shared 會存進 shared.json、overlay id 每次執行從 o1 重算，讀的人（`openNow()`）只信這一次執行寫的，上次留下的視為沒開 |
 
-dock 另外寫 Herdr 的 `space.colors`（上游 `spaces` 讀的 Space 色）：`yuzora.space.colors` 有 hex、而且 `space.colors` **還沒有值**的 Space（只限目前存在的），模式列／抽屜把同一個 hex 寫進去（把 beta.3 使用者的 Yuzora 色帶過去一次）；`space.colors` 已有值的不覆蓋（那是使用者在上游 UI 的選擇）；Yuzora 沒有顏色時不寫。`yuzora.badge.workspace` 與 legacy 模式列的 `WAITING` 只剩舊 clone 在用，等 legacy 清理一併移除。`workspace.panels` 不動（它只決定 tab 列的 Files／Changes 兩顆鈕）。
+dock 另外寫 Herdr 的 `space.colors`（上游 `spaces` 讀的 Space 色）：`yuzora.space.colors` 有 hex、而且 `space.colors` **不是 `#` hex** 的 Space（只限目前存在的），模式列／抽屜把同一個 hex 寫進去（把 beta.3 使用者的 Yuzora 色帶過去）；`space.colors` 已是 `#` hex 的不覆蓋（那是使用者在上游 UI 的選擇）；Yuzora 沒有顏色時不寫。不能只填空：上游 `spaces`、`picker` 每次 render 都替沒有顏色的 Space 填 `ansi*` 色名，而且左側先於模式列 render，「只填空」永遠寫不進去（render 測試 R5 先跑 `spaces` 再跑模式列來守住）。左側欄與上游 `main.json` 的 sidebar 一致（只差寬 248、頂列 40），由 `shell.rs` 的測試守住（`min 44`、`window_drag`、footer prop）。`yuzora.badge.workspace` 與 legacy 模式列的 `WAITING` 只剩舊 clone 在用，等 legacy 清理一併移除。`workspace.panels` 不動（它只決定 tab 列的 Files／Changes 兩顆鈕）。
 
 L1 讀的 key：
 

@@ -52,8 +52,9 @@ export function badgeText(value) {
 }
 
 // Herdr's Spaces (the left side) keep their badge colors in "space.colors"; Yuzora's mods keep theirs in
-// "yuzora.space.colors". Where Yuzora has a color for a Space and Herdr has none yet, Herdr gets the same hex
-// (a beta.3 user's colors carry over once). A color Herdr already has is the user's pick in its own UI: never overwritten.
+// "yuzora.space.colors". Where Yuzora has a color for a Space, Herdr gets the same hex unless it already has a
+// hex of its own (a pick in its UI stays). Herdr's `spaces` and `picker` mods give a Space without a color a theme
+// color name ("ansi6") on every render, and they render before this does, so a name is theirs to be replaced, not a pick.
 export function syncSpaceColors() {
   const mine = shared(COLORS);
   if (!mine || typeof mine !== "object") return;
@@ -61,7 +62,7 @@ export function syncSpaceColors() {
   const ids = new Set(spaces().map((s) => s.id));
   let next = null;
   for (const [id, hex] of Object.entries(mine)) {
-    if (ids.has(id) && typeof hex === "string" && hex.startsWith("#") && !theirs[id]) (next ??= { ...theirs })[id] = hex;
+    if (ids.has(id) && typeof hex === "string" && hex.startsWith("#") && !String(theirs[id] ?? "").startsWith("#")) (next ??= { ...theirs })[id] = hex;
   }
   if (next) setShared(SPACE_COLORS, next);
 }

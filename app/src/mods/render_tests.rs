@@ -1494,9 +1494,11 @@ fn yuzora_status_branch_opens_git_in_the_dock(cx: &mut TestAppContext) {
     assert_eq!(click(cx, &sidebarless), [json!(["layout.select", {"stack": "yuzora-sidebar", "child": "yuzora-sidebar-git"}])]);
 }
 
-// R5: Yuzora's Space colors (yuzora.space.colors) are written into Herdr's (space.colors) only for the
-// Spaces that exist and have none there yet (a beta.3 user's colors carry over once); a color Herdr has
-// already is the user's pick and stays, and nothing is written when there's nothing to say.
+// R5: Yuzora's Space colors (yuzora.space.colors) are written into Herdr's (space.colors) for the Spaces
+// that exist and have no hex there yet: Herdr's own `spaces` and `picker` mods give every colorless Space a
+// theme color name ("ansi6") each time they render, before this does, so a name is replaced (the beta.3
+// colors carry over); a hex Herdr has is a pick in its own UI and stays. Nothing is written when there's
+// nothing to say, and Herdr's mods and this one agree after one pass (no ping-pong).
 #[gpui::test]
 fn yuzora_dock_keeps_space_colors_in_step(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
@@ -1509,14 +1511,25 @@ fn yuzora_dock_keeps_space_colors_in_step(cx: &mut TestAppContext) {
     let yuzora = json!({"s1": "#2563eb", "s2": "#0f766e", "gone": "#c2410c", "s3": "#7c3aed", "bad": "ansi4"});
     for (dock, layout, placement) in [("bar", &main, Value::Null), ("drawer", &terminals, place.clone())] {
         let go = |cx: &mut TestAppContext, shared: &[(&str, Value)]| dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": dock}), layout, placement.clone(), shared, &[], None);
-        let copy = go(cx, &[("yuzora.space.colors", yuzora.clone()), ("space.colors", json!({"s1": "ansi6", "other": "ansi3"}))]);
-        assert_eq!(theirs(&copy), Some(json!({"s1": "ansi6", "s2": "#0f766e", "other": "ansi3"})), "{dock}: Herdr's own colors stay; Yuzora's hex only fills a Space that has none, and only one that exists");
+        let copy = go(cx, &[("yuzora.space.colors", yuzora.clone()), ("space.colors", json!({"s1": "ansi6", "s2": "#123456", "other": "ansi3"}))]);
+        assert_eq!(theirs(&copy), Some(json!({"s1": "#2563eb", "s2": "#123456", "other": "ansi3"})), "{dock}: Yuzora's hex replaces a color name and fills a Space with none, only for one that exists; Herdr's hex stays");
         let copy = go(cx, &[("yuzora.space.colors", yuzora.clone())]);
         assert_eq!(theirs(&copy), Some(json!({"s1": "#2563eb", "s2": "#0f766e"})), "{dock}: Herdr had none");
         let same = json!({"s1": "#2563eb", "s2": "#0f766e"});
         assert_eq!(theirs(&go(cx, &[("yuzora.space.colors", same.clone()), ("space.colors", same.clone())])), Some(same), "{dock}");
         assert_eq!(theirs(&go(cx, &[])), None, "{dock}: Yuzora has no colors: nothing written");
         assert_eq!(theirs(&go(cx, &[("space.colors", json!({"s1": "ansi6"}))])), Some(json!({"s1": "ansi6"})), "{dock}: Herdr's own are kept");
+
+        // The real order: Herdr's `spaces` mod renders first and names every colorless Space; this mod follows.
+        let first = dock_copy(cx, &staged, "mods/spaces", json!({}), layout, placement.clone(), &[("yuzora.space.colors", yuzora.clone())], &[], None);
+        assert_eq!(theirs(&first), Some(json!({"s1": "ansi6", "s2": "ansi3"})), "{dock}: Herdr's mod names the Spaces");
+        let after: Vec<(&str, Value)> = first.shared.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+        let second = go(cx, &after);
+        assert_eq!(theirs(&second), Some(json!({"s1": "#2563eb", "s2": "#0f766e"})), "{dock}: and Yuzora's colors win");
+        // Both again with that state: nothing changes, so the two never trade writes.
+        let settled: Vec<(&str, Value)> = second.shared.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+        let again = dock_copy(cx, &staged, "mods/spaces", json!({}), layout, placement.clone(), &settled, &[], None);
+        assert_eq!(theirs(&again), theirs(&second), "{dock}: Herdr's mod leaves a hex alone");
     }
 }
 
