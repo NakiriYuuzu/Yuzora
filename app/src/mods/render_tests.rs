@@ -50,11 +50,14 @@ impl Staged {
         dir
     }
     // yuzora(dock): `setup` that reads and writes shared state, so it can play another copy's part.
+    // A `setup` with `BEFORE_INIT` in it runs the text before it ahead of `super.init` (to swap what init starts, such
+    // as a page'"'"'s refresh that runs a listing on a thread of its own, which the test executor refuses).
     fn wrapper_with_shared(&self, entry: &str, setup: &str) -> PathBuf {
         let dir = self.0.clone();
+        let (early, setup) = setup.split_once(BEFORE_INIT).unwrap_or(("", setup));
         std::fs::write(dir.join("main.js"), format!(
             "import Real from './{entry}/main.js'; import {{ shared, setShared }} from 'herdr'; \
-             export default class Scenario extends Real {{ init(props, cx) {{ super.init(props, cx); {setup} }} }}"
+             export default class Scenario extends Real {{ init(props, cx) {{ {early} super.init(props, cx); {setup} }} }}"
         )).unwrap();
         dir
     }
@@ -64,6 +67,8 @@ impl Drop for Staged {
         std::fs::remove_dir_all(&self.0).unwrap();
     }
 }
+
+const BEFORE_INIT: &str = "/*before-init*/";
 
 #[derive(Default)]
 struct Calls {
@@ -1440,7 +1445,7 @@ fn yuzora_settings_mods_sets_the_dock_per_layout(cx: &mut TestAppContext) {
         { name: 'mine', path: '/x/mine.json', valid: true, shipped: false, cloned_from: null, preview: null, dock: 'off', source: 'personal' },
         { name: 'yuzora', path: '/x/yuzora.json', valid: true, shipped: true, cloned_from: null, preview: null, dock: null, source: 'shipped' } ]"#;
     let scenario = |pick: &str| format!(
-        "const rows = {layouts}; \
+        "this.refresh = () => {{}}; this.list = () => {{}}; /*before-init*/ const rows = {layouts}; \
          Object.defineProperty(this, 'data', {{ get: () => ({{ mods: [], layouts: rows }}), set: () => {{}} }}); \
          this.loaded = true; let store = {{ unrelated: 1 }}; \
          this.readShell = () => store; this.writeShell = (s) => {{ store = s; }}; \
@@ -1602,6 +1607,26 @@ fn yuzora_dock_keeps_space_colors_in_step(cx: &mut TestAppContext) {
         let again = dock_copy(cx, &staged, "mods/spaces", json!({}), layout, placement.clone(), &settled, &[], None);
         assert_eq!(theirs(&again), theirs(&second), "{dock}: Herdr's mod leaves a hex alone");
     }
+}
+
+// R5b: with the dock off, the mode bar is not drawn, and the tab bar (always in the yuzora layout) does the same
+// Space color write: Herdr's `spaces` mod must not stay on color names while the tabs are in Yuzora's hex.
+#[gpui::test]
+fn yuzora_tab_bar_keeps_space_colors_in_step(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let layout = dock_layout(include_str!("../../defaults/layouts/main.json"));
+    let theirs = |copy: &DockCopy| copy.shared.get("space.colors").cloned();
+    let go = |cx: &mut TestAppContext, shared: &[(&str, Value)]| dock_copy(cx, &staged, "mods/yuzora-shell-tabs", json!({}), &layout, Value::Null, shared, &[], None);
+    let yuzora = json!({"s1": "#2563eb", "s2": "#0f766e", "gone": "#c2410c", "bad": "ansi4"});
+    let copy = go(cx, &[("yuzora.space.colors", yuzora.clone()), ("space.colors", json!({"s1": "ansi6", "s2": "#123456", "other": "ansi3"}))]);
+    assert_eq!(theirs(&copy), Some(json!({"s1": "#2563eb", "s2": "#123456", "other": "ansi3"})), "a name is replaced by Yuzora's hex, a Herdr hex and an unknown Space stay");
+    let copy = go(cx, &[("yuzora.space.colors", yuzora)]);
+    assert_eq!(theirs(&copy), Some(json!({"s1": "#2563eb", "s2": "#0f766e"})), "Herdr had none: only the Spaces that exist");
+    // No Yuzora colors yet: the badges give the Spaces theirs first (the same hex the left side then shows); a Herdr hex still stays.
+    let copy = go(cx, &[("space.colors", json!({"s1": "#123456"}))]);
+    assert_eq!(theirs(&copy).unwrap()["s1"], json!("#123456"), "Herdr's own pick stays");
+    assert_eq!(theirs(&copy).unwrap()["s2"], copy.shared["yuzora.space.colors"]["s2"], "the badge color is the one Herdr shows");
 }
 
 // yuzora(L1): Herdr's own Files and Changes panels start off in Yuzora (its sidebar has Files and
@@ -2109,7 +2134,7 @@ fn yuzora_settings_mods_closes_the_drawers_window(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let scenario = |pick: &str| format!(
-        "const rows = [ {{ name: 'win98', path: '/x/win98.json', valid: true, shipped: true, cloned_from: null, preview: null, dock: null, source: 'shipped' }}, \
+        "this.refresh = () => {{}}; this.list = () => {{}}; /*before-init*/ const rows = [ {{ name: 'win98', path: '/x/win98.json', valid: true, shipped: true, cloned_from: null, preview: null, dock: null, source: 'shipped' }}, \
            {{ name: 'mine', path: '/x/mine.json', valid: true, shipped: false, cloned_from: null, preview: null, dock: null, source: 'personal' }} ]; \
          Object.defineProperty(this, 'data', {{ get: () => ({{ mods: [], layouts: rows }}), set: () => {{}} }}); \
          this.loaded = true; let store = {{}}; this.readShell = () => store; this.writeShell = (s) => {{ store = s; }}; {pick}"
