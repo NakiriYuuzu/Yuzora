@@ -162,17 +162,16 @@ pub fn strip(n: &Node, fallback: Option<&Node>) -> Node {
     fn go(x: &mut Node, fallback: Option<&Node>) {
         x.floating.retain(|f| !reserved(&f.id));
         let id = x.id.clone();
-        if let Kind::Stack { children, active, .. } = &mut x.kind {
-            children.retain(|c| !reserved(&c.id));
-            if active.as_deref().is_some_and(reserved) {
-                *active = fallback
-                    .and_then(|f| f.find(&id))
-                    .and_then(|f| match &f.kind {
-                        Kind::Stack { active, .. } => active.clone(),
-                        _ => None,
-                    })
-                    .filter(|a| !reserved(a));
-            }
+        if let Kind::Stack { active, .. } = &mut x.kind
+            && active.as_deref().is_some_and(reserved)
+        {
+            *active = fallback
+                .and_then(|f| f.find(&id))
+                .and_then(|f| match &f.kind {
+                    Kind::Stack { active, .. } => active.clone(),
+                    _ => None,
+                })
+                .filter(|a| !reserved(a));
         }
         if let Some(children) = x.children_mut() {
             children.retain(|c| !reserved(&c.id));
@@ -238,17 +237,25 @@ fn as_read_with(n: &Node, fallback: Option<&Node>, on: bool, personal: Option<Ch
 /// A tree a mod made (`layout.set`): the dock is already in it when the mod
 /// started from `layout()`; a tree built from scratch gets it added.
 /// Whatever is there is kept as it is, with the clicks it carries.
-pub fn ensure(n: &mut Node, layout: &str) {
-    ensure_with(n, enabled(), personal(layout));
+/// `fallback` (the tree as the file has it) is what a stack that showed a
+/// removed dock node goes back to when the dock is rebuilt.
+pub fn ensure(n: &mut Node, layout: &str, fallback: Option<&Node>) {
+    ensure_with(n, enabled(), personal(layout), fallback);
 }
 
-fn ensure_with(n: &mut Node, on: bool, personal: Option<Choice>) {
+fn ensure_with(n: &mut Node, on: bool, personal: Option<Choice>, fallback: Option<&Node>) {
     if !on {
         return;
     }
-    let mut want = n.clone();
+    let mut want = strip(n, fallback);
     inject_with(&mut want, true, personal);
     if reserved_ids(n) != reserved_ids(&want) {
+        // The stacks keep what they showed, where that child is still there.
+        for x in n.walk() {
+            if let Kind::Stack { active: Some(a), .. } = &x.kind {
+                want.select(&x.id, a);
+            }
+        }
         *n = want;
     }
 }
@@ -415,7 +422,7 @@ mod tests {
             // What a save would write for it (nothing edited) is the file's text.
             assert_eq!(text_of(&strip(&without_clicks(&file, &n), Some(&file))), text_of(&file));
             let mut shown = file.clone();
-            ensure_with(&mut shown, false, None);
+            ensure_with(&mut shown, false, None, None);
             assert_eq!(shown, file, "ensure does nothing while off");
         }
     }
@@ -427,11 +434,11 @@ mod tests {
             let mut n = parse(text);
             assert_eq!(inject(&mut n, "x"), want);
             let mut shown = n.clone();
-            ensure(&mut shown, "x");
+            ensure(&mut shown, "x", None);
             assert_eq!(shown, n, "a tree that has the dock keeps it");
         }
         let mut bare = parse(MAIN);
-        ensure(&mut bare, "a-layout-nobody-has-chosen-for");
+        ensure(&mut bare, "a-layout-nobody-has-chosen-for", None);
         assert!(bare.find("yuzora-dock-bar").is_some(), "a tree built without the dock gets it");
     }
 
@@ -513,19 +520,19 @@ mod tests {
         let (file, mut chrome, placed) = injected(MAIN);
         click(&mut chrome, placed);
         let mut kept = chrome.clone();
-        ensure_with(&mut kept, true, None);
+        ensure_with(&mut kept, true, None, None);
         assert_eq!(kept, chrome, "a tree that has the dock keeps it, clicks and all");
         let mut bare = file.clone();
-        ensure_with(&mut bare, true, None);
+        ensure_with(&mut bare, true, None, None);
         assert_eq!(strip(&bare, None), file);
         assert!(bare.find("yuzora-dock-bar").is_some());
         // The drawer too, and a dock the tree opted out of stays out.
         let mut win = parse(WIN98);
-        ensure_with(&mut win, true, None);
+        ensure_with(&mut win, true, None, None);
         assert!(win.floating.iter().any(|f| f.id == PREFIX));
         let mut off = parse(&MAIN.replacen("\"id\": \"root\",", "\"id\": \"root\", \"yuzora\": { \"dock\": \"off\" },", 1));
         let before = off.clone();
-        ensure_with(&mut off, true, None);
+        ensure_with(&mut off, true, None, None);
         assert_eq!(off, before);
     }
 
@@ -575,11 +582,11 @@ mod tests {
         assert_eq!(placed(WIN98, Some(Choice::Off)), Placed::Off);
         // The choice reaches what a mod's layout.set and a save's read-back make, not only a load.
         let mut bare = parse(MAIN);
-        ensure_with(&mut bare, true, Some(Choice::Off));
+        ensure_with(&mut bare, true, Some(Choice::Off), None);
         assert!(reserved_ids(&bare).is_empty(), "off: a tree built without the dock stays without");
         let mut shown = parse(MAIN);
         inject_with(&mut shown, true, None);
-        ensure_with(&mut shown, true, Some(Choice::Off));
+        ensure_with(&mut shown, true, Some(Choice::Off), None);
         assert!(reserved_ids(&shown).is_empty(), "off: a tree that had the dock loses it, as a load would");
         let file = parse(MAIN);
         assert!(reserved_ids(&as_read_with(&shown, Some(&file), true, Some(Choice::Off))).is_empty());
@@ -769,13 +776,13 @@ mod tests {
         let row = n.walk().into_iter().filter(|x| x.id == "r").nth(1).unwrap();
         let ids: Vec<&str> = row.children().iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, ["main", "panel", "yuzora-dock-bar"], "the bar is in the row that holds the panel");
-        assert!(n.walk().into_iter().filter(|x| x.id == "r").next().unwrap().children().iter().all(|c| c.id != "yuzora-dock-bar"));
+        assert!(n.walk().into_iter().find(|x| x.id == "r").unwrap().children().iter().all(|c| c.id != "yuzora-dock-bar"));
         // No ids at all but the panel's.
         let bare = json!({ "type": "row", "children": [{ "type": "column", "children": [row_with_panel("", vec![])] }] });
         let mut n: Node = serde_json::from_value(bare).unwrap();
         assert_eq!(inject_with(&mut n, true, None), Placed::Panel);
-        let mut again: Node = serde_json::from_value(serde_json::to_value(&strip(&n, None)).unwrap()).unwrap();
-        ensure_with(&mut again, true, None);
+        let mut again: Node = serde_json::from_value(serde_json::to_value(strip(&n, None)).unwrap()).unwrap();
+        ensure_with(&mut again, true, None, None);
         assert!(again.find("yuzora-dock-bar").is_some());
         // Several panel-bodies: the modes join the one inside the panel.
         let many = json!({ "id": "root", "type": "row", "children": [
@@ -808,17 +815,24 @@ mod tests {
             seed ^= seed << 17;
             seed % n
         };
+        // Half the trees draw from ids with the dock's among them, half from ids without (those are what the invariants below run on).
+        const CLEAN: [&str; 6] = ["", "root", "r", "panel", "panel-body", "x"];
         const IDS: [&str; 9] = ["", "root", "r", "panel", "panel-body", "yuzora-dock", "yuzora-dock-git", "yuzora-dock-bar", "x"];
-        fn rand_tree(next: &mut impl FnMut(u64) -> u64, depth: u32) -> Value {
-            let id = IDS[next(IDS.len() as u64) as usize];
+        fn rand_tree(next: &mut impl FnMut(u64) -> u64, ids: &[&str], depth: u32) -> Value {
+            let id = ids[next(ids.len() as u64) as usize];
             let mut node = match next(if depth == 0 { 1 } else { 4 }) {
                 0 => json!({ "type": "block", "content": { "mod": if next(3) == 0 { "yuzora-sidebar-git" } else { "m" } } }),
                 k => {
-                    let kids: Vec<Value> = (0..next(4)).map(|_| rand_tree(next, depth - 1)).collect();
+                    let kids: Vec<Value> = (0..next(4)).map(|_| rand_tree(next, ids, depth - 1)).collect();
                     match k {
+                        // A third of the rows hold a panel, so the panel placement is what gets run.
+                        1 if next(3) == 0 => {
+                            let body = json!({ "id": "panel-body", "type": "stack", "children": kids, "active": ids[next(ids.len() as u64) as usize] });
+                            json!({ "type": "row", "children": [{ "type": "block", "content": { "tab": "active" } }, { "id": "panel", "type": "column", "children": [body] }] })
+                        }
                         1 => json!({ "type": "row", "children": kids }),
                         2 => json!({ "type": "column", "children": kids }),
-                        _ => json!({ "type": "stack", "children": kids, "active": IDS[next(IDS.len() as u64) as usize] }),
+                        _ => json!({ "type": "stack", "children": kids, "active": ids[next(ids.len() as u64) as usize] }),
                     }
                 }
             };
@@ -826,7 +840,7 @@ mod tests {
                 node["id"] = json!(id);
             }
             if next(5) == 0 {
-                node["floating"] = json!([{ "id": IDS[next(IDS.len() as u64) as usize], "content": { "mod": "m" } }]);
+                node["floating"] = json!([{ "id": ids[next(ids.len() as u64) as usize], "content": { "mod": "m" } }]);
             }
             if next(6) == 0 {
                 let dock = [json!("off"), json!("drawer"), json!("auto"), json!(5)][next(4) as usize].clone();
@@ -834,22 +848,46 @@ mod tests {
             }
             node
         }
-        let mut parsed = 0;
-        for _ in 0..3000 {
-            let tree = rand_tree(&mut next, 4);
+        let (mut parsed, mut panels, mut checked) = (0, 0, 0);
+        for i in 0..3000 {
+            let tree = rand_tree(&mut next, if i % 2 == 0 { &IDS } else { &CLEAN }, 4);
             let Ok(node) = serde_json::from_value::<Node>(tree) else { continue };
             parsed += 1;
+            let shown = |n: &Node| serde_json::to_string(n).unwrap();
+            // What the dock promises a file that never held it (no reserved id, no stack pointing at one), repeated or missing ids included.
+            let points_at_dock = node.walk().iter().any(|x| matches!(&x.kind, Kind::Stack { active: Some(a), .. } if reserved(a)));
+            // A reserved id in the file is ignored: what is shown is what a file without it shows.
+            let mut once = node.clone();
+            inject_with(&mut once, true, None);
+            let mut clean = strip(&node, None);
+            inject_with(&mut clean, true, None);
+            assert_eq!(once, clean, "inject(F) == inject(strip(F)): seed 0x2545_F491_4F6C_DD1D, tree {}", shown(&node));
+            let mut twice = once.clone();
+            inject_with(&mut twice, true, None);
+            assert_eq!(twice, once, "inject is idempotent: seed 0x2545_F491_4F6C_DD1D, tree {}", shown(&node));
+            if reserved_ids(&node).is_empty() && !points_at_dock {
+                checked += 1;
+                let mut shown_tree = node.clone();
+                let placed = inject_with(&mut shown_tree, true, None);
+                panels += usize::from(placed == Placed::Panel);
+                let ctx = |what: &str| format!("{what}: seed 0x2545_F491_4F6C_DD1D, tree {}", shown(&node));
+                assert_eq!(strip(&shown_tree, None), node, "{}", ctx("strip(inject(F)) == F"));
+                let mut ensured = shown_tree.clone();
+                ensure_with(&mut ensured, true, None, None);
+                assert_eq!(ensured, shown_tree, "{}", ctx("ensure(inject(F)) == inject(F)"));
+            }
             for (on, personal) in [(true, None), (false, None), (true, Some(Choice::Auto)), (true, Some(Choice::Drawer)), (true, Some(Choice::Off))] {
                 let mut a = node.clone();
                 inject_with(&mut a, on, personal);
                 inject_with(&mut a, on, personal);
                 let mut b = node.clone();
-                ensure_with(&mut b, on, personal);
+                ensure_with(&mut b, on, personal, None);
                 let _ = strip(&a, Some(&b));
                 let _ = strip(&b, None);
                 let _ = as_read_with(&a, Some(&node), on, personal);
             }
         }
         assert!(parsed > 1000, "the generator makes trees: {parsed}");
+        assert!(checked > 200 && panels > 50, "the invariants run on a good share of them, panels too: {checked} checked, {panels} panels");
     }
 }
