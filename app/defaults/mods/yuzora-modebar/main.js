@@ -15,7 +15,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agents, layout, run, theme, shared, setShared, props, placement, spaces, openOverlay, closeOverlay, nextCommand } from "herdr";
-import { t, tokens } from "yuzora:core";
+import { t, tokens, session } from "yuzora:core";
 
 const STACK = "yuzora-sidebar";
 const MODES = ["workspace", "files", "git", "database", "ssh"];
@@ -26,7 +26,7 @@ const DOCK_MODES = MODES.slice(1);
 const PANEL = "panel", BODY = "panel-body";
 const NODE = "yuzora-dock-";
 const LAST = "yuzora.dock.last"; // the mode the toggle command shows again
-const OPEN = "yuzora.dock.open"; // the drawer's window now: { id, mode }; the window's header sets it
+const OPEN = "yuzora.dock.open"; // the drawer's window now: { id, mode, session }; the window's header sets it, clears it on closing
 const COLORS = "yuzora.space.colors", SPACE_COLORS = "space.colors";
 const WINDOW_W = 380;
 
@@ -37,6 +37,13 @@ function find(node, id) {
     if (found) return found;
   }
   return null;
+}
+
+// The window open now, or null. Shared state outlives the app but overlay ids start over on every run, so
+// what an earlier run left is no window of this one (and its id could be another overlay's).
+export function openNow() {
+  const open = shared(OPEN);
+  return open && open.session === session() ? open : null;
 }
 
 export function badgeText(value) {
@@ -79,13 +86,19 @@ const badgeChip = (th, tk, badge) => div().absolute().top(2).right(3).min_w(13).
 export default class Modebar extends View {
   init(_props, cx) {
     this.dock = props()?.dock ?? null;
-    if (this.dock === "head") { setShared(OPEN, { id: props()?.overlay ?? null, mode: props()?.mode ?? null }); return; }
+    if (this.dock === "head") { setShared(OPEN, { id: props()?.overlay ?? null, mode: props()?.mode ?? null, session: session() }); return; }
     cx.spawn(async (cx) => {
       for (;;) {
         this.command(await nextCommand());
         cx.notify();
       }
     });
+  }
+
+  // The window closes (its ×, a layout switch, the app quitting): it is no longer open. A window that
+  // replaced this one (a mode tab) has already said so under its own id, which stays.
+  close() {
+    if (this.dock === "head" && openNow()?.id === props()?.overlay) setShared(OPEN, null);
   }
 
   // ---- commands -----------------------------------------------------------------
@@ -100,8 +113,8 @@ export default class Modebar extends View {
     if (this.dock === "bar") {
       if (name === "toggle" && this.shownMode() !== null) run("layout.hide", { id: PANEL });
       else this.showMode(mode);
-    } else if (name === "toggle" && shared(OPEN)) {
-      const open = shared(OPEN);
+    } else if (name === "toggle" && openNow()) {
+      const open = openNow();
       setShared(OPEN, null);
       closeOverlay(open.id);
     } else {
@@ -164,7 +177,7 @@ export default class Modebar extends View {
     const th = theme(), tk = tokens();
     syncSpaceColors();
     const p = placement(), vertical = p?.vertical !== false, left = p?.edge === "left";
-    const open = shared(OPEN)?.mode ?? null;
+    const open = openNow()?.mode ?? null;
     const item = (mode) => {
       const on = open === mode, badge = badgeText(shared(`yuzora.badge.${mode}`));
       const icon = div().relative().w(40).h(36).flex().flex_none().items_center().justify_center().child(modeIcon(mode))
@@ -183,6 +196,16 @@ export default class Modebar extends View {
 
   // ---- the window's header ----------------------------------------------------------
 
+  // A tab of another mode replaces the window (same key) with that mode.
+  pickTab(mode) {
+    if (mode !== props()?.mode) openMode(mode);
+  }
+
+  closeWindow() {
+    setShared(OPEN, null);
+    closeOverlay(props()?.overlay);
+  }
+
   head() {
     const th = theme(), tk = tokens();
     const stop = (_e, cx) => cx.stop_propagation();
@@ -193,7 +216,7 @@ export default class Modebar extends View {
         .bg(on ? th.selected : th.popover).text_color(on ? tk.text.strong : th.muted)
         .when(!on, (el) => el.hover((s) => s.bg(th.hover).text_color(th.foreground)))
         .on_mouse_down("left", stop)
-        .on_click(() => { if (!on) openMode(m); })
+        .on_click(() => this.pickTab(m))
         .child(modeIcon(m)).child(on ? div().text_size(12.5).child(t(`mode.${m}`)) : div());
     };
     return h_flex().id("root").size_full().px(6).gap(2).items_center().bg(th.popover).border_b(1).border_color(th.border)
@@ -202,7 +225,7 @@ export default class Modebar extends View {
       .child(div().id("close").size(26).flex().flex_none().items_center().justify_center().rounded(6).text_color(th.muted)
         .hover((s) => s.bg(th.hover).text_color(th.foreground)).tooltip(t("close"))
         .on_mouse_down("left", stop)
-        .on_click(() => { setShared(OPEN, null); closeOverlay(props()?.overlay); })
+        .on_click(() => this.closeWindow())
         .child("×"));
   }
 

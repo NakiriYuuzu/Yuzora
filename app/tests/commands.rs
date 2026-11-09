@@ -26,6 +26,7 @@ export default class Probe extends View {
         let output = Command::new(env!("CARGO_BIN_EXE_herdr-app"))
             .arg("check").arg(&module)
             .env("HERDR_APP_HOME", &home)
+            .env("YUZORA_APP_HOME", &home) // yuzora(L9): Yuzora reads only YUZORA_APP_HOME
             .env("HC_SESSION", format!("check-shared-{}", std::process::id()))
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_STATE_HOME", root.join("state"))

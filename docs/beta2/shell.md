@@ -56,7 +56,7 @@ L1 寫的 key：
 | `yuzora.shell.agents` | 各機器 `knownAgents()` 的上次結果（新增 pane 選單先顯示，再背景更新） |
 | `yuzora.shell.split` | 新增 pane 選單放在 `right` 或 `down` |
 | `yuzora.dock.last` | 右側 dock 上次開的模式（`files`／`git`／`database`／`ssh`），`yuzora-modebar.toggle` 用它 |
-| `yuzora.dock.open` | 抽屜的 window 現在開的是哪個（`{id, mode}`），由 window 標頭寫入，關閉鈕清成 null |
+| `yuzora.dock.open` | 抽屜的 window 現在開的是哪個（`{id, mode, session}`），由 window 標頭寫入；關閉鈕與標頭的 `close()`（換 layout、結束 App；只在自己的 id 還是這個值時）清成 null。`session` 是 `yuzora:core` 的 `session()`（每次執行不同）：shared 會存進 shared.json、overlay id 每次執行從 o1 重算，讀的人（`openNow()`）只信這一次執行寫的，上次留下的視為沒開 |
 
 dock 另外寫 Herdr 的 `space.colors`（上游 `spaces` 讀的 Space 色）：`yuzora.space.colors` 有 hex、而且 `space.colors` **還沒有值**的 Space（只限目前存在的），模式列／抽屜把同一個 hex 寫進去（把 beta.3 使用者的 Yuzora 色帶過去一次）；`space.colors` 已有值的不覆蓋（那是使用者在上游 UI 的選擇）；Yuzora 沒有顏色時不寫。`yuzora.badge.workspace` 與 legacy 模式列的 `WAITING` 只剩舊 clone 在用，等 legacy 清理一併移除。`workspace.panels` 不動（它只決定 tab 列的 Files／Changes 兩顆鈕）。
 
@@ -111,7 +111,7 @@ L1 讀的 key：
 | --- | --- |
 | `app/src/layout.rs` | `PaneFrame` 新增 `blocked: Option<Line>` 欄位 |
 | `app/src/layout.rs`（dock） | `Node` 新增 root 欄位 `yuzora: Option<Value>`（個別 layout 的 `"yuzora": {"dock": "auto" \| "drawer" \| "off"}`；沒有欄位的話 `text_of` 重寫檔案時會把它丟掉）與 `Node::new` 的一行 |
-| `app/src/window.rs`（dock） | 5 處、各一行（`yuzora(dock)`）：`load_layout` 在 `keep_ids`／`fill_ids` 之後、`file_chrome = chrome.clone()` 之前 `dock::inject`（H1）；`check_layout_file` 在 `keep_ids` 之後 `dock::inject`（H2）；`save` 寫檔前 `dock::strip`（H3）；`layout.set` 的 shipped 分支 `dock::ensure`（H4，順手把 `let n` 改成 `let mut n`）；`layout.set` 的個人分支 `dock::ensure` 後寫檔前 `dock::strip`（H5）。`RIGHT_DOCK` 為 false 時 inject 只做 strip、ensure 不做事 |
+| `app/src/window.rs`（dock） | 非測試共新增 8 行、改 4 行（7 處，皆 `yuzora(dock)` 註記）：`load_layout` 在 `keep_ids`／`fill_ids` 之後、`file_chrome = chrome.clone()` 之前 `dock::inject`（H1，1 行）；`check_layout_file` 在 `keep_ids` 之後 `dock::inject`（H2，1 行）；`save` 寫檔前 `dock::strip`（H3，改 1 行）；`layout.set` 的 shipped 分支 `dock::ensure`（H4，新增 1 行，並把 `let n` 改成 `let mut n`，改 1 行）；`layout.set` 的個人分支 `dock::ensure` 後寫檔前 `dock::strip`（H5，新增 1 行、改寫 `let text` 1 行），並把 `file_chrome` 改成 `dock::as_read(…)`（寫出去的樹重新注入，改 1 行；不能存沒 strip 的樹，否則下一次 `layout.set` 或存檔會把 dock 的 `active` 寫進檔案）。`RIGHT_DOCK` 為 false 時 inject、ensure 不做事（不 strip），save 與 `layout.set` 仍 strip（只動保留 id）。測試新增約 356 行（`mod tests`）：W1／W1b（連續 `layout.set` 加結構存檔）、W2（檔案 opt-out 來回、`file_chrome` 有 dock、存檔不改檔案）、W3／W3b（`load_layout`／`check_layout_file` 的 `keep_ids` 順序）、S2（`layout.set` 前的 dock 點選重啟後還在）、重複 id／無 id 不 panic、shipped `layout.set`、原始碼守衛（也涵蓋 `window/*.rs` 子模組）。已知限制（N4）：root 的 `yuzora` opt-out 在 root 被 `dock()` 包進新 row 時變成子節點，重啟後失效（與上游 `titlebar`、`traffic_lights`、`preview` 這些只讀 root 的欄位相同） |
 | `app/src/window.rs` | `frame_pane` 多一行：呼叫 `crate::yuzora::shell::frame_line` 決定邊框；`run_as` 在 `space.new` 前多一段：人執行的 bare `space.new`（以及沒有 Space 時的 bare `tab.new`）改開資料夾對話框 |
 | `app/defaults/mods/tabs/main.js`（dock） | **上游 mod，lanes.md「不改上游 mods」的例外（使用者同意，2026-11-04）**：`syncPanel` 在 `const now = …` 之後加 2 行（1 行 `// yuzora(dock):` 註記、1 行 early return）：目前顯示的是 `yuzora-dock-*` 時只更新 `this.space`、清掉 `pending` 就 return，不記錄也不恢復。`yuzora-shell-tabs` 有同樣的 2 行。同步上游時若 `syncPanel` 被改動，這 2 行會衝突，或 `scripts/yuzora-dock-panels.test.ts` 會失敗 |
 | `app/src/yuzora/mod.rs` | 加一行 `pub mod shell;`（lanes.md 允許的改動）；dock 再加一行 `pub mod dock;` |

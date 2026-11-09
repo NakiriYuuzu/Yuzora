@@ -5,7 +5,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, agents, panes, machines, focused, updates, keys, window, theme, run, shared, setShared } from "herdr";
+import { spaces, agents, panes, machines, focused, updates, keys, window, theme, run, shared, setShared, layout } from "herdr";
 import { t, tokens } from "yuzora:core";
 import { spaceBadges, gitStatus } from "yuzora:shell";
 
@@ -21,6 +21,18 @@ function badgesOf(list) {
   const r = spaceBadges(list.map((s) => ({ id: s.id, name: s.name })), shared(COLORS));
   if (r.changed) setShared(COLORS, r.kept);
   return r.badges;
+}
+
+// Whether a mode bar is on screen: a block (or a float) of it that no hidden node holds.
+export function modebarShown(node) {
+  if (!node || node.hidden) return false;
+  if (node.content?.mod === "yuzora-modebar") return true;
+  if ((node.floating ?? []).some((f) => !f.hidden && f.content?.mod === "yuzora-modebar")) return true;
+  return (node.children ?? []).some(modebarShown);
+}
+
+function hasNode(node, id) {
+  return node?.id === id || (node?.children ?? []).some((c) => hasNode(c, id));
 }
 
 function shortcut(action) {
@@ -59,10 +71,13 @@ export default class Statusbar extends View {
     });
   }
 
-  // The mode bar opens Git where the layout has it: the right dock's panel or window, or an old clone's
-  // sidebar stack (the legacy bar takes the command too).
+  // The mode bar opens Git where it is on screen: the right dock's panel or window, or an old clone's
+  // sidebar stack (the legacy bar takes the command too). With the bar hidden the command would fail
+  // with a toast: an old clone's stack is selected as before; a dock layout has nothing to open.
   openGit() {
-    run("yuzora-modebar.git");
+    const tree = layout();
+    if (modebarShown(tree)) run("yuzora-modebar.git");
+    else if (hasNode(tree, "yuzora-sidebar")) run("layout.select", { stack: "yuzora-sidebar", child: "yuzora-sidebar-git" });
   }
 
   // The focused terminal's machine: its address is "<machine>/<id>" off this computer. A layout
