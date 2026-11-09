@@ -208,7 +208,7 @@ export default class Modebar extends View {
       // The edge side shows while the drawer peeks, so the icon goes there and the name on the inner side.
       const name = div().w(96).flex_none().truncate().text_size(12.5).child(t(`mode.${mode}`));
       return h_flex().id(`dock-${mode}`).h(36).flex_none().items_center().rounded(6).cursor_pointer()
-        .bg(on ? th.selected : th.popover).text_color(on ? tk.text.strong : th.muted)
+        .bg(on ? th.selected : th.popover).text_color(on ? th.foreground : th.muted)
         .hover((s) => s.bg(th.hover).text_color(th.foreground))
         .tooltip(t(`mode.${mode}`))
         .on_click((e) => this.pickDrawer(mode, e))
@@ -236,7 +236,7 @@ export default class Modebar extends View {
     const tab = (m) => {
       const on = m === mode;
       return h_flex().id(`head-${m}`).h(26).px(8).gap(6).rounded(6).items_center().flex_none().cursor_pointer()
-        .bg(on ? th.selected : th.popover).text_color(on ? tk.text.strong : th.muted)
+        .bg(on ? th.selected : th.popover).text_color(on ? th.foreground : th.muted)
         .when(!on, (el) => el.hover((s) => s.bg(th.hover).text_color(th.foreground)))
         .on_mouse_down("left", stop)
         .on_click(() => this.pickTab(m))

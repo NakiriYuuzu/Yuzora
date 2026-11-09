@@ -402,6 +402,11 @@ pub mod startup {
         let mode = general.pointer("/startup/dock").and_then(Value::as_str)?;
         (mode == "none" || MODES.contains(&mode)).then(|| mode.to_owned())
     }
+
+    /// What the script's `startup()` returns for the `general` section.
+    pub fn value(general: &Value) -> Value {
+        serde_json::json!({ "dock": dock(general) })
+    }
 }
 
 /// The `yuzora:settings` module.
@@ -480,7 +485,7 @@ pub fn host_module() -> HostModule {
         })
         .function("startup", |_| {
             let general = yuzora_core::settings::section(yuzora_core::settings::GENERAL);
-            Ok(to_host(&json!({ "dock": startup::dock(&general) })))
+            Ok(to_host(&startup::value(&general)))
         })
         .function("session", |_| Ok(HostValue::Str(session().to_owned())))
 }
@@ -534,8 +539,9 @@ mod tests {
 
     #[test]
     fn startup_reads_the_dock_from_the_general_section() {
-        let value = call("startup", vec![]).unwrap();
-        assert!(value.get("dock").is_some() && value.get("sidebar").is_none(), "{value}");
+        // (The script's `startup()` reads the person's settings; this is what it makes of the section.)
+        assert_eq!(startup::value(&json!({ "startup": { "dock": "git", "sidebar": "ssh" } })), json!({ "dock": "git" }));
+        assert_eq!(startup::value(&Value::Null), json!({ "dock": null }));
     }
 
     #[test]
