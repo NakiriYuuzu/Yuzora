@@ -77,12 +77,43 @@ pub struct Place {
     /// The program to run; empty: the `git.executable` setting (else `git`)
     /// at each call, so a change applies to the repos already open.
     pub git: String,
+    /// `root` is a work tree's top level (an open repo): git looks for the
+    /// repository there only, never in a folder above ([`Place::confine`]).
+    /// With the work tree's `.git` gone, git then fails rather than reading
+    /// and writing the repo around it under this one's name. Off where a repo
+    /// is looked for from a folder in it (`open`).
+    pub top: bool,
     pub write_lock: Arc<Mutex<()>>,
 }
 
 impl Place {
     pub fn local(root: impl Into<String>) -> Self {
-        Self { root: root.into(), on: None, git: "git".into(), write_lock: Arc::default() }
+        Self { root: root.into(), on: None, git: "git".into(), top: false, write_lock: Arc::default() }
+    }
+
+    /// What keeps git in this place's repo, for a [`top`](Self::top) one: the
+    /// folder above `root` as `GIT_CEILING_DIRECTORIES` (none above `/` or a
+    /// drive), and only that: a hook inherits it, and a hook must never get
+    /// `GIT_DIR`/`GIT_WORK_TREE` (git itself sets neither for a plain repo; a
+    /// hook that `cd`s elsewhere would run git in this repo, with that folder
+    /// as its work tree). The ceiling is a list git splits at `:`, or at `;`
+    /// on Windows; which git runs isn't told here (a machine may be either
+    /// kind), so a folder above with either in its path (but a drive's `C:`)
+    /// can't be in it: nothing is set then, and [`Place::needs_git_check`]
+    /// has every command ask git which repository it finds first.
+    fn confine(&self) -> Vec<(String, String)> {
+        match above(&self.root).filter(|a| self.top && !has_list_separator(a)) {
+            Some(above) => vec![("GIT_CEILING_DIRECTORIES".into(), above)],
+            None => Vec::new(),
+        }
+    }
+
+    /// A top-level place that [`Place::confine`] can't hold in its repo (the
+    /// folder above has a list separator in its path): every command, read or
+    /// write, first has git say which repository it finds at `root`
+    /// ([`check_top`]).
+    fn needs_git_check(&self) -> bool {
+        self.top && above(&self.root).is_some_and(|a| has_list_separator(&a))
     }
 
     pub fn program(&self) -> String {
@@ -91,6 +122,27 @@ impl Place {
     pub fn is_remote(&self) -> bool {
         self.on.is_some()
     }
+}
+
+/// The folder above `root`, as git wrote it (`/` between names, also on Windows), whichever kind of machine's
+/// path it is (`/srv/repo` → `/srv`, `C:/x/repo` → `C:/x`, `C:/repo` → `C:/`);
+/// none above `/` or a drive.
+fn above(root: &str) -> Option<String> {
+    // Only `/`: git writes every root so, and a unix name may hold a `\`.
+    let path = root.trim_end_matches('/');
+    let up = &path[..path.rfind('/')?];
+    Some(match up {
+        "" => "/".to_owned(),
+        drive if drive.len() == 2 && drive.ends_with(':') => format!("{drive}/"),
+        up => up.to_owned(),
+    })
+}
+
+/// Whether a path has a character `GIT_CEILING_DIRECTORIES` is split at (`:`,
+/// `;` on Windows): a drive's own `C:` is not one.
+fn has_list_separator(path: &str) -> bool {
+    let drive = path.len() >= 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.as_bytes()[1] == b':';
+    path[if drive { 2 } else { 0 }..].contains([':', ';'])
 }
 
 /// One git command.
@@ -357,11 +409,55 @@ pub fn run_streaming(place: &Place, cmd: Git, sink: Option<&mut dyn FnMut(&[u8])
         Kind::Write => Some(lock(&place.write_lock, cmd.cancel.as_ref())?),
         Kind::Read => None,
     };
+    // Every command, read or write (a fetch writes, a status runs filters): where no ceiling can
+    // hold git in the repo, git is asked first which repository it finds there.
+    if place.needs_git_check() {
+        check_top(place, &cmd)?;
+    }
     let out = if place.is_remote() { run_remote(place, &cmd, sink) } else { run_local(place, &cmd, sink) }?;
     if let Some(g) = guarded {
         crate::trust::heard(g, &out);
     }
     Ok(out)
+}
+
+/// Asks git (`rev-parse --show-toplevel`, the same folder and environment, here or on the
+/// machine, with the command's own cancel and timeout) which repository it finds at `place.root`,
+/// and refuses the command unless that is the folder itself: git skips a `.git` it doesn't take
+/// for a repository (empty, no `HEAD`, no `objects`) and goes on up, so only git's own answer
+/// tells. `rev-parse` runs no program a repository names: it reads the config for paths and
+/// never the index, filters, hooks or a transport.
+fn check_top(place: &Place, cmd: &Git) -> GitResult<()> {
+    let mut probe = Git::read(["rev-parse", "--show-toplevel"]);
+    probe.timeout = cmd.timeout.min(READ_TIMEOUT);
+    probe.cancel = cmd.cancel.clone();
+    probe.max_output = 64 << 10;
+    let out = if place.is_remote() { run_remote(place, &probe, None) } else { run_local(place, &probe, None) }?;
+    let text = out.stdout_text();
+    // One line, whose own line feeds are part of the name.
+    let found = text.strip_suffix('\n').unwrap_or(&text);
+    if out.ok() && same_folder(found, &place.root, place.is_remote()) {
+        return Ok(());
+    }
+    let seen = if out.ok() { format!("the repository at {found}") } else { out.stderr_text().trim().to_owned() };
+    Err(GitError::Other(format!("git finds no repository at {} ({seen}): git is not run there (a repository around it would get the change)", place.root)))
+}
+
+/// Whether git's `found` and `root` are the same folder: by real path here; on a machine as
+/// written (git gave both). Drive letters, `\\?\`, `\` and a trailing `/` don't tell
+/// folders apart, nor does case: `found` is the folder itself or one above it, which no
+/// difference of case alone can make of one.
+fn same_folder(found: &str, root: &str, remote: bool) -> bool {
+    let norm = |p: &str| -> String {
+        let p = if remote { p.to_owned() } else { std::fs::canonicalize(p).map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| p.to_owned()) };
+        let p = yuzora_core::paths::plain_str(&p);
+        let win = p.starts_with("\\\\") || p.starts_with("//") || (p.len() >= 2 && p.as_bytes()[0].is_ascii_alphabetic() && p.as_bytes()[1] == b':');
+        let p = if win { p.replace('\\', "/") } else { p };
+        let kept = p.trim_end_matches('/');
+        // `/` and `C:/` are their own folder.
+        (if kept.is_empty() || kept.ends_with(':') { p.as_str() } else { kept }).to_lowercase()
+    };
+    !found.is_empty() && norm(found) == norm(root)
 }
 
 fn lock<'a>(m: &'a Mutex<()>, cancel: Option<&Cancel>) -> GitResult<std::sync::MutexGuard<'a, ()>> {
@@ -383,7 +479,7 @@ fn run_local(place: &Place, cmd: &Git, mut sink: Option<&mut dyn FnMut(&[u8]) ->
     let git = place.program();
     let mut c = Command::new(&git);
     c.args(base_args(cmd.kind)).args(&cmd.args).current_dir(&place.root);
-    for (k, v) in environment(cmd.kind, false, &cmd.env) {
+    for (k, v) in environment(cmd.kind, false, &cmd.env).into_iter().chain(place.confine()) {
         c.env(k, v);
     }
     c.stdin(if cmd.stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -670,7 +766,7 @@ impl Stream {
 pub fn hc_args(place: &Place, cmd: &Git) -> Vec<String> {
     let secs = cmd.timeout.min(REMOTE_MAX_TIMEOUT).as_secs_f64().ceil().max(1.0) as u64;
     let mut a: Vec<String> = vec!["exec".into(), "--json".into(), "--on".into(), place.on.clone().unwrap_or_default(), "--timeout".into(), secs.to_string(), "--cwd".into(), place.root.clone()];
-    for (k, v) in environment(cmd.kind, true, &cmd.env) {
+    for (k, v) in environment(cmd.kind, true, &cmd.env).into_iter().chain(place.confine()) {
         a.push("--env".into());
         a.push(format!("{k}={v}"));
     }
@@ -688,7 +784,7 @@ fn run_remote(place: &Place, cmd: &Git, sink: Option<&mut dyn FnMut(&[u8]) -> bo
     let hc = hc_program().to_string_lossy().into_owned();
     // hc answers with both streams base64'd (4/3 the size), whole.
     let answer = cmd.max_output.saturating_mul(3).saturating_add(64 << 10);
-    let local = Place { root: yuzora_core::paths::home_dir().to_string_lossy().into_owned(), on: None, git: hc, write_lock: Arc::default() };
+    let local = Place { root: yuzora_core::paths::home_dir().to_string_lossy().into_owned(), on: None, git: hc, top: false, write_lock: Arc::default() };
     let call = Git {
         args: hc_args(place, cmd),
         stdin: cmd.stdin.clone(),
@@ -811,12 +907,439 @@ mod tests {
         assert_eq!(all.args, ["status"]);
     }
 
+    // The ceiling is a list git splits at `:`, or `;` on Windows, and either kind of git may run
+    // (a machine may be the other kind): a folder above with either in it (but a drive's `C:`)
+    // gets no environment at all (never `GIT_DIR`: a hook would inherit it), and every command
+    // first asks git which repo it finds there. Windows paths keep the ceiling, here or on a machine.
+    #[test]
+    fn a_top_place_is_kept_in_its_repo_whichever_git_runs() {
+        let at = |root: &str, on: Option<&str>| Place { root: root.into(), on: on.map(Into::into), git: "git".into(), top: true, write_lock: Arc::default() };
+        let ceiling = |above: &str| vec![("GIT_CEILING_DIRECTORIES".to_owned(), above.to_owned())];
+        for on in [None, Some("lab")] {
+            for (root, above) in [("/srv/repo", "/srv"), ("/repo", "/"), ("C:/Users/x/repo", "C:/Users/x"), ("C:/repo", "C:/"), ("//host/share/repo", "//host/share"), ("/srv/repo/", "/srv"), ("/srv/re\\po", "/srv"), ("/srv/a/re\\po/", "/srv/a")] {
+                assert_eq!(at(root, on).confine(), ceiling(above), "{root} {on:?}");
+                assert!(!at(root, on).needs_git_check(), "{root} {on:?}");
+            }
+            for root in ["/srv/a:b/repo", "/srv/a;b/repo", "C:/a;b/repo", "C:/x/a:b/repo", "//host/sh:are/repo"] {
+                assert!(at(root, on).confine().is_empty(), "{root} {on:?}: nothing, GIT_DIR least");
+                assert!(at(root, on).needs_git_check(), "{root} {on:?}");
+            }
+            for root in ["/", "C:/"] {
+                assert!(at(root, on).confine().is_empty() && !at(root, on).needs_git_check(), "nothing above {root}");
+            }
+        }
+        // A `:` or `;` in the folder itself is no list entry: only the one above is.
+        assert_eq!(at("/srv/a:b", None).confine(), ceiling("/srv"));
+        assert!(Place::local("/srv/repo").confine().is_empty() && !Place::local("/srv/a:b/repo").needs_git_check(), "not a top level");
+        for (p, sep) in [("C:/x", false), ("C:/", false), ("c:\\x", false), ("/a:b", true), ("C:/a;b", true), ("a:b", false), ("ab:c", true), ("/srv", false)] {
+            assert_eq!(has_list_separator(p), sep, "{p}");
+        }
+        // git writes `/` between names, also on Windows: a `\` is part of a unix name.
+        for (root, up) in [("C:/repo", Some("C:/")), ("C:\\repo", None), ("/srv/re\\po", Some("/srv")), ("/srv/a:b/re\\po", Some("/srv/a:b")), ("C:/", None), ("/", None), ("/a", Some("/")), ("repo", None)] {
+            assert_eq!(above(root).as_deref(), up, "{root}");
+        }
+    }
+
+    fn plain_git(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = Command::new("git").args(["-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false", "-c", "protocol.file.allow=always"]).args(args).current_dir(dir).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    /// What the check says when git finds no repository at the folder.
+    const NOT_THERE: &str = "finds no repository at";
+
+    fn real(p: &std::path::Path) -> String {
+        yuzora_core::paths::plain_str(&std::fs::canonicalize(p).unwrap().to_string_lossy())
+    }
+
+    fn commit_of(repo: &crate::repo::Repo, msg: &str) -> GitResult<Output> {
+        repo.run(Git::write(["-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false", "commit", "--allow-empty", "-q", "-m", msg]))
+    }
+
+    // An open repo is its top level only, with the git this computer has (Windows CI runs
+    // `exec::`): with its `.git` gone and a repo around it, git fails rather than reading or
+    // writing that repo under this one's name. Status has none of its branch (the trust gate
+    // can't read this repo's config, so it asks, keeping what this one's status said last; or git
+    // says there's no repo), a commit fails; while the `.git` is there git works as ever. Opening
+    // the folder then finds the repo around it, as git looks. On unix also with a `:` in the
+    // folder above and on a machine: no ceiling there (git splits the list at it), so every
+    // command, read or write, first asks git which repo it finds there.
+    #[test]
+    fn an_open_repo_whose_git_is_gone_runs_nothing_in_the_repo_around_it() {
+        use crate::repo::{Repo, open};
+        let mut below = vec!["inner"];
+        if cfg!(unix) {
+            below.push("a:b/inner");
+        }
+        for rel in below {
+            let colon = rel.contains(':');
+            let dir = tempfile::tempdir().unwrap();
+            let outer = real(dir.path());
+            plain_git(dir.path(), &["init", "-q", "-b", "main"]);
+            plain_git(dir.path(), &["commit", "--allow-empty", "-q", "-m", "outer"]);
+            let head = plain_git(dir.path(), &["rev-parse", "HEAD"]);
+            let inner_path = dir.path().join(rel);
+            std::fs::create_dir_all(&inner_path).unwrap();
+            let inner = real(&inner_path);
+            plain_git(&inner_path, &["init", "-q", "-b", "main"]);
+            let repo = open(&inner, None).unwrap();
+            assert_eq!(real(std::path::Path::new(&repo.place.root)), inner, "{rel}");
+            let mut repos = vec![("here", repo.clone())];
+            #[cfg(unix)]
+            {
+                let _ = crate::repo::testing::on_machine(&crate::repo::testing::scratch());
+                let place = Place { on: Some("test-machine".into()), write_lock: Arc::default(), ..repo.place.clone() };
+                repos.push(("on a machine", Arc::new(Repo::new(crate::repo::repo_id(Some("test-machine"), &repo.place.root), place, repo.git_dir.clone(), repo.common_dir.clone()))));
+            }
+            for (where_, repo) in &repos {
+                let out = commit_of(repo, "inner").unwrap();
+                assert!(out.ok(), "{rel} {where_}: {}", out.stderr_text());
+                let st = crate::status::read(repo, true).unwrap();
+                assert_eq!(st["branch"]["head"], "main", "{rel} {where_}: {st}");
+            }
+            std::fs::rename(inner_path.join(".git"), inner_path.join(".git-away")).unwrap();
+            for (where_, repo) in &repos {
+                let status = crate::status::read(repo, true);
+                let none = match &status {
+                    Err(e) => e.to_string().contains("not a git repository") || e.to_string().contains(NOT_THERE),
+                    Ok(st) => st["branch"]["oid"] != head.as_str() && st["trust"].as_array().is_some_and(|t| !t.is_empty()),
+                };
+                assert!(none, "{rel} {where_}: status {status:?}");
+                let out = commit_of(repo, "inner");
+                if colon {
+                    assert!(out.as_ref().is_err_and(|e| e.to_string().contains(NOT_THERE)), "{rel} {where_}: {out:?}");
+                } else {
+                    assert!(out.is_ok_and(|o| !o.ok()), "{rel} {where_}: committed");
+                }
+            }
+            assert_eq!(plain_git(dir.path(), &["rev-parse", "HEAD"]), head, "{rel}: the repo around it got a commit");
+            assert_eq!(real(std::path::Path::new(&open(&inner, None).unwrap().place.root)), outer, "{rel}");
+        }
+    }
+
+    // A hook inherits what the engine sets, and for a plain repo that may be a ceiling and
+    // nothing else: git sets no `GIT_DIR` or `GIT_WORK_TREE` there, so a hook that goes
+    // somewhere else must not find one (it would run git in this repo, with that folder as the
+    // work tree). With a `:` above, none of the three. A hook that does `cd frontend && git add
+    // -u` (a formatter's) leaves the commit whole.
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_gets_the_ceiling_and_never_a_git_dir_and_a_monorepo_hook_deletes_nothing() {
+        use crate::repo::open;
+        use std::os::unix::fs::PermissionsExt;
+        for rel in ["mono", "a:b/mono"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.join("frontend")).unwrap();
+            std::fs::create_dir_all(path.join("backend")).unwrap();
+            plain_git(&path, &["init", "-q", "-b", "main"]);
+            for (f, t) in [("README", "r"), ("frontend/a.js", "a"), ("backend/b.py", "b")] {
+                std::fs::write(path.join(f), t).unwrap();
+            }
+            plain_git(&path, &["add", "."]);
+            plain_git(&path, &["commit", "-q", "-m", "base"]);
+            let seen = path.join("seen-env");
+            let hook = path.join(".git/hooks/pre-commit");
+            std::fs::write(&hook, format!("#!/bin/sh\nenv | grep '^GIT_' | sort > '{}'\ncd frontend && echo changed > a.js && git add -u\n", seen.display())).unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(path.join("README"), "r2").unwrap();
+            plain_git(&path, &["add", "README"]);
+            let repo = open(&real(&path), None).unwrap();
+            let out = commit_of(&repo, "with hook").unwrap();
+            assert!(out.ok(), "{rel}: {}", out.stderr_text());
+            let env = std::fs::read_to_string(&seen).unwrap();
+            let names: Vec<&str> = env.lines().filter_map(|l| l.split('=').next()).collect();
+            for bad in ["GIT_DIR", "GIT_WORK_TREE"] {
+                assert!(!names.contains(&bad), "{rel}: the hook got {bad}: {env}");
+            }
+            assert_eq!(names.contains(&"GIT_CEILING_DIRECTORIES"), !rel.contains(':'), "{rel}: {env}");
+            let files = plain_git(&path, &["ls-tree", "-r", "--name-only", "HEAD"]);
+            assert_eq!(files.lines().collect::<Vec<_>>(), ["README", "backend/b.py", "frontend/a.js"], "{rel}: the commit lost files");
+            assert_eq!(plain_git(&path, &["show", "HEAD:frontend/a.js"]), "changed", "{rel}: the hook's own add");
+        }
+    }
+
+    // A linked worktree and a submodule (their `.git` is a file) are open repos like any: git
+    // works there with the ceiling, and under a `:` with the write's look at the `.git`.
+    #[test]
+    fn a_linked_worktree_and_a_submodule_work_with_and_without_a_ceiling() {
+        use crate::repo::open;
+        // A `:` in a name is no Windows folder (`a:b` there is a drive's relative path).
+        let mut below = vec!["x"];
+        if cfg!(unix) {
+            below.push("a:b/x");
+        }
+        for rel in below {
+            let dir = tempfile::tempdir().unwrap();
+            let base = dir.path().join(rel);
+            let (main, other, wt) = (base.join("main"), base.join("other"), base.join("wt"));
+            std::fs::create_dir_all(&main).unwrap();
+            std::fs::create_dir_all(&other).unwrap();
+            for p in [&main, &other] {
+                plain_git(p, &["init", "-q", "-b", "main"]);
+                plain_git(p, &["commit", "--allow-empty", "-q", "-m", "first"]);
+            }
+            plain_git(&main, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+            plain_git(&main, &["submodule", "add", "-q", other.to_str().unwrap(), "sub"]);
+            plain_git(&main, &["commit", "-q", "-m", "sub"]);
+            for place in [&wt, &main.join("sub")] {
+                assert!(place.join(".git").is_file(), "{rel}: {place:?}");
+                let repo = open(&real(place), None).unwrap();
+                assert_eq!(real(std::path::Path::new(&repo.place.root)), real(place), "{rel}");
+                assert!(repo.place.top);
+                let out = commit_of(&repo, "here").unwrap();
+                assert!(out.ok(), "{rel} {place:?}: {}", out.stderr_text());
+                let st = crate::status::read(&repo, true).unwrap();
+                assert!(st["branch"]["head"].is_string(), "{rel} {place:?}: {st}");
+                // And on a machine: its gitfile is found there too.
+                #[cfg(unix)]
+                {
+                    use crate::repo::Repo;
+                    let _ = crate::repo::testing::on_machine(&crate::repo::testing::scratch());
+                    let there = Place { on: Some("test-machine".into()), write_lock: Arc::default(), ..repo.place.clone() };
+                    let there = Arc::new(Repo::new(crate::repo::repo_id(Some("test-machine"), &there.root), there, repo.git_dir.clone(), repo.common_dir.clone()));
+                    let out = commit_of(&there, "there").unwrap();
+                    assert!(out.ok(), "{rel} {place:?} on a machine: {}", out.stderr_text());
+                }
+            }
+            let repo = open(&real(&main), None).unwrap();
+            let out = repo.run(Git::read(["status", "--porcelain=v2", "--ignore-submodules=none"])).unwrap();
+            assert!(out.ok(), "{rel}: {}", out.stderr_text());
+            let out = repo.run(Git::read(["submodule", "status"])).unwrap();
+            assert!(out.ok() && out.stdout_text().contains("sub"), "{rel}: {}", out.stderr_text());
+            // Its gitfile gone: a command is refused, not run in the repo around it.
+            if rel.contains(':') {
+                let repo = open(&real(&wt), None).unwrap();
+                std::fs::remove_file(wt.join(".git")).unwrap();
+                assert!(commit_of(&repo, "gone").is_err_and(|e| e.to_string().contains(NOT_THERE)));
+                assert!(repo.run(Git::read(["status"])).is_err_and(|e| e.to_string().contains(NOT_THERE)));
+            }
+        }
+    }
+
+    /// A small executable script (a hook, a filter, an uploadpack).
+    #[cfg(unix)]
+    fn script(at: &std::path::Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(at, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// `repo` as one on a machine (the stand-in `hc` answers there).
+    #[cfg(unix)]
+    fn on_a_machine(repo: &Arc<crate::repo::Repo>) -> Arc<crate::repo::Repo> {
+        let _ = crate::repo::testing::on_machine(&crate::repo::testing::scratch());
+        let place = Place { on: Some("test-machine".into()), write_lock: Arc::default(), ..repo.place.clone() };
+        Arc::new(crate::repo::Repo::new(crate::repo::repo_id(Some("test-machine"), &place.root), place, repo.git_dir.clone(), repo.common_dir.clone()))
+    }
+
+    // With a `:` above there is no ceiling, so the `.git` gone sends git up to the repo around
+    // it: not only a write (a commit) but a fetch, a push, a tag push and a remote tag's deletion
+    // (reads to the engine, they write refs, run hooks and the transport of that repo), and a
+    // status (which runs that repo's clean filters once this one is trusted). Every command asks
+    // git first which repo it finds, so none of them reaches the repo around it.
+    #[cfg(unix)]
+    #[test]
+    fn with_a_colon_above_no_command_reaches_the_repo_around_an_open_one() {
+        use crate::repo::open;
+        let dir = tempfile::tempdir().unwrap();
+        let up_dir = tempfile::tempdir().unwrap();
+        let marks = tempfile::tempdir().unwrap();
+        let d = std::path::PathBuf::from(real(dir.path()));
+        let up = std::path::PathBuf::from(real(up_dir.path())).join("up.git");
+        let (m_hook, m_clean, m_upload) = (marks.path().join("hook"), marks.path().join("clean"), marks.path().join("upload"));
+        plain_git(&d, &["init", "-q", "--bare", up.to_str().unwrap()]);
+        plain_git(&d, &["init", "-q", "-b", "main"]);
+        std::fs::write(d.join(".gitattributes"), "f filter=evil\n").unwrap();
+        std::fs::write(d.join("f"), "x\n").unwrap();
+        plain_git(&d, &["add", ".gitattributes", "f"]);
+        plain_git(&d, &["commit", "-q", "-m", "outer1"]);
+        let outer1 = plain_git(&d, &["rev-parse", "HEAD"]);
+        plain_git(&d, &["remote", "add", "origin", up.to_str().unwrap()]);
+        plain_git(&d, &["push", "-q", "-u", "origin", "main"]);
+        plain_git(&d, &["tag", "t1"]);
+        plain_git(&d, &["commit", "--allow-empty", "-q", "-m", "outer2-unpushed"]);
+        plain_git(&up, &["update-ref", "refs/heads/feature", &outer1]);
+        plain_git(&up, &["tag", "t2", &outer1]);
+        script(&d.join(".git/hooks/pre-push"), &format!("touch '{}'", m_hook.display()));
+        let upload = marks.path().join("upload.sh");
+        script(&upload, &format!("touch '{}'\nexec git-upload-pack \"$@\"", m_upload.display()));
+        plain_git(&d, &["config", "filter.evil.clean", &format!("touch '{}'; cat", m_clean.display())]);
+        plain_git(&d, &["config", "remote.origin.uploadpack", upload.to_str().unwrap()]);
+        // The same content under another time: status reads it through the clean filter.
+        std::fs::File::options().write(true).open(d.join("f")).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(946_684_800)).unwrap();
+        let inner = d.join("a:b/inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        plain_git(&inner, &["init", "-q", "-b", "main"]);
+        plain_git(&inner, &["commit", "--allow-empty", "-q", "-m", "inner"]);
+        let repo = open(&real(&inner), None).unwrap();
+        let repos = [("here", repo.clone()), ("on a machine", on_a_machine(&repo))];
+        for (_, r) in &repos {
+            crate::trust::trust(r).unwrap();
+            assert!(crate::status::read(r, true).unwrap().get("trust").is_none());
+        }
+        assert!(!m_clean.exists() && !m_upload.exists(), "setup ran a program");
+        std::fs::rename(inner.join(".git"), inner.join(".git-away")).unwrap();
+        let up_main = plain_git(&up, &["rev-parse", "refs/heads/main"]);
+        for (where_, r) in &repos {
+            let refused = |out: GitResult<Output>, what: &str| assert!(out.as_ref().is_err_and(|e| e.to_string().contains(NOT_THERE)), "{where_} {what}: {out:?}");
+            refused(r.run(Git::read(["fetch", "origin"])), "fetch");
+            refused(r.run(Git::read(["fetch", "--all", "--prune"])), "auto fetch");
+            refused(r.run(Git::read(["push", "origin", "main"])), "push");
+            refused(r.run(Git::read(["push", "origin", "refs/tags/t1"])), "tag push");
+            refused(r.run(Git::read(["push", "origin", ":refs/tags/t2"])), "remote tag delete");
+            refused(r.run(Git::read(["push", "origin", "--delete", "feature"])), "remote branch delete");
+            refused(r.run(Git::read(["status", "--porcelain=v2", "--branch"])), "status");
+            refused(commit_of(r, "inner"), "commit");
+            assert!(crate::status::read(r.as_ref(), true).is_err(), "{where_}: status shows the repo around it");
+            assert!(!m_hook.exists() && !m_clean.exists() && !m_upload.exists(), "{where_}: a program of the repo around it ran");
+        }
+        assert_eq!(plain_git(&up, &["rev-parse", "refs/heads/main"]), up_main, "the upstream of the repo around it moved");
+        assert_eq!(plain_git(&up, &["rev-parse", "refs/heads/feature"]), outer1);
+        assert_eq!(plain_git(&up, &["rev-parse", "t2^{commit}"]), outer1, "its tag was deleted");
+        let remote_refs = plain_git(&d, &["for-each-ref", "refs/remotes"]);
+        assert!(!remote_refs.contains("feature"), "the repo around it fetched: {remote_refs}");
+        assert!(plain_git(&d, &["log", "-1", "--format=%s"]).starts_with("outer2"), "the repo around it got a commit");
+    }
+
+    // The `.git` is there but git doesn't take it for a repository (`HEAD` empty or gone, no
+    // `objects` or `refs`, a folder with nothing in it, a half done `rm -rf`) and goes up: only
+    // git's own answer says so.
+    #[cfg(unix)]
+    #[test]
+    fn a_git_dir_git_rejects_is_no_repo_here_whatever_is_in_it() {
+        use crate::repo::open;
+        for how in ["empty HEAD", "no HEAD", "empty .git folder", "no objects", "no refs"] {
+            let dir = tempfile::tempdir().unwrap();
+            let d = std::path::PathBuf::from(real(dir.path()));
+            plain_git(&d, &["init", "-q", "-b", "main"]);
+            plain_git(&d, &["commit", "--allow-empty", "-q", "-m", "outer"]);
+            let head = plain_git(&d, &["rev-parse", "HEAD"]);
+            let inner = d.join("a:b/inner");
+            std::fs::create_dir_all(&inner).unwrap();
+            plain_git(&inner, &["init", "-q", "-b", "main"]);
+            plain_git(&inner, &["commit", "--allow-empty", "-q", "-m", "inner"]);
+            let repo = open(&real(&inner), None).unwrap();
+            let there = on_a_machine(&repo);
+            match how {
+                "empty HEAD" => std::fs::write(inner.join(".git/HEAD"), "").unwrap(),
+                "no HEAD" => std::fs::remove_file(inner.join(".git/HEAD")).unwrap(),
+                "empty .git folder" => {
+                    std::fs::remove_dir_all(inner.join(".git")).unwrap();
+                    std::fs::create_dir(inner.join(".git")).unwrap();
+                }
+                "no objects" => std::fs::remove_dir_all(inner.join(".git/objects")).unwrap(),
+                _ => std::fs::remove_dir_all(inner.join(".git/refs")).unwrap(),
+            }
+            for (where_, r) in [("here", &repo), ("on a machine", &there)] {
+                let out = commit_of(r, "landed");
+                assert!(out.as_ref().is_err_and(|e| e.to_string().contains(NOT_THERE)), "{how} {where_}: {out:?}");
+                assert_eq!(plain_git(&d, &["rev-parse", "HEAD"]), head, "{how} {where_}: the repo around it got a commit");
+            }
+        }
+    }
+
+    // A unix name may hold a `\`: the folder above is cut at `/` only, so the ceiling holds
+    // (and with a `:` above, the check runs).
+    #[cfg(unix)]
+    #[test]
+    fn a_backslash_in_the_name_of_the_repo_folder_keeps_the_ceiling() {
+        use crate::repo::open;
+        for rel in ["re\\po", "a:b/re\\po"] {
+            let dir = tempfile::tempdir().unwrap();
+            let d = std::path::PathBuf::from(real(dir.path()));
+            plain_git(&d, &["init", "-q", "-b", "main"]);
+            plain_git(&d, &["commit", "--allow-empty", "-q", "-m", "outer"]);
+            let head = plain_git(&d, &["rev-parse", "HEAD"]);
+            let inner = d.join(rel);
+            std::fs::create_dir_all(&inner).unwrap();
+            plain_git(&inner, &["init", "-q", "-b", "main"]);
+            plain_git(&inner, &["commit", "--allow-empty", "-q", "-m", "inner"]);
+            let repo = open(&real(&inner), None).unwrap();
+            let there = on_a_machine(&repo);
+            let up = real(inner.parent().unwrap());
+            assert_eq!(repo.place.confine().first().map(|(_, v)| v.clone()), (!rel.contains(':')).then_some(up), "{rel}");
+            std::fs::rename(inner.join(".git"), inner.join(".git-away")).unwrap();
+            for (where_, r) in [("here", &repo), ("on a machine", &there)] {
+                let out = commit_of(r, "landed");
+                assert!(out.is_err() || out.is_ok_and(|o| !o.ok()), "{rel} {where_}: committed");
+                assert_eq!(plain_git(&d, &["rev-parse", "HEAD"]), head, "{rel} {where_}: the repo around it got a commit");
+            }
+        }
+    }
+
+    // The check is cancelled with the command, also where the machine doesn't answer.
+    #[cfg(unix)]
+    #[test]
+    fn the_check_on_a_machine_that_does_not_answer_is_cancelled_with_the_command() {
+        use crate::repo::open;
+        let dir = tempfile::tempdir().unwrap();
+        let d = std::path::PathBuf::from(real(dir.path()));
+        let inner = d.join("a:b/inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        plain_git(&inner, &["init", "-q", "-b", "main"]);
+        let there = on_a_machine(&open(&real(&inner), None).unwrap());
+        assert!(there.place.needs_git_check());
+        std::fs::write(inner.join(".hc-hang"), "").unwrap();
+        for kind in [Kind::Write, Kind::Read] {
+            let cancel = Cancel::new();
+            let c2 = cancel.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                c2.cancel();
+            });
+            let started = Instant::now();
+            let cmd = if kind == Kind::Write { Git::write(["status"]) } else { Git::read(["status"]) };
+            let out = there.run(cmd.cancel(Some(cancel)));
+            assert_eq!(out, Err(GitError::Cancelled), "{kind:?}");
+            assert!(started.elapsed() < Duration::from_secs(5), "{kind:?}: took {:?}", started.elapsed());
+        }
+        // A write waiting behind it isn't stuck: the lock is free again.
+        std::fs::remove_file(inner.join(".hc-hang")).unwrap();
+        assert!(there.run(Git::write(["status"])).unwrap().ok());
+    }
+
+    // Which folder git found is the folder: by real path here (a link, a trailing `/`, case),
+    // as written on a machine, with Windows' forms (`\\?\`, `\`, case, `C:/`) the same one.
+    #[test]
+    fn the_folder_git_found_is_the_folder_or_it_is_not() {
+        for (found, root) in [("/srv/repo", "/srv/repo"), ("/srv/repo", "/srv/repo/"), ("/Srv/Repo", "/srv/repo"), ("/", "/"), ("C:/x/repo", "C:/x/repo"), ("C:/x/repo", r"C:\x\repo"), ("c:/x/repo", "C:/X/Repo"), (r"\\?\C:\x\repo", "C:/x/repo"), ("C:/", "C:/"), ("C:/", r"C:\"), ("//host/share/repo", r"\\host\share\repo")] {
+            assert!(same_folder(found, root, true), "{found} = {root}");
+        }
+        for (found, root) in [("/srv", "/srv/repo"), ("", "/srv/repo"), ("", ""), ("/srv/repo/sub", "/srv/repo"), ("C:/", "C:/x"), ("/", "/srv"), ("/srv/re/po", r"/srv/re\po"), ("/srv/repo2", "/srv/repo")] {
+            assert!(!same_folder(found, root, true), "{found} != {root}");
+        }
+        // Here: by real path.
+        let dir = tempfile::tempdir().unwrap();
+        let real_dir = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(real_dir.join("repo")).unwrap();
+        let (found, root) = (real_dir.join("repo").to_string_lossy().into_owned(), format!("{}/", dir.path().join("repo").display()));
+        assert!(same_folder(&found, &root, false), "{found} = {root}");
+        assert!(!same_folder(&real_dir.to_string_lossy(), &found, false));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(real_dir.join("repo"), real_dir.join("link")).unwrap();
+            assert!(same_folder(&found, &real_dir.join("link").to_string_lossy(), false), "a link to it");
+            assert!(!same_folder(&found, &real_dir.join("link").to_string_lossy(), true), "on a machine: as written");
+        }
+    }
+
     #[test]
     fn remote_commands_go_through_hc_exec() {
-        let place = Place { root: "/srv/repo".into(), on: Some("lab-01".into()), git: "git".into(), write_lock: Arc::default() };
+        let place = Place { root: "/srv/repo".into(), on: Some("lab-01".into()), git: "git".into(), top: false, write_lock: Arc::default() };
         let a = hc_args(&place, &Git::read(["status", "-z"]).stdin(b"x".to_vec()).timeout(Duration::from_secs(9000)));
         assert_eq!(&a[..8], ["exec", "--json", "--on", "lab-01", "--timeout", "600", "--cwd", "/srv/repo"]);
         assert!(a.windows(2).any(|w| w == ["--env", "GIT_OPTIONAL_LOCKS=0"]));
+        // Looking for a repo from a folder: up as far as git goes. In an open one: its top only.
+        assert!(!a.iter().any(|x| x.starts_with("GIT_CEILING_DIRECTORIES=")));
+        let top = hc_args(&Place { top: true, ..place.clone() }, &Git::read(["status"]));
+        assert!(top.windows(2).any(|w| w == ["--env", "GIT_CEILING_DIRECTORIES=/srv"]), "{top:?}");
+        let root = Place { root: "/".into(), top: true, ..place.clone() };
+        assert!(!hc_args(&root, &Git::read(["status"])).iter().any(|x| x.starts_with("GIT_CEILING_DIRECTORIES=")), "nothing above /");
+        // A `:` above: no ceiling git would split there, and nothing else in its place.
+        let colon = hc_args(&Place { root: "/srv/a:b/repo".into(), top: true, ..place.clone() }, &Git::read(["status"]));
+        assert!(!colon.iter().any(|x| x.starts_with("GIT_CEILING_DIRECTORIES=") || x.starts_with("GIT_DIR=") || x.starts_with("GIT_WORK_TREE=")), "{colon:?}");
         let dashes = a.iter().position(|x| x == "--").unwrap();
         assert_eq!(a[dashes - 1], "--stdin");
         assert_eq!(a[dashes + 1], "git");
