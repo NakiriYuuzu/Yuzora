@@ -714,6 +714,8 @@ while [ $# -gt 0 ] && [ "$1" != -- ]; do
 done
 shift
 printf '%s\n' "$cwd" >> "$0.calls"
+# A machine that doesn't answer (tests: a `.hc-hang` in the folder).
+[ -e "$cwd/.hc-hang" ] && exec sleep 30
 out=$(mktemp) err=$(mktemp)
 if [ "$stdin" = 1 ]; then (cd "$cwd" && "$@") >"$out" 2>"$err"; else (cd "$cwd" && "$@") </dev/null >"$out" 2>"$err"; fi
 code=$?
