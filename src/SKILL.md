@@ -51,19 +51,34 @@ login/interactive shell (sh, bash, zsh, dash, ksh or fish), including its
 configured PATH. Other shells keep the sh launcher.
 `terminal.open --folder /path --place down` starts the split in that folder,
 including when `--argv` supplies a program. Without `--folder`, it follows the
-focused terminal's folder.
+focused terminal's folder. If an inherited local folder was deleted, new spaces,
+tabs and splits retry in that machine's home. An explicit invalid folder
+still fails.
 `hc machine ls` lists machines. Use `hc run --on vps ...`, `hc exec --on vps ...`
 and `hc file ... --on vps ...` for remote work, not your local file tools.
 
 `do` accepts `--key value` arguments (JSON for arrays/objects) or one JSON
 object. Unknown argument names fail and list valid names. Target IDs (`id`,
-`pane`, `space`, `terminal`) must be strings; other non-null types fail before
+`pane`, `space`, `target`, `terminal`) must be strings; other non-null types fail before
 the current-target default can apply. Null keeps its omitted-argument meaning.
 Use `commands` to confirm the command's exact shape:
 
 ```sh
 herdr-app do pane.split '{"direction":"right","pane":"p12"}'
 ```
+
+`pane.swap {pane?, direction | target}` trades the places of `pane` (default:
+the focused one) and its neighbor in a direction, or `target`, another pane of
+the same tab. Give `direction` or `target`, not both. Focus stays with the same pane:
+
+```sh
+herdr-app do pane.swap '{"pane":"p12","target":"p14"}'
+```
+
+`terminal.search` opens a find bar in the focused terminal. It searches that
+terminal's screen and scrollback; Enter and Shift-Enter move between matches,
+Escape closes the bar while its find field has focus, and each terminal keeps its own query (reopening selects it, so typing replaces it).
+Clicking the terminal while the bar is open puts typing, including Escape, back in the program; the bar and its matches stay.
 
 It prints the created IDs (for example `{ "pane": "...", "terminal": "..." }`)
 or `{ "error": "..." }` and exits 1. Read the result, then inspect `ls` or
@@ -115,7 +130,8 @@ herdr-app shot /tmp/mod.png   # then look at the picture
 ```
 
 `check` loads the mod and renders it once. It exits nonzero with the exact
-error. Never call a mod done without a passing check. Then confirm it is
+error. Its shared state starts empty and stays in memory; it leaves shared.json
+untouched. Never call a mod done without a passing check. Then confirm it is
 shown correctly in the running window with `shot`; don't claim a visual
 check you haven't made.
 
