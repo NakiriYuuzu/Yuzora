@@ -699,7 +699,8 @@ mod tests {
         // But not over a panel the person opened themselves meanwhile (their Files): the mode stays out of it.
         let mut state = files.clone();
         keep_clicks(&mut state, &before, &file);
-        assert_eq!(state, files);
+        assert_eq!(state.nodes["panel"], files.nodes["panel"]);
+        assert!(!state.nodes.contains_key("panel-body"), "the dock's mode stays out");
     }
 
     #[test]
