@@ -59,6 +59,12 @@ export default class Statusbar extends View {
     });
   }
 
+  // The mode bar opens Git where the layout has it: the right dock's panel or window, or an old clone's
+  // sidebar stack (the legacy bar takes the command too).
+  openGit() {
+    run("yuzora-modebar.git");
+  }
+
   // The focused terminal's machine: its address is "<machine>/<id>" off this computer. A layout
   // terminal block can show another machine's terminal than the Space's; a mod pane has none.
   key() {
@@ -102,7 +108,7 @@ export default class Statusbar extends View {
         .child(t("needs", { count: waiting.length }))))
       .when(Boolean(branch), (el) => el.child(item("branch").min_w(0).cursor_pointer().hover((s) => s.text_color(th.foreground))
         .tooltip(t("branch.open"))
-        .on_click(() => run("layout.select", { stack: "yuzora-sidebar", child: "yuzora-sidebar-git" }))
+        .on_click(() => this.openGit())
         .when(Boolean(badge), (el) => el.child(div().size(14).flex_none().rounded(3).bg(badge.color).flex().items_center().justify_center()
           .text_size(9).font_bold().text_color(tk.text.on_badge).child(badge.initial)))
         .child(svg("mods/workspace-chrome/branch.svg").size(12).flex_none())

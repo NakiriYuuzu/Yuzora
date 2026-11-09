@@ -6,5 +6,6 @@
     "database": "Database",
     "ssh": "SSH / SFTP"
   },
-  "settings": "Settings"
+  "settings": "Settings",
+  "close": "Close"
 }

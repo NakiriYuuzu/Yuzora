@@ -21,9 +21,10 @@
 use crate::layout::{Align, Axis, Content, Edge, Float, Kind, Node, Size};
 use serde_json::{Value, json};
 
-/// Off until the mode bar and drawer mods ship (PR-2): while false, [`inject`]
-/// only strips and [`ensure`] does nothing, so the app is what it was.
-pub const RIGHT_DOCK: bool = false;
+/// The switch: while false, [`inject`] only strips and [`ensure`] does nothing,
+/// so the app is what it was. On since the mode bar and drawer ship in
+/// `yuzora-modebar` (PR-2).
+pub const RIGHT_DOCK: bool = true;
 
 /// Reserved: only the injection makes nodes whose ids start with this. A file
 /// that has one has it ignored.
@@ -348,17 +349,21 @@ mod tests {
             ensure_with(&mut shown, "x", false);
             assert_eq!(shown, file, "ensure does nothing while off");
         }
-        // The switch the app runs with.
-        if !RIGHT_DOCK {
-            for text in [MAIN, TERMINALS, WIN98, YUZORA] {
-                let file = parse(text);
-                let mut n = file.clone();
-                assert_eq!(inject(&mut n, "main"), Placed::Off);
-                assert_eq!(n, file);
-                ensure(&mut n, "main");
-                assert_eq!(n, file);
-            }
+    }
+
+    #[test]
+    fn the_switch_the_app_runs_with_is_on() {
+        // main and a layout with no panel get the dock through the public entry the hooks call; yuzora keeps its own modes.
+        for (text, want) in [(MAIN, Placed::Panel), (TERMINALS, Placed::Drawer), (WIN98, Placed::Drawer), (YUZORA, Placed::Own)] {
+            let mut n = parse(text);
+            assert_eq!(inject(&mut n, "x"), want);
+            let mut shown = n.clone();
+            ensure(&mut shown, "x");
+            assert_eq!(shown, n, "a tree that has the dock keeps it");
         }
+        let mut bare = parse(MAIN);
+        ensure(&mut bare, "main");
+        assert!(bare.find("yuzora-dock-bar").is_some(), "a tree built without the dock gets it");
     }
 
     #[test]
