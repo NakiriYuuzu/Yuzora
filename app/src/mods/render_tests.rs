@@ -49,6 +49,15 @@ impl Staged {
         )).unwrap();
         dir
     }
+    // yuzora(dock): `setup` that reads and writes shared state, so it can play another copy's part.
+    fn wrapper_with_shared(&self, entry: &str, setup: &str) -> PathBuf {
+        let dir = self.0.clone();
+        std::fs::write(dir.join("main.js"), format!(
+            "import Real from './{entry}/main.js'; import {{ shared, setShared }} from 'herdr'; \
+             export default class Scenario extends Real {{ init(props, cx) {{ super.init(props, cx); {setup} }} }}"
+        )).unwrap();
+        dir
+    }
 }
 impl Drop for Staged {
     fn drop(&mut self) {
@@ -109,6 +118,9 @@ fn fixture(populated: bool, props: Value, update: Value) -> BTreeMap<String, Val
     values
 }
 
+// yuzora(dock): the `<mod>.<command>`s shipped mods run (they go to that mod's nextCommand()).
+const SHIPPED_MOD_COMMANDS: [&str; 1] = ["yuzora-modebar.git"];
+
 fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostModule {
     let mut module = HostModule::new("herdr");
     for (name, value) in values {
@@ -133,10 +145,9 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
         module = module.function(name, move |a| {
             if name == "run" {
                 let command = a.string(0)?;
-                // yuzora(dock): `<mod>.<command>` goes to that shipped mod's nextCommand(), not to commands::.
-                let mod_command = crate::commands::find(command).is_none()
-                    && command.split_once('.').is_some_and(|(m, _)| DEFAULT_MODS.iter().any(|(n, _)| *n == format!("{m}/main.js")));
-                if !mod_command {
+                // yuzora(dock): `<mod>.<command>` goes to that shipped mod's nextCommand(), not to commands::;
+                // only the ones a mod is known to run (a misspelled one must still fail here).
+                if !SHIPPED_MOD_COMMANDS.contains(&command) {
                     let command = crate::commands::find(command).unwrap_or_else(|| panic!("unknown shipped mod command {command}"));
                     let args = a.get(1).map(from_host).unwrap_or(Value::Null);
                     crate::commands::validate_args(command, &args).unwrap();
@@ -1197,6 +1208,8 @@ struct DockCopy {
     tree: String,
     runs: Vec<Value>,
     overlays: Vec<Value>,
+    /// What closeOverlay was given.
+    effects: Vec<Value>,
     shared: BTreeMap<String, Value>,
 }
 
@@ -1249,7 +1262,7 @@ fn dock_copy(
         .with_host_module(module(values, calls.clone()))
         .unwrap();
     let policy = crate::yuzora::with_modules(policy, "");
-    let root = setup.map(|s| staged.wrapper(entry, s)).unwrap_or_else(|| staged.0.join(entry));
+    let root = setup.map(|s| staged.wrapper_with_shared(entry, s)).unwrap_or_else(|| staged.0.join(entry));
     let window = cx.add_window(|_, _| Empty);
     let (tree, session) = window.update(cx, |_, window, cx| {
         let mut session = DescriptionSession::load(ShellRuntime::new_isolated().unwrap(), root, policy, window, cx).unwrap();
@@ -1264,7 +1277,7 @@ fn dock_copy(
     let calls = calls.borrow();
     assert!(calls.unexpected.is_empty(), "{entry}: {:?}", calls.unexpected);
     let of = |name: &str| calls.effects.iter().filter(|(n, _)| n == name).map(|(_, a)| json!(a)).collect::<Vec<Value>>();
-    DockCopy { tree, runs: of("run"), overlays: of("openOverlay").into_iter().map(|a| a[0].clone()).collect(), shared: calls.shared.clone() }
+    DockCopy { tree, runs: of("run"), overlays: of("openOverlay").into_iter().map(|a| a[0].clone()).collect(), effects: of("closeOverlay"), shared: calls.shared.clone() }
 }
 
 const DOCK_MODES: [&str; 4] = ["files", "git", "database", "ssh"];
@@ -1348,19 +1361,66 @@ fn yuzora_dock_drawer_opens_a_window(cx: &mut TestAppContext) {
     // No pointer position (a command): no `at`, the window opens where it was or centered.
     assert!(copy(cx, place("right", true), &[], &["ssh"], None).overlays[0].get("at").is_none());
 
-    // Toggle closes the window the header reported, or opens the last mode.
-    let open = json!({"id": "o7", "mode": "git"});
-    let gone = copy(cx, place("right", true), &[("yuzora.dock.open", open)], &["toggle"], None);
-    assert!(gone.overlays.is_empty() && gone.shared.get("yuzora.dock.open") == Some(&Value::Null), "{:?}", gone.overlays);
-    assert_eq!(copy(cx, place("right", true), &[("yuzora.dock.last", json!("ssh"))], &["toggle"], None).overlays[0]["layout"]["children"][1]["content"]["mod"], "yuzora-sidebar-ssh");
-
-    // The window's header: the four modes (the open one is named); it says which window is open.
+    // The window's header: the four modes (the open one is named); it says which window is open, for this run.
     let head = dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": "head", "mode": "git", "overlay": "o7"}), &layout, Value::Null, &[], &[], None);
     for mode in DOCK_MODES {
         assert!(head.tree.contains(&format!("\"head-{mode}\"")), "{mode}: {}", head.tree);
     }
     assert!(head.tree.contains("\"close\"") && head.tree.contains("mode.git") && !head.tree.contains("mode.ssh"), "{}", head.tree);
-    assert_eq!(head.shared.get("yuzora.dock.open"), Some(&json!({"id": "o7", "mode": "git"})), "the header says which window is open");
+    let open = head.shared.get("yuzora.dock.open").cloned().unwrap();
+    assert_eq!((&open["id"], &open["mode"]), (&json!("o7"), &json!("git")), "the header says which window is open");
+    assert!(open["session"].as_str().is_some_and(|s| !s.is_empty()), "and in which run: {open}");
+
+    // Toggle closes the window the header reported, or opens the last mode.
+    let gone = copy(cx, place("right", true), &[("yuzora.dock.open", open.clone())], &["toggle"], None);
+    assert!(gone.overlays.is_empty() && gone.shared.get("yuzora.dock.open") == Some(&Value::Null), "{:?}", gone.overlays);
+    assert!(gone.effects.contains(&json!(["o7"])), "closeOverlay o7: {:?}", gone.effects);
+    assert_eq!(copy(cx, place("right", true), &[("yuzora.dock.last", json!("ssh"))], &["toggle"], None).overlays[0]["layout"]["children"][1]["content"]["mod"], "yuzora-sidebar-ssh");
+
+    // An open window an earlier run left in shared state (overlay ids start over each run) is no window of
+    // this one: the toggle opens the mode instead of closing whatever has that id now, and the drawer
+    // doesn't show the mode as open.
+    let stale = json!({"id": "o7", "mode": "git", "session": "an-earlier-run"});
+    let after_restart = copy(cx, place("right", true), &[("yuzora.dock.open", stale.clone())], &["toggle"], None);
+    assert_eq!(after_restart.overlays.len(), 1, "opens a window: {:?}", after_restart.overlays);
+    assert!(!after_restart.effects.contains(&json!(["o7"])), "closes nothing: {:?}", after_restart.effects);
+    let mut drawn = |shared: &[(&str, Value)]| copy(cx, place("right", true), shared, &[], None).tree;
+    let none = drawn(&[]);
+    assert_eq!(drawn(&[("yuzora.dock.open", stale)]), none, "not shown as open");
+    assert_ne!(drawn(&[("yuzora.dock.open", open)]), none, "this run's is");
+}
+
+// R2b: the window's header. Its × and its tabs act on its own window, a closing window that is still the
+// open one says so, and it takes no commands (the drawer does; a header copy would answer them too).
+#[gpui::test]
+fn yuzora_dock_head_acts_on_its_window(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let layout = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
+    let head = |cx: &mut TestAppContext, overlay: &str, shared: &[(&str, Value)], commands: &[&str], setup: Option<&str>| {
+        dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": "head", "mode": "git", "overlay": overlay}), &layout, Value::Null, shared, commands, setup)
+    };
+    let body = |c: &DockCopy| c.overlays.iter().map(|o| o["layout"]["children"][1]["content"]["mod"].clone()).collect::<Vec<_>>();
+
+    // ×: no longer open, and the window closes.
+    let x = head(cx, "o7", &[], &[], Some("this.closeWindow();"));
+    assert_eq!(x.shared.get("yuzora.dock.open"), Some(&Value::Null));
+    assert_eq!(x.effects, [json!(["o7"])]);
+
+    // A tab opens the mode it shows (not the one the window has); the window's own tab does nothing.
+    assert_eq!(body(&head(cx, "o7", &[], &[], Some("this.pickTab('ssh');"))), [json!("yuzora-sidebar-ssh")]);
+    assert!(head(cx, "o7", &[], &[], Some("this.pickTab('git');")).overlays.is_empty());
+
+    // It takes no commands.
+    let silent = head(cx, "o7", &[], &["files", "toggle"], None);
+    assert!(silent.overlays.is_empty() && silent.runs.is_empty() && silent.effects.is_empty(), "{:?}", silent.overlays);
+
+    // Closing (a layout switch, quitting) clears what it said, but not once another window has said it:
+    // a tab's replacement opens first and its own header has already written its id.
+    assert_eq!(head(cx, "o7", &[], &[], Some("this.close();")).shared.get("yuzora.dock.open"), Some(&Value::Null));
+    let replaced = head(cx, "o7", &[], &[], Some(
+        "setShared('yuzora.dock.open', { ...shared('yuzora.dock.open'), id: 'o8', mode: 'ssh' }); this.close();"));
+    assert_eq!(replaced.shared["yuzora.dock.open"]["id"], "o8", "o8 said it, closing o7 leaves it: {:?}", replaced.shared);
 }
 
 // R3: the dock never touches shared("workspace.panels"), which only decides the tab bar's Files and
@@ -1404,6 +1464,26 @@ fn yuzora_status_branch_opens_git_in_the_dock(cx: &mut TestAppContext) {
         assert!(old.tree.contains(&format!("\"mode-{mode}\"")), "legacy keeps its five modes: {}", old.tree);
     }
     assert!(old.tree.contains("\"settings\""), "and the gear: {}", old.tree);
+
+    // With no mode bar on screen the command would fail with a toast ("unknown command"): a dock layout whose
+    // bar was hidden has nothing to open, an old clone whose sidebar was hidden selects its stack's Git as before.
+    fn hide(node: &mut Value, id: &str) {
+        if node["id"] == id {
+            node["hidden"] = json!(true);
+        }
+        for child in node.get_mut("children").and_then(Value::as_array_mut).into_iter().flatten() {
+            hide(child, id);
+        }
+    }
+    let click = |cx: &mut TestAppContext, layout: &Value| dock_copy(cx, &staged, "mods/yuzora-statusbar", json!({}), layout, Value::Null, &[], &[], Some("this.openGit();")).runs;
+    let mut barless = layout.clone();
+    hide(&mut barless, "yuzora-dock-bar");
+    assert!(click(cx, &barless).is_empty(), "a dock layout without its bar: nothing to open");
+    let legacy = dock_layout(include_str!("../../defaults/layouts/yuzora.json"));
+    assert_eq!(click(cx, &legacy), [json!(["yuzora-modebar.git"])], "an old clone's bar shows");
+    let mut sidebarless = legacy.clone();
+    hide(&mut sidebarless, "yuzora-modebar");
+    assert_eq!(click(cx, &sidebarless), [json!(["layout.select", {"stack": "yuzora-sidebar", "child": "yuzora-sidebar-git"}])]);
 }
 
 // R5: Yuzora's Space colors (yuzora.space.colors) are written into Herdr's (space.colors) for the

@@ -23,6 +23,8 @@ export interface ExecResult { code: number; stdout: string; stderr: string }
 export function version(): string;
 /** Yuzora's app home: ~/.config/yuzora, or $YUZORA_APP_HOME. */
 export function appHome(): string;
+/** One value for this run of the app, the same in every mod and different on the next run: tells a value kept in shared state (which survives a restart) from one this run wrote. */
+export function session(): string;
 /** The language shown: always "en". */
 export function locale(): "en";
 /** Does nothing: the interface is English only. Kept so older mods keep working. */
@@ -90,6 +92,17 @@ fn pairs(v: &[(String, String)]) -> Vec<(&str, String)> {
     v.iter().map(|(k, v)| (k.as_str(), v.clone())).collect()
 }
 
+/// This run of the app: its process id and the time it was first asked.
+fn session() -> String {
+    static SESSION: OnceLock<String> = OnceLock::new();
+    SESSION
+        .get_or_init(|| {
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+            format!("{}-{nanos}", std::process::id())
+        })
+        .clone()
+}
+
 /// `yuzora:core` for one mod copy (`mod_name` "" outside a mod, e.g. `check`).
 pub fn module(mod_name: &str) -> HostModule {
     crate::i18n::forget(mod_name);
@@ -98,6 +111,7 @@ pub fn module(mod_name: &str) -> HostModule {
         .declarations(DECLARATIONS)
         .function("version", |_| Ok(crate::VERSION.into()))
         .function("appHome", |_| Ok(crate::paths::app_home().to_string_lossy().into_owned().into()))
+        .function("session", |_| Ok(session().into()))
         .function("locale", |_| Ok(crate::i18n::current().into()))
         // English only: older mods may still call this, and it must not fail.
         .function("setLocale", |_| Ok(HostValue::Null))
@@ -161,6 +175,11 @@ mod tests {
             assert_eq!(m.call("setLocale", &HostArguments::new([HostValue::Str(choice.into())])).unwrap(), HostValue::Null, "{choice}");
             assert_eq!(m.call("locale", &HostArguments::new([])).unwrap(), HostValue::Str("en".into()), "after {choice}");
         }
+        // One value for the run, whichever copy asks.
+        let first = m.call("session", &HostArguments::new([])).unwrap();
+        let again = module("another-mod").call("session", &HostArguments::new([])).unwrap();
+        assert!(matches!(&first, HostValue::Str(s) if !s.is_empty()), "{first:?}");
+        assert_eq!(first, again);
         assert!(m.is_async("exec"));
         let tokens = from_host(&m.call("tokens", &HostArguments::new([])).unwrap());
         assert_eq!(tokens["agents"]["claude"], "#c96a4b");

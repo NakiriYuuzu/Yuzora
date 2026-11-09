@@ -56,7 +56,7 @@ L1 寫的 key：
 | `yuzora.shell.agents` | 各機器 `knownAgents()` 的上次結果（新增 pane 選單先顯示，再背景更新） |
 | `yuzora.shell.split` | 新增 pane 選單放在 `right` 或 `down` |
 | `yuzora.dock.last` | 右側 dock 上次開的模式（`files`／`git`／`database`／`ssh`），`yuzora-modebar.toggle` 用它 |
-| `yuzora.dock.open` | 抽屜的 window 現在開的是哪個（`{id, mode}`），由 window 標頭寫入，關閉鈕清成 null |
+| `yuzora.dock.open` | 抽屜的 window 現在開的是哪個（`{id, mode, session}`），由 window 標頭寫入；關閉鈕與標頭的 `close()`（換 layout、結束 App；只在自己的 id 還是這個值時）清成 null。`session` 是 `yuzora:core` 的 `session()`（每次執行不同）：shared 會存進 shared.json、overlay id 每次執行從 o1 重算，讀的人（`openNow()`）只信這一次執行寫的，上次留下的視為沒開 |
 
 dock 另外寫 Herdr 的 `space.colors`（上游 `spaces` 讀的 Space 色）：`yuzora.space.colors` 有 hex 的 Space（只限目前存在的），模式列／抽屜把同一個 hex 寫進去，讓左側頭像與 Yuzora 的徽章同色；Yuzora 沒有顏色時不寫。`workspace.panels` 不動（它只決定 tab 列的 Files／Changes 兩顆鈕）。
 
