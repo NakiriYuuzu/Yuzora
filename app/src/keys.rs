@@ -331,7 +331,7 @@ mod tests {
     }
 
     // yuzora(L1): an untouched keys.json from Yuzora beta.2 or beta.3 is upgraded to the current
-    // defaults (terminal.search in, no layout.switch key); one edited by a character is left alone.
+    // defaults (terminal.search and the dock toggle in, no layout.switch key); one edited by a character is left alone.
     #[test]
     fn untouched_yuzora_beta_keys_are_upgraded_and_edited_ones_are_not() {
         let dir = std::env::temp_dir().join(format!("yuzora-keys-beta-{}", std::process::id()));
@@ -350,6 +350,8 @@ mod tests {
                 std::fs::write(&path, original).unwrap();
                 assert_eq!(super::load_text(&path, defaults, originals).unwrap(), defaults, "{name} upgraded");
                 assert!(defaults.contains("terminal.search") && !defaults.contains("layout.switch"));
+                // The dock's toggle key (cmd-alt-b, ctrl-alt-b) comes with the upgrade: the betas didn't have it.
+                assert!(defaults.contains("\"yuzora-modebar.toggle\"") && !original.contains("yuzora-modebar"), "{name}");
                 let edited = original.replacen("tab.new", "pane.zoom", 1);
                 assert_ne!(edited, original);
                 std::fs::write(&path, &edited).unwrap();

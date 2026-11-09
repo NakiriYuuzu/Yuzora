@@ -15,7 +15,7 @@ import { page, title, heading, row, button, toggle, segmented, note, item } from
 // What the app uses when settings.json names no font (settings.rs).
 const DEFAULT_FONT = "JetBrains Mono";
 const DEFAULT_UI_FONT = "Geist";
-const MODES = ["last", "workspace", "files", "git", "database", "ssh"];
+const MODES = ["last", "none", "files", "git", "database", "ssh"];
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -200,10 +200,10 @@ export default class General extends View {
   // Startup -------------------------------------------------------------
 
   startup(th) {
-    const now = this.general().startup?.sidebar ?? "last";
+    const now = this.general().startup?.dock ?? "last";
     return v_flex()
       .child(heading(th, t("startup.heading")))
-      .child(row(th, t("startup.sidebar"), t("startup.sidebar_about"), div()))
+      .child(row(th, t("startup.dock"), t("startup.dock_about"), div()))
       .child(
         h_flex()
           .flex_wrap()
@@ -223,7 +223,7 @@ export default class General extends View {
                 .text_color(m === now ? th.foreground : th.muted)
                 .cursor_pointer()
                 .hover((s) => s.text_color(th.foreground))
-                .on_click(() => this.setGeneral((g) => (g.startup = { ...(g.startup ?? {}), sidebar: m })))
+                .on_click(() => this.setGeneral((g) => (g.startup = { ...(g.startup ?? {}), dock: m })))
                 .child(t(`startup.modes.${m}`)),
             ),
           ),
@@ -281,7 +281,7 @@ export default class General extends View {
         .w_full()
         .child(title(th, t("page.title"), t("page.about")))
         .child(this.look(th))
-        // Only once something opens the window on it (the mode bar sets this flag).
+        // Only once something applies it (the dock's mode bar or drawer sets this flag).
         .when(Boolean(shared("yuzora.startup.honored")), (el) => el.child(this.startup(th)))
         .child(this.panels(th))
         .child(this.security(th, cx)),

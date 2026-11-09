@@ -10,12 +10,14 @@
 // open that mode; toggle shows the last one or closes it.
 // A mode's badge is shared("yuzora.badge.<mode>"): a number, or null for none. Each lane sets its own;
 // the legacy workspace mode's (agents waiting for a reply, every machine) is amber and set here.
+// "When Yuzora opens" (settings > General, general.startup.dock) is applied here, by the first bar or drawer of the run.
 // Owned by lane L1 (the dock forms: lane dock).
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agents, layout, run, theme, shared, setShared, props, placement, spaces, openOverlay, closeOverlay, nextCommand } from "herdr";
 import { t, tokens, session } from "yuzora:core";
+import { startup } from "yuzora:settings";
 
 const STACK = "yuzora-sidebar";
 const MODES = ["workspace", "files", "git", "database", "ssh"];
@@ -29,6 +31,8 @@ const LAST = "yuzora.dock.last"; // the mode the toggle command shows again
 const OPEN = "yuzora.dock.open"; // the drawer's window now: { id, mode, session }; the window's header sets it, clears it on closing
 const COLORS = "yuzora.space.colors", SPACE_COLORS = "space.colors";
 const WINDOW_W = 380;
+const STARTED = "yuzora.startup.applied"; // session() of the run whose startup mode was applied: once per run
+const HONORED = "yuzora.startup.honored"; // settings > General shows its "When Yuzora opens" choice only once something applies it
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -88,6 +92,7 @@ export default class Modebar extends View {
   init(_props, cx) {
     this.dock = props()?.dock ?? null;
     if (this.dock === "head") { setShared(OPEN, { id: props()?.overlay ?? null, mode: props()?.mode ?? null, session: session() }); return; }
+    if (this.dock === "bar" || this.dock === "drawer") this.start();
     cx.spawn(async (cx) => {
       for (;;) {
         this.command(await nextCommand());
@@ -96,8 +101,25 @@ export default class Modebar extends View {
     });
   }
 
-  // The window closes (its ×, a layout switch, the app quitting): it is no longer open. A window that
-  // replaced this one (a mode tab) has already said so under its own id, which stays.
+  // Settings > General "When Yuzora opens": the dock's mode to open (or "none": closed), applied by the first
+  // dock this run shows, once. A layout switch later in the run does not apply it again.
+  start() {
+    setShared(HONORED, true);
+    if (shared(STARTED) === session()) return;
+    setShared(STARTED, session());
+    const mode = startup().dock;
+    if (mode === null) return;
+    if (this.dock === "bar") {
+      if (mode === "none") run("layout.hide", { id: PANEL });
+      else this.showMode(mode);
+    } else if (mode !== "none") {
+      openMode(mode);
+    }
+  }
+
+  // The window closes (its ×, a layout switch, the app quitting): it is no longer open. A mode tab's replacement
+  // opens with the same key: the window removes the old overlay first (this close() clears OPEN), then the new
+  // header's init writes its own id. A close() that finds another id there leaves it.
   close() {
     if (this.dock === "head" && openNow()?.id === props()?.overlay) setShared(OPEN, null);
   }

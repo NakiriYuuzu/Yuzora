@@ -26,11 +26,11 @@
   },
   "startup": {
     "heading": "When Yuzora opens",
-    "sidebar": "Sidebar",
-    "sidebar_about": "The sidebar mode to show first.",
+    "dock": "Right-hand dock",
+    "dock_about": "The mode the dock on the right opens on, or closed. Applied once per start, by the first layout that has the dock.",
     "modes": {
-      "last": "The last one",
-      "workspace": "Workspace",
+      "last": "As you left it",
+      "none": "Closed",
       "files": "Files",
       "git": "Git",
       "database": "Database",

@@ -1084,6 +1084,7 @@ impl AppWindow {
         let mut state = layout_sync::State::between(&self.file_chrome, &self.chrome);
         state.theme = self.picked_theme.clone();
         if self.layout_file_ok {
+            crate::yuzora::dock::keep_clicks(&mut state, &read_state(&self.layout_name), &self.chrome); // yuzora(dock): clicks on a dock part that isn't shown (the person chose off or drawer) are kept for its return
             self.write_state(&state);
         }
         let edited = layout_sync::without_clicks(&self.file_chrome, &self.chrome);
@@ -6083,6 +6084,121 @@ export default class Probe extends View {
         });
         assert_eq!(after, before);
         assert!(!layout_file().contains("yuzora-dock"));
+    }
+
+    // W4: the person's choice for a layout (settings `shell.dock.layouts.<name>`) applies at once, with
+    // `layout.switch` to the layout shown, and leaves the layout file alone and the dock's clicks in `.state`.
+    #[test]
+    fn a_persons_dock_choice_applies_at_once() {
+        in_own_process("dock_personal_choice");
+    }
+
+    #[gpui::test]
+    fn dock_personal_choice(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("dock_personal_choice") {
+            return;
+        }
+        crate::yuzora::dock::force_for_tests();
+        let original = panel_layout().to_string();
+        let (view, cx) = open_window(cx, "unused", "", panel_layout());
+        let choose = |word: Option<&str>| {
+            let shell = word.map_or(serde_json::Value::Null, |w| json!({ "dock": { "layouts": { "test": w } } }));
+            yuzora_core::settings::set_section(crate::yuzora::dock::SHELL, shell).unwrap();
+        };
+        let switch = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.switch", json!({ "name": "test" }), window, cx)));
+            cx.run_until_parked();
+        };
+        // The dock on Git, panel wider than the file has it: clicks.
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx);
+            this.run("layout.show", json!({ "id": "panel" }), window, cx);
+            this.run("layout.resize", json!({ "id": "panel", "px": 420 }), window, cx);
+        }));
+        let shown = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| (dock_view(&this.chrome), this.chrome.find("panel").unwrap().size));
+        let before = shown(cx);
+        assert_eq!(before.0, (Some("yuzora-dock-git".to_string()), false, false));
+
+        // Off: the dock is gone at once (in both trees), the layout file is the same bytes.
+        choose(Some("off"));
+        switch(cx);
+        view.update(cx, |this, _| {
+            assert!(this.chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")) && this.file_chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")));
+        });
+        assert_eq!(layout_file(), original);
+        // Saved while it is off (a click elsewhere, a switch to the same layout): still nothing in the file.
+        view.update(cx, |this, _| this.save());
+        switch(cx);
+        assert_eq!(layout_file(), original);
+
+        // Auto again: the dock is back, on Git, at the width it was dragged to.
+        choose(Some("auto"));
+        switch(cx);
+        assert_eq!(shown(cx), before, "the clicks on the dock survived the time it was off");
+        assert_eq!(layout_file(), original);
+
+        // Drawer: the panel's bar gives way to the drawer; auto brings the panel back.
+        choose(Some("drawer"));
+        switch(cx);
+        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_none() && this.chrome.find("yuzora-dock").is_none() && this.chrome.walk().iter().any(|n| n.floating.iter().any(|f| f.id == "yuzora-dock"))));
+        choose(None);
+        switch(cx);
+        assert_eq!(shown(cx), before);
+        assert!(!layout_file().contains("yuzora-dock"));
+
+        // Over the layout file's own field: the file says off, the person says auto (the dock is shown); no choice, off.
+        let mut off = panel_layout();
+        off["yuzora"] = json!({ "dock": "off" });
+        std::fs::write(super::layout_path("test"), off.to_string()).unwrap();
+        choose(Some("auto"));
+        switch(cx);
+        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some(), "the person's auto beats the file's off"));
+        choose(None);
+        switch(cx);
+        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_none(), "no choice: the file's off"));
+    }
+
+    // "When Yuzora opens" (general.startup.dock): the first bar of a run opens the dock on that mode (or closes it), once.
+    #[test]
+    fn the_first_dock_of_a_run_opens_the_mode_settings_ask_for() {
+        in_own_process("dock_startup_mode");
+    }
+
+    #[gpui::test]
+    fn dock_startup_mode(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("dock_startup_mode") {
+            return;
+        }
+        crate::yuzora::dock::force_for_tests();
+        let general = |dock: &str| yuzora_core::settings::set_section(yuzora_core::settings::GENERAL, json!({ "startup": { "dock": dock } })).unwrap();
+        general("database");
+        let (view, cx) = open_window(cx, "yuzora-modebar", include_str!("../defaults/mods/yuzora-modebar/main.js"), panel_layout());
+        cx.run_until_parked();
+        let shown = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| dock_view(&this.chrome));
+        assert_eq!(shown(cx), (Some("yuzora-dock-database".to_string()), false, false), "the panel opens on the mode settings name");
+        assert_eq!(crate::mods::shared("yuzora.startup.honored"), Some(json!(true)), "settings may show the choice now");
+
+        // The person goes on to Files; a layout switch (the bar's mod loads again) does not take that back.
+        std::fs::write(super::layout_path("other"), json!({ "id": "root", "type": "block", "yuzora": { "dock": "off" }, "content": { "tab": "active" } }).to_string()).unwrap();
+        let switch = |name: &str, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.switch", json!({ "name": name }), window, cx)));
+            cx.run_until_parked();
+        };
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.select", json!({ "stack": "panel-body", "child": "files" }), window, cx)));
+        switch("other", cx);
+        switch("test", cx);
+        assert_eq!(shown(cx).0, Some("files".to_string()), "once per run");
+
+        // A new run (another session) with none: the dock starts closed.
+        crate::mods::set_shared("yuzora.startup.applied".into(), json!("an earlier run"));
+        general("none");
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.show", json!({ "id": "panel" }), window, cx)));
+        assert!(!shown(cx).1);
+        switch("other", cx);
+        switch("test", cx);
+        assert!(shown(cx).1, "none: the panel is closed");
     }
 
     // B2: a layout the dock can't place by position (repeated ids), or a layout.set tree without ids, is no crash.

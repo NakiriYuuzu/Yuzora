@@ -19,6 +19,7 @@
 //!   or [`RIGHT_DOCK`] is false).
 
 use crate::layout::{Align, Axis, Content, Edge, Float, Kind, Node, Size};
+use crate::layout_sync::State;
 use serde_json::{Value, json};
 
 /// The switch: while false, [`inject`] and [`ensure`] do nothing (only a save
@@ -43,6 +44,8 @@ const OWN: [&str; 6] = [
     "yuzora-sidebar-database",
     "yuzora-sidebar-ssh",
 ];
+/// The `settings.json` section holding the person's dock choices.
+pub const SHELL: &str = "shell";
 /// The mode bar's width, px (min = max: it never resizes).
 const BAR_PX: f32 = 40.0;
 /// How much of the drawer shows at the edge until hovered, px.
@@ -96,12 +99,28 @@ fn mod_of(c: &Content) -> Option<&str> {
     }
 }
 
-fn choice(n: &Node) -> Choice {
-    match n.yuzora.as_ref().and_then(|y| y.get("dock")).and_then(Value::as_str) {
-        Some("off") => Choice::Off,
-        Some("drawer") => Choice::Drawer,
+fn word(s: &str) -> Choice {
+    match s {
+        "off" => Choice::Off,
+        "drawer" => Choice::Drawer,
         _ => Choice::Auto,
     }
+}
+
+fn choice(n: &Node) -> Choice {
+    word(n.yuzora.as_ref().and_then(|y| y.get("dock")).and_then(Value::as_str).unwrap_or_default())
+}
+
+/// What the person chose for the layout `name` in Yuzora's settings
+/// (`shell.dock.layouts.<name>`: `auto`, `drawer` or `off`). Nothing, or a
+/// word nobody knows, is no choice: the layout's own field decides.
+fn personal_in(shell: &Value, name: &str) -> Option<Choice> {
+    let word = shell.get("dock")?.get("layouts")?.get(name)?.as_str()?;
+    matches!(word, "auto" | "drawer" | "off").then(|| self::word(word))
+}
+
+fn personal(name: &str) -> Option<Choice> {
+    personal_in(&yuzora_core::settings::section(SHELL), name)
 }
 
 /// The layout already uses one of Yuzora's mode mods, in a block or a float:
@@ -168,21 +187,21 @@ pub fn strip(n: &Node, fallback: Option<&Node>) -> Node {
 }
 
 /// A tree read from the layout `_layout`'s file (or its shipped default):
-/// puts the dock in. Off (see [`RIGHT_DOCK`]) it leaves the tree alone. `_layout` is
-/// there for the person's own choice per layout (a later step); today only
-/// the layout's own `yuzora.dock` decides.
-pub fn inject(n: &mut Node, _layout: &str) -> Placed {
-    inject_with(n, enabled())
+/// puts the dock in. Off (see [`RIGHT_DOCK`]) it leaves the tree alone. The
+/// person's choice for the layout (settings, `shell.dock.layouts.<layout>`)
+/// beats the layout's own `yuzora.dock`, which beats `auto`.
+pub fn inject(n: &mut Node, layout: &str) -> Placed {
+    inject_with(n, enabled(), personal(layout))
 }
 
-fn inject_with(n: &mut Node, on: bool) -> Placed {
+fn inject_with(n: &mut Node, on: bool, personal: Option<Choice>) -> Placed {
     // Off, the tree is the file's own, whatever ids it uses.
     if !on {
         return Placed::Off;
     }
     // A reserved id in a file is ignored: the dock is rebuilt, never doubled.
     *n = strip(n, None);
-    let choice = choice(n);
+    let choice = personal.unwrap_or_else(|| choice(n));
     if choice == Choice::Off {
         return Placed::Off;
     }
@@ -206,13 +225,13 @@ fn inject_with(n: &mut Node, on: bool) -> Placed {
 /// What a tree written to a layout file reads back as, shown: [`strip`]ped
 /// (as the file gets it), then [`inject`]ed (as a load shows it). What
 /// `file_chrome` must hold after a write, so the dock's clicks stay clicks.
-pub fn as_read(n: &Node, _layout: &str, fallback: Option<&Node>) -> Node {
-    as_read_with(n, fallback, enabled())
+pub fn as_read(n: &Node, layout: &str, fallback: Option<&Node>) -> Node {
+    as_read_with(n, fallback, enabled(), personal(layout))
 }
 
-fn as_read_with(n: &Node, fallback: Option<&Node>, on: bool) -> Node {
+fn as_read_with(n: &Node, fallback: Option<&Node>, on: bool, personal: Option<Choice>) -> Node {
     let mut read = strip(n, fallback);
-    inject_with(&mut read, on);
+    inject_with(&mut read, on, personal);
     read
 }
 
@@ -220,17 +239,41 @@ fn as_read_with(n: &Node, fallback: Option<&Node>, on: bool) -> Node {
 /// started from `layout()`; a tree built from scratch gets it added.
 /// Whatever is there is kept as it is, with the clicks it carries.
 pub fn ensure(n: &mut Node, layout: &str) {
-    ensure_with(n, layout, enabled());
+    ensure_with(n, enabled(), personal(layout));
 }
 
-fn ensure_with(n: &mut Node, _layout: &str, on: bool) {
+fn ensure_with(n: &mut Node, on: bool, personal: Option<Choice>) {
     if !on {
         return;
     }
     let mut want = n.clone();
-    inject_with(&mut want, true);
+    inject_with(&mut want, true, personal);
     if reserved_ids(n) != reserved_ids(&want) {
         *n = want;
+    }
+}
+
+/// The clicks of `before` (the layout's `.state` as written) that belong to a
+/// dock part `chrome` doesn't show now: the person chose `off` or `drawer` for
+/// this layout since, and the clicks on the part that isn't shown (the panel's
+/// mode, the bar, the drawer's place) must outlive that until it is back. A
+/// click `state` already has (made on what shows now) is not replaced.
+pub fn keep_clicks(state: &mut State, before: &State, chrome: &Node) {
+    let shown = reserved_ids(chrome);
+    let gone = |id: &str| reserved(id) && !shown.iter().any(|s| s == id);
+    for (id, click) in &before.nodes {
+        if gone(id) {
+            state.nodes.entry(id.clone()).or_insert_with(|| click.clone());
+        } else if let Some(mode) = click.active.as_ref().filter(|a| gone(a))
+            && chrome.find(id).is_some()
+        {
+            state.nodes.entry(id.clone()).or_default().active.get_or_insert_with(|| mode.clone());
+        }
+    }
+    for (id, click) in &before.floats {
+        if gone(id) {
+            state.floats.entry(id.clone()).or_insert_with(|| click.clone());
+        }
     }
 }
 
@@ -258,7 +301,7 @@ mod tests {
     fn injected(text: &str) -> (Node, Node, Placed) {
         let file = parse(text);
         let mut n = file.clone();
-        let placed = inject_with(&mut n, true);
+        let placed = inject_with(&mut n, true, None);
         (file, n, placed)
     }
 
@@ -356,7 +399,7 @@ mod tests {
             let (file, n, placed) = injected(text);
             assert_eq!(strip(&n, None), file);
             let mut again = n.clone();
-            assert_eq!(inject_with(&mut again, true), placed);
+            assert_eq!(inject_with(&mut again, true, None), placed);
             assert_eq!(again, n, "a tree read back from the injected one is the same");
         }
     }
@@ -366,13 +409,13 @@ mod tests {
         for text in [MAIN, TERMINALS, WIN98, YUZORA, YUZORA_BETA3] {
             let file = parse(text);
             let mut n = file.clone();
-            assert_eq!(inject_with(&mut n, false), Placed::Off);
+            assert_eq!(inject_with(&mut n, false, None), Placed::Off);
             assert_eq!(n, file, "inject(F) == F");
             assert_eq!(strip(&file, Some(&file)), file, "strip(F) == F");
             // What a save would write for it (nothing edited) is the file's text.
             assert_eq!(text_of(&strip(&without_clicks(&file, &n), Some(&file))), text_of(&file));
             let mut shown = file.clone();
-            ensure_with(&mut shown, "x", false);
+            ensure_with(&mut shown, false, None);
             assert_eq!(shown, file, "ensure does nothing while off");
         }
     }
@@ -388,7 +431,7 @@ mod tests {
             assert_eq!(shown, n, "a tree that has the dock keeps it");
         }
         let mut bare = parse(MAIN);
-        ensure(&mut bare, "main");
+        ensure(&mut bare, "a-layout-nobody-has-chosen-for");
         assert!(bare.find("yuzora-dock-bar").is_some(), "a tree built without the dock gets it");
     }
 
@@ -432,7 +475,7 @@ mod tests {
             saved.file = serde_json::to_value(&edited).ok();
             let saved: State = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
             let mut reread = parse(&written);
-            inject_with(&mut reread, true);
+            inject_with(&mut reread, true, None);
             let mut s = saved;
             s.forget_since_saved(&reread);
             let mut again = reread.clone();
@@ -470,19 +513,19 @@ mod tests {
         let (file, mut chrome, placed) = injected(MAIN);
         click(&mut chrome, placed);
         let mut kept = chrome.clone();
-        ensure_with(&mut kept, "main", true);
+        ensure_with(&mut kept, true, None);
         assert_eq!(kept, chrome, "a tree that has the dock keeps it, clicks and all");
         let mut bare = file.clone();
-        ensure_with(&mut bare, "main", true);
+        ensure_with(&mut bare, true, None);
         assert_eq!(strip(&bare, None), file);
         assert!(bare.find("yuzora-dock-bar").is_some());
         // The drawer too, and a dock the tree opted out of stays out.
         let mut win = parse(WIN98);
-        ensure_with(&mut win, "win98", true);
+        ensure_with(&mut win, true, None);
         assert!(win.floating.iter().any(|f| f.id == PREFIX));
         let mut off = parse(&MAIN.replacen("\"id\": \"root\",", "\"id\": \"root\", \"yuzora\": { \"dock\": \"off\" },", 1));
         let before = off.clone();
-        ensure_with(&mut off, "main", true);
+        ensure_with(&mut off, true, None);
         assert_eq!(off, before);
     }
 
@@ -509,6 +552,94 @@ mod tests {
         assert!(!text_of(&parse(MAIN)).contains("\"yuzora\""));
     }
 
+    // T9: the person's choice (settings) beats the layout's field, which beats auto.
+    #[test]
+    fn a_persons_choice_beats_the_layout_field() {
+        let with = |dock: &str| MAIN.replacen("\"id\": \"root\",", &format!("\"id\": \"root\", \"yuzora\": {{ \"dock\": \"{dock}\" }},"), 1);
+        let placed = |text: &str, personal: Option<Choice>| {
+            let mut n = parse(text);
+            inject_with(&mut n, true, personal)
+        };
+        // Neither says anything: auto.
+        assert_eq!(placed(MAIN, None), Placed::Panel);
+        // The person says off or drawer over a layout that says auto (or nothing).
+        assert_eq!(placed(MAIN, Some(Choice::Off)), Placed::Off);
+        assert_eq!(placed(&with("auto"), Some(Choice::Off)), Placed::Off);
+        assert_eq!(placed(MAIN, Some(Choice::Drawer)), Placed::Drawer);
+        // The person says auto over a layout that says off or drawer.
+        assert_eq!(placed(&with("off"), None), Placed::Off);
+        assert_eq!(placed(&with("off"), Some(Choice::Auto)), Placed::Panel);
+        assert_eq!(placed(&with("drawer"), Some(Choice::Auto)), Placed::Panel);
+        // A layout with no panel stays a drawer under auto, and off still wins.
+        assert_eq!(placed(WIN98, Some(Choice::Auto)), Placed::Drawer);
+        assert_eq!(placed(WIN98, Some(Choice::Off)), Placed::Off);
+        // The choice reaches what a mod's layout.set and a save's read-back make, not only a load.
+        let mut bare = parse(MAIN);
+        ensure_with(&mut bare, true, Some(Choice::Off));
+        assert!(reserved_ids(&bare).is_empty(), "off: a tree built without the dock stays without");
+        let mut shown = parse(MAIN);
+        inject_with(&mut shown, true, None);
+        ensure_with(&mut shown, true, Some(Choice::Off));
+        assert!(reserved_ids(&shown).is_empty(), "off: a tree that had the dock loses it, as a load would");
+        let file = parse(MAIN);
+        assert!(reserved_ids(&as_read_with(&shown, Some(&file), true, Some(Choice::Off))).is_empty());
+        assert!(as_read_with(&file, Some(&file), true, Some(Choice::Drawer)).floating.iter().any(|f| f.id == PREFIX));
+    }
+
+    // The clicks on the dock outlive the time the person has it off (or as a drawer): a save then keeps them.
+    #[test]
+    fn clicks_on_a_dock_part_that_is_not_shown_are_kept() {
+        for (text, placed) in [(MAIN, Placed::Panel), (TERMINALS, Placed::Drawer)] {
+            let (file, shown, _) = injected(text);
+            let mut chrome = shown.clone();
+            click(&mut chrome, placed);
+            let before = State::between(&shown, &chrome);
+            assert!(!before.nodes.is_empty() || !before.floats.is_empty());
+            // Off: what shows is the file; a save recomputes the clicks and would lose them.
+            let mut state = State::between(&file, &file);
+            assert!(state.nodes.is_empty() && state.floats.is_empty());
+            keep_clicks(&mut state, &before, &file);
+            // The panel's own width and visibility are the file's nodes: the save finds them again by itself.
+            let mut dock_parts = before.nodes.clone();
+            dock_parts.remove("panel");
+            assert_eq!(state.nodes, dock_parts, "{text:.20}");
+            assert_eq!(state.floats, before.floats);
+            // Shown, nothing is carried: the tree's own clicks are the whole truth.
+            let mut state = State::between(&shown, &chrome);
+            let again = state.clone();
+            keep_clicks(&mut state, &State::default(), &chrome);
+            assert_eq!(state, again);
+            keep_clicks(&mut state, &before, &chrome);
+            assert_eq!(state, again);
+        }
+        // A click made on what shows now (the file's own Files) is not replaced by the old one on the dock's Git.
+        let (file, shown, _) = injected(MAIN);
+        let mut chrome = shown.clone();
+        click(&mut chrome, Placed::Panel);
+        let before = State::between(&shown, &chrome);
+        let mut now = file.clone();
+        now.select("panel-body", "changes");
+        let mut state = State::between(&file, &now);
+        keep_clicks(&mut state, &before, &now);
+        assert_eq!(state.nodes["panel-body"].active.as_deref(), Some("changes"));
+    }
+
+    #[test]
+    fn the_settings_name_a_choice_per_layout() {
+        let shell = json!({ "dock": { "layouts": { "win98": "off", "main": "drawer", "odd": "sideways", "num": 5, "auto": "auto" } } });
+        assert_eq!(personal_in(&shell, "win98"), Some(Choice::Off));
+        assert_eq!(personal_in(&shell, "main"), Some(Choice::Drawer));
+        assert_eq!(personal_in(&shell, "auto"), Some(Choice::Auto));
+        // A word nobody knows, a non-word, a layout not named, no section: no choice (the layout's field decides).
+        for (shell, name) in [(&shell, "odd"), (&shell, "num"), (&shell, "terminals"), (&Value::Null, "main"), (&json!({ "dock": 3 }), "main"), (&json!({ "dock": { "layouts": [] } }), "main")] {
+            assert_eq!(personal_in(shell, name), None, "{name}");
+        }
+        // A name is a key, never a path: a slash or a tilde in it is just part of the name.
+        let odd = json!({ "dock": { "layouts": { "a/b": "off" } } });
+        assert_eq!(personal_in(&odd, "a/b"), Some(Choice::Off));
+        assert_eq!(personal_in(&odd, "a"), None);
+    }
+
     #[test]
     fn a_layout_that_places_the_modes_itself_is_left_alone() {
         let (file, n, placed) = injected(YUZORA_BETA3);
@@ -523,7 +654,7 @@ mod tests {
         // Strip runs first, so the dock's own mode nodes never count as the layout's: injecting twice stays a Panel.
         let (_, once, _) = injected(MAIN);
         let mut twice = once.clone();
-        assert_eq!(inject_with(&mut twice, true), Placed::Panel);
+        assert_eq!(inject_with(&mut twice, true, None), Placed::Panel);
     }
 
     #[test]
@@ -539,7 +670,7 @@ mod tests {
             hidden: false,
         });
         let mut n = file.clone();
-        assert_eq!(inject_with(&mut n, true), Placed::Panel);
+        assert_eq!(inject_with(&mut n, true, None), Placed::Panel);
         let ids = reserved_ids(&n);
         assert_eq!(ids.iter().filter(|i| *i == "yuzora-dock-git").count(), 1, "{ids:?}");
         assert!(!ids.iter().any(|i| i == PREFIX), "the hand-written drawer is gone");
@@ -580,18 +711,18 @@ mod tests {
         file.floating.push(Float { id: "yuzora-dockview".into(), content: Content::Terminal { terminal: "t2".into() }, edge: Edge::Left, align: Align::Start, peek: None, hidden: false });
         // Off: the tree is the file's, to the byte, and a save writes it back whole.
         let mut off = file.clone();
-        assert_eq!(inject_with(&mut off, false), Placed::Off);
+        assert_eq!(inject_with(&mut off, false, None), Placed::Off);
         assert_eq!(off, file);
         assert_eq!(strip(&off, Some(&file)), file);
         // Even a hand-written reserved id is left alone while off (nothing is injected, so nothing is the dock's to take out).
         let mut hand = file.clone();
         hand.find_mut("panel-body").unwrap().children_mut().unwrap().push(Node::block("yuzora-dock-git", Content::Terminal { terminal: "t3".into() }));
         let mut off_hand = hand.clone();
-        assert_eq!(inject_with(&mut off_hand, false), Placed::Off);
+        assert_eq!(inject_with(&mut off_hand, false, None), Placed::Off);
         assert_eq!(off_hand, hand);
         // On: still theirs, next to the dock.
         let mut on = file.clone();
-        assert_eq!(inject_with(&mut on, true), Placed::Panel);
+        assert_eq!(inject_with(&mut on, true, None), Placed::Panel);
         assert!(on.find("yuzora-docker").is_some() && on.floating.iter().any(|f| f.id == "yuzora-dockview"));
         assert_eq!(strip(&on, None), file);
     }
@@ -611,12 +742,12 @@ mod tests {
     fn as_read_is_what_a_load_of_the_written_file_shows() {
         let (file, mut chrome, placed) = injected(MAIN);
         click(&mut chrome, placed);
-        let read = as_read_with(&chrome, Some(&file), true);
+        let read = as_read_with(&chrome, Some(&file), true, None);
         assert_eq!(read, injected(&text_of(&strip(&chrome, Some(&file)))).1);
         assert_eq!(active(&read, "panel-body").as_deref(), Some("files"));
         assert!(read.find("yuzora-dock-bar").is_some());
         // As what it is called with again, it stays put.
-        assert_eq!(as_read_with(&read, Some(&read), true), read);
+        assert_eq!(as_read_with(&read, Some(&read), true, None), read);
     }
 
     fn row_with_panel(id: &str, tail: Vec<Value>) -> Value {
@@ -642,9 +773,9 @@ mod tests {
         // No ids at all but the panel's.
         let bare = json!({ "type": "row", "children": [{ "type": "column", "children": [row_with_panel("", vec![])] }] });
         let mut n: Node = serde_json::from_value(bare).unwrap();
-        assert_eq!(inject_with(&mut n, true), Placed::Panel);
+        assert_eq!(inject_with(&mut n, true, None), Placed::Panel);
         let mut again: Node = serde_json::from_value(serde_json::to_value(&strip(&n, None)).unwrap()).unwrap();
-        ensure_with(&mut again, "x", true);
+        ensure_with(&mut again, true, None);
         assert!(again.find("yuzora-dock-bar").is_some());
         // Several panel-bodies: the modes join the one inside the panel.
         let many = json!({ "id": "root", "type": "row", "children": [
@@ -708,15 +839,15 @@ mod tests {
             let tree = rand_tree(&mut next, 4);
             let Ok(node) = serde_json::from_value::<Node>(tree) else { continue };
             parsed += 1;
-            for on in [true, false] {
+            for (on, personal) in [(true, None), (false, None), (true, Some(Choice::Auto)), (true, Some(Choice::Drawer)), (true, Some(Choice::Off))] {
                 let mut a = node.clone();
-                inject_with(&mut a, on);
-                inject_with(&mut a, on);
+                inject_with(&mut a, on, personal);
+                inject_with(&mut a, on, personal);
                 let mut b = node.clone();
-                ensure_with(&mut b, "x", on);
+                ensure_with(&mut b, on, personal);
                 let _ = strip(&a, Some(&b));
                 let _ = strip(&b, None);
-                let _ = as_read_with(&a, Some(&node), on);
+                let _ = as_read_with(&a, Some(&node), on, personal);
             }
         }
         assert!(parsed > 1000, "the generator makes trees: {parsed}");
