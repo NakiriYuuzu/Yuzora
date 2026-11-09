@@ -1,3 +1,5 @@
+// LEGACY (beta.4): the shipped yuzora layout no longer uses this mode (its left side is the upstream spaces/agents, and the
+// right dock has no workspace mode). Kept for beta.2/3 clones that name it, and for status/*.svg, which other mods draw.
 // The sidebar's Workspace mode. Owned by lane L1.
 // Spaces / Agents tabs; scope chips, one per machine, lit by its connection;
 // "needs attention" (agents blocked or done unseen); and the tree

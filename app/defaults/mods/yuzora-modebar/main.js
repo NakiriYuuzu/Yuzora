@@ -4,7 +4,8 @@
 //   "drawer" the dock's peeking launcher in a layout with no panel: its modes open in a window
 //            (a floating mod holds one mod and refocuses the terminal on every press, so it can't hold them).
 //   "head"   that window's header: the mode tabs and a close button.
-//   none     legacy: the old sidebar's row of five modes (an old clone of the yuzora layout still has it).
+//   none     LEGACY (beta.4): the old sidebar's row of five modes, with the workspace mode and its amber count; only an
+//            old clone of the yuzora layout still has it (the shipped one gets the "bar" form from the dock).
 // Commands (<mod>.<command>: a key in keys.json, `herdr-app do`, the status bar): files, git, database, ssh
 // open that mode; toggle shows the last one or closes it.
 // A mode's badge is shared("yuzora.badge.<mode>"): a number, or null for none. Each lane sets its own;
@@ -44,8 +45,8 @@ export function badgeText(value) {
 }
 
 // Herdr's Spaces (the left side) keep their badge colors in "space.colors"; Yuzora's mods keep theirs in
-// "yuzora.space.colors". Where Yuzora has a color for a Space, the other gets the same hex, so a Space
-// is one color on the left and in Yuzora's tab bar and headers.
+// "yuzora.space.colors". Where Yuzora has a color for a Space and Herdr has none yet, Herdr gets the same hex
+// (a beta.3 user's colors carry over once). A color Herdr already has is the user's pick in its own UI: never overwritten.
 export function syncSpaceColors() {
   const mine = shared(COLORS);
   if (!mine || typeof mine !== "object") return;
@@ -53,7 +54,7 @@ export function syncSpaceColors() {
   const ids = new Set(spaces().map((s) => s.id));
   let next = null;
   for (const [id, hex] of Object.entries(mine)) {
-    if (ids.has(id) && typeof hex === "string" && hex.startsWith("#") && theirs[id] !== hex) (next ??= { ...theirs })[id] = hex;
+    if (ids.has(id) && typeof hex === "string" && hex.startsWith("#") && !theirs[id]) (next ??= { ...theirs })[id] = hex;
   }
   if (next) setShared(SPACE_COLORS, next);
 }

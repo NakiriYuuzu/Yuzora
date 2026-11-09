@@ -1394,6 +1394,14 @@ fn yuzora_status_branch_opens_git_in_the_dock(cx: &mut TestAppContext) {
     let click = dock_copy(cx, &staged, "mods/yuzora-statusbar", json!({}), &layout, Value::Null, &[], &[], Some("this.openGit();"));
     assert!(click.tree.contains("\"branch\""), "the branch is drawn: {}", click.tree);
     assert_eq!(click.runs, [json!(["yuzora-modebar.git"])]);
+    // The shipped yuzora layout, injected: its status bar opens Git the same way, and its bar picks the
+    // dock's Git (the new layout has no sidebar stack at all).
+    let yuzora = dock_layout(include_str!("../../defaults/layouts/yuzora.json"));
+    assert!(yuzora.to_string().contains("yuzora-dock-git") && !yuzora.to_string().contains("yuzora-sidebar\""));
+    let click = dock_copy(cx, &staged, "mods/yuzora-statusbar", json!({}), &yuzora, Value::Null, &[], &[], Some("this.openGit();"));
+    assert_eq!(click.runs, [json!(["yuzora-modebar.git"])]);
+    let bar = dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": "bar"}), &yuzora, Value::Null, &[], &["git"], None);
+    assert_eq!(bar.runs, select_and_show("git"), "{}", bar.tree);
     // An old clone (no dock props): the same command selects the sidebar stack's Git.
     let old = dock_copy(cx, &staged, "mods/yuzora-modebar", json!({}), &layout, Value::Null, &[], &["git", "workspace", "toggle"], None);
     assert_eq!(old.runs, [
@@ -1406,9 +1414,9 @@ fn yuzora_status_branch_opens_git_in_the_dock(cx: &mut TestAppContext) {
     assert!(old.tree.contains("\"settings\""), "and the gear: {}", old.tree);
 }
 
-// R5: Yuzora's Space colors (yuzora.space.colors) are written into Herdr's (space.colors) for the
-// Spaces that exist, so a Space is one color on the left and in Yuzora's chrome; a color Herdr has
-// already is left when it's the same, and nothing is written when there's nothing to say.
+// R5: Yuzora's Space colors (yuzora.space.colors) are written into Herdr's (space.colors) only for the
+// Spaces that exist and have none there yet (a beta.3 user's colors carry over once); a color Herdr has
+// already is the user's pick and stays, and nothing is written when there's nothing to say.
 #[gpui::test]
 fn yuzora_dock_keeps_space_colors_in_step(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
@@ -1421,8 +1429,8 @@ fn yuzora_dock_keeps_space_colors_in_step(cx: &mut TestAppContext) {
     let yuzora = json!({"s1": "#2563eb", "s2": "#0f766e", "gone": "#c2410c", "s3": "#7c3aed", "bad": "ansi4"});
     for (dock, layout, placement) in [("bar", &main, Value::Null), ("drawer", &terminals, place.clone())] {
         let go = |cx: &mut TestAppContext, shared: &[(&str, Value)]| dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": dock}), layout, placement.clone(), shared, &[], None);
-        let copy = go(cx, &[("yuzora.space.colors", yuzora.clone()), ("space.colors", json!({"s1": "ansi6", "s2": "#0f766e", "other": "ansi3"}))]);
-        assert_eq!(theirs(&copy), Some(json!({"s1": "#2563eb", "s2": "#0f766e", "other": "ansi3"})), "{dock}: Yuzora's hex wins, only for Spaces that exist");
+        let copy = go(cx, &[("yuzora.space.colors", yuzora.clone()), ("space.colors", json!({"s1": "ansi6", "other": "ansi3"}))]);
+        assert_eq!(theirs(&copy), Some(json!({"s1": "ansi6", "s2": "#0f766e", "other": "ansi3"})), "{dock}: Herdr's own colors stay; Yuzora's hex only fills a Space that has none, and only one that exists");
         let copy = go(cx, &[("yuzora.space.colors", yuzora.clone())]);
         assert_eq!(theirs(&copy), Some(json!({"s1": "#2563eb", "s2": "#0f766e"})), "{dock}: Herdr had none");
         let same = json!({"s1": "#2563eb", "s2": "#0f766e"});

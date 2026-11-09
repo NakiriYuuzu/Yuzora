@@ -8,14 +8,14 @@ lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列
 | --- | --- |
 | `app/crates/yuzora-shell/` | `yuzora:shell`：工作區樹模型、Space 徽章色、git 摘要、新 Space 的資料夾 |
 | `app/src/yuzora/shell.rs` | app 端 glue：pane 外框的 `blocked` 邊框；人執行的 `space.new` 改開資料夾對話框 |
-| `app/defaults/mods/yuzora-sidebar-workspace/` | 側欄工作區模式；`status/*.svg` 是 5 種 agent 狀態的形狀，其他 L1 mod 也引用 |
-| `app/defaults/mods/yuzora-modebar/` | 模式列，依 `props().dock` 有三種形態：`bar`（右側 dock 的 40px 垂直列）、`drawer`（沒有 panel 的 layout 的抽屜）、`head`（抽屜開出的 window 標頭）；沒有 `dock` 時是舊行為（舊 yuzora clone 的橫向 5 模式列、設定齒輪，標為 legacy） |
+| `app/defaults/mods/yuzora-sidebar-workspace/` | **legacy**（beta.4 起預設 layout 不再使用，只給 beta.2／3 的舊 clone）：側欄工作區模式；`status/*.svg` 是 5 種 agent 狀態的形狀，其他 L1 mod 也引用 |
+| `app/defaults/mods/yuzora-modebar/` | 模式列，依 `props().dock` 有三種形態：`bar`（右側 dock 的 40px 垂直列）、`drawer`（沒有 panel 的 layout 的抽屜）、`head`（抽屜開出的 window 標頭）；沒有 `dock` 時是舊行為（**legacy**：舊 yuzora clone 的橫向 5 模式列、工作區徽章、設定齒輪） |
 | `app/defaults/mods/yuzora-shell-tabs/` | tab 列與新增 pane 選單（由指令開啟） |
 | `app/defaults/mods/yuzora-shell-pane/` | pane 標頭 |
 | `app/defaults/mods/yuzora-new-space/` | 新增 Space 的資料夾對話框 |
 | `app/defaults/mods/yuzora-statusbar/` | 狀態列 |
-| `app/defaults/mods/yuzora-brand/` | 側欄頂端的品牌列：標誌與搜尋（開指令面板） |
-| `app/defaults/layouts/yuzora.json` | 預設 layout：改用上面的 tab 列與 pane 標頭，加上 `blocked` 邊框與 UI 字型 |
+| `app/defaults/mods/yuzora-brand/` | **legacy**（beta.4 起預設 layout 不再使用）：側欄頂端的品牌列，標誌與搜尋（開指令面板）；只給舊 clone，之後的 legacy 清理會刪 |
+| `app/defaults/layouts/yuzora.json` | 預設 layout：左側是上游的 `workspace-chrome`（40px 頂列）＋`spaces`＋`agents`＋`workspace-chrome` footer，`min 44`；工作區改用上面的 tab 列與 pane 標頭，加上 `blocked` 邊框與 UI 字型；模式由右側 dock 注入（layout 不可引用 `yuzora-brand`、`yuzora-modebar`、`yuzora-sidebar-*`，否則被判定為 Own、不注入，`shell.rs` 的測試鎖住） |
 | `app/defaults/themes/yuzora-{dark,light}.json`、`app/defaults/yuzora/tokens.json` | 深色／淺色 theme 與 tokens（`light` 區塊是淺色主題的覆寫值） |
 | `app/defaults/frame/{welcome,whatsnew,feedback}/` | 上游畫面，只改品牌字樣（見「上游改動」） |
 
@@ -58,7 +58,7 @@ L1 寫的 key：
 | `yuzora.dock.last` | 右側 dock 上次開的模式（`files`／`git`／`database`／`ssh`），`yuzora-modebar.toggle` 用它 |
 | `yuzora.dock.open` | 抽屜的 window 現在開的是哪個（`{id, mode}`），由 window 標頭寫入，關閉鈕清成 null |
 
-dock 另外寫 Herdr 的 `space.colors`（上游 `spaces` 讀的 Space 色）：`yuzora.space.colors` 有 hex 的 Space（只限目前存在的），模式列／抽屜把同一個 hex 寫進去，讓左側頭像與 Yuzora 的徽章同色；Yuzora 沒有顏色時不寫。`workspace.panels` 不動（它只決定 tab 列的 Files／Changes 兩顆鈕）。
+dock 另外寫 Herdr 的 `space.colors`（上游 `spaces` 讀的 Space 色）：`yuzora.space.colors` 有 hex、而且 `space.colors` **還沒有值**的 Space（只限目前存在的），模式列／抽屜把同一個 hex 寫進去（把 beta.3 使用者的 Yuzora 色帶過去一次）；`space.colors` 已有值的不覆蓋（那是使用者在上游 UI 的選擇）；Yuzora 沒有顏色時不寫。`yuzora.badge.workspace` 與 legacy 模式列的 `WAITING` 只剩舊 clone 在用，等 legacy 清理一併移除。`workspace.panels` 不動（它只決定 tab 列的 Files／Changes 兩顆鈕）。
 
 L1 讀的 key：
 
@@ -69,13 +69,14 @@ L1 讀的 key：
 
 - **tab 列只列出目前 Space 的 tab**（使用者回報，2026-11-04）：沿用上游 Herdr tab 列的做法，只列 active Space 的 tab，以 Space 區分；沒有 active Space 時列表是空的。切換 Space 時列表跟著換（側欄的 Space 清單、`tab.select` 跨 Space 切換不受影響）。徽章仍顯示目前 Space 的色塊與縮寫，tooltip 仍帶 Space 名稱。設計稿 p1 把不同 Space 的 tab 並列在同一條 tab 列，與這個決定不一致，以此條為準。已收起（settled）的 tab 不顯示，除非正在看它。拖曳排序只在同一個 Space 內（列表本來就只有一個 Space）。測試：`render_tests.rs` 的 `yuzora_tab_bar_lists_only_the_current_space`。
 - **右側面板（Files／Changes）**：沿用上游 tab 列的切換鈕與「每個 Space 記住自己的面板」：切換 Space 時恢復該 Space 上次的選擇（沒選過就關閉）。`shared("workspace.panels")` 決定顯示哪幾顆。tab 列不再提供分割鈕；分割在 pane 標頭（`yuzora-shell-pane`）。
-- **右側 dock 的模式列與抽屜**（beta.4 PR-2，設計見 `specs/right-dock-spec.md`）：`RIGHT_DOCK` 開啟後，沒有自己放 Yuzora 模式的 layout 都會得到 dock（`src/yuzora/dock.rs` 注入，不寫進 layout 檔）。有 `panel`／`panel-body` 的 layout（`main`）：四個模式加進 `panel-body` stack，`panel` 右邊多一條 40px 的垂直模式列（`yuzora-modebar {dock: "bar"}`，一直看得到）；點沒顯示的模式 = `layout.select` ＋ `layout.show`，點正在顯示的模式 = `layout.hide`。沒有 panel 的 layout（`terminals`、`win98`、自訂）：root 的 floating 加一個 peek 40 的抽屜（`{dock: "drawer"}`），只當啟動列（一個 float 只能放一個 mod，而且每次按壓都會把焦點還給 terminal），點模式開一個 `kind: "window"` 的 overlay（key `yuzora-dock`、`keep`、380px × 85%，標頭 `{dock: "head"}` 有四個模式分頁與關閉鈕），同一個 key 再開會在原位置取代。抽屜在左右邊緣時圖示在靠邊的一側、名稱在內側；拖到上下邊緣就變成只有圖示的橫列。指令 `yuzora-modebar.files|git|database|ssh|toggle`（可綁 `keys.json`，狀態列的 branch 點擊走 `yuzora-modebar.git`）。`yuzora` layout 目前仍放自己的模式，判定為 Own，畫面不變（PR-3 才改版）。
+- **右側 dock 的模式列與抽屜**（beta.4 PR-2，設計見 `specs/right-dock-spec.md`）：`RIGHT_DOCK` 開啟後，沒有自己放 Yuzora 模式的 layout 都會得到 dock（`src/yuzora/dock.rs` 注入，不寫進 layout 檔）。有 `panel`／`panel-body` 的 layout（`main`）：四個模式加進 `panel-body` stack，`panel` 右邊多一條 40px 的垂直模式列（`yuzora-modebar {dock: "bar"}`，一直看得到）；點沒顯示的模式 = `layout.select` ＋ `layout.show`，點正在顯示的模式 = `layout.hide`。沒有 panel 的 layout（`terminals`、`win98`、自訂）：root 的 floating 加一個 peek 40 的抽屜（`{dock: "drawer"}`），只當啟動列（一個 float 只能放一個 mod，而且每次按壓都會把焦點還給 terminal），點模式開一個 `kind: "window"` 的 overlay（key `yuzora-dock`、`keep`、380px × 85%，標頭 `{dock: "head"}` 有四個模式分頁與關閉鈕），同一個 key 再開會在原位置取代。抽屜在左右邊緣時圖示在靠邊的一側、名稱在內側；拖到上下邊緣就變成只有圖示的橫列。指令 `yuzora-modebar.files|git|database|ssh|toggle`（可綁 `keys.json`，狀態列的 branch 點擊走 `yuzora-modebar.git`）。beta.2／3 複製出來、自己放 Yuzora 模式的 yuzora layout 判定為 Own，不注入，畫面不變。出貨的 `yuzora` layout 已改版（PR-3，見「yuzora layout 改版」）：它是 Panel，和 `main` 一樣。
 - **右側 panel：Yuzora 模式全域保持，Files／Changes 仍按 Space 記憶**（使用者決定 Q1＝b，2026-11-04）：`tabs` 與 `yuzora-shell-tabs` 的 `syncPanel` 各在 `const now = …` 後加 2 行：畫面上顯示的是 `yuzora-dock-*` 時，切換 Space 不記錄、不恢復、不關閉。不這樣做的話，切到沒開過 panel 的 Space 會把 dock 關掉，而且之後不會恢復。`scripts/yuzora-dock-panels.test.ts` 在兩個檔案各自實際的 `syncPanel` 原始碼上跑切換情境。
 - **「＋」與新增 pane 選單**：「＋」開上游的 `new-menu`（新 tab：終端機、agent、新 Space、worktree）。tab 列不再提供新增 pane／分割鈕（使用者要求，2026-11-04）；新增 pane 選單保留，從 `yuzora-shell-tabs.new-pane` 開啟。選單在目前的 tab 內混合分割：工具 pane（`yuzora:core` 的 `panes()`）用 `pane.split {direction, pane, mod, props}`、終端機用 `pane.split {direction, pane}`、agent 用 `terminal.open {argv, place}`；位置（右側／下方）在選單頂端切換。沒有 focus 的 pane（還沒有 Space，或 focus 在 layout 的終端機 block）時改開新 tab。
 - **blocked 外框**：上游的 pane frame 只有 `border` 與 `focus`。L1 在 `PaneFrame` 加了 `blocked`（`{width, color}`），agent 需要回覆時優先使用（即使該 pane 有 focus，因為那裡需要人）。標頭底色 `#1d1a14` 由 `yuzora-shell-pane` 自己畫。工具 pane 沒有 agent，不會變色。
 - **狀態形狀**：每種狀態同時用顏色與形狀表示（工作中綠點、需要回覆琥珀三角、完成未查看藍菱形、閒置空心圓、未知虛線圓）。GPUI 沒有 CSS 旋轉與三角形 border，所以 5 種形狀做成 SVG（`yuzora-sidebar-workspace/status/`），以 tokens 的 `status.<x>.mark` 上色。
 - **設定齒輪**：L6 的設定框架合併前，先開上游的 `app.settings`。圖形是 6 齒（8 齒在 1x 時齒縫會被線寬填滿）。
-- **品牌標誌**：側欄頂端畫 Yuzora 正式標誌（`public/brand/yuzora-mark.svg`），用 `image()` 保留四色；`svg()` 會把它當單色遮罩。gpui 不支援 CSS `var()`，所以 `yuzora-brand/mark.svg` 直接寫入原檔的 fallback 色碼。淺色 chrome（判斷方式同 `settings.rs` 的 `is_light`）改用 `mark-light.svg`：銀色面改成 slate `#94a3b8`，摺面依原本的比例加深成 `#668296`，否則銀色面在淺色底上幾乎看不見。
+- **yuzora layout 改版**（beta.4 PR-3，使用者決定 Q3、Q6，2026-11-04）：左側改用上游原生的 `workspace-chrome`（頂列 40px、`window_drag`、id `brand`）、`spaces`、`agents`、`workspace-chrome` footer（Settings、Add machine），寬度 248、`min 44`（上游的 rail 才縮得下去）；不放 `yuzora-brand`，也不做它的窄版。Yuzora 的四個模式移到右側 dock（`panel` 右邊的 40px 垂直列）。「工作區」模式不保留：scope chip、「需要注意」清單、LED、合併式「＋」選單、HERDR 工具選單隨 `yuzora-sidebar-workspace` 一起退場，Space 排序、新增 Space 先選資料夾、機器分組、worktree 由上游 `spaces` 負責（`run_as` 攔截對它的「＋」同樣有效）。root 的 `traffic_lights` 維持 `[14, 13]`。左側的字串是上游寫死的英文（整個 App 只留英文）。舊的 `.state/yuzora.json` 裡 `yuzora-sidebar` 的點選會因 id 不存在被忽略；改過 `yuzora.json` 的使用者照例得到 `yuzora-edited`。
+- **品牌標誌**（legacy：beta.4 起預設 layout 的左上角是上游的 `workspace-chrome`，顯示「Herdr」；Yuzora 標誌只剩 app icon、welcome 與官網）：側欄頂端畫 Yuzora 正式標誌（`public/brand/yuzora-mark.svg`），用 `image()` 保留四色；`svg()` 會把它當單色遮罩。gpui 不支援 CSS `var()`，所以 `yuzora-brand/mark.svg` 直接寫入原檔的 fallback 色碼。淺色 chrome（判斷方式同 `settings.rs` 的 `is_light`）改用 `mark-light.svg`：銀色面改成 slate `#94a3b8`，摺面依原本的比例加深成 `#668296`，否則銀色面在淺色底上幾乎看不見。
 - **鍵盤與腳本入口**：`yuzora-shell-tabs.new-pane` 開新增 pane 選單（置中顯示的 dialog；tab 列已沒有對應的按鈕）；`yuzora-sidebar-workspace.spaces`／`agents` 切換分頁，`add`／`tools` 開對應選單。可綁進 `keys.json`（`"alt-n": "yuzora-shell-tabs.new-pane"`），也可用 `herdr-app do yuzora-shell-tabs.new-pane`。
 - **Space 排序**：在側欄把 Space 拖到同一台機器的另一個 Space 上即可移動（`space.move`），右鍵開上游的 Space 選單（改名、worktree、關閉）。放開在其他地方或拖出側欄就取消。
 - **側欄「HERDR 工具」選單**：只有「指令面板」與「HERDR 說明」兩列。不放「下一個 layout」（使用者要求，2026-11-04）：從 `yuzora` layout 按下去會繞到上游的 `main`，Yuzora 的功能全部消失且回不來。換 layout 走設定 › Mods › Layouts 的「切換」；`layout.switch` 指令本身不動。同一個原因，預設快捷鍵（`keys.json` 的 `ctrl-shift-l`、`keys.macos.json` 的 `cmd-shift-l`）與指令面板的「Next layout」也拿掉（`frame/palette/main.js` 的 NAMED 與 HIDDEN，標 `// yuzora(L1):`）；指令面板的「Layout: <名稱>」照舊。`keys.json` 只在檔案不存在時寫入，所以已裝 beta.2 的使用者檔案裡還留著舊綁定：`keys.rs` 的 `parse` 在 global 區段略過「舊預設鍵 → `layout.switch`」這一條（`yuzora(L1)` 註記）；使用者改綁到別的鍵、或綁 `layout.switch:<名稱>` 的都保留。
@@ -100,7 +101,7 @@ L1 讀的 key：
 - herdr-app 會在啟動時載入 mod 的 `fonts/` 或 app home `fonts/` 下的 `.ttf`／`.otf`（Herdr 98 的字型就是這樣帶的）；`build.rs` 會把 `defaults/` 打包進執行檔。
 - 這台機器與 repo 都沒有這兩套字型，取得需要從外部下載；Noto Sans TC 可變字型約 12 MB，打包會讓執行檔與 repo 明顯變大。
 
-所以 beta.2 先**退回系統字型**：`yuzora.json` 的 `ui_font` 設為 `.SystemUIFont`（GPUI 的系統 UI 字型：macOS 為 SF Pro，中文由系統字型 fallback 到蘋方；Windows 為 Segoe UI；Linux 為系統預設 sans）。終端機字型不變（JetBrains Mono）。要改用 Inter 時：把 `InterVariable.ttf` 與 OFL 授權放進 `defaults/mods/yuzora-brand/fonts/`，`ui_font` 改為 `Inter`，並在 `THIRD-PARTY-NOTICES` 補上授權（列在待辦）。
+所以 beta.2 先**退回系統字型**：`yuzora.json` 的 `ui_font` 設為 `.SystemUIFont`（GPUI 的系統 UI 字型：macOS 為 SF Pro，中文由系統字型 fallback 到蘋方；Windows 為 Segoe UI；Linux 為系統預設 sans）。終端機字型不變（JetBrains Mono）。要改用 Inter 時：把 `InterVariable.ttf` 與 OFL 授權放進會留下來的 Yuzora mod（例如 `defaults/mods/yuzora-shell-pane/fonts/`，不放 `yuzora-brand`，它是 legacy，之後會刪）的 `fonts/`，`ui_font` 改為 `Inter`，並在 `THIRD-PARTY-NOTICES` 補上授權（列在待辦）。
 
 ## 上游改動
 
@@ -161,13 +162,14 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 | `l1-mixed-split-after-restart.png` | 終端機與工具 pane 混合分割，重啟後保留 |
 | `l1-welcome.png` | welcome 的 Yuzora 品牌字樣 |
 | `l1-modebar-gear.png` | 模式列（2x 裁切）：最右的設定按鈕是齒輪 |
-| `l1-brand-dark.png`、`l1-brand-light.png` | 側欄頂端（2x 裁切）的 Yuzora 標誌，深色（yuzora-dark）與淺色（paper，`appearance: light`）主題 |
+| `l1-brand-dark.png`、`l1-brand-light.png` | （legacy，beta.2／3 的 `yuzora-brand`；beta.4 起左上角是 `workspace-chrome`，需要重拍）側欄頂端（2x 裁切）的 Yuzora 標誌，深色（yuzora-dark）與淺色（paper，`appearance: light`）主題 |
 | `l1-light-*.png` | 淺色主題（`appearance: light`）的各畫面：`workspace`、`sidebar-files`、`sidebar-git`（L2、L5 尚未合併，仍是 L0 的佔位）、`sidebar-database`、`sidebar-ssh`、`database`（資料表與 SQL 查詢）、`sftp`、`settings`、`settings-mods`、`new-pane`、`palette`。SSH 主機來自假的 HOME（`build-server`、`staging-db`） |
+
+beta.4 PR-3 之後要重拍或新增的：yuzora layout 的全畫面（左上角 `workspace-chrome` 的 Herdr 圖示與字樣、Spaces／Agents、footer、右側 40px 模式列）、模式列開啟 Git 後的畫面、rail 狀態（`cmd-b`）、macOS 紅綠燈與 40px 頂列的位置、淺色主題。
 
 ## 待辦
 
 - 隨 app 打包 Inter（與 Noto Sans TC 的取捨），見「字型」。
-- 設計稿品牌列的第二顆按鈕用途未定（搜尋已加入，開指令面板）。
 - pane 標頭的 `repo` 目前是 pane 目前資料夾的名稱；在 repo 子資料夾時不是 repo 名稱。
 - 設計稿 tab 列右側兩顆圖示按鈕的用途未定，暫時做成「在右側／下方開終端機」。
 

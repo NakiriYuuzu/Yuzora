@@ -27,72 +27,61 @@
       "size": {
         "px": 248
       },
-      "min": 180,
+      "min": 44,
       "max": 480,
       "background": "chrome",
       "resizable": false,
       "children": [
         {
-          "id": "yuzora-brand",
+          "id": "brand",
           "type": "block",
           "size": {
             "px": 40
           },
           "window_drag": true,
           "content": {
-            "mod": "yuzora-brand"
+            "mod": "workspace-chrome"
           }
         },
         {
-          "id": "yuzora-sidebar",
-          "type": "stack",
-          "active": "yuzora-sidebar-workspace",
+          "id": "sidebar-lists",
+          "type": "column",
           "children": [
             {
-              "id": "yuzora-sidebar-workspace",
+              "id": "spaces",
               "type": "block",
+              "size": {
+                "weight": 1
+              },
+              "min": 90,
               "content": {
-                "mod": "yuzora-sidebar-workspace"
+                "mod": "spaces"
               }
             },
             {
-              "id": "yuzora-sidebar-files",
+              "id": "agents",
               "type": "block",
+              "size": {
+                "weight": 1
+              },
+              "min": 90,
               "content": {
-                "mod": "yuzora-sidebar-files"
-              }
-            },
-            {
-              "id": "yuzora-sidebar-git",
-              "type": "block",
-              "content": {
-                "mod": "yuzora-sidebar-git"
-              }
-            },
-            {
-              "id": "yuzora-sidebar-database",
-              "type": "block",
-              "content": {
-                "mod": "yuzora-sidebar-database"
-              }
-            },
-            {
-              "id": "yuzora-sidebar-ssh",
-              "type": "block",
-              "content": {
-                "mod": "yuzora-sidebar-ssh"
+                "mod": "agents"
               }
             }
           ]
         },
         {
-          "id": "yuzora-modebar",
+          "id": "sidebar-footer",
           "type": "block",
           "size": {
-            "px": 44
+            "px": 69
           },
           "content": {
-            "mod": "yuzora-modebar"
+            "mod": "workspace-chrome",
+            "props": {
+              "footer": true
+            }
           }
         }
       ]

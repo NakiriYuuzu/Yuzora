@@ -137,9 +137,9 @@ mod 在自己的 `mod.json` 宣告，不需要任何人去改共用清單：
 ### D11. 預設 layout 與佔位 mods
 
 - 新安裝的預設 layout 是 `app/defaults/layouts/yuzora.json`（`DEFAULT_LAYOUT`）。已經有 layout 的 app home 不受影響。
-  - 左側 248px 側欄由上而下是 `yuzora-brand`、`stack` `yuzora-sidebar`（5 個模式 block：`yuzora-sidebar-workspace`／`files`／`git`／`database`／`ssh`）、`yuzora-modebar`（44px，以 `layout.select {stack: "yuzora-sidebar", child}` 切換，最右是設定齒輪 `app.settings`）。
-  - 右側由上而下是 tab 列（上游 `tabs` mod）、主區 `{tab: "active"}`（pane 間距 6、圓角 6、標頭 28）、`yuzora-statusbar`（26px）。
-  - 另有一個隱藏的 `panel` 欄（files／changes），保留給上游 tabs、welcome 會用到的指令。
+  - 左側 248px（`min 44`）側欄由上而下是上游的 `workspace-chrome`（40px 頂列，Herdr 圖示與搜尋）、`spaces`＋`agents`、`workspace-chrome` footer（Settings、Add machine）（beta.4 起；beta.3 以前是 `yuzora-brand`、`yuzora-sidebar` stack 與 `yuzora-modebar`，現為 legacy）。
+  - 中間由上而下是 tab 列（`yuzora-shell-tabs`）、主區 `{tab: "active"}`（pane 間距 6、圓角 6、標頭 28）、`yuzora-statusbar`（26px）。
+  - 右側是隱藏的 `panel` 欄（files／changes）；Yuzora 的四個模式（files／git／database／ssh）與它右邊的 40px 模式列由 `src/yuzora/dock.rs` 注入，不寫進 layout 檔。
 - 佔位 mods 只顯示 i18n 標題與「由 Lx lane 實作」。全部都能通過 `herdr-app check`（`app/scripts/yuzora/check-mods`）。
 
 ### D12. 遠端策略

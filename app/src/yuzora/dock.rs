@@ -225,8 +225,6 @@ mod tests {
     const YUZORA: &str = include_str!("../../defaults/layouts/yuzora.json");
     /// `yuzora.json` as beta.3 shipped it: the modes in its own side bar.
     const YUZORA_BETA3: &str = include_str!("dock_fixtures/yuzora-beta3.json");
-    /// The shape `yuzora.json` takes once its left side is the upstream's (spec appendix B).
-    const YUZORA_NEXT: &str = include_str!("dock_fixtures/yuzora-pr3-draft.json");
 
     fn parse(text: &str) -> Node {
         serde_json::from_str(text).unwrap()
@@ -303,9 +301,12 @@ mod tests {
             assert!(n.walk().iter().all(|x| !reserved(&x.id)), "no node, only the float");
         }
 
-        // yuzora.json today places the modes in its own side bar: left alone (its rework makes it a Panel).
-        assert_eq!(injected(YUZORA).2, Placed::Own);
-        assert_eq!(injected(YUZORA_NEXT).2, Placed::Panel);
+        // yuzora.json's left side is the upstream's, so the modes go to the right: a Panel, like main.
+        let (_, yuzora, placed) = injected(YUZORA);
+        assert_eq!(placed, Placed::Panel);
+        assert!(yuzora.find("yuzora-dock-bar").is_some() && yuzora.find("yuzora-dock-git").is_some());
+        // The beta.3 file places the modes itself: left alone.
+        assert_eq!(injected(YUZORA_BETA3).2, Placed::Own);
     }
 
     #[test]
@@ -326,7 +327,7 @@ mod tests {
 
     #[test]
     fn strip_undoes_inject_and_inject_is_idempotent() {
-        for text in [MAIN, TERMINALS, WIN98, YUZORA, YUZORA_NEXT] {
+        for text in [MAIN, TERMINALS, WIN98, YUZORA] {
             let (file, n, placed) = injected(text);
             assert_eq!(strip(&n, None), file);
             let mut again = n.clone();
@@ -353,8 +354,8 @@ mod tests {
 
     #[test]
     fn the_switch_the_app_runs_with_is_on() {
-        // main and a layout with no panel get the dock through the public entry the hooks call; yuzora keeps its own modes.
-        for (text, want) in [(MAIN, Placed::Panel), (TERMINALS, Placed::Drawer), (WIN98, Placed::Drawer), (YUZORA, Placed::Own)] {
+        // main and a layout with no panel get the dock through the public entry the hooks call; yuzora (the new one) is a Panel and a beta.3 clone keeps its own modes.
+        for (text, want) in [(MAIN, Placed::Panel), (TERMINALS, Placed::Drawer), (WIN98, Placed::Drawer), (YUZORA, Placed::Panel), (YUZORA_BETA3, Placed::Own)] {
             let mut n = parse(text);
             assert_eq!(inject(&mut n, "x"), want);
             let mut shown = n.clone();
@@ -518,5 +519,29 @@ mod tests {
         assert_eq!(ids.iter().filter(|i| *i == "yuzora-dock-git").count(), 1, "{ids:?}");
         assert!(!ids.iter().any(|i| i == PREFIX), "the hand-written drawer is gone");
         assert!(matches!(n.find("yuzora-dock-git").unwrap().content(), Some(Content::Mod { name, .. }) if name == "yuzora-sidebar-git"));
+    }
+
+    #[test]
+    fn a_beta3_state_file_meets_the_new_yuzora_layout_without_harm() {
+        // What a beta.3 user's .state/yuzora.json holds: the old side bar's stack on Git, a dragged
+        // side bar, the panel opened. The ids that are gone are skipped; the ones that remain apply.
+        let state: State = serde_json::from_value(json!({ "nodes": {
+            "yuzora-sidebar": { "active": "yuzora-sidebar-git" },
+            "yuzora-modebar": { "hidden": true },
+            "sidebar": { "size": { "px": 300.0 } },
+            "panel": { "hidden": false },
+        } })).unwrap();
+        let (file, mut n, placed) = injected(YUZORA);
+        assert_eq!(placed, Placed::Panel);
+        let before = n.clone();
+        state.apply(&mut n);
+        assert!(n.find("yuzora-sidebar").is_none() && n.find("yuzora-modebar").is_none());
+        assert!(!n.find("panel").unwrap().hidden, "a click on a node that is still there applies");
+        assert_eq!(n.find("sidebar").unwrap().size, Some(Size::Px { px: 300.0 }));
+        // Nothing else moved, and the file stays free of the dock when it is written back.
+        n.find_mut("panel").unwrap().hidden = true;
+        n.find_mut("sidebar").unwrap().size = before.find("sidebar").unwrap().size;
+        assert_eq!(n, before);
+        assert_eq!(strip(&n, None), file);
     }
 }

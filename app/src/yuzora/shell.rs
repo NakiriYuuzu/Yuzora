@@ -85,8 +85,15 @@ mod tests {
             Some(HeaderContent::Mod { name, .. }) => mods.push(name),
             other => panic!("pane header: {other:?}"),
         }
-        for want in ["yuzora-shell-tabs", "yuzora-shell-pane", "yuzora-statusbar", "yuzora-modebar", "yuzora-sidebar-workspace"] {
+        for want in ["yuzora-shell-tabs", "yuzora-shell-pane", "yuzora-statusbar", "workspace-chrome", "spaces", "agents"] {
             assert!(mods.iter().any(|m| m == want), "{want} is in the layout");
+        }
+        // The modes come from the dock; naming any of these makes the dock treat the layout as placing them itself (Own) and not inject.
+        for m in &mods {
+            assert!(
+                m != "yuzora-brand" && m != "yuzora-modebar" && !m.starts_with("yuzora-sidebar-"),
+                "{m} is legacy and must not be in the layout"
+            );
         }
         let defaults = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods");
         for m in &mods {
