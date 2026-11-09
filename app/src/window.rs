@@ -5852,8 +5852,9 @@ export default class Probe extends View {
             return;
         }
         crate::yuzora::dock::force_for_tests();
+        let original = panel_layout().to_string();
         let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        let original = layout_file();
+        assert_eq!(layout_file(), original, "showing a layout writes nothing");
         view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some() && this.file_chrome.find("yuzora-dock-bar").is_some(), "the dock is in both trees"));
 
         // Clicks on the dock (a mode, the panel open) are the person's, kept in .state only.
