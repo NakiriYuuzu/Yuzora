@@ -37,6 +37,13 @@ pub const APP_SELF_UPDATE_OFF: bool = true;
 /// Herdr's update notes (CHANGELOG.md) link pictures on media.herdr.dev; the
 /// app never downloads them.
 pub const UPDATE_NOTES_MEDIA_OFF: bool = true;
+/// herdr-core 0.1.14 finishes an old bare-executable core install after an update by
+/// fetching releases.herdr.dev/core/install.sh and piping it to sh, with nothing but a
+/// marker string to vouch for it (`core_bin::ensure_core_bundle`). Yuzora never runs a
+/// downloaded script on its own; `hc update` itself still runs (the core stays bare,
+/// as it was before 0.1.14).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // read only by the macOS core_bin
+pub const CORE_BUNDLE_SCRIPT_OFF: bool = true;
 
 /// The app home (`~/.config/yuzora`, `$YUZORA_APP_HOME`); never Herdr's.
 pub fn app_home() -> PathBuf {
@@ -138,6 +145,15 @@ mod tests {
         assert_eq!(names.len(), 8);
         let d = declarations();
         assert!(d.contains("declare module \"yuzora:core\"") && d.contains("declare module \"yuzora:git\""));
+    }
+
+    #[test]
+    fn no_downloaded_core_installer_runs_by_itself() {
+        assert!(CORE_BUNDLE_SCRIPT_OFF);
+        let src = include_str!("../core_bin.rs");
+        let body = &src[src.find("fn ensure_core_bundle(").expect("ensure_core_bundle")..];
+        let first = body.lines().skip(1).find(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//")).unwrap();
+        assert_eq!(first.trim(), "if crate::yuzora::CORE_BUNDLE_SCRIPT_OFF {", "ensure_core_bundle must return before anything else");
     }
 
     #[test]

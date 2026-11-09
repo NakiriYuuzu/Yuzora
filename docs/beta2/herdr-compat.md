@@ -78,6 +78,7 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
   - setup 畫面或設定頁按「Update herdr-core」（`app.update_core`，`app/src/update.rs:244` `update_core`、`app/src/core_bin.rs:202` `update_to`）。
   - Yuzora 自我更新後第一次啟動，自動執行 `hc update --version <目標>`（`update.rs:600` `after_update`）。目標是最新的同代 release，取不到時改用 `core-version`。`--version` 是「至少這版」，不會降版。
   - 這些都和 Herdr.app 的行為相同。core 由 Homebrew、Nix、mise 管理時都不會更新（`installed_by`）。
+  - 例外（beta.4 起）：上游 0.1.14 在 macOS 的 `update_to` 之後多了 `core_bin::ensure_core_bundle`：core 是 home 底下、Apple 簽章的單獨執行檔時，下載 `releases.herdr.dev/core/install.sh` 並直接 pipe 給 `sh`（只檢查內容含 `HC_BUNDLE_ONLY`），把舊 updater 留下的單一執行檔補成完整 bundle。Yuzora 以 `yuzora::CORE_BUNDLE_SCRIPT_OFF` 關掉這一步（`core_bin.rs` 開頭 `yuzora(L7)` 註記）：不在背景自行執行下載來的腳本；`hc update` 照常執行，core 維持 0.1.14 之前的樣子。想要完整 bundle 的人可自行執行官方安裝指令。
 - 兩個 app 要求的 core 版本不同時：
   - 同一代：較新的 core 只會增加功能。哪一邊把 core 升上去，另一邊都能用。現在兩邊的下限都是 0.1.11。
   - 不同代：沒有辦法同時滿足兩邊，只能讓落後的 app 跟上。
