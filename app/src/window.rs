@@ -3247,7 +3247,7 @@ impl AppWindow {
                     Ok(n) => n,
                     Err(e) => return self.fail(format!("layout: {e}")),
                 };
-                crate::yuzora::dock::ensure(&mut n, &self.layout_name); // yuzora(dock): a tree built without the dock isn't an edit
+                crate::yuzora::dock::ensure(&mut n, &self.layout_name, Some(&self.file_chrome)); // yuzora(dock): a tree built without the dock isn't an edit
                 if layout_sync::without_clicks(&self.chrome, &n) != self.chrome {
                     return self.fail("Only supported click/look fields can change on Herdr's own layouts: clone one for other changes");
                 }
@@ -3264,7 +3264,7 @@ impl AppWindow {
             "layout.set" => match serde_json::from_value::<Node>(a.get("layout").cloned().unwrap_or_default()) {
                 Ok(mut n) => {
                     fill_ids(&mut n, &mut self.model);
-                    crate::yuzora::dock::ensure(&mut n, &self.layout_name); // yuzora(dock): shown with the dock, written without
+                    crate::yuzora::dock::ensure(&mut n, &self.layout_name, Some(&self.file_chrome)); // yuzora(dock): shown with the dock, written without
                     let text = layout_sync::text_of(&crate::yuzora::dock::strip(&n, Some(&self.file_chrome)));
                     if !write_atomic(&layout_path(&self.layout_name), &text) {
                         return self.fail(format!("cannot write layouts/{}.json", self.layout_name));
@@ -5938,7 +5938,8 @@ export default class Probe extends View {
         let written_at = mtime();
         std::thread::sleep(std::time::Duration::from_millis(20));
         cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
-        assert_eq!(mtime(), written_at, "reading the edit rewrites nothing (the dock is in the file's tree too, so it is no edit)");
+        assert_eq!(layout_file(), panel_layout().to_string(), "reading the edit rewrites nothing (the dock is in the file's tree too, so it is no edit)");
+        assert_eq!(mtime(), written_at, "and the file isn't touched");
         let before_save = layout_file();
         view.update(cx, |this, _| {
             assert!(this.chrome.find("yuzora-dock-bar").is_some());
@@ -6085,6 +6086,63 @@ export default class Probe extends View {
         assert!(!layout_file().contains("yuzora-dock"));
     }
 
+    // SF1: a layout.set that makes the dock be rebuilt (not kept as it came) keeps the file's own stack choice and the dock's click.
+    #[test]
+    fn a_rebuilt_dock_keeps_the_files_stack_choice() {
+        in_own_process("dock_rebuilt_keeps_choice");
+    }
+
+    #[gpui::test]
+    fn dock_rebuilt_keeps_choice(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("dock_rebuilt_keeps_choice") {
+            return;
+        }
+        crate::yuzora::dock::force_for_tests();
+        let mut layout = panel_layout();
+        layout["children"][1]["children"][0]["active"] = json!("changes");
+        let (view, cx) = open_window(cx, "unused", "", layout.clone());
+        let file_choice = || {
+            let n: crate::layout::Node = serde_json::from_str(&layout_file()).unwrap();
+            dock_choice(&n)
+        };
+        fn dock_choice(n: &crate::layout::Node) -> Option<String> {
+            match &n.find("panel-body").unwrap().kind {
+                crate::layout::Kind::Stack { active, .. } => active.clone(),
+                _ => None,
+            }
+        }
+        // (trigger, does the dock's Git click survive: the panel's dock nodes are still there)
+        type Edit = fn(&mut serde_json::Value);
+        let triggers: [(&str, Edit, bool); 3] = [
+            ("the row reversed", |t| t["children"].as_array_mut().unwrap().reverse(), true),
+            ("a dock node dropped", |t| t["children"][1]["children"][0]["children"].as_array_mut().unwrap().retain(|c| c["id"] != "yuzora-dock-ssh"), true),
+            ("opted into the drawer", |t| t["yuzora"] = json!({ "dock": "drawer" }), false),
+        ];
+        for (what, edit, click_kept) in triggers {
+            std::fs::write(super::layout_path("test"), layout.to_string()).unwrap();
+            let _ = std::fs::remove_file(super::state_path("test"));
+            view.update(cx, |this, _| this.load_layout("test"));
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx);
+                let mut tree = serde_json::to_value(&this.chrome).unwrap();
+                edit(&mut tree);
+                this.run("layout.set", json!({ "layout": tree }), window, cx);
+                this.save();
+            }));
+            assert_eq!(file_choice().as_deref(), Some("changes"), "{what}: the file keeps its own choice");
+            assert!(!layout_file().contains("yuzora-dock"), "{what}");
+            let want = Some(if click_kept { "yuzora-dock-git" } else { "changes" }.to_string());
+            let shown = view.update(cx, |this, _| dock_choice(&this.chrome));
+            assert_eq!(shown, want, "{what}: shown");
+            let after = view.update(cx, |this, _| {
+                this.load_layout("test");
+                dock_choice(&this.chrome)
+            });
+            assert_eq!(after, want, "{what}: after a restart");
+        }
+    }
+
     // B2: a layout the dock can't place by position (repeated ids), or a layout.set tree without ids, is no crash.
     #[test]
     fn dock_in_a_layout_with_repeated_ids_is_shown_not_a_crash() {
@@ -6165,7 +6223,7 @@ export default class Probe extends View {
         assert!(code.contains("text_of(&crate::yuzora::dock::strip(&n, Some(&self.file_chrome)))"));
         // Every load injects after keep_ids; every other read of a file is a copy (clone_layout) or only looks (missing_mods).
         assert_eq!(code.matches("crate::yuzora::dock::inject(").count(), 2);
-        assert_eq!(code.matches("crate::yuzora::dock::ensure(").count(), 2);
+        assert_eq!(code.matches("crate::yuzora::dock::ensure(&mut n, &self.layout_name, Some(&self.file_chrome))").count(), 2);
         assert_eq!(code.matches("std::fs::read_to_string(layout_path(").count(), 4, "a new read of a layout file: should it inject?");
         // The submodules of window never touch a layout file.
         for (name, sub) in [
