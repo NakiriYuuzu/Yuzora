@@ -21,9 +21,9 @@
 use crate::layout::{Align, Axis, Content, Edge, Float, Kind, Node, Size};
 use serde_json::{Value, json};
 
-/// The switch: while false, [`inject`] only strips and [`ensure`] does nothing,
-/// so the app is what it was. On since the mode bar and drawer ship in
-/// `yuzora-modebar` (PR-2).
+/// The switch: while false, [`inject`] and [`ensure`] do nothing (only a save
+/// and `layout.set` strip), so the app is what it was. On since the mode bar
+/// and drawer ship in `yuzora-modebar` (PR-2).
 pub const RIGHT_DOCK: bool = true;
 
 /// Reserved: only the injection makes nodes whose ids start with this. A file
@@ -86,7 +86,7 @@ pub fn force_for_tests() {
 
 /// Whether `id` is one the injection owns.
 pub fn reserved(id: &str) -> bool {
-    id.starts_with(PREFIX)
+    id == PREFIX || id.starts_with("yuzora-dock-")
 }
 
 fn mod_of(c: &Content) -> Option<&str> {
@@ -104,19 +104,37 @@ fn choice(n: &Node) -> Choice {
     }
 }
 
-/// The layout (outside the reserved ids) already uses one of Yuzora's mode
-/// mods, in a block or a float: an old clone of `yuzora`, an author's own.
+/// The layout already uses one of Yuzora's mode mods, in a block or a float:
+/// an old clone of `yuzora`, an author's own. (Called on a stripped tree: the
+/// dock's own nodes are never there to count.)
 fn provides_own(n: &Node) -> bool {
     n.walk().iter().any(|x| {
-        (!reserved(&x.id) && x.content().and_then(mod_of).is_some_and(|m| OWN.contains(&m)))
-            || x.floating.iter().any(|f| !reserved(&f.id) && mod_of(&f.content).is_some_and(|m| OWN.contains(&m)))
+        x.content().and_then(mod_of).is_some_and(|m| OWN.contains(&m)) || x.floating.iter().any(|f| mod_of(&f.content).is_some_and(|m| OWN.contains(&m)))
     })
 }
 
-/// A `panel` holding a `panel-body` stack, in a row: the modes go there, the bar after it.
-fn panel_slot(n: &Node) -> bool {
-    n.find("panel").is_some_and(|p| p.find("panel-body").is_some_and(|b| matches!(b.kind, Kind::Stack { .. })))
-        && n.parent_of("panel").is_some_and(|p| p.axis() == Some(Axis::Row))
+/// The first row with a `panel` column of its own (holding a `panel-body`
+/// stack): the modes join that stack, the bar goes right after the panel.
+/// Found and changed in one walk, by position and never by id, so a tree with
+/// repeated or missing ids can't send it somewhere else. False (nothing
+/// touched) when no row has one.
+fn place_panel(x: &mut Node) -> bool {
+    if x.axis() == Some(Axis::Row)
+        && let Some(children) = x.children_mut()
+        && let Some(at) = children.iter().position(|c| c.id == "panel" && matches!(c.find("panel-body"), Some(Node { kind: Kind::Stack { .. }, .. })))
+        && let Some(Node { kind: Kind::Stack { children: modes, .. }, .. }) = children[at].find_mut("panel-body")
+    {
+        for m in MODES {
+            modes.push(Node::block(format!("{PREFIX}-{m}"), Content::Mod { name: format!("yuzora-sidebar-{m}"), props: Value::Null }));
+        }
+        let mut bar = Node::block(format!("{PREFIX}-bar"), Content::Mod { name: MODEBAR_MOD.into(), props: json!({ "dock": "bar" }) });
+        bar.size = Some(Size::Px { px: BAR_PX });
+        bar.min = Some(BAR_PX);
+        bar.max = Some(BAR_PX);
+        children.insert(at + 1, bar);
+        return true;
+    }
+    x.children_mut().is_some_and(|cs| cs.iter_mut().any(place_panel))
 }
 
 /// `n` without anything the injection put there. A stack that showed a
@@ -128,10 +146,13 @@ pub fn strip(n: &Node, fallback: Option<&Node>) -> Node {
         if let Kind::Stack { children, active, .. } = &mut x.kind {
             children.retain(|c| !reserved(&c.id));
             if active.as_deref().is_some_and(reserved) {
-                *active = fallback.and_then(|f| f.find(&id)).and_then(|f| match &f.kind {
-                    Kind::Stack { active, .. } => active.clone(),
-                    _ => None,
-                });
+                *active = fallback
+                    .and_then(|f| f.find(&id))
+                    .and_then(|f| match &f.kind {
+                        Kind::Stack { active, .. } => active.clone(),
+                        _ => None,
+                    })
+                    .filter(|a| !reserved(a));
             }
         }
         if let Some(children) = x.children_mut() {
@@ -147,7 +168,7 @@ pub fn strip(n: &Node, fallback: Option<&Node>) -> Node {
 }
 
 /// A tree read from the layout `_layout`'s file (or its shipped default):
-/// puts the dock in. Off (see [`RIGHT_DOCK`]) it only strips. `_layout` is
+/// puts the dock in. Off (see [`RIGHT_DOCK`]) it leaves the tree alone. `_layout` is
 /// there for the person's own choice per layout (a later step); today only
 /// the layout's own `yuzora.dock` decides.
 pub fn inject(n: &mut Node, _layout: &str) -> Placed {
@@ -155,29 +176,20 @@ pub fn inject(n: &mut Node, _layout: &str) -> Placed {
 }
 
 fn inject_with(n: &mut Node, on: bool) -> Placed {
+    // Off, the tree is the file's own, whatever ids it uses.
+    if !on {
+        return Placed::Off;
+    }
     // A reserved id in a file is ignored: the dock is rebuilt, never doubled.
     *n = strip(n, None);
     let choice = choice(n);
-    if !on || choice == Choice::Off {
+    if choice == Choice::Off {
         return Placed::Off;
     }
     if provides_own(n) {
         return Placed::Own;
     }
-    if choice != Choice::Drawer && panel_slot(n) {
-        if let Some(Node { kind: Kind::Stack { children, .. }, .. }) = n.find_mut("panel-body") {
-            for m in MODES {
-                children.push(Node::block(format!("{PREFIX}-{m}"), Content::Mod { name: format!("yuzora-sidebar-{m}"), props: Value::Null }));
-            }
-        }
-        let parent = n.parent_of("panel").map(|p| p.id.clone()).unwrap_or_default();
-        let row = n.find_mut(&parent).and_then(Node::children_mut).expect("panel_slot found a row holding panel");
-        let at = row.iter().position(|c| c.id == "panel").expect("panel_slot found panel in that row");
-        let mut bar = Node::block(format!("{PREFIX}-bar"), Content::Mod { name: MODEBAR_MOD.into(), props: json!({ "dock": "bar" }) });
-        bar.size = Some(Size::Px { px: BAR_PX });
-        bar.min = Some(BAR_PX);
-        bar.max = Some(BAR_PX);
-        row.insert(at + 1, bar);
+    if choice != Choice::Drawer && place_panel(n) {
         return Placed::Panel;
     }
     n.floating.push(Float {
@@ -189,6 +201,19 @@ fn inject_with(n: &mut Node, on: bool) -> Placed {
         hidden: false,
     });
     Placed::Drawer
+}
+
+/// What a tree written to a layout file reads back as, shown: [`strip`]ped
+/// (as the file gets it), then [`inject`]ed (as a load shows it). What
+/// `file_chrome` must hold after a write, so the dock's clicks stay clicks.
+pub fn as_read(n: &Node, _layout: &str, fallback: Option<&Node>) -> Node {
+    as_read_with(n, fallback, enabled())
+}
+
+fn as_read_with(n: &Node, fallback: Option<&Node>, on: bool) -> Node {
+    let mut read = strip(n, fallback);
+    inject_with(&mut read, on);
+    read
 }
 
 /// A tree a mod made (`layout.set`): the dock is already in it when the mod
@@ -494,7 +519,7 @@ mod tests {
         assert_eq!(injected(&floaty.to_string()).2, Placed::Own);
         let bar = json!({ "id": "root", "type": "row", "children": [{ "id": "bar", "type": "block", "content": { "mod": "yuzora-modebar" } }] });
         assert_eq!(injected(&bar.to_string()).2, Placed::Own);
-        // The dock's own nodes don't count as the layout's: injecting twice stays a Panel.
+        // Strip runs first, so the dock's own mode nodes never count as the layout's: injecting twice stays a Panel.
         let (_, once, _) = injected(MAIN);
         let mut twice = once.clone();
         assert_eq!(inject_with(&mut twice, true), Placed::Panel);
@@ -518,5 +543,157 @@ mod tests {
         assert_eq!(ids.iter().filter(|i| *i == "yuzora-dock-git").count(), 1, "{ids:?}");
         assert!(!ids.iter().any(|i| i == PREFIX), "the hand-written drawer is gone");
         assert!(matches!(n.find("yuzora-dock-git").unwrap().content(), Some(Content::Mod { name, .. }) if name == "yuzora-sidebar-git"));
+    }
+
+    // S1: the reserved ids are `yuzora-dock` and `yuzora-dock-…`, nothing else.
+    #[test]
+    fn a_persons_node_that_only_starts_like_the_dock_is_theirs() {
+        assert!(reserved(PREFIX) && reserved("yuzora-dock-git") && reserved("yuzora-dock-bar"));
+        assert!(!reserved("yuzora-docker") && !reserved("yuzora-dockview") && !reserved("yuzora-doc"));
+        let mut file = parse(MAIN);
+        file.children_mut().unwrap().push(Node::block("yuzora-docker", Content::Terminal { terminal: "t1".into() }));
+        file.floating.push(Float { id: "yuzora-dockview".into(), content: Content::Terminal { terminal: "t2".into() }, edge: Edge::Left, align: Align::Start, peek: None, hidden: false });
+        // Off: the tree is the file's, to the byte, and a save writes it back whole.
+        let mut off = file.clone();
+        assert_eq!(inject_with(&mut off, false), Placed::Off);
+        assert_eq!(off, file);
+        assert_eq!(strip(&off, Some(&file)), file);
+        // Even a hand-written reserved id is left alone while off (nothing is injected, so nothing is the dock's to take out).
+        let mut hand = file.clone();
+        hand.find_mut("panel-body").unwrap().children_mut().unwrap().push(Node::block("yuzora-dock-git", Content::Terminal { terminal: "t3".into() }));
+        let mut off_hand = hand.clone();
+        assert_eq!(inject_with(&mut off_hand, false), Placed::Off);
+        assert_eq!(off_hand, hand);
+        // On: still theirs, next to the dock.
+        let mut on = file.clone();
+        assert_eq!(inject_with(&mut on, true), Placed::Panel);
+        assert!(on.find("yuzora-docker").is_some() && on.floating.iter().any(|f| f.id == "yuzora-dockview"));
+        assert_eq!(strip(&on, None), file);
+    }
+
+    // B1: a stack never keeps the dock's mode as its choice, even from the fallback.
+    #[test]
+    fn strip_never_falls_back_to_a_reserved_choice() {
+        let (_, mut chrome, placed) = injected(MAIN);
+        click(&mut chrome, placed);
+        // The fallback tree itself shows the dock's mode (what file_chrome held before the fix).
+        let stripped = strip(&chrome, Some(&chrome));
+        assert_eq!(active(&stripped, "panel-body"), None);
+        assert!(!text_of(&stripped).contains("yuzora-dock"));
+    }
+
+    #[test]
+    fn as_read_is_what_a_load_of_the_written_file_shows() {
+        let (file, mut chrome, placed) = injected(MAIN);
+        click(&mut chrome, placed);
+        let read = as_read_with(&chrome, Some(&file), true);
+        assert_eq!(read, injected(&text_of(&strip(&chrome, Some(&file)))).1);
+        assert_eq!(active(&read, "panel-body").as_deref(), Some("files"));
+        assert!(read.find("yuzora-dock-bar").is_some());
+        // As what it is called with again, it stays put.
+        assert_eq!(as_read_with(&read, Some(&read), true), read);
+    }
+
+    fn row_with_panel(id: &str, tail: Vec<Value>) -> Value {
+        let mut kids = vec![json!({ "id": "main", "type": "block", "content": { "tab": "active" } }), json!({ "id": "panel", "type": "column", "children": [
+            { "id": "panel-body", "type": "stack", "children": [{ "id": "files", "type": "block", "content": { "mod": "files" } }] }] })];
+        kids.extend(tail);
+        json!({ "id": id, "type": "row", "children": kids })
+    }
+
+    // B2: the slot is found by position, never by looking an id up again.
+    #[test]
+    fn a_tree_with_repeated_or_missing_ids_is_never_a_panic() {
+        // The row holding the panel shares its id with an earlier row.
+        let dup = json!({ "id": "root", "type": "row", "children": [
+            { "id": "r", "type": "row", "children": [{ "id": "a", "type": "block", "content": { "tab": "active" } }] },
+            { "id": "c", "type": "column", "children": [row_with_panel("r", vec![])] }] });
+        let (_, n, placed) = injected(&dup.to_string());
+        assert_eq!(placed, Placed::Panel);
+        let row = n.walk().into_iter().filter(|x| x.id == "r").nth(1).unwrap();
+        let ids: Vec<&str> = row.children().iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["main", "panel", "yuzora-dock-bar"], "the bar is in the row that holds the panel");
+        assert!(n.walk().into_iter().filter(|x| x.id == "r").next().unwrap().children().iter().all(|c| c.id != "yuzora-dock-bar"));
+        // No ids at all but the panel's.
+        let bare = json!({ "type": "row", "children": [{ "type": "column", "children": [row_with_panel("", vec![])] }] });
+        let mut n: Node = serde_json::from_value(bare).unwrap();
+        assert_eq!(inject_with(&mut n, true), Placed::Panel);
+        let mut again: Node = serde_json::from_value(serde_json::to_value(&strip(&n, None)).unwrap()).unwrap();
+        ensure_with(&mut again, "x", true);
+        assert!(again.find("yuzora-dock-bar").is_some());
+        // Several panel-bodies: the modes join the one inside the panel.
+        let many = json!({ "id": "root", "type": "row", "children": [
+            { "id": "early", "type": "column", "children": [{ "id": "panel-body", "type": "stack", "children": [] }] },
+            { "id": "main", "type": "block", "content": { "tab": "active" } },
+            { "id": "panel", "type": "column", "children": [{ "id": "panel-body", "type": "stack", "children": [] }] }] });
+        let (_, n, placed) = injected(&many.to_string());
+        assert_eq!(placed, Placed::Panel);
+        assert!(n.find("early").unwrap().find("panel-body").unwrap().children().is_empty(), "the other stack is untouched");
+        assert_eq!(n.find("panel").unwrap().find("panel-body").unwrap().children().len(), MODES.len());
+        // A first panel-body that is a block (not in the panel) changes nothing about the panel.
+        let odd = json!({ "id": "root", "type": "row", "children": [
+            { "id": "panel-body", "type": "block", "content": { "mod": "x" } },
+            { "id": "panel", "type": "column", "children": [{ "id": "panel-body", "type": "stack", "children": [] }] }] });
+        let (_, n, placed) = injected(&odd.to_string());
+        assert_eq!(placed, Placed::Panel);
+        assert_eq!(n.find("panel").unwrap().children()[0].children().len(), MODES.len());
+        // The panel in a column, not in any row: the drawer.
+        let col = json!({ "id": "root", "type": "column", "children": [row_with_panel("r", vec![]).pointer("/children/1").cloned().unwrap()] });
+        assert_eq!(injected(&col.to_string()).2, Placed::Drawer);
+    }
+
+    /// Every input the injection, strip and ensure get, a malformed tree included, is answered without a panic.
+    #[test]
+    fn nothing_the_dock_is_given_makes_it_panic() {
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        const IDS: [&str; 9] = ["", "root", "r", "panel", "panel-body", "yuzora-dock", "yuzora-dock-git", "yuzora-dock-bar", "x"];
+        fn rand_tree(next: &mut impl FnMut(u64) -> u64, depth: u32) -> Value {
+            let id = IDS[next(IDS.len() as u64) as usize];
+            let mut node = match next(if depth == 0 { 1 } else { 4 }) {
+                0 => json!({ "type": "block", "content": { "mod": if next(3) == 0 { "yuzora-sidebar-git" } else { "m" } } }),
+                k => {
+                    let kids: Vec<Value> = (0..next(4)).map(|_| rand_tree(next, depth - 1)).collect();
+                    match k {
+                        1 => json!({ "type": "row", "children": kids }),
+                        2 => json!({ "type": "column", "children": kids }),
+                        _ => json!({ "type": "stack", "children": kids, "active": IDS[next(IDS.len() as u64) as usize] }),
+                    }
+                }
+            };
+            if !id.is_empty() || next(2) == 0 {
+                node["id"] = json!(id);
+            }
+            if next(5) == 0 {
+                node["floating"] = json!([{ "id": IDS[next(IDS.len() as u64) as usize], "content": { "mod": "m" } }]);
+            }
+            if next(6) == 0 {
+                let dock = [json!("off"), json!("drawer"), json!("auto"), json!(5)][next(4) as usize].clone();
+                node["yuzora"] = json!({ "dock": dock });
+            }
+            node
+        }
+        let mut parsed = 0;
+        for _ in 0..3000 {
+            let tree = rand_tree(&mut next, 4);
+            let Ok(node) = serde_json::from_value::<Node>(tree) else { continue };
+            parsed += 1;
+            for on in [true, false] {
+                let mut a = node.clone();
+                inject_with(&mut a, on);
+                inject_with(&mut a, on);
+                let mut b = node.clone();
+                ensure_with(&mut b, "x", on);
+                let _ = strip(&a, Some(&b));
+                let _ = strip(&b, None);
+                let _ = as_read_with(&a, Some(&node), on);
+            }
+        }
+        assert!(parsed > 1000, "the generator makes trees: {parsed}");
     }
 }

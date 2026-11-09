@@ -3243,7 +3243,7 @@ impl AppWindow {
                 self.folders = mods::scan().into_iter().map(|f| (f.id.clone(), f)).collect();
             }
             "layout.set" if shipped_layouts().contains(&self.layout_name.as_str()) => {
-                let mut n = match serde_json::from_value::<Node>(a.get("layout").cloned().unwrap_or_default()) {
+                let mut n = match serde_json::from_value::<Node>(a.get("layout").cloned().unwrap_or_default()) { // yuzora(dock): `mut` for the ensure below
                     Ok(n) => n,
                     Err(e) => return self.fail(format!("layout: {e}")),
                 };
@@ -3271,7 +3271,7 @@ impl AppWindow {
                     }
                     self.written_layout = text;
                     self.layout_file_ok = true;
-                    self.file_chrome = n.clone();
+                    self.file_chrome = crate::yuzora::dock::as_read(&n, &self.layout_name, Some(&self.file_chrome)); // yuzora(dock): the file as a load shows it, so the dock's clicks stay clicks
                     self.chrome = n;
                     self.picked_theme = None;
                     self.write_state(&layout_sync::State::default());
@@ -5934,8 +5934,41 @@ export default class Probe extends View {
         });
         // And back: taking the opt-out out brings the dock back.
         std::fs::write(super::layout_path("test"), panel_layout().to_string()).unwrap();
+        let mtime = || std::fs::metadata(super::layout_path("test")).unwrap().modified().unwrap();
+        let written_at = mtime();
+        std::thread::sleep(std::time::Duration::from_millis(20));
         cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some()));
+        assert_eq!(mtime(), written_at, "reading the edit rewrites nothing (the dock is in the file's tree too, so it is no edit)");
+        let before_save = layout_file();
+        view.update(cx, |this, _| {
+            assert!(this.chrome.find("yuzora-dock-bar").is_some());
+            assert!(this.file_chrome.find("yuzora-dock-bar").is_some(), "the file's tree has the dock too, or its clicks are edits");
+            this.save();
+        });
+        assert_eq!(layout_file(), before_save, "a save after a file edit rewrites nothing");
+    }
+
+    // W3b: a file edit with an id-less node is given its ids (and written) before the dock goes in.
+    #[test]
+    fn a_file_edit_without_ids_never_writes_the_dock() {
+        in_own_process("dock_watcher_keep_ids");
+    }
+
+    #[gpui::test]
+    fn dock_watcher_keep_ids(cx: &mut gpui::TestAppContext) {
+        if !running_alone("dock_watcher_keep_ids") {
+            return;
+        }
+        crate::yuzora::dock::force_for_tests();
+        let (view, cx) = open_window(cx, "unused", "", panel_layout());
+        let mut edited = panel_layout();
+        edited["children"].as_array_mut().unwrap().push(serde_json::json!({ "type": "block", "content": { "mod": "unused" } }));
+        std::fs::write(super::layout_path("test"), edited.to_string()).unwrap();
+        cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
+        let written = layout_file();
+        assert!(written.contains("node-1"), "keep_ids wrote the file: {written}");
+        assert!(!written.contains("yuzora-dock"), "{written}");
+        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some() && this.file_chrome.find("yuzora-dock-bar").is_some()));
     }
 
     #[test]
@@ -5957,6 +5990,131 @@ export default class Probe extends View {
         assert!(written.contains("node-1"), "keep_ids wrote the file: {written}");
         assert!(!written.contains("yuzora-dock"), "{written}");
         view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some(), "yet the dock shows"));
+    }
+
+    /// What the dock shows after a click: the stack's mode, whether the panel and the bar are hidden.
+    fn dock_view(n: &crate::layout::Node) -> (Option<String>, bool, bool) {
+        let active = match &n.find("panel-body").unwrap().kind {
+            crate::layout::Kind::Stack { active, .. } => active.clone(),
+            _ => None,
+        };
+        (active, n.find("panel").unwrap().hidden, n.find("yuzora-dock-bar").unwrap().hidden)
+    }
+
+    // W1b (B1): layout.set again and again, then a structural save: the file never has the dock, and keeps the person's own choice.
+    #[test]
+    fn layout_set_twice_and_a_save_never_write_the_dock() {
+        in_own_process("dock_set_twice");
+    }
+
+    #[gpui::test]
+    fn dock_set_twice(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("dock_set_twice") {
+            return;
+        }
+        crate::yuzora::dock::force_for_tests();
+        let (view, cx) = open_window(cx, "unused", "", panel_layout());
+        let set = |name: &str, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                view.update(cx, |this, cx| {
+                    let mut tree = serde_json::to_value(&this.chrome).unwrap();
+                    tree["children"].as_array_mut().unwrap().push(json!({ "id": name, "type": "block", "content": { "mod": "unused" } }));
+                    this.run("layout.set", json!({ "layout": tree }), window, cx);
+                })
+            });
+        };
+        let own_choice = |cx: &mut gpui::VisualTestContext| {
+            let written = layout_file();
+            assert!(!written.contains("yuzora-dock"), "{written}");
+            let back: crate::layout::Node = serde_json::from_str(&written).unwrap();
+            assert_eq!(dock_choice(&back), Some("files".to_string()), "{written}");
+            view.update(cx, |this, _| assert!(this.file_chrome.find("yuzora-dock-bar").is_some() && this.chrome.find("yuzora-dock-bar").is_some()));
+        };
+        fn dock_choice(n: &crate::layout::Node) -> Option<String> {
+            match &n.find("panel-body")?.kind {
+                crate::layout::Kind::Stack { active, .. } => active.clone(),
+                _ => None,
+            }
+        }
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx)));
+        set("one", cx);
+        own_choice(cx);
+        set("two", cx);
+        own_choice(cx);
+        view.update(cx, |this, _| {
+            this.chrome.children_mut().unwrap().push(crate::layout::Node::block("three", crate::layout::Content::Mod { name: "unused".into(), props: serde_json::Value::Null }));
+            this.save();
+        });
+        own_choice(cx);
+        assert!(layout_file().contains("three"));
+        view.update(cx, |this, _| assert_eq!(dock_view(&this.chrome).0.as_deref(), Some("yuzora-dock-git"), "the click is still shown"));
+    }
+
+    // S2: the dock's clicks that came in with a layout.set are the same after a restart.
+    #[test]
+    fn dock_clicks_made_before_a_layout_set_survive_a_restart() {
+        in_own_process("dock_set_restart");
+    }
+
+    #[gpui::test]
+    fn dock_set_restart(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("dock_set_restart") {
+            return;
+        }
+        crate::yuzora::dock::force_for_tests();
+        let (view, cx) = open_window(cx, "unused", "", panel_layout());
+        cx.update(|window, cx| {
+            view.update(cx, |this, cx| {
+                this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx);
+                this.run("layout.show", json!({ "id": "panel" }), window, cx);
+                this.run("layout.hide", json!({ "id": "yuzora-dock-bar" }), window, cx);
+                let tree = serde_json::to_value(&this.chrome).unwrap();
+                this.run("layout.set", json!({ "layout": tree }), window, cx);
+                this.save();
+            })
+        });
+        let before = view.update(cx, |this, _| dock_view(&this.chrome));
+        assert_eq!(before, (Some("yuzora-dock-git".to_string()), false, true));
+        let after = view.update(cx, |this, _| {
+            this.load_layout("test");
+            dock_view(&this.chrome)
+        });
+        assert_eq!(after, before);
+        assert!(!layout_file().contains("yuzora-dock"));
+    }
+
+    // B2: a layout the dock can't place by position (repeated ids), or a layout.set tree without ids, is no crash.
+    #[test]
+    fn dock_in_a_layout_with_repeated_ids_is_shown_not_a_crash() {
+        in_own_process("dock_repeated_ids");
+    }
+
+    #[gpui::test]
+    fn dock_repeated_ids(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("dock_repeated_ids") {
+            return;
+        }
+        crate::yuzora::dock::force_for_tests();
+        let layout = json!({ "id": "root", "type": "row", "children": [
+            { "id": "r", "type": "row", "children": [{ "id": "a", "type": "block", "content": { "tab": "active" } }] },
+            { "id": "c", "type": "column", "children": [{ "id": "r", "type": "row", "children": [
+                { "id": "main", "type": "block", "content": { "tab": "active" } },
+                { "id": "panel", "type": "column", "children": [{ "id": "panel-body", "type": "stack", "children": [] }] }] }] }] });
+        let (view, cx) = open_window(cx, "unused", "", layout);
+        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some()));
+        // layout.set on a personal layout with the tree gone without ids.
+        let bare = json!({ "type": "row", "children": [{ "type": "column", "children": [{ "type": "row", "children": [
+            { "id": "panel", "type": "column", "children": [{ "id": "panel-body", "type": "stack", "children": [] }] }] }] }] });
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.set", json!({ "layout": bare.clone() }), window, cx)));
+        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some()));
+        assert!(!layout_file().contains("yuzora-dock"));
+        // And on a shipped layout (win98's side: no ids, nothing to keep).
+        view.update(cx, |this, _| this.load_layout("main"));
+        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.set", json!({ "layout": bare }), window, cx)));
+        view.update(cx, |this, _| assert!(this.chrome.find("main").is_some(), "still shows a layout"));
     }
 
     #[test]
@@ -6009,5 +6167,15 @@ export default class Probe extends View {
         assert_eq!(code.matches("crate::yuzora::dock::inject(").count(), 2);
         assert_eq!(code.matches("crate::yuzora::dock::ensure(").count(), 2);
         assert_eq!(code.matches("std::fs::read_to_string(layout_path(").count(), 4, "a new read of a layout file: should it inject?");
+        // The submodules of window never touch a layout file.
+        for (name, sub) in [
+            ("floats", include_str!("window/floats.rs")),
+            ("movable", include_str!("window/movable.rs")),
+            ("pane_drag", include_str!("window/pane_drag.rs")),
+            ("pane_size", include_str!("window/pane_size.rs")),
+            ("titlebar", include_str!("window/titlebar.rs")),
+        ] {
+            assert!(!sub.contains("layout_path(") && !sub.contains("\"layouts\""), "window/{name}.rs touches a layout file: should the dock be stripped/injected?");
+        }
     }
 }
