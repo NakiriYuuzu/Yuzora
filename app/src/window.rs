@@ -5950,12 +5950,44 @@ export default class Probe extends View {
         view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some(), "yet the dock shows"));
     }
 
+    #[test]
+    fn layout_set_on_a_shipped_layout_accepts_the_dock() {
+        in_own_process("dock_layout_set_shipped");
+    }
+
+    /// win98's `setDesktop`: a mod sets the look on a shipped layout with the
+    /// tree it read from `layout()`, or one built without the dock.
+    #[gpui::test]
+    fn dock_layout_set_shipped(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("dock_layout_set_shipped") {
+            return;
+        }
+        crate::yuzora::dock::force_for_tests();
+        let (view, cx) = open_window(cx, "unused", "", panel_layout());
+        view.update(cx, |this, _| this.load_layout("win98"));
+        let set = |tree: serde_json::Value, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.set", json!({ "layout": tree }), window, cx)));
+        };
+        let painted = |color: &str, cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.chrome.background == Some(crate::layout::Background::Color(color.into())));
+        view.update(cx, |this, _| assert!(this.chrome.floating.iter().any(|f| f.id == "yuzora-dock")));
+        let mut with_dock = view.update(cx, |this, _| serde_json::to_value(&this.chrome).unwrap());
+        with_dock["background"] = json!("teal");
+        set(with_dock, cx);
+        assert!(painted("teal", cx), "the tree read from layout() is accepted");
+        let mut without = view.update(cx, |this, _| serde_json::to_value(&crate::yuzora::dock::strip(&this.chrome, None)).unwrap());
+        without["background"] = json!("navy");
+        set(without, cx);
+        assert!(painted("navy", cx), "a tree built without the dock is accepted too");
+        view.update(cx, |this, _| assert!(this.chrome.floating.iter().any(|f| f.id == "yuzora-dock")));
+    }
+
     /// The layout files are written in four places only; a new one (an upstream
     /// change) fails here until someone decides whether the dock may reach it.
     /// Matches the text of the code, not what it does: the tests above are the
     /// guard of what it does.
     #[test]
-    fn the_layout_file_is_written_from_known_places_only() {
+    fn dock_guard_the_layout_file_is_written_from_known_places_only() {
         let src = include_str!("window.rs");
         let code = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
         // keep_ids, layout.set (a person's layout), layout.reset (the shipped text).
