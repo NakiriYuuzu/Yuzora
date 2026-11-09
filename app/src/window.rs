@@ -5984,7 +5984,7 @@ export default class Probe extends View {
         with_dock["background"] = json!("teal");
         set(with_dock, cx);
         assert!(painted("teal", cx), "the tree read from layout() is accepted");
-        let mut without = view.update(cx, |this, _| serde_json::to_value(&crate::yuzora::dock::strip(&this.chrome, None)).unwrap());
+        let mut without = view.update(cx, |this, _| serde_json::to_value(crate::yuzora::dock::strip(&this.chrome, None)).unwrap());
         without["background"] = json!("navy");
         set(without, cx);
         assert!(painted("navy", cx), "a tree built without the dock is accepted too");
