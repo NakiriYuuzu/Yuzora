@@ -33,14 +33,15 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
   <img src="docs/readme/workspace-zh.png" width="880" alt="Yuzora beta.2：側欄列出三個 Space 與各自的 agent，同一個 tab 裡分割出 agent 終端機、Git diff 與資料表" />
 </p>
 
+<sub>這張截圖是 beta.2 的，待重拍：beta.4 起左側是 Herdr 原生的 Spaces 與 agents 清單（頂端為「Herdr」），Files、Git、Database、SSH 模式在右側。</sub>
+
 ## 功能
 
-- **Spaces 與 agents。** 一個 Space 是這台電腦上的資料夾，或是經 SSH 連到的 herdr machine 上的資料夾。工作區側欄依
-  機器 → Space → worktree → agent 排列，每個 agent 的狀態同時以顏色與形狀表示（工作中、需要回覆、完成、閒置），
-  需要你處理的 agent 會集中在「需要注意」區。
+- **Spaces 與 agents。** 一個 Space 是這台電腦上的資料夾，或是經 SSH 連到的 herdr machine 上的資料夾。左側
+  （Herdr 原生的 Spaces 與 agents 清單）依機器分組、把 worktree 排在所屬 repo 下，並顯示每個 agent 的狀態，需要你處理的排在最前面。
 - **混合分割。**新增 pane 選單（指令 `yuzora-shell-tabs.new-pane`）把工具 pane（Git、編輯器、資料庫、SFTP⋯）、終端機或 agent 放在目前 pane 的右側或
   下方，都在同一個 tab 裡。
-- **Git** 以 IntelliJ IDEA Community 為基準，採 staging area 模式：側欄處理變更與 commit，diff pane 可以逐塊、逐行
+- **Git** 以 IntelliJ IDEA Community 為基準，採 staging area 模式：右側 dock 處理變更與 commit，diff pane 可以逐塊、逐行
   暫存，另有提交紀錄與分支圖、分支、push、三方合併、互動式 rebase 與 annotate。repo 自己的 Git 設定會執行程式的
   資料夾，要先信任才會動作。
 - **檔案與編輯器。** 帶 Git 標記的檔案樹、檔名與內容搜尋、tree-sitter 上色的程式碼編輯器、Markdown 預覽，以及圖片
@@ -131,7 +132,7 @@ cargo check --locked --all-targets
 | [`app/`](app/) | **beta.2 App**：以 `git subtree` 引入的 herdr-app，獨立的 Cargo workspace |
 | `app/src/yuzora/` | Yuzora 在 App 裡唯一的整合點：品牌、開關、`yuzora:*` 模組、更新 |
 | `app/crates/yuzora-*` | Yuzora 的原生層：`yuzora-core` 與各功能一個 crate（shell、git、db、ssh、files、settings、perf） |
-| `app/defaults/mods/yuzora-*` | Yuzora 的 mods：側欄模式、工具 pane、模式列、狀態列 |
+| `app/defaults/mods/yuzora-*` | Yuzora 的 mods：dock 的模式、工具 pane、模式列、狀態列 |
 | `app/defaults/layouts/yuzora.json`、`themes/yuzora-{dark,light}.json`、`yuzora/tokens.json` | 預設 layout、主題與設計 tokens |
 | `app/scripts/yuzora/`、`app/distribution/yuzora/` | 打包、更新 manifest、上游同步檢查 |
 | [`docs/beta2/`](docs/beta2/) | 架構、lanes、各功能的設計文件與實機截圖 |
@@ -145,29 +146,28 @@ beta.2 分成多條 lane 並行開發，每條 lane 擁有自己的目錄與下�
 
 ### L1 · 外殼與工作區
 
-工作區側欄（機器 → Space → worktree → agent、「需要注意」區、每台機器的 scope chip）、帶各模式徽章的模式列、
-tab 列、pane 標頭（agent 需要回覆時轉為
+左側是 Herdr 原生的（`workspace-chrome`、`spaces`、`agents`）；右側 dock 放 Files、Git、Database、SSH 四個模式：`panel` 旁 40px 的模式列（帶各模式徽章），沒有 panel 的 layout 改用抽屜（設定 › Mods › Layouts 可對每個 layout 選 Auto／Drawer／Off；`cmd-alt-b`／`ctrl-alt-b` 開關）。另有 tab 列、pane 標頭（agent 需要回覆時轉為
 琥珀色）與狀態列；新增 pane 選單（指令 `yuzora-shell-tabs.new-pane`）可把工具 pane、終端機與 agent 混合分割進同一個 tab。新增 Space 時先選資料夾；遠端機器改成輸入路徑，並在那台機器上確認。`yuzora:shell`
-（`app/crates/yuzora-shell`）提供側欄的模型、Space 徽章與簡單的 Git 摘要。細節見
+（`app/crates/yuzora-shell`）提供工作區模型、Space 徽章與簡單的 Git 摘要。細節見
 [docs/beta2/shell.md](docs/beta2/shell.md)。
 
 ### L2 · Git
 
-以 JetBrains IntelliJ IDEA Community 為基準、採 staging area 模式的 Git：側欄 Git 模式（變更、暫存、commit、push）、
+以 JetBrains IntelliJ IDEA Community 為基準、採 staging area 模式的 Git：右側 Git 模式（變更、暫存、commit、push）、
 可逐塊與逐行暫存的 diff pane、提交紀錄與分支圖、分支 popup、push 對話框、三方合併、互動式 rebase、annotate，以及
 repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 工作都在 Rust（`app/crates/yuzora-git`，
 `yuzora:git` 模組）執行，不在 UI 執行緒。設計與 IntelliJ 對照清單見 [docs/beta2/git.md](docs/beta2/git.md)。
 
 ### L3 · 資料庫
 
-側欄「資料庫」模式支援 PostgreSQL、SQL Server、SQLite：儲存的連線（密碼存在系統鑰匙圈）、資料庫切換與 schema
+右側「資料庫」模式支援 PostgreSQL、SQL Server、SQLite：儲存的連線（密碼存在系統鑰匙圈）、資料庫切換與 schema
 樹；資料表 pane 有資料（虛擬捲動表格、排序、複製、編輯儲存格並在單一交易內寫回）、結構（欄位、索引、外鍵、DDL）
 與 SQL 分頁；SQL pane 可執行多個結果集、取消與查看歷史紀錄。經 SSH tunnel 連線尚未接上。原生層是
 `app/crates/yuzora-db`（`yuzora:db`），設計與限制見 [docs/beta2/db.md](docs/beta2/db.md)。
 
 ### L4 · SSH／SFTP
 
-側欄 SSH／SFTP 模式列出 `~/.ssh/config`、Yuzora 自建主機與 herdr machines，並顯示連線狀態與延遲。主機的快速動作：
+右側 SSH／SFTP 模式列出 `~/.ssh/config`、Yuzora 自建主機與 herdr machines，並顯示連線狀態與延遲。主機的快速動作：
 開啟 SFTP（本機 ↔ 主機雙欄，傳輸佇列可以續傳，並保留權限與時間）、在那台主機開終端機、HERDR Session
 （`hc machine add`）與已知主機。新的主機金鑰以指紋確認，金鑰變更時會警告；Yuzora 只把主機金鑰寫進自己的檔案，
 `~/.ssh` 只讀不寫。遠端檔案可以用本機的文字編輯器開啟，每次存檔都會自動上傳。`yuzora_ssh::tunnel` 可經由主機轉送
@@ -175,7 +175,7 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
 
 ### L5 · 檔案與編輯器
 
-- 側欄**檔案**模式：以樹狀顯示目前 pane 所在的 repo，帶 Git 標記（M／A／D／U／?）；新增檔案與資料夾、重新命名、刪除到
+- 右側**檔案**模式：以樹狀顯示目前 pane 所在的 repo，帶 Git 標記（M／A／D／U／?）；新增檔案與資料夾、重新命名、刪除到
   垃圾桶、複製路徑、在 Finder 中顯示；檔名模糊搜尋與內容搜尋（有安裝 ripgrep 就用它，否則用內建搜尋）。
 - **編輯器** pane：14 種語言的 tree-sitter 上色，存檔時檢查衝突（⌘S），尋找與取代（⌘F／⌘H）。磁碟上的變更會即時跟上，
   有 agent 在改同一個檔案時會顯示。
@@ -190,7 +190,7 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
 `"yuzora": {"settings": …}` 的 mod；隱私與更新頁改為說明 Yuzora 的做法（不收集也不傳送任何資料）。L6 的頁面：
 
 - **一般**（`yuzora-settings-general`）：外觀（主題、字型、字級、縮放）、終端機
-  剪貼簿寫入（啟動時的側欄模式要等模式列套用後才會出現）。
+  剪貼簿寫入、啟動時開啟的右側 dock 模式（dock 套用後才會出現）。
 - **模板**（`yuzora-settings-templates`）：各台機器上的 herdr-core agent 模板。可以列出、以表單編輯 frontmatter、以
   文字編輯 body（存檔前檢查）、移到垃圾桶，或啟動到指定的 Space 與 tab（`yuzora-settings-launch`：帶
   `herdr.space`／`herdr.tab` label 的 `hc run`）。

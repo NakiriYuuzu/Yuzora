@@ -1070,13 +1070,22 @@ with these differences.
   `panel-body` stack, and a 40px `yuzora-dock-bar` (the `yuzora-modebar` mod)
   sits right of `panel`. A layout with no `panel` and `panel-body` stack gets a
   drawer at the right edge instead (it opens a mode in a window). The ids
-  starting `yuzora-dock` are reserved: don't write them into a layout file
-  (they are ignored there), and select a mode with
+  `yuzora-dock` and `yuzora-dock-*` are reserved (an id like `yuzora-docker` is
+  not): don't write them into a layout file (they are ignored there), and select a mode with
   `layout.select {"stack": "panel-body", "child": "yuzora-dock-git"}` plus
   `layout.show {"id": "panel"}`, or with the commands
   `yuzora-modebar.files`, `.git`, `.database`, `.ssh` and `.toggle` (bind them
   in `keys.json`). A layout opts out with `"yuzora": {"dock": "off"}` at its
-  root (`"drawer"` forces the drawer).
+  root (`"drawer"` forces the drawer). A person's own choice per layout beats
+  the layout file's: Settings > Mods > Layouts has Auto / Drawer / Off on every
+  layout, saved in Yuzora's `settings.json` as
+  `{"shell": {"dock": {"layouts": {"win98": "off"}}}}` (shipped layouts can't
+  be edited, so this is how to turn the dock off for one). The default keys
+  `cmd-alt-b` (macOS) and `ctrl-alt-b` bind `yuzora-modebar.toggle`; a
+  `keys.json` that was edited keeps its own keys, so add the line by hand.
+  Settings > General > When Yuzora opens > Right-hand dock
+  (`general.startup.dock`: `last`, `none`, `files`, `git`, `database`, `ssh`)
+  sets the mode the first dock of a run opens on.
 - Themes `yuzora-dark` and `yuzora-light`: the layout shows the one for the
   system's appearance (or settings.json's `appearance`). Design values a theme
   has no name for (diff colors, agent brand colors, Space badge colors, the
@@ -1113,7 +1122,7 @@ with these differences.
   in `keys.json`; a colon makes the whole file fail to load; or `herdr-app do yuzora-shell-tabs.new-pane`) and puts
   a tool pane, a terminal or an agent right of or below the focused pane (`pane.split {direction, pane, mod, props}`).
   A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
-  The sidebar's tools menu has no "next layout" row: switch layouts in Settings > Mods > Layouts. Yuzora ignores the old
+  The left side (Herdr's `workspace-chrome`) has no "next layout" row: switch layouts in Settings > Mods > Layouts. Yuzora ignores the old
   default `cmd-shift-l`/`ctrl-shift-l` → `layout.switch` in `global` (also in a keys.json written before it was removed):
   bind another key, or a named `layout.switch:<name>`.
 - A person's `space.new` with no arguments but `machine` (a key, a click, a menu, a mod's `run()`) opens the
@@ -1123,10 +1132,10 @@ with these differences.
   while no Space is open would start one, so it opens the dialog too.
 - Herdr's Files and Changes panels are off in Yuzora until turned on (the welcome's third page, or Settings >
   Yuzora > General > Panels): shared `"workspace.panels"` lists the ones on, and unset means none. The tab bar
-  shows a button only for those; Yuzora's sidebar has its own Files and Git modes.
+  shows a button only for those; Yuzora's right dock has its own Files and Git modes.
 - Pane headers are `yuzora-shell-pane`. The yuzora layout's pane frame has one field Herdr's doesn't:
   `"blocked": {"width": 1, "color": "#8a6420"}`, the border while that pane's agent needs a reply.
-- `yuzora:shell`: `workspace({...})` (the sidebar's model), `spaceBadges(spaces, shared("yuzora.space.colors"))`
+- `yuzora:shell`: `workspace({...})` (the legacy workspace sidebar's model), `spaceBadges(spaces, shared("yuzora.space.colors"))`
   (each Space's initial and color; when `changed`, write `kept` back to that shared key so the color stays),
   `agentBrand(app, key)`, `gitStatus(cwd, {on})`.
 - A mod shows a number on its mode in the mode bar with `setShared("yuzora.badge.<workspace|files|git|database|ssh>", n)`
@@ -1139,7 +1148,7 @@ with these differences.
 <!-- yuzora:lane:L2:start -->
 ### Git (`yuzora:git`)
 
-- The sidebar's Git mode is `yuzora-sidebar-git`. Tool panes: `yuzora-git-log`
+- The right dock's Git mode is `yuzora-sidebar-git`. Tool panes: `yuzora-git-log`
   (props `{cwd, on, filter?, compare?}`; `filter: {paths: [p], follow: true}`
   is a file's history), `yuzora-git-diff` (`{cwd, on, path, mode: "unstaged" |
   "staged" | "commit" | "compare", rev?, to?}`), `yuzora-git-merge`,
@@ -1184,8 +1193,8 @@ with these differences.
 <!-- yuzora:lane:L3:start -->
 ### Databases (`yuzora:db`)
 
-- Databases (PostgreSQL, SQL Server, SQLite) live in the sidebar's
-  `yuzora-sidebar-database` mode. Saved connections are the `db` section of
+- Databases (PostgreSQL, SQL Server, SQLite) live in the right
+  dock's `yuzora-sidebar-database` mode. Saved connections are the `db` section of
   `yuzora/settings.json` (`connections`, and `maxRows`, the most rows a result
   keeps: 100000 by default). Passwords are in the system's credential store,
   never in that file; don't write one there. Query history is
@@ -1217,7 +1226,7 @@ with these differences.
 <!-- yuzora:lane:L5:start -->
 ### Files and the editor
 
-- The sidebar's Files mode shows the focused pane's repo. Files open beside the
+- The right dock's Files mode shows the focused pane's repo. Files open beside the
   focused pane: `yuzora-editor` (code), `yuzora-markdown` (`.md`: preview or
   source), `yuzora-files-image` (images and SVG). Open one yourself with
   `pane.split {direction: "right", mod: "yuzora-editor", props: {path: "/abs/file.rs", line: 12}}`
