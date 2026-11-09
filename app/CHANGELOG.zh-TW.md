@@ -8,7 +8,7 @@
 - **左側改用 Herdr 原生的 Spaces 與 Agents。** 預設的 yuzora layout 左側現在是 Herdr 原生的 Spaces 與 Agents 清單（左上角顯示「Herdr」），Files、Git、Database、SSH 移到右側 dock。在 Yuzora 設定的 Space 顏色會顯示在左側清單的頭像上。改過 `yuzora.json` 的使用者會保留舊版並命名為 `yuzora-edited`；沒改過的會自動換成新版。
 - **每個 layout 可設定 dock，啟動時也可指定。** 設定 › Mods › Layouts 可讓每個 layout 把右側 dock 設為 Auto、Drawer 或 Off，優先於 layout 檔自己的設定。設定 › General › When Yuzora opens 可指定啟動時 dock 開在 Files、Git、Database 或 SSH，或維持收起。
 - **`Cmd+Alt+B`（macOS）／`Ctrl+Alt+B` 開關右側 dock。** 沒改過的 beta.2、beta.3 `keys.json` 會自動更新成新的預設（包含 Herdr 的終端搜尋 Cmd/Ctrl+F）；改過的不會動，請自行加上 `"cmd-alt-b": "yuzora-modebar.toggle"`（或 `ctrl-alt-b`）。
-- **同步官方 herdr-app v0.1.14。** herdr-core 連線錯誤會顯示原因並可重試、新增終端搜尋（Cmd/Ctrl+F）與捲動指令、pane 有捲軸、mod 可用 `pane.swap`，Add machine 也改為告知要執行的指令。herdr-core 的需求不變（0.1.11 以上、generation 1）。
+- **同步官方 herdr-app v0.1.14。** herdr-core 連線錯誤會顯示原因並可重試、新增終端搜尋（Cmd/Ctrl+F）與捲動指令、pane 有捲軸、mod 可用 `pane.swap`，Add machine 也改為告知要執行的指令。herdr-core 的需求不變（0.1.11 以上、generation 1）。v0.1.14 有一步沒有沿用：更新後下載 Herdr 的 core 安裝腳本並直接執行，把仍是單一執行檔的 herdr-core 補成 Herdr Core app。Yuzora 不會自行執行下載來的腳本；需要的話請自己執行官方的 herdr-core 安裝程式。
 
 ### Fixed
 - Git：開著的 repo 的 `.git` 不見時，fetch、push、status 等 Git 指令不會再往上找到外層的 repo 並在那裡執行。往上搜尋由 `GIT_CEILING_DIRECTORIES` 擋住；上一層路徑含 `:` 或 `;`、無法設定 ceiling 時，每個指令執行前會先問 Git 找到的是哪個 repo，不是這個就拒絕。Git hook 不會多繼承 `GIT_DIR`。
