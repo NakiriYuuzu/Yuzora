@@ -5344,6 +5344,11 @@ mod tests {
             .env("HERDR_APP_HOME", &home)
             .env("YUZORA_APP_HOME", &home) // yuzora(L9): Yuzora reads only YUZORA_APP_HOME; without it the test used ~/.config/yuzora
             .env("HERDR_TEST_WINDOW", name)
+            // yuzora(L9): the shipped mods call the real `hc` (`machine ls`), which starts herdr-core in the user's state dir; give it a session and state dir of its own
+            .env("HC_SESSION", format!("test-window-{name}-{}", std::process::id()))
+            .env("XDG_STATE_HOME", home.join("state"))
+            .env("XDG_RUNTIME_DIR", home.join("run"))
+            .env_remove("HC_TERMINAL_SOCKET").env_remove("HC_TERMINAL_ID").env_remove("HC_SCOPE")
             .output()
             .unwrap();
         let _ = std::fs::remove_dir_all(&home);
@@ -5363,6 +5368,8 @@ mod tests {
     /// executor refuses.
     fn open_window<'a>(cx: &'a mut gpui::TestAppContext, mod_name: &str, main_js: &str, layout: serde_json::Value) -> (gpui::Entity<super::AppWindow>, &'a mut gpui::VisualTestContext) {
         use serde_json::json;
+        // yuzora(L9): a window test must never reach the user's real herdr-core; `in_own_process` isolates it
+        assert!(std::env::var("HC_SESSION").is_ok_and(|s| s.starts_with("test-")), "window tests must run through `in_own_process` (HC_SESSION=test-*): the mods call the real `hc`, which would start herdr-core in the user's state dir");
         let home = crate::mods::app_dir();
         crate::mods::write_workspace().unwrap();
         let folder = home.join("mods").join(mod_name);
