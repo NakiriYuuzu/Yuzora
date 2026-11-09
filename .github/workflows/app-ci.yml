@@ -143,6 +143,11 @@ jobs:
         run: |
           bun test scripts/docs.test.ts
           bun scripts/docs.ts check
+      # Includes yuzora-trust-mods.test.ts, the guard of the L2c trust gate in the
+      # upstream git mods (an auto-merged upstream edit can break it silently).
+      - name: Yuzora script tests
+        if: matrix.platform == 'linux-x86_64'
+        run: bun test scripts
 
   # Not the workspace's tests (some fail on Windows today): only the ones that
   # start programs and look at the console they get, which no other job can see.
