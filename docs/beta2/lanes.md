@@ -53,7 +53,7 @@ L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行�
 
 - 能新增檔案就不改上游檔。app 端需要 glue 時，新增 `app/src/yuzora/<lane>.rs`，並在 `app/src/yuzora/mod.rs` 加一行 `mod <lane>;`（唯一允許的 `mod.rs` 改動）。
 - 非改不可時只做最少改動，同一行或上一行加 `// yuzora(L<n>): <原因>` 註記，並在 PR 描述列出每個上游檔的改動。這些註記是同步上游時檢查的依據。
-- 不要改上游 mods（`app/defaults/mods/` 下非 `yuzora-*` 的 mod）；要改行為時新增 `yuzora-*` mod。
+- 不要改上游 mods（`app/defaults/mods/` 下非 `yuzora-*` 的 mod）；要改行為時新增 `yuzora-*` mod。例外：`app/defaults/mods/tabs/main.js` 的 `syncPanel` 加了 2 行（右側 dock 的模式切換 Space 時全域保持，`// yuzora(dock):` 註記；使用者同意，2026-11-04）；`scripts/yuzora-dock-panels.test.ts` 會執行這個方法的實際原始碼，同步上游時若改到它，測試會失敗。其他上游 mod 不適用這個例外。
 
 ### `app/crates/yuzora-core`
 
