@@ -280,6 +280,10 @@ pub fn keep_clicks(state: &mut State, before: &State, chrome: &Node) {
             && chrome.find(id).is_some()
         {
             state.nodes.entry(id.clone()).or_default().active.get_or_insert_with(|| mode.clone());
+            // The panel was opened for that mode: its visibility goes with it (see `without_panel_click`).
+            if let Some(hidden) = before.nodes.get("panel").and_then(|p| p.hidden) {
+                state.nodes.entry("panel".into()).or_default().hidden.get_or_insert(hidden);
+            }
         }
     }
     for (id, click) in &before.floats {
@@ -287,6 +291,28 @@ pub fn keep_clicks(state: &mut State, before: &State, chrome: &Node) {
             state.floats.entry(id.clone()).or_insert_with(|| click.clone());
         }
     }
+}
+
+/// `state` as it shows on `chrome`: with the dock not in the panel (off, a
+/// drawer, a layout's own), the panel's visibility click that was made for a
+/// dock mode (the stack still names one) is not shown, so the layout's own panel
+/// doesn't appear beside the drawer or under `off`. The click stays in the state
+/// (written as it is) for the dock's return.
+pub fn without_panel_click(state: &State, chrome: &Node) -> State {
+    let mut s = state.clone();
+    if chrome.find(&format!("{PREFIX}-bar")).is_none()
+        && s.nodes.values().any(|c| c.active.as_deref().is_some_and(reserved))
+        && let Some(p) = s.nodes.get_mut("panel")
+    {
+        p.hidden = None;
+    }
+    s
+}
+
+/// Whether a kept window `spec` is the drawer's (key [`PREFIX`]) while `chrome`
+/// has no drawer: the person chose `off` or `auto` since, so it doesn't reopen.
+pub fn stale_window(spec: &Value, chrome: &Node) -> bool {
+    spec.get("key").and_then(Value::as_str) == Some(PREFIX) && !chrome.walk().iter().any(|n| n.floating.iter().any(|f| f.id == PREFIX))
 }
 
 /// Every reserved node and float id in `n`, in tree order.
@@ -611,9 +637,12 @@ mod tests {
             let mut state = State::between(&file, &file);
             assert!(state.nodes.is_empty() && state.floats.is_empty());
             keep_clicks(&mut state, &before, &file);
-            // The panel's own width and visibility are the file's nodes: the save finds them again by itself.
+            // The panel's own width is the file's node: the save finds it again by itself. Its visibility goes with the mode it was opened for.
             let mut dock_parts = before.nodes.clone();
             dock_parts.remove("panel");
+            if let Some(hidden) = before.nodes.get("panel").and_then(|p| p.hidden) {
+                dock_parts.entry("panel".into()).or_default().hidden = Some(hidden);
+            }
             assert_eq!(state.nodes, dock_parts, "{text:.20}");
             assert_eq!(state.floats, before.floats);
             // Shown, nothing is carried: the tree's own clicks are the whole truth.
@@ -624,7 +653,7 @@ mod tests {
             keep_clicks(&mut state, &before, &chrome);
             assert_eq!(state, again);
         }
-        // A click made on what shows now (the file's own Files) is not replaced by the old one on the dock's Git.
+        // A click made on what shows now (the file's own Changes) is not replaced by the old one on the dock's Git.
         let (file, shown, _) = injected(MAIN);
         let mut chrome = shown.clone();
         click(&mut chrome, Placed::Panel);
@@ -634,6 +663,34 @@ mod tests {
         let mut state = State::between(&file, &now);
         keep_clicks(&mut state, &before, &now);
         assert_eq!(state.nodes["panel-body"].active.as_deref(), Some("changes"));
+        // Known limit: the file's own default child (Files) picked meanwhile is no click (the stack is as the
+        // file has it), so it can't be told from a stack nobody touched: the dock's mode comes back.
+        let now = file.clone();
+        let mut state = State::between(&file, &now);
+        keep_clicks(&mut state, &before, &now);
+        assert_eq!(state.nodes["panel-body"].active.as_deref(), Some("yuzora-dock-git"));
+    }
+
+    // The panel opened for a dock mode does not show without the dock in it; with the bar there it does.
+    #[test]
+    fn a_panel_opened_for_the_dock_is_not_shown_without_it() {
+        let (file, shown, _) = injected(MAIN);
+        let mut chrome = shown.clone();
+        click(&mut chrome, Placed::Panel);
+        let before = State::between(&shown, &chrome);
+        assert_eq!(before.nodes["panel"].hidden, Some(false));
+        assert_eq!(without_panel_click(&before, &shown), before, "the bar is there");
+        let plain = without_panel_click(&before, &file);
+        assert_eq!(plain.nodes["panel"].hidden, None);
+        assert_eq!(plain.nodes["panel-body"], before.nodes["panel-body"]);
+        // The person's own Files panel (the stack names no dock mode) stays.
+        let mut files = State::default();
+        files.nodes.entry("panel".into()).or_default().hidden = Some(false);
+        assert_eq!(without_panel_click(&files, &file), files);
+        // Carried with the mode while the dock is off, so its return finds the panel open.
+        let mut state = State::between(&file, &file);
+        keep_clicks(&mut state, &before, &file);
+        assert_eq!(state.nodes["panel"].hidden, Some(false));
     }
 
     #[test]

@@ -156,7 +156,7 @@ beta.2 is built in parallel lanes, each owning its own directories and its secti
 The left side is Herdr's own (`workspace-chrome`, `spaces`, `agents`); the right-hand dock holds the Files, Git, Database and SSH modes: a 40px mode bar with each mode's badge beside a panel, or a drawer in a layout without one (Settings > Mods > Layouts turns it Auto, Drawer or Off per layout; `cmd-alt-b` / `ctrl-alt-b` toggles it). Then the tab bar (the new-pane menu, opened with the `yuzora-shell-tabs.new-pane` command, mixes tool panes, terminals and agents into one tab),
 pane headers (amber while an agent needs a reply) and the status bar. A new Space starts by picking its folder; on a
 remote machine you type the path, checked on that machine. `yuzora:shell` (`app/crates/yuzora-shell`) holds the
-the workspace model, Space badges and a small Git summary. Details: [docs/beta2/shell.md](docs/beta2/shell.md).
+workspace model, Space badges and a small Git summary. Details: [docs/beta2/shell.md](docs/beta2/shell.md).
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->

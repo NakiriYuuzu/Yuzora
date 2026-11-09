@@ -9,8 +9,8 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState } from "gpui-base";
-import { theme, run, shared, pickFolder, props } from "herdr";
-import { t, panes, getSetting, setSetting } from "yuzora:core";
+import { theme, run, shared, setShared, closeOverlay, pickFolder, props } from "herdr";
+import { t, panes, getSetting, setSetting, session } from "yuzora:core";
 import { listMods, resetMod, appStatus, checkMod, planInstall, installFolder, reveal } from "yuzora:settings";
 import { page, title, heading, button, segmented, note, badge, spinner, input } from "./ui.js";
 
@@ -97,7 +97,15 @@ export default class Mods extends View {
     const layouts = dock.layouts && typeof dock.layouts === "object" && !Array.isArray(dock.layouts) ? dock.layouts : (dock.layouts = {});
     layouts[l.name] = choice;
     this.writeShell(shell);
-    if (shared("layout") === l.name) run("layout.switch", { name: l.name });
+    if (shared("layout") === l.name) {
+      // The drawer's window (src/yuzora/dock.rs: a drawer only) goes with the drawer: off or auto has none to belong to.
+      const open = shared("yuzora.dock.open");
+      if (choice !== "drawer" && open && open.session === session()) {
+        setShared("yuzora.dock.open", null);
+        closeOverlay(open.id);
+      }
+      run("layout.switch", { name: l.name });
+    }
     cx.notify();
   }
 
