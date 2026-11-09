@@ -498,7 +498,7 @@ pub fn get(id: &str) -> GitResult<Arc<Repo>> {
 /// The repo holding `cwd` (here, or on machine `on`), opened once and shared.
 pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
     // No program named: each call runs the git the settings name then.
-    let probe = Place { root: cwd.to_owned(), on: on.map(str::to_owned).filter(|m| !m.is_empty()), git: String::new(), write_lock: Arc::default() };
+    let probe = Place { root: cwd.to_owned(), on: on.map(str::to_owned).filter(|m| !m.is_empty()), git: String::new(), top: false, write_lock: Arc::default() };
     let out = exec::run(&probe, Git::read(["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"]))?;
     if !out.ok() {
         return Err(GitError::Other(not_a_repo(&out.stderr_text())));
@@ -527,7 +527,7 @@ pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
         r.used();
         return Ok(r);
     }
-    let place = Place { root: root.to_owned(), on: probe.on.clone(), git: String::new(), write_lock: Arc::default() };
+    let place = Place { root: root.to_owned(), on: probe.on.clone(), git: String::new(), top: true, write_lock: Arc::default() };
     let repo = Arc::new(Repo::new(id.clone(), place, git_dir.to_owned(), common.to_owned()));
     all.insert(id, repo.clone());
     drop(all);
@@ -678,7 +678,8 @@ pub mod testing {
         let dir = tempfile::tempdir().unwrap();
         // The real path: macOS temp dirs sit behind a /var → /private/var link.
         let root = std::fs::canonicalize(dir.path()).unwrap().to_string_lossy().into_owned();
-        let place = Place::local(&root);
+        // As `open` gives it: git stays in this repo.
+        let place = Place { top: true, ..Place::local(&root) };
         let init = exec::run(&place, Git::write(["init", "-q", "-b", "main"])).unwrap();
         assert!(init.ok(), "{}", init.stderr_text());
         for (k, v) in [("user.name", "Yuzora Test"), ("user.email", "test@yuzora.dev"), ("commit.gpgSign", "false"), ("core.autocrlf", "false")] {

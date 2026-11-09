@@ -68,6 +68,13 @@ yuzora-git-settings ┘
 - 信任：每個 repo 各自過原本的信任關卡。只有選中的 repo 會跑 status（以及信任掃描）；列出 repo 不會對任何一個跑 git。
 - 釘選的 repo 消失：打開它失敗、之後 status 失敗，或打開的不是它（見下一點）時，再問一次檔案系統（`repos(root, on, [])`）。確定不見才取消釘選，跳出提示，改回跟隨焦點。確定不見是指：那個資料夾還在、可以進入，但已經沒有 `.git`；或資料夾本身（或路上某一層）不存在而它的上一層可以進入；或那一層不是資料夾。問不到時保留釘選並顯示錯誤，例如遠端機器離線、沒有權限進入那個資料夾或它的上層、路上有解析不了的 symlink（可能指向沒有權限的資料夾）。這些情況下 `repos` 回傳錯誤，不回空清單，遠端的 sh 也一樣（以 `exit 1` 回報，不印 `gone`）。`.git` 還在（錯誤是別的原因）時也保留釘選。
 - 打開成功也要是同一個 repo：資料夾的 `.git` 沒了，git 會往上打開外層的 repo，`open` 照樣成功。所以釘選時 `open` 回傳的 `root` 不是釘選的 `root`，就照上一點問檔案系統：確定沒有 `.git` 就取消釘選。`.git` 還在但 git 不接受（例如讀不到），或問不到時，保留釘選並顯示「git 在這裡打開的是 …」，不改用外層的 repo。git 的寫法和釘選的不同、其實是同一個資料夾時（例如 Windows 的 subst 磁碟機：`canonicalize` 解析成實際位置，git 可能保留磁碟機代號），先問 `repos(git 的 root, on, [])`：它的頂層真實路徑就是釘選的 `root`，就照常打開。Windows 上這一點沒有實測。
+- 已打開的 repo 只在它的頂層找 `.git`：yuzora-git 對已打開的 repo 跑的每個 git 指令，都帶 `GIT_CEILING_DIRECTORIES=<root 的上一層>`。本機和遠端（`hc exec --env`）都一樣；`open` 從資料夾往上找 repo 時不帶。
+  - 正常情況下行為不變：git 在 root 就找到 `.git`。
+  - `.git` 在 repo 開著時不見了：git 不會往上找到外層 repo。status 會回錯誤，或者信任掃描讀不到這個 repo 的設定，改成詢問（`(unreadable config)`）；commit 等寫入都會失敗。不會頂著這個 repo 的名稱去讀寫外層 repo，跟隨焦點和釘選都一樣。
+  - 釘選的 repo 在 status 失敗時，照前面的規則取消釘選；出現信任提示的話，信任之後 status 失敗，再取消釘選。
+  - `GIT_CEILING_DIRECTORIES` 是清單，Windows 上的 git 用 `;` 分隔，其他系統用 `:`。上一層的路徑裡有分隔字元時，git 會把它切開，限制就失效了。yuzora-git 不判斷跑的是哪一種 git（遠端可能和本機不同），所以上一層的路徑裡只要有 `:` 或 `;`（開頭的磁碟機代號，例如 `C:`，不算），就**不帶任何環境變數**（不設 ceiling，也**絕不**用 `GIT_DIR`／`GIT_WORK_TREE` 代替：hook 會繼承它們，見下）。遠端是 Windows 時，`C:` 是磁碟機代號，所以照常用 ceiling（`C:/x/repo` → `C:/x`，`C:/repo` → `C:/`，`//host/share/repo` → `//host/share`）。上一層照 root 的寫法用字串算出，本機、遠端、unix、Windows 的路徑都用同一套規則，`exec::tests::a_top_place_is_kept_in_its_repo_whichever_git_runs` 列出這些情況，所有平台都跑。
+  - 沒有 ceiling 時的補救：寫入指令（`Git::write`，也就是會拿 repo 寫入鎖的那些）在 git 執行前，先確認 `<root>/.git` 還在（檔案或資料夾都算，gitfile 也行）；不在就回傳 `<root>/.git is gone: git is not run there …`，不執行 git。遠端走同一個 `hc exec`（`sh` 的 `test -e`），問不到也算不在（fail closed）。讀取指令不檢查：此時 `.git` 不見的 repo 的讀取可能顯示外層 repo 的內容，但不會寫入任何東西；檢查和執行之間仍有極短的時間差。有 ceiling 的 repo 不需要這個檢查。
+  - 代價：hook 只繼承 ceiling（一般 repo 本來就沒有 `GIT_DIR`／`GIT_WORK_TREE`，這裡也不加）。hook 如果在上層 repo 的子資料夾（不是這個 repo 的上一層本身）跑 git，會找不到上層 repo；hook 換到別的 repo 或 `cd frontend && git add -u` 這類寫法都不受影響。曾經用 `GIT_DIR`／`GIT_WORK_TREE` 當退路，被獨立審查擋下：hook 繼承後在別處跑 git 會對著這個 repo，monorepo hook 的 `git add -u` 甚至讓 commit 刪光所有檔案。測試：`exec::tests::a_hook_gets_the_ceiling_and_never_a_git_dir_and_a_monorepo_hook_deletes_nothing`。linked worktree 的 hook 本來就拿得到 git 自己設的 `GIT_DIR`，與這裡無關。
 - 和總指揮提案不同的地方：
   - 多列了 Space 資料夾所在的 repo（往上找）：Space 資料夾是 repo 的子資料夾時，跟隨焦點本來就會打開它，選擇器裡沒有它就切不回去。
   - symlink 不跳過而是跟著走兩層：指向別處的專案資料夾也列得出來；兩層的限制就足以擋住迴圈。
