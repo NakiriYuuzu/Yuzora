@@ -247,6 +247,10 @@ fn bundle_completion_writable(bin: &Path) -> bool {
 /// with the current installer, which retains the complete signed app bundle.
 #[cfg(target_os = "macos")]
 fn ensure_core_bundle(version: &str) -> Result<(), String> {
+    // yuzora(L7): never pipe a downloaded installer to sh by itself (yuzora::CORE_BUNDLE_SCRIPT_OFF).
+    if crate::yuzora::CORE_BUNDLE_SCRIPT_OFF {
+        return Ok(());
+    }
     let bin = path();
     let resolved = bin.canonicalize().unwrap_or_else(|_| bin.clone());
     if !bundle_completion_path(&resolved, &crate::mods::home()) || !bundle_completion_writable(&resolved) {
