@@ -51,7 +51,7 @@ impl Staged {
     }
     // yuzora(dock): `setup` that reads and writes shared state, so it can play another copy's part.
     // A `setup` with `BEFORE_INIT` in it runs the text before it ahead of `super.init` (to swap what init starts, such
-    // as a page'"'"'s refresh that runs a listing on a thread of its own, which the test executor refuses).
+    // as a page's refresh that runs a listing on a thread of its own, which the test executor refuses).
     fn wrapper_with_shared(&self, entry: &str, setup: &str) -> PathBuf {
         let dir = self.0.clone();
         let (early, setup) = setup.split_once(BEFORE_INIT).unwrap_or(("", setup));
@@ -68,6 +68,7 @@ impl Drop for Staged {
     }
 }
 
+// yuzora(dock): the marker `wrapper_with_shared` splits a setup at.
 const BEFORE_INIT: &str = "/*before-init*/";
 
 #[derive(Default)]
