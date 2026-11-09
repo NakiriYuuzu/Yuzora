@@ -184,7 +184,7 @@ L9 另開同步 PR（`beta2/l9-upstream-sync`，**必須 merge commit 合併**�
 - 7 個衝突：`Cargo.toml`（版本維持 `version.workspace = true`）、`CHANGELOG.md`（Yuzora 的 beta.3 在最上面，上游 0.1.14／0.1.13 接在 beta.2 之後）、`Cargo.lock`（取上游，再補回 Yuzora 的 rustls 0.23.46／rustls-webpki 0.103.16 釘版，見 `0507f018`）、`THIRD-PARTY-NOTICES`（重產）、`worktree/main.js`（保留 `untrusted()` 閘門，接上游的 `timeout` 參數）、`keys.rs`（L1 的 `retired_default()` 套在新的 `Binding::String` 上，listing 與 parse 兩處）、`setup.rs`（保留 `setup_words`）。
 - 上游新增 `Need::Connect`（core 連線錯誤顯示原文、按 Retry）：`herdr_compat::setup_words` 補上對應文案（`setup.connect.*`，只有英文）。
 - 守衛跟著調整：`tests/commands.rs` 新測試補 `YUZORA_APP_HOME`；`spawn::ALLOWED` 加上 macOS 專用的 `macos_check.rs`（`launchctl`，mod check 的 job）與 `core_bin::bundle_completion_writable`，`links::open` 改名 `open_system`。
-- 新外連：沒有新端點。`core_bin::ensure_core_bundle` 在使用者更新 core 時補裝 macOS bundle，連的仍是 `releases.herdr.dev/core/install.sh`（D3 允許的 herdr-core 安裝與更新）。
+- 新外連：沒有新端點。`core_bin::ensure_core_bundle` 在 core 更新時補裝 macOS bundle，包含 Yuzora 自我更新後第一次啟動的自動 core 更新（`update.rs` `after_update` → `core_bin::update_to` → `ensure_core_bundle`）。做法是下載 `releases.herdr.dev/core/install.sh` 後用 `sh` 執行，仍是 D3 允許的 herdr-core 安裝與更新通道。
 
 ### C2. 同步流程與 `app/scripts/yuzora/sync-check`
 
@@ -192,8 +192,8 @@ L9 另開同步 PR（`beta2/l9-upstream-sync`，**必須 merge commit 合併**�
 git subtree pull --prefix=app https://github.com/herdrdev/herdr-app.git master --squash
 git submodule update --init app/vendor/ghostty
 # 解衝突、commit 之後（建置環境照 lanes.md）
-app/scripts/yuzora/sync-check            # 5 項檢查，含 cargo test 與 check-mods
-app/scripts/yuzora/sync-check --quick    # 只跑 1–4 與掃描
+app/scripts/yuzora/sync-check            # 5 項檢查，含 cargo test、bun test scripts 與 check-mods
+app/scripts/yuzora/sync-check --quick    # 只跑 1–4、掃描與 bun test scripts（不跑 cargo test、check-mods）
 ```
 
 腳本比對三個 tree，都已經在 repo 裡（squash commit 本身就是上游的 tree），不需要網路：

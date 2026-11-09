@@ -486,8 +486,8 @@ mod tests {
         ("app/src/update.rs", "unpack", 1, "codesign, inside `cfg!(target_os = \"macos\")`; curl and tar go through `spawn::command`"),
         ("app/src/update.rs", "prepare_macos_bundle", 3, "codesign and PlistBuddy: macOS only"),
         ("app/src/macos_check.rs", "drop", 2, "launchctl: the file is `#[cfg(target_os = \"macos\")]` (upstream's mod check job)"),
-        ("app/src/macos_check.rs", "worker", 1, "launchctl: macOS only, as above"),
-        ("app/src/macos_check.rs", "submit", 2, "launchctl and the checker itself: macOS only, as above"),
+        ("app/src/macos_check.rs", "worker", 1, "the checker itself (`current_exe`): macOS only, as above"),
+        ("app/src/macos_check.rs", "submit", 2, "launchctl bootstrap and bootout: macOS only, as above"),
         ("app/src/core_bin.rs", "bundle_completion_writable", 1, "/bin/test: only the macOS core bundle completion calls it (`ensure_core_bundle`)"),
         ("app/src/update.rs", "relaunch_expected", 1, "the `#[cfg(unix)]` variant (`sh`); the Windows one uses `spawn::command`"),
         // Delegated: checked on their own below.

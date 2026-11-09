@@ -181,9 +181,9 @@ git submodule update --init app/vendor/ghostty
 2. `app/CHANGELOG.md`：上游新版本會加在最上面，但 `update_notes` 測試要求第一筆版本等於 `CARGO_PKG_VERSION`。保持 Yuzora 的 `0.1.0-beta.2` 那筆在最上面。
 3. `app/.gitmodules` 與 root `.gitmodules` 的 ghostty URL 一致。
 4. `app/Cargo.lock` 有變動時，重產 `app/THIRD-PARTY-NOTICES`（見 lanes.md）。
-5. 跑完整的 app 測試與 `scripts/yuzora/check-mods`。上游新增的 telemetry、feedback、更新等外連端點要補上 D3 的開關。
+5. 跑完整的 app 測試（`cargo test --locked`、`bun test scripts`，後者含守護 L2c 信任閘門的 `yuzora-trust-mods.test.ts`）與 `scripts/yuzora/check-mods`。上游新增的 telemetry、feedback、更新等外連端點要補上 D3 的開關。
 
-subtree pull commit 之後執行 `app/scripts/yuzora/sync-check`，會依序做上面五項，並擋下只用 `HERDR_APP_HOME` 隔離的測試。加 `--quick` 不跑 cargo test 與 check-mods。說明見 [herdr-compat.md](herdr-compat.md) C2。
+subtree pull commit 之後執行 `app/scripts/yuzora/sync-check`，會依序做上面五項，並擋下只用 `HERDR_APP_HOME` 隔離的測試。加 `--quick` 不跑 cargo test 與 check-mods（bun 測試只要約 2 秒，仍會跑）。說明見 [herdr-compat.md](herdr-compat.md) C2。
 
 ## 合併規則
 
