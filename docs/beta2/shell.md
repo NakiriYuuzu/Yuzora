@@ -60,7 +60,7 @@ L1 寫的 key：
 | `yuzora.startup.honored` | 有 dock 套用啟動模式時設為 true；設定 › 一般頁看到它才顯示「Right-hand dock」這個選項（沒有人套用的設定不顯示） |
 | `yuzora.dock.open` | 抽屜的 window 現在開的是哪個（`{id, mode, session}`），由 window 標頭寫入；關閉鈕與標頭的 `close()`（換 layout、結束 App；只在自己的 id 還是這個值時）清成 null。`session` 是 `yuzora:core` 的 `session()`（每次執行不同）：shared 會存進 shared.json、overlay id 每次執行從 o1 重算，讀的人（`openNow()`）只信這一次執行寫的，上次留下的視為沒開 |
 
-dock 另外寫 Herdr 的 `space.colors`（上游 `spaces` 讀的 Space 色）：`yuzora.space.colors` 有 hex、而且 `space.colors` **不是 `#` hex** 的 Space（只限目前存在的），模式列／抽屜把同一個 hex 寫進去（把 beta.3 使用者的 Yuzora 色帶過去）；`space.colors` 已是 `#` hex 的不覆蓋（那是使用者在上游 UI 的選擇）；Yuzora 沒有顏色時不寫。不能只填空：上游 `spaces`、`picker` 每次 render 都替沒有顏色的 Space 填 `ansi*` 色名，而且左側先於模式列 render，「只填空」永遠寫不進去（render 測試 R5 先跑 `spaces` 再跑模式列來守住）。左側欄與上游 `main.json` 的 sidebar 一致（只差寬 248、頂列 40），由 `shell.rs` 的測試守住（`min 44`、`window_drag`、footer prop）。`yuzora.badge.workspace` 與 legacy 模式列的 `WAITING` 只剩舊 clone 在用，等 legacy 清理一併移除。`workspace.panels` 不動（它只決定 tab 列的 Files／Changes 兩顆鈕）。
+dock 另外寫 Herdr 的 `space.colors`（上游 `spaces` 讀的 Space 色）：`yuzora.space.colors` 有 hex、而且 `space.colors` **不是 `#` hex** 的 Space（只限目前存在的），模式列／抽屜把同一個 hex 寫進去（把 beta.3 使用者的 Yuzora 色帶過去）；`space.colors` 已是 `#` hex 的不覆蓋（那是使用者在上游 UI 的選擇）；Yuzora 沒有顏色時不寫。`yuzora-shell-tabs` 的 `badgesOf` 寫完 `yuzora.space.colors` 後做同一個同步（`syncSpaceColors` 在兩個 mod 各有一份，必須一致；mod 之間不能互相 import）：yuzora layout 的 dock 設 Off 時模式列不 render，只有 tab 列在，Space 顏色才不會停在 `ansi*`（render 測試 `yuzora_tab_bar_keeps_space_colors_in_step`）。不能只填空：上游 `spaces`、`picker` 每次 render 都替沒有顏色的 Space 填 `ansi*` 色名，而且左側先於模式列 render，「只填空」永遠寫不進去（render 測試 R5 先跑 `spaces` 再跑模式列來守住）。左側欄與上游 `main.json` 的 sidebar 一致（只差寬 248、頂列 40），由 `shell.rs` 的測試守住（`min 44`、`window_drag`、footer prop）。`yuzora.badge.workspace` 與 legacy 模式列的 `WAITING` 只剩舊 clone 在用，等 legacy 清理一併移除。`workspace.panels` 不動（它只決定 tab 列的 Files／Changes 兩顆鈕）。
 
 L1 讀的 key：
 
@@ -179,6 +179,7 @@ beta.4 PR-3、PR-4 之後要重拍或新增的（截圖尚未重拍，圖檔不�
 - **抽屜的 window 裡的模式 mod，localStorage 每次開啟換一個檔**：抽屜開出的 overlay 把 overlay id 放進 props，而 mod copy 的 localStorage 檔名由 props 的 hash 決定；overlay id 每次執行、每次開啟都不同（`o1`、`o2`…）。結果：在抽屜 window 裡的模式，靠 localStorage 記住的狀態每次開啟都重置，例如 Files 的「顯示隱藏檔」。Panel 形態（`main`、`yuzora`）的模式沒有 overlay id，不受影響。要根治得改上游 `window.rs` 的 `overlay_layout` 或 `mods.rs` 的 `prepare_load`（讓 hash 不含 overlay id），這次沒動。
 - **root 被包進新 row 時，opt-out 變子節點**（PR-1 N4）：layout 的 root 若是 block 而不是容器，`dock()` 會把它包進新 row，root 的 `"yuzora": {"dock": "off"}` 就跑到子節點，重啟後失效；個人設定（設定 › Mods › Layouts）不受影響，因為它不靠 root 的欄位。與上游 `titlebar`、`traffic_lights`、`preview` 這些只讀 root 的欄位相同。
 - **dock 隱藏期間選了 stack 的預設子節點（Files），改回 Auto 時 dock 的模式會蓋回來**（PR-4 r1 S3）：`.state` 只記「和檔案不同」的點選，選回檔案原本的預設子節點不留痕跡，`keep_clicks` 分不出「選了 Files」和「沒點過」，所以把 dock 隱藏前的模式帶回來；選 Changes（非預設）會保留。要可靠區分得另記一份「點選過」的標記，不值得這個改動。
+- **dock 隱藏期間，layout 檔刻意改 `panel-body.active`，watcher 與重啟結果不同**（PR-4 r2 nit 2）：Off／Drawer 且 panel 沒開時，watcher 路徑（`check_layout_file`）的 `keep_clicks` 把被 `forget_edited` 丟掉的 dock 模式帶回來，改回 Auto 時顯示 Git；重啟路徑檔案的選擇會贏。使用者自己開了 panel 的情況已由 `keep_clicks` 的 own-panel 判斷處理（`dock_own_panel_while_hidden`）；這條只剩「panel 關著＋檔案改了 active」的窄情況，不修。
 - **win98 的抽屜 window 底端壓到工作列**（驗收 d-14）：window 高度是螢幕的 85%，win98 的工作列沒有被排除在可用區之外；不修。win98 抽屜選中項的字色改用主題的 foreground（原本的 token strong 在淺灰底上看不見）。
 - **只有英文**：dock 與左側的上游 mod 字串都是英文（整個 App 只留英文）。
 - **已安裝使用者改過 `keys.json` 時沒有新預設鍵**：見「預設快捷鍵與啟動模式」。
