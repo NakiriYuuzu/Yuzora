@@ -1147,14 +1147,23 @@ impl Scenario {
 
 /// The commit detail panel of the Git Log in a `width`×`height` box, dragged by its `dragging()`.
 /// A press with three clicks swaps in another commit's details (the height must stay).
+/// The message is `line N` lines with blank ones among them (`BLANKS`), so `detailPanel` lays out paragraphs
+/// as well as lines.
+const BLANKS: &str = "(i % 10 === 5 || i % 10 === 6) ? '' : i % 10 === 7 ? '   ' : 'line ' + i";
+
 fn detail_scenario(lines: usize, side: bool, width: f32, height: f32, files: usize) -> String {
+    detail_scenario_of(BLANKS, lines, side, width, height, files)
+}
+
+/// `detail_scenario` with the message line `i` being the JS expression `line`.
+fn detail_scenario_of(line: &str, lines: usize, side: bool, width: f32, height: f32, files: usize) -> String {
     format!(
         r#"
 import Real from "./mods/yuzora-git-log/main.js";
 import {{ v_flex }} from "gpui-base";
 import {{ theme }} from "herdr";
 import {{ note }} from "probe";
-const make = (hash, n) => ({{ hash, subject: "Subject " + hash, body: Array.from({{ length: n }}, (_, i) => "line " + i).join("\n"), author: "A", email: "a@x",
+const make = (hash, n) => ({{ hash, subject: "Subject " + hash, body: Array.from({{ length: n }}, (_, i) => {line}).join("\n"), author: "A", email: "a@x",
   authorTime: 1700000000, committer: "A", committerEmail: "a@x", commitTime: 1700000000, parents: [], signature: "N", signer: "",
   files: Array.from({{ length: {files} }}, (_, i) => ({{ path: "src/f" + i + ".rs", kind: "M" }})) }});
 export default class Scenario extends Real {{
@@ -1267,17 +1276,41 @@ fn git_log_commit_message_is_shown_whole_up_to_a_cap(cx: &mut TestAppContext) {
     let staged = Staged::new();
     for (lines, cut) in [(100, false), (2500, true)] {
         let setup = format!(
-            "this.repo = {{}}; this.showDetail = true; this.sel = {{hash:'a'}}; this.detail = {{hash:'a', data: {{hash:'a', subject:'S', body: Array.from({{length:{lines}}}, (_, i) => 'line ' + i).join('\\n'), \
+            "this.repo = {{}}; this.showDetail = true; this.sel = {{hash:'a'}}; this.detail = {{hash:'a', data: {{hash:'a', subject:'S', body: Array.from({{length:{lines}}}, (_, i) => {BLANKS}).join('\\n'), \
              author:'A', email:'a@x', authorTime:1, committer:'A', committerEmail:'a@x', commitTime:1, parents:[], signature:'N', signer:'', files:[]}}}};"
         );
         let tree = describe(cx, &staged, "mods/yuzora-git-log", false, props(), updates("current", "current"), Some(&setup)).unwrap();
         assert!(tree.contains(&format!("line {}\"", lines.min(2000) - 1)), "{lines} lines: the last one shows");
         assert!(!tree.contains("line 2000\""), "{lines} lines: the cap");
-        // A paragraph is one text, not a div per line (2000 of them cost a quarter of the 50ms render budget).
-        assert_eq!(tree.matches("text \"line 0\\n").count(), 1, "{lines} lines: one text for the message");
-        assert!(tree.matches("text \"line ").count() <= 1, "{lines} lines: no text per line");
+        // A paragraph is one text, not a div per line (2000 of them cost a quarter of the 50ms render budget):
+        // a text for each of the paragraphs (lines 8 to 4 of the next ten, then 3 blank; 0 to 4 at the start) the message has, through `detailPanel`.
+        let paragraphs = lines.min(2000) / 10 + 1;
+        assert_eq!(tree.matches("text \"line 0\\n").count(), 1, "{lines} lines: the first paragraph is one text");
+        assert_eq!(tree.matches("text \"line ").count(), paragraphs, "{lines} lines: a text per paragraph, not per line");
         assert_eq!(tree.contains("text \"detail.truncated\""), cut, "{lines} lines: the notice");
     }
+}
+
+// yuzora(beta4): through `detailPanel` itself, a message of paragraphs and blank lines takes what its lines
+// and 8px per blank line take, in a column (a row or a text for the whole message would not). The info
+// area is as tall as its limit either way, so it is measured by how far the message scrolls.
+#[gpui::test]
+fn git_log_commit_message_paragraphs_in_the_panel_take_the_height_of_their_lines(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let scrolled = |cx: &mut TestAppContext, line: &str, lines: usize| {
+        let mut s = Scenario::mount(cx, &staged, &detail_scenario_of(line, lines, true, 340.0, 600.0, 0), 340.0, 600.0);
+        s.mouse("move", 100.0, 40.0, 0);
+        let before = s.last("info").expect("content under the pointer")[1].as_f64().unwrap();
+        s.wheel(100.0, 40.0, -100000.0);
+        s.mouse("move", 100.0, 40.0, 0);
+        s.last("info").unwrap()[1].as_f64().unwrap() - before
+    };
+    // 300 lines: 210 of text, and 30 runs of three blank ones (two blank, one whitespace-only) between them.
+    let with_blanks = scrolled(cx, BLANKS, 300);
+    let text_only = scrolled(cx, "'line ' + i", 210);
+    assert!(text_only > 1000.0, "the message scrolls: {text_only}");
+    assert!((with_blanks - text_only - 30.0 * 24.0).abs() < 0.5, "210 lines and 30 runs of 24px: {with_blanks} vs {text_only}");
 }
 
 /// The repo picker in the frame an overlay gives it (`render_overlays`): 340 wide, at most 360 high
