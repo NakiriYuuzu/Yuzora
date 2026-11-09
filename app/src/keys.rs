@@ -52,11 +52,17 @@ const SHIPPED_KEYS: &[&str] = &[
     include_str!("keys/shipped/v0.1.4-keys.json"),
     include_str!("keys/shipped/v0.1.5-keys.json"),
     include_str!("keys/shipped/v0.1.12-keys.json"),
+    // yuzora(L1): what Yuzora's own betas wrote (an untouched file is upgraded like Herdr's).
+    include_str!("keys/shipped/v0.1.0-beta.2-keys.json"),
+    include_str!("keys/shipped/v0.1.0-beta.3-keys.json"),
 ];
 #[cfg(any(target_os = "macos", test))]
 const SHIPPED_MACOS_KEYS: &[&str] = &[
     include_str!("keys/shipped/v0.1.4-keys.macos.json"),
     include_str!("keys/shipped/v0.1.5-keys.macos.json"),
+    // yuzora(L1): what Yuzora's own betas wrote.
+    include_str!("keys/shipped/v0.1.0-beta.2-keys.macos.json"),
+    include_str!("keys/shipped/v0.1.0-beta.3-keys.macos.json"),
 ];
 
 #[derive(serde::Deserialize)]
@@ -320,6 +326,36 @@ mod tests {
             std::fs::remove_file(&path).unwrap();
             assert_eq!(super::load_text(&path, defaults, originals).unwrap(), defaults);
             assert_eq!(std::fs::read_to_string(&path).unwrap(), defaults);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // yuzora(L1): an untouched keys.json from Yuzora beta.2 or beta.3 is upgraded to the current
+    // defaults (terminal.search in, no layout.switch key); one edited by a character is left alone.
+    #[test]
+    fn untouched_yuzora_beta_keys_are_upgraded_and_edited_ones_are_not() {
+        let dir = std::env::temp_dir().join(format!("yuzora-keys-beta-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys.json");
+        let betas = [
+            ("beta.2", include_str!("keys/shipped/v0.1.0-beta.2-keys.json"), include_str!("keys/shipped/v0.1.0-beta.2-keys.macos.json")),
+            ("beta.3", include_str!("keys/shipped/v0.1.0-beta.3-keys.json"), include_str!("keys/shipped/v0.1.0-beta.3-keys.macos.json")),
+        ];
+        for (defaults, originals, pick) in [
+            (include_str!("../defaults/keys.json"), super::SHIPPED_KEYS, 0),
+            (include_str!("../defaults/keys.macos.json"), super::SHIPPED_MACOS_KEYS, 1),
+        ] {
+            for (name, plain, mac) in betas {
+                let original = if pick == 0 { plain } else { mac };
+                std::fs::write(&path, original).unwrap();
+                assert_eq!(super::load_text(&path, defaults, originals).unwrap(), defaults, "{name} upgraded");
+                assert!(defaults.contains("terminal.search") && !defaults.contains("layout.switch"));
+                let edited = original.replacen("tab.new", "pane.zoom", 1);
+                assert_ne!(edited, original);
+                std::fs::write(&path, &edited).unwrap();
+                assert_eq!(super::load_text(&path, defaults, originals).unwrap(), edited, "{name} edited stays");
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+            }
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
