@@ -5339,7 +5339,21 @@ mod tests {
     fn in_own_process(name: &str) {
         let home = std::path::PathBuf::from(format!("/var/tmp/herdr-window-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
+        // yuzora(L9): a stub `hc` first on PATH, so no window test ever runs the real one (with no server it would start a herdr-core under launchd that outlives the test). Unix only: Windows CI has no `hc`, and `Command::new("hc")` finds no .cmd there either.
+        #[cfg(unix)]
+        let path = {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = home.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("hc"), "#!/bin/sh\nexit 1\n").unwrap();
+            std::fs::set_permissions(bin.join("hc"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            let old = std::env::var_os("PATH").unwrap_or_default();
+            std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&old))).unwrap()
+        };
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        #[cfg(unix)]
+        command.env("PATH", path);
+        let out = command
             .args(["--exact", &format!("window::tests::{name}"), "--nocapture", "--test-threads=1"])
             .env("HERDR_APP_HOME", &home)
             .env("YUZORA_APP_HOME", &home) // yuzora(L9): Yuzora reads only YUZORA_APP_HOME; without it the test used ~/.config/yuzora
