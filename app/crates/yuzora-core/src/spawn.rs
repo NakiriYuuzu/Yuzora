@@ -476,7 +476,7 @@ mod tests {
         ("yuzora-settings/src/lib.rs", "file_manager", 3, "open / explorer / xdg-open: file managers"),
         ("yuzora-ssh/src/js.rs", "spawn_notepad", 1, "notepad.exe: a GUI program (opens the downloaded remote file)"),
         ("yuzora-files/src/fsops.rs", "reveal_impl", 4, "open / explorer / xdg-open / dbus-send: file managers"),
-        ("app/src/links.rs", "open", 1, "explorer.exe / open / xdg-open: the default browser (upstream)"),
+        ("app/src/links.rs", "open_system", 1, "open / xdg-open: the default browser (upstream; Windows uses ShellExecuteW, no console)"),
         // Never run on Windows (the upstream's own files are in the same list: a new spawn there shows up here).
         ("yuzora-core/src/migrate.rs", "sqlite_item", 1, "/usr/bin/sqlite3: the WebKit store only exists on macOS"),
         ("yuzora-settings/src/trash.rs", "platform", 2, "/usr/bin/trash and osascript: the macOS variant; the Windows powershell is flagged"),
@@ -485,6 +485,10 @@ mod tests {
         ("app/src/core_bin.rs", "login_shell_path", 1, "returns at once on Windows (`cfg!(windows)`), upstream"),
         ("app/src/update.rs", "unpack", 1, "codesign, inside `cfg!(target_os = \"macos\")`; curl and tar go through `spawn::command`"),
         ("app/src/update.rs", "prepare_macos_bundle", 3, "codesign and PlistBuddy: macOS only"),
+        ("app/src/macos_check.rs", "drop", 2, "launchctl: the file is `#[cfg(target_os = \"macos\")]` (upstream's mod check job)"),
+        ("app/src/macos_check.rs", "worker", 1, "launchctl: macOS only, as above"),
+        ("app/src/macos_check.rs", "submit", 2, "launchctl and the checker itself: macOS only, as above"),
+        ("app/src/core_bin.rs", "bundle_completion_writable", 1, "/bin/test: only the macOS core bundle completion calls it (`ensure_core_bundle`)"),
         ("app/src/update.rs", "relaunch_expected", 1, "the `#[cfg(unix)]` variant (`sh`); the Windows one uses `spawn::command`"),
         // Delegated: checked on their own below.
         ("yuzora-files/src/svg/process.rs", "start", 1, "`prepare` sets CREATE_NO_WINDOW on Windows before the spawn (checked in prepare_sets_the_flag)"),
