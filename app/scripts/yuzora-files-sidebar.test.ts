@@ -59,10 +59,19 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     },
   });
   const maker = () => chain;
+  // The engine refuses to change an input, or to ask for a redraw, while a frame is being built.
+  let building = false;
+  const inFrame = (what: string) => { if (building) throw new TypeError(`${what} cannot run during render or layout`); };
+  const inputCalls: any[][] = [];
   // The search box is the first input made, the name being typed for a new file or a rename the second.
   const inputs: any[] = [];
   const makeInput = () => {
-    const input = { on() {}, value: () => (inputs[0] === input ? world.query : world.name), set_value() {}, focus() {}, set_selected_range() {} };
+    const input = {
+      on() {}, value: () => (inputs[0] === input ? world.query : world.name),
+      set_value: (v: string) => { inputCalls.push(["set_value", v]); inFrame("set_value"); },
+      focus: () => { inputCalls.push(["focus"]); inFrame("focus"); },
+      set_selected_range: (range: object) => { inputCalls.push(["set_selected_range", range]); inFrame("set_selected_range"); },
+    };
     inputs.push(input);
     return input;
   };
@@ -101,8 +110,8 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
   }
   const { FilesSidebar: View, menuItems } = new Function(...Object.keys(stubs), `${real ? sourceWithOpen : source}\nreturn { FilesSidebar, menuItems };`)(...Object.values(stubs));
   const cx: any = {
-    spawn: (fn: (cx: any) => Promise<any>) => { fn(cx); }, notify() {},
-    timer: { every() {}, after: (ms: number, fn: () => void) => { world.timers.push({ ms, fn, fired: false }); } },
+    spawn: (fn: (cx: any) => Promise<any>) => { fn(cx); }, notify() { inFrame("cx.notify()"); },
+    timer: { every() {}, after: (ms: number, fn: (cx: any) => void) => { world.timers.push({ ms, fn: () => fn(cx), fired: false }); } },
   };
   const view = new View();
   view.init(null, cx);
@@ -112,7 +121,8 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
   // The frame: what it says, which lists it draws, and the key each of the tree's rows was drawn with.
   const frame = () => {
     world.log.length = 0; world.lists.length = 0;
-    view.render(cx);
+    building = true;
+    try { view.render(cx); } finally { building = false; }
     return { texts: [...world.log], lists: [...world.lists], keys: [...world.keys] };
   };
   // A click on the i-th row of a frame, as the list reports it: by the key the frame gave the row.
@@ -125,6 +135,10 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
   // The timers of a click's check that are due within `ms`: later ones are not yet.
   const fireWithin = (ms: number) => {
     for (const t of world.timers) if (!t.fired && t.ms >= 1000 && t.ms <= ms) { t.fired = true; t.fn(); }
+  };
+  // What a frame left to run at once (a request from the popup is answered there, never in the frame).
+  const tasks = () => {
+    for (const t of world.timers) if (!t.fired && t.ms === 0) { t.fired = true; t.fn(); }
   };
   // Answers whatever is asked of the host until nothing is: root and folders from `folders`, git with `git`.
   const settle = async (folders: Record<string, any>, git: any) => {
@@ -140,7 +154,7 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     throw new Error("the host is still being asked");
   };
   const show = (space: string) => { for (const s of world.spaces) s.active = s.id === space; };
-  return { view, cx, world, pending, answer, fail, frame, press, pressRight, fireTimers, fireWithin, settle, show, menuItems };
+  return { view, cx, world, inputCalls, pending, answer, fail, frame, press, pressRight, fireTimers, fireWithin, tasks, settle, show, menuItems };
 }
 
 const A = { "/a": listing("src/", "x.txt", "gone.txt"), "/a/src": listing("a.js") };
@@ -360,6 +374,7 @@ test("a popup opened on the tree drawn from the folder still gets its new file a
   await s.answer(s.pending("list").find(c => c.args[0] === "/repo")!, listing("README.md", "sub/"));
   s.world.shared.set("yuzora.files.request", { action: "new-file", root: menu.root, seq: 7, dir: SUB });
   s.frame();
+  s.tasks();
   expect(s.view.edit).toMatchObject({ kind: "new-file", dir: SUB });
   expect(s.world.toasts).toEqual([]);
 });
@@ -709,7 +724,9 @@ for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null
     expect(menu).toMatchObject({ abs: "/srv/a.txt", on: machine });
     s.menuItems(menu).find((i: any) => i?.label === "menu.rename").run();
     s.frame();
+    s.tasks();
     expect(s.view.edit).toMatchObject({ kind: "rename", path: "/srv/a.txt", dir: "/srv" });
+    expect(s.inputCalls.slice(-3)).toEqual([["set_value", "a.txt"], ["set_selected_range", { start: 0, end: 1 }], ["focus"]]);
     expect(s.world.toasts).toEqual([]);
     await submit(s, "b.txt");
     expect(makes(s)).toEqual([["rename", "/srv/a.txt", "/srv/b.txt", { on: machine }]]);
@@ -725,6 +742,7 @@ for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null
     const menu = s.world.menus[0].props.menu;
     s.menuItems(menu).find((i: any) => i?.label === "menu.new_folder").run();
     s.frame();
+    s.tasks();
     expect(s.view.edit).toMatchObject({ kind: "new-folder", dir: "/srv/src" });
     await submit(s, "lib");
     expect(makes(s)).toEqual([["createFolder", "/srv/src/lib", { on: machine }]]);
@@ -804,12 +822,15 @@ test("a request from the popup of another machine, or of a root this tree is not
   s.frame();
   s.world.shared.set("yuzora.files.request", { action: "new-file", root: "/srv", on: null, seq: 1, dir: "/srv" });
   s.frame();
+  s.tasks();
   expect(s.view.edit).toBeNull();
   s.world.shared.set("yuzora.files.request", { action: "new-file", root: "/elsewhere", on: "lab", seq: 2, dir: "/elsewhere" });
   s.frame();
+  s.tasks();
   expect(s.view.edit).toBeNull();
   s.world.shared.set("yuzora.files.request", { action: "new-file", root: "/srv", on: "lab", seq: 3, dir: "/srv" });
   s.frame();
+  s.tasks();
   expect(s.view.edit).toMatchObject({ kind: "new-file", dir: "/srv" });
   expect(s.world.toasts).toEqual([]);
 });

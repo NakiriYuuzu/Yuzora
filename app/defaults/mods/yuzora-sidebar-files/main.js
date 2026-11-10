@@ -227,14 +227,20 @@ export default class FilesSidebar extends View {
     const req = shared(REQUEST);
     if (req?.seq && req.seq > this.lastRequest) {
       this.lastRequest = req.seq;
-      const here = this.here;
-      if (here?.root && (req.on ?? null) === (here.on ?? null) && this.store.owns(here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
+      // A frame only looks: the name input and the redraw are for the task that follows it.
+      cx.timer.after(0, cx => this.answer(req, cx));
     }
     const refresh = shared(REFRESH) ?? 0;
     if (refresh > this.lastRefresh) { this.lastRefresh = refresh; this.reload(cx); }
   }
 
   // New file / folder / rename: one bar above the tree.
+
+  // The popup's request, for the machine and the folder this tree is.
+  answer(req, cx) {
+    const here = this.here;
+    if (here?.root && (req.on ?? null) === (here.on ?? null) && this.store.owns(here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
+  }
 
   startEdit(kind, path, dir, cx) {
     const value = kind === "rename" ? base(path) : "";
