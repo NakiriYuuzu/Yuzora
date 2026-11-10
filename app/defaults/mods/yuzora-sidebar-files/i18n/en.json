@@ -63,6 +63,7 @@
   },
   "error": {
     "list": "Can't open this folder",
+    "gone": "{name} no longer exists: the list was refreshed",
     "name": "That name can't be used",
     "new-file": "Can't create the file",
     "new-folder": "Can't create the folder",
