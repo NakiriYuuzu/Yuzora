@@ -230,10 +230,18 @@ export default class DbTable extends View {
           : button("drop-edits", t("unsaved_drop"), true, (_e, cx) => { leave(); c.action(cx); cx.notify(); })));
   }
 
+  /** Stop is there for whatever goes on, on every tab: it is how the read of a table ends when there is no SQL to run over it. */
+  showsStop() {
+    return Boolean(this.state?.running);
+  }
+
+  /** Run is there when nothing goes on, and in the SQL tab over a read of the table (see runSql). What is typed there does not redraw the toolbar, so Run cannot wait for it. */
+  showsRun() {
+    return !this.state?.running || (this.tab === "sql" && this.jobKind === "table");
+  }
+
   toolbar(th, conn) {
     const tg = this.target;
-    // In the SQL tab, Run goes ahead of a read of the table (see runSql): that is the button there while it goes on.
-    const running = Boolean(this.state?.running) && !(this.tab === "sql" && this.jobKind === "table");
     const where = [tg.database ?? conn?.database ?? "", tg.schema ? `${tg.schema}.${tg.name}` : tg.name].filter(Boolean).join(" · ");
     // The pane is as narrow as the dock leaves it: what doesn't fit beside the
     // name goes under it, and the button is always on a line of its own at worst.
@@ -247,12 +255,11 @@ export default class DbTable extends View {
             .bg(this.tab === id ? th.selected : th.raised).text_color(this.tab === id ? th.foreground : th.muted)
             .hover((s) => s.text_color(th.foreground))
             .on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(t(`tab.${id}`)))))
-        .child(running
-          ? div().id("stop").h(20).px(10).flex().flex_none().items_center().rounded(4).border_1().border_color(th.input)
-            .text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).on_click(() => this.stop()).child(t("stop"))
-          : div().id("run").h(20).px(10).flex().flex_none().items_center().rounded(4).bg(th.solid).text_color(th.solid_foreground)
-            .font_semibold().text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).tooltip(this.tab !== "sql" ? t("refresh_tip") : this.state?.running ? t("run_sql_over_read_tip") : t("run_sql_tip"))
-            .on_click((_e, cx) => this.run(cx)).child(t("run"))));
+        .when(this.showsStop(), (el) => el.child(div().id("stop").h(20).px(10).flex().flex_none().items_center().rounded(4).border_1().border_color(th.input)
+          .text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).on_click(() => this.stop()).child(t("stop"))))
+        .when(this.showsRun(), (el) => el.child(div().id("run").h(20).px(10).flex().flex_none().items_center().rounded(4).bg(th.solid).text_color(th.solid_foreground)
+          .font_semibold().text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).tooltip(this.tab !== "sql" ? t("refresh_tip") : this.state?.running ? t("run_sql_over_read_tip") : t("run_sql_tip"))
+          .on_click((_e, cx) => this.run(cx)).child(t("run")))));
   }
 
   data(th) {
