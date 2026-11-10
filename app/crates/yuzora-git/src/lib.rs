@@ -95,6 +95,10 @@ export function diffOpen(repo: string, spec: { path: string; orig?: string | nul
 /** The rows of a loaded diff: layout side | unified, context lines (-1 all), whitespace none | trim | all. */
 export function diffView(id: number, options?: { layout?: string; context?: number; whitespace?: string }): Promise<any>;
 /** Stages whole hunks, or lines of hunks ({hunk: {del: [line], add: [line]}}). */
+/** The lines of a loaded diff named by runs `[side, start, end]` (side "l" or "r", lines `start` to `end` of it, 0-based, half open), as the file has them: only the line ends dropped, runs and lines joined by "\n". */
+export function diffText(id: number, runs: ["l" | "r", number, number][]): string;
+/** The patch (as `git apply` takes it) of some hunks of a loaded diff, numbered in the view whitespace none | trim | all makes. Empty when none is named. */
+export function diffPatch(id: number, hunks: number[], whitespace?: string): Promise<string>;
 export function diffStage(id: number, hunks: number[], lines?: Record<string, { del?: number[]; add?: number[] }>): Promise<Outcome>;
 export function diffUnstage(id: number, hunks: number[], lines?: Record<string, { del?: number[]; add?: number[] }>): Promise<Outcome>;
 export function diffDiscard(id: number, hunks: number[], lines?: Record<string, { del?: number[]; add?: number[] }>): Promise<Outcome>;
@@ -282,6 +286,24 @@ fn selection(rest: &[Value]) -> diffview::Selection {
     diffview::Selection::from_json(rest.first().unwrap_or(&Value::Null), rest.get(1).unwrap_or(&Value::Null))
 }
 
+/// The runs `diffText` is asked for: `[["l" or "r", start, end], …]`.
+fn runs(v: &Value) -> GitResult<Vec<(diffview::Side, usize, usize)>> {
+    let bad = || GitError::other("a run is [\"l\" or \"r\", start, end]");
+    v.as_array()
+        .ok_or_else(bad)?
+        .iter()
+        .map(|run| {
+            let run = run.as_array().filter(|r| r.len() == 3).ok_or_else(bad)?;
+            let side = match run[0].as_str() {
+                Some("l") => diffview::Side::Left,
+                Some("r") => diffview::Side::Right,
+                _ => return Err(bad()),
+            };
+            Ok((side, run[1].as_u64().ok_or_else(bad)? as usize, run[2].as_u64().ok_or_else(bad)? as usize))
+        })
+        .collect()
+}
+
 fn diff_fn(m: HostModule, name: &'static str, job: fn(&diffview::DiffSession, &diffview::Selection) -> GitResult<()>) -> HostModule {
     m.async_function(name, move |a| {
         let s = diffview::get(a.integer(0)? as u64).map_err(err)?;
@@ -392,6 +414,16 @@ pub fn host_module() -> HostModule {
             let ws = diff::Whitespace::parse(o.get("whitespace").and_then(Value::as_str).unwrap_or("none"));
             Ok(d.view(&layout, context, ws))
         }))
+    });
+    m = m.function("diffText", |a| {
+        let d = diffview::get(a.integer(0)? as u64).map_err(err)?;
+        Ok(HostValue::Str(d.lines_text(&runs(&arg(a, 1)).map_err(err)?)))
+    });
+    m = m.async_function("diffPatch", |a| {
+        let d = diffview::get(a.integer(0)? as u64).map_err(err)?;
+        let hunks: Vec<usize> = arg(a, 1).as_array().map(|h| h.iter().filter_map(|h| h.as_u64().map(|h| h as usize)).collect()).unwrap_or_default();
+        let ws = diff::Whitespace::parse(a.get(2).and_then(HostValue::as_str).unwrap_or("none"));
+        Ok(finish("diff", move || Ok(Value::String(d.patch(ws, &hunks)))))
     });
     m = diff_fn(m, "diffStage", diffview::DiffSession::stage);
     m = diff_fn(m, "diffUnstage", diffview::DiffSession::unstage);
