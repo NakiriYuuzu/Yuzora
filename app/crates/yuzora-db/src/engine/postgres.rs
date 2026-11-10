@@ -8,7 +8,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error as StdError;
-use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,7 +60,8 @@ pub struct PgConn {
 pub struct PgCanceller {
     token: CancelToken,
     tls: MakeRustlsConnect,
-    /// Where the request goes; `None` for a unix socket.
+    /// Where the connection is, and so where the request goes; `None` for a
+    /// unix socket.
     target: Option<Arc<Target>>,
     /// A stop pressed by the person, as opposed to the sink saying enough:
     /// the server's "canceled" error then reads as [`DbError::Cancelled`].
@@ -76,11 +77,13 @@ pub struct PgCanceller {
     pub(super) commit: CommitSent,
 }
 
-/// The address a cancel request is sent to, and the name its TLS is for.
-#[derive(Clone)]
+/// The server one connection is with: the address it was made to, whichever
+/// of the ones its host names that was, and the name its TLS is for. A cancel
+/// request is for the backend of that connection, which only that address
+/// has; the host may name others, or name different ones by the time of the
+/// stop.
 struct Target {
-    address: String,
-    port: u16,
+    address: SocketAddr,
     tls_name: String,
 }
 
@@ -150,7 +153,7 @@ impl PgCanceller {
         let Some(target) = &self.target else {
             return self.token.cancel_query(self.tls.clone()).await.is_ok();
         };
-        let Ok(tcp) = TcpStream::connect((target.address.as_str(), target.port)).await else { return false };
+        let Ok(tcp) = TcpStream::connect(target.address).await else { return false };
         let Ok(tls) = MakeTlsConnect::<UntilClosed>::make_tls_connect(&mut self.tls.clone(), &target.tls_name);
         self.token.cancel_query_raw(UntilClosed { tcp, shut: false }, tls).await.is_ok()
     }
@@ -227,7 +230,7 @@ impl PgConn {
         let mut tried = Vec::new();
         for (i, database) in candidates.iter().enumerate() {
             match open(spec, &tls, database, deadline).await {
-                Ok(client) => return Self::ready(client, tls, Target::of(spec)).await,
+                Ok((client, target)) => return Self::ready(client, tls, target).await,
                 Err(Attempt { error, code }) => {
                     // Only a database that can't be had is worth moving on
                     // from: missing, no CONNECT right, connections disallowed.
@@ -654,28 +657,13 @@ impl PgConn {
     }
 }
 
-/// The host to name and, through a tunnel, the address to reach it at: the
-/// bytes go to the tunnel's local end, but the certificate is still the
-/// server's, so the name to check stays the configured host.
-fn route(spec: &ConnectSpec) -> (&str, Option<IpAddr>) {
-    match spec.endpoint.as_ref().and_then(|(h, _)| h.parse::<IpAddr>().ok()) {
-        Some(ip) => (spec.config.host.trim(), Some(ip)),
-        None => (spec.host(), None),
-    }
-}
-
-impl Target {
-    /// Where a cancel request goes, the way [`open`] reaches the server.
-    fn of(spec: &ConnectSpec) -> Option<Arc<Self>> {
-        let (name, address) = route(spec);
-        // A host that is a path is a unix socket (the driver reads it so).
-        (!name.starts_with('/')).then(|| {
-            Arc::new(Target {
-                address: address.map_or_else(|| name.to_owned(), |ip| ip.to_string()),
-                port: spec.port(),
-                tls_name: name.to_owned(),
-            })
-        })
+/// The name the server's certificate is checked for. Through a tunnel the bytes
+/// go to the tunnel's local end, but the certificate is still the server's, so
+/// the name to check stays the configured host.
+fn tls_name(spec: &ConnectSpec) -> &str {
+    match spec.endpoint.as_ref().and_then(|(h, _)| h.parse::<std::net::IpAddr>().ok()) {
+        Some(_) => spec.config.host.trim(),
+        None => spec.host(),
     }
 }
 
@@ -685,7 +673,7 @@ async fn open(
     tls: &MakeRustlsConnect,
     database: &str,
     deadline: Instant,
-) -> Result<Client, Attempt> {
+) -> Result<(Client, Option<Arc<Target>>), Attempt> {
     let (host, port) = (spec.host(), spec.port());
     let mut cfg = tokio_postgres::Config::new();
     cfg.user(spec.config.user.trim()).dbname(database).application_name("Yuzora");
@@ -693,7 +681,7 @@ async fn open(
     if let Some(password) = &spec.password {
         cfg.password(password);
     }
-    cfg.host(route(spec).0);
+    cfg.host(tls_name(spec));
     let ssl = spec.config.ssl;
     let fail = |error: DbError, code: Option<String>| Attempt { error, code };
     match tokio::time::timeout_at(deadline, connect_any(spec, cfg, tls)).await {
@@ -730,7 +718,7 @@ async fn open(
                 None,
             ))
         }
-        Ok(Ok(client)) => Ok(client),
+        Ok(Ok(connected)) => Ok(connected),
     }
 }
 
@@ -743,14 +731,15 @@ enum Failure {
 
 /// Connects to the first address that takes the connection, the way the driver
 /// does for a host name (any failure moves on to the next, the last one is the
-/// error), and runs the connection's driver on the crate's runtime. A unix
-/// socket is the driver's alone.
+/// error), and runs the connection's driver on the crate's runtime. Says which
+/// address that was: it is a fact of this connection, not of the host name.
+/// A unix socket is the driver's alone.
 async fn connect_any(
     spec: &ConnectSpec,
     base: tokio_postgres::Config,
     tls: &MakeRustlsConnect,
-) -> Result<Client, Failure> {
-    let (name, _) = route(spec);
+) -> Result<(Client, Option<Arc<Target>>), Failure> {
+    let name = tls_name(spec);
     let connect = |cfg: tokio_postgres::Config| async move {
         let (client, connection) = cfg.connect(tls.clone()).await.map_err(Failure::Driver)?;
         crate::runtime::handle().spawn(async move {
@@ -761,7 +750,7 @@ async fn connect_any(
     if name.starts_with('/') {
         let mut cfg = base;
         cfg.port(spec.port());
-        return connect(cfg).await;
+        return Ok((connect(cfg).await?, None));
     }
     let addresses = match &spec.addresses {
         Some(addresses) => addresses.clone(),
@@ -773,7 +762,7 @@ async fn connect_any(
         let mut cfg = base.clone();
         cfg.hostaddr(address.ip()).port(address.port());
         match connect(cfg).await {
-            Ok(client) => return Ok(client),
+            Ok(client) => return Ok((client, Some(Arc::new(Target { address, tls_name: name.to_owned() })))),
             Err(e) => last = e,
         }
     }
