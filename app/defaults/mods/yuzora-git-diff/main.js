@@ -1,11 +1,12 @@
 // The diff pane: one file, side by side or unified, with word highlights;
-// stage, unstage or discard hunks or lines without touching the rest.
-// Follows shared "yuzora.git.diff" ({cwd, on, path, orig, mode, rev?, to?, at}).
+// stage, unstage or discard hunks or lines without touching the rest; select rows and copy their
+// lines, a hunk or a patch. Follows shared "yuzora.git.diff" ({cwd, on, path, orig, mode, rev?, to?, at}).
+// The same class draws the menu a right-click opens (props.menu), as the Git log does.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, Scrollbar, VirtualListScrollHandle } from "gpui-base";
-import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay } from "herdr";
+import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify } from "herdr";
 import { t, tokens, session } from "yuzora:core";
-import { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from "yuzora:git";
+import { open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from "yuzora:git";
 
 // Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
 // the space of the pane it is given, so a pane is only looked for among the tabs of the shown
@@ -44,6 +45,8 @@ const SPLIT = "yuzora.git.diff.split", SPLIT_MIN = 0.15, SPLIT_MAX = 0.85;
 // The grab area over the divider, the bar below the lines when they scroll sideways, and the room left
 // after the widest line.
 const GRAB = 5, BAR = 8, REST = 12;
+// The menu a right-click opens: three rows of MENU_ROW in MENU_PAD, so MENU_HEIGHT.
+const MENU_W = 210, MENU_ROW = 28, MENU_PAD = 4, MENU_HEIGHT = 3 * MENU_ROW + 2 * MENU_PAD;
 // How wide a diff's lines are is found out a little at a time, so that nothing a frame or an event does grows with the
 // diff. [`scan`] goes through the rows SLICE units of work at a time (a row costs STEP, and reading a line TOLL besides
 // its length, and SLOW more for each character that is not ASCII): a frame that finds the rows not all gone through asks,
@@ -81,12 +84,18 @@ let gauges = 0;
 export default class GitDiff extends View {
   init(_props, cx) {
     const s = gitSettings(), p = props() ?? {};
+    // The popup of a right-click: what it offers, and nothing of the pane's own.
+    this.offer = p.menu ?? null;
+    if (this.offer) { this.err = null; return; }
     // Kept from a modal: the view it had there.
     this.layout = (p.layout ?? s.diffMode) === "unified" ? "unified" : "side";
     this.whitespace = p.whitespace ?? s.diffIgnoreWhitespace ?? "none";
     this.context = Number(p.context ?? s.diffContext ?? 3);
     this.view = null; this.error = null; this.busy = false; this.note = null;
     this.sel = {}; this.hunk = 0; this.askDiscard = null;
+    // The rows selected to copy: {side: "left" | "right" | "unified", anchor, head} (rows of the view, not
+    // lines on screen, so the list's scrolling does not touch it), or null.
+    this.mark = null;
     this.scrollX = 0; this.rowsPx = 0; this.drag = null; this.fit = null; this.gauge = null; this.unit = null;
     this.scroll = VirtualListScrollHandle.new();
     this.handle = cx.focus_handle();
@@ -194,26 +203,64 @@ export default class GitDiff extends View {
     cx.notify();
   }
 
-  // Rows can't hold handlers (virtual list): a click on a fold opens the
-  // whole file; on a changed line's number it picks the line; elsewhere on a
-  // change it makes that hunk the current one.
+  // The line a press at `x` picks (a change's own number, in a diff that can stage), or null.
+  pickAt(r, x) {
+    if (!this.view.stageable || r.h === undefined || x < 0) return null;
+    if (this.layout === "unified") return x < GUTTER * 2 ? (r.k === "-" ? ["l", r.li] : ["r", r.ri]) : null;
+    // Where the left side ends, as the last frame laid it out: its share of the row, less the divider.
+    const left = ((this.rowsWidth ?? 0) - 1) * (this.lay?.ratio ?? 0.5);
+    if (x < GUTTER && r.l !== undefined) return ["l", r.li];
+    if (x > left && x < left + 1 + GUTTER && r.r !== undefined) return ["r", r.ri];
+    return null;
+  }
+
+  // The side a press at `x` is on: what a selection begun there belongs to.
+  sideAt(x) {
+    if (this.layout === "unified") return "unified";
+    return x > ((this.rowsWidth ?? 0) - 1) * (this.lay?.ratio ?? 0.5) ? "right" : "left";
+  }
+
+  // Rows can't hold handlers (virtual list): a click on a fold opens the whole file; on a changed
+  // line's number (where lines can be picked) it picks the line; elsewhere it selects the row to
+  // copy (Shift: from where the selection began) and makes its hunk the current one.
   clickRow(i, cx) {
     const r = this.view?.rows[i];
     if (!r) return;
     if (r.k === "fold") { this.context = -1; this.relayout(cx); return; }
-    if (r.h === undefined) return;
-    const x = this.downX ?? -1;
-    if (this.view.stageable) {
-      if (this.layout === "unified") {
-        if (x >= 0 && x < GUTTER * 2) return this.toggleLine(r.h, r.k === "-" ? "l" : "r", r.k === "-" ? r.li : r.ri, cx);
-      } else {
-        // Where the left side ends, as the last frame laid it out: its share of the row, less the divider.
-        const left = ((this.rowsWidth ?? 0) - 1) * (this.lay?.ratio ?? 0.5);
-        if (x >= 0 && x < GUTTER && r.l !== undefined) return this.toggleLine(r.h, "l", r.li, cx);
-        if (x > left && x < left + 1 + GUTTER && r.r !== undefined) return this.toggleLine(r.h, "r", r.ri, cx);
-      }
-    }
-    this.hunk = r.h; cx.notify();
+    const x = this.downX ?? -1, pick = this.pickAt(r, x);
+    if (pick) return this.toggleLine(r.h, pick[0], pick[1], cx);
+    this.mark = press(this.mark, i, this.sideAt(x), Boolean(this.downShift));
+    if (r.h !== undefined) this.hunk = r.h;
+    cx.notify();
+  }
+
+  // Cmd+C (Ctrl+C): the selected rows' lines, as the file has them. False when there is nothing to copy.
+  copyLines(cx) {
+    const v = this.view, runs = v ? copyRuns(v.rows, this.mark) : [];
+    if (!runs.length) return false;
+    try { clip(cx, diffText(v.id, runs), linesCopied(total(runs))); }
+    catch (e) { this.note = String(e?.message ?? e); cx.notify(); }
+    return true;
+  }
+
+  // A right-click: the row joins the selection (replaces it, unless it is in it), and a menu of this
+  // mod's own offers what to copy: the selection, the hunk under the pointer, the patch of the
+  // hunks the selection touches.
+  openMenu(i, x, cx) {
+    const v = this.view, r = v?.rows[i];
+    if (!r || r.k === "fold") return;
+    if (!covers(this.mark, i)) this.mark = { side: this.sideAt(x), anchor: i, head: i };
+    openOverlay({
+      mod: "yuzora-git-diff", kind: "popup", at: "pointer", width: MENU_W, height: MENU_HEIGHT,
+      props: { menu: { id: v.id, whitespace: this.whitespace, runs: copyRuns(v.rows, this.mark), hunk: hunkRuns(v, r.h ?? -1), hunks: touchedHunks(v.rows, this.mark) } },
+    });
+    cx.notify();
+  }
+
+  // Whether row `i` is in the selection, on `side` ("l" or "r"; a unified selection is on every row).
+  marked(i, side) {
+    const m = this.mark;
+    return covers(m, i) && (m.side === "unified" || m.side === (side === "l" ? "left" : "right"));
   }
 
   // The width the rows are laid out in. It is kept as the box reported it, in window pixels: a new zoom changes
@@ -230,9 +277,9 @@ export default class GitDiff extends View {
   // A diff's rows come in here: what the pane needs of their lines to draw is worked out from now on, once, not in
   // each frame, a slice at a time ([`ranked`]) from the first frame. None of it is done here: this is a task, and one the
   // engine cuts off would take the loop that follows the file with it. A row that is not what the rows are ends the diff
-  // as an error.
+  // as an error. The rows are new ones: a selection of rows names rows of the old, so it goes.
   show(view) {
-    this.view = view; this.gauge = null;
+    this.view = view; this.gauge = null; this.mark = null;
     this.fit = this.layout === "unified" ? { longest: Math.min(2000, view.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0)) } : ranking(view.rows);
   }
 
@@ -350,10 +397,12 @@ export default class GitDiff extends View {
     if (at !== this.scrollX) { this.scrollX = at; cx.notify(); }
   }
 
-  // Where a press landed in the rows, across, for [`clickRow`] to tell a line's number from its text.
+  // Where a press landed in the rows, across, and whether Shift was down, for [`clickRow`] to tell a line's number
+  // from its text and a selection begun from one extended.
   pressed(e) {
     const x = e.local_position?.x;
     this.downX = x == null ? null : unzoom(x);
+    this.downShift = Boolean(e.modifiers?.shift);
   }
 
   // The drag in progress follows the pointer: the divider by the share of the width it moved, the bar by
@@ -405,6 +454,10 @@ export default class GitDiff extends View {
   }
 
   key(e, cx) {
+    if (e.key === "c" && (e.modifiers?.platform || e.modifiers?.control) && !e.modifiers?.alt && !e.modifiers?.shift) {
+      if (this.copyLines(cx)) cx.stop_propagation();
+      return;
+    }
     if (e.key === "f7" || e.key === "n" || e.key === "down" && e.modifiers?.alt) { this.go(cx, e.modifiers?.shift ? -1 : 1); cx.stop_propagation(); }
     else if (e.key === "p" || e.key === "up" && e.modifiers?.alt) { this.go(cx, -1); cx.stop_propagation(); }
     else if (e.key === "s" && this.view?.stageable && this.spec?.mode === "unstaged") { this.apply(cx, "stage", Object.keys(this.picked()).length ? [] : [this.hunk], this.picked()); cx.stop_propagation(); }
@@ -417,6 +470,12 @@ export default class GitDiff extends View {
       .children(segs.map((s, i) => div().id(`s${i}`).when(s.h, (el) => el.bg(strong).rounded(2)).child(s.t || "")));
   }
 
+  // The tint over a selected line's text, from `left` to the row's end. It is laid over the row, out of its
+  // flow, and is not in [`line`], so it takes no room and the measuring of the lines does not see it.
+  shade(th, left, side) {
+    return div().id(`shade-${side}`).absolute().top(0).bottom(0).left(left).right(0).bg(wash(th.accent));
+  }
+
   // The box a line's text is drawn in. The cell draws it and the measuring of the lines lays it out ([`probes`]):
   // how wide a line is is how wide this is, whatever it is cut into.
   line(r, side, th, d) {
@@ -426,8 +485,8 @@ export default class GitDiff extends View {
   }
 
   // One side's cell: number (click picks the line), then the text, which `sx` moves under the cell's
-  // edge. `grow` is its share of the row, the same for every row.
-  cell(r, side, th, d, grow, sx) {
+  // edge. `grow` is its share of the row, the same for every row; `selected`, that the row is in the selection.
+  cell(r, side, th, d, grow, sx, selected) {
     const n = r[side];
     const changedRow = r.k === "~" || r.k === "-" || r.k === "+";
     const present = n !== undefined;
@@ -436,7 +495,8 @@ export default class GitDiff extends View {
     const index = del ? r.li : r.ri;
     const picked = changedRow && present && this.sel[r.h]?.[del ? "del" : "add"]?.has(index);
     const canPick = changedRow && present && this.view.stageable;
-    return h_flex().w(0).flex_grow(grow).min_w(0).h_full().when(Boolean(bg), (el) => el.bg(bg)).when(changedRow && !present, (el) => el.bg(th.raised))
+    return h_flex().w(0).flex_grow(grow).min_w(0).h_full().relative().when(Boolean(bg), (el) => el.bg(bg)).when(changedRow && !present, (el) => el.bg(th.raised))
+      .when(selected && present, (el) => el.child(this.shade(th, GUTTER, side)))
       .child(div().w(GUTTER).flex_none().h_full().pr(6).text_right().text_color(picked ? th.foreground : th.dim)
         .when(picked, (el) => el.bg(del ? d.removed ?? th.ansi1 : d.added ?? th.ansi2).text_color(th.background))
         .when(canPick, (el) => el.cursor_pointer().hover((s) => s.text_color(th.foreground)))
@@ -458,7 +518,8 @@ export default class GitDiff extends View {
       const side = del ? "del" : "add";
       const picked = (del || add) && this.sel[r.h]?.[side]?.has(index);
       const canPick = (del || add) && this.view.stageable;
-      return base.when(current, (el) => el.border_l(2).border_color(th.accent)).when(Boolean(bg), (el) => el.bg(bg))
+      return base.relative().when(current, (el) => el.border_l(2).border_color(th.accent)).when(Boolean(bg), (el) => el.bg(bg))
+        .when(this.marked(i, "l"), (el) => el.child(this.shade(th, GUTTER * 2, "u")))
         .child(div().w(GUTTER * 2).flex_none().h_full().flex().text_color(picked ? th.background : th.dim)
           .when(picked, (el) => el.bg(del ? d.removed ?? th.ansi1 : d.added ?? th.ansi2))
           .when(canPick, (el) => el.cursor_pointer())
@@ -469,7 +530,7 @@ export default class GitDiff extends View {
     }
     // The current hunk's mark sits over the row's edge: a border would move this row's divider off the others'.
     const lay = this.lay;
-    return base.relative().child(this.cell(r, "l", th, d, lay.l, lay.sx)).child(div().w(1).flex_none().h_full().bg(th.border)).child(this.cell(r, "r", th, d, lay.r, lay.sx))
+    return base.relative().child(this.cell(r, "l", th, d, lay.l, lay.sx, this.marked(i, "l"))).child(div().w(1).flex_none().h_full().bg(th.border)).child(this.cell(r, "r", th, d, lay.r, lay.sx, this.marked(i, "r")))
       .when(current, (el) => el.child(div().absolute().top(0).left(0).w(2).h_full().bg(th.accent)));
   }
 
@@ -612,6 +673,7 @@ export default class GitDiff extends View {
     return v_virtual_list("diff-rows", v.rows.length, ROW, (i) => String(i),
       (range) => v.rows.slice(range.start, range.end).map((r, k) => this.row(r, range.start + k, th, d, width)))
       .on_item_click((key, cx) => this.clickRow(Number(key), cx))
+      .on_item_secondary_click((key, e, cx) => this.openMenu(Number(key), e.local_position?.x == null ? -1 : unzoom(e.local_position.x), cx))
       .track_scroll(this.scroll).size_full();
   }
 
@@ -627,8 +689,28 @@ export default class GitDiff extends View {
       .child(label);
   }
 
+  // The popup of a right-click. Each row puts its text on the clipboard and closes the popup; a failure stays in it.
+  renderOffer(cx) {
+    const th = theme(), m = this.offer, n = total(m.runs);
+    const act = (cx, work) => cx.spawn(async (cx) => {
+      try { await work(cx); closeOverlay(props().overlay); }
+      catch (e) { this.err = String(e?.message ?? e); cx.notify(); }
+    });
+    const row = (id, label, enabled, work) => div().id(id).h(MENU_ROW).px(10).flex().items_center().rounded(4).text_size(12)
+      .text_color(enabled ? th.foreground : th.dim)
+      .when(enabled, (el) => el.cursor_pointer().hover((s) => s.bg(th.hover)).on_click((_e, cx) => act(cx, work)))
+      .child(label);
+    return v_flex().size_full().p(MENU_PAD)
+      .child(row("copy", n === 1 ? t("menu.copy_one") : n ? t("menu.copy_other", { count: n }) : t("menu.copy"), n > 0,
+        (cx) => clip(cx, diffText(m.id, m.runs), linesCopied(n))))
+      .child(row("hunk", t("menu.hunk"), m.hunk.length > 0, (cx) => clip(cx, diffText(m.id, m.hunk), t("copied.hunk"))))
+      .child(row("patch", t("menu.patch"), m.hunks.length > 0, async (cx) => clip(cx, await diffPatch(m.id, m.hunks, m.whitespace), t("copied.patch"))))
+      .when(Boolean(this.err), (el) => el.child(div().px(10).py(4).text_size(11).text_color(th.ansi1).child(this.err)));
+  }
+
   // A frame that does not come back, not even by throwing, was cut off by the engine: it stays marked as begun.
   render(cx) {
+    if (this.offer) return this.renderOffer(cx);
     this.framing = true;
     try { return this.frame(cx); } finally {
       this.framing = false;
@@ -716,6 +798,74 @@ export default class GitDiff extends View {
 // A kept or dragged share of the width, in range; anything else (nothing kept, a damaged file) is half.
 function ratioOf(v) {
   return typeof v === "number" && Number.isFinite(v) ? Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, v)) : 0.5;
+}
+
+// The one place the clipboard is written: the text, and a toast that says what it was.
+function clip(cx, text, what) {
+  cx.write_to_clipboard(text);
+  notify({ title: what, level: "success", timeout: 1500 });
+}
+
+const total = (runs) => runs.reduce((n, r) => n + r[2] - r[1], 0);
+const linesCopied = (n) => (n === 1 ? t("copied.lines_one") : t("copied.lines_other", { count: n }));
+
+// The accent as a wash over what is under it (a color that is not #rrggbb is used as it is).
+const wash = (c) => (/^#[0-9a-f]{6}$/i.test(c ?? "") ? `${c}44` : c);
+
+// The rows a selection covers, first to last, whichever way it was made.
+function span(m) {
+  return [Math.min(m.anchor, m.head), Math.max(m.anchor, m.head)];
+}
+
+function covers(m, row) {
+  if (!m) return false;
+  const [from, to] = span(m);
+  return row >= from && row <= to;
+}
+
+// The lines of the rows a selection covers, in the order they are shown: the row, which side the line
+// is on ("l" or "r") and its place in that side (0-based). The side is the one the selection began
+// on; unified shows a deleted line from the left and an added one from the right. A row with no
+// line on the side (the blank beside an added line) and a fold add none.
+function lineOfRows(rows, m) {
+  const out = [];
+  if (!m) return out;
+  const [from, to] = span(m);
+  for (let i = from; i <= to && i < rows.length; i++) {
+    const r = rows[i];
+    if (!r || r.k === "fold") continue;
+    const side = m.side === "unified" ? (r.k === "+" ? "r" : "l") : m.side === "left" ? "l" : "r";
+    const n = side === "l" ? r.l : r.r;
+    if (n !== undefined) out.push({ r, side, line: n - 1 });
+  }
+  return out;
+}
+
+// Those lines as runs of one side's lines, `[side, start, end)`, neighbours joined: what `diffText` takes.
+function copyRuns(rows, m) {
+  const runs = [];
+  for (const { side, line } of lineOfRows(rows, m)) {
+    const last = runs[runs.length - 1];
+    if (last && last[0] === side && last[2] === line) last[2] = line + 1;
+    else runs.push([side, line, line + 1]);
+  }
+  return runs;
+}
+
+// The hunks that have a selected line, once each (hunks run in the order of the rows).
+function touchedHunks(rows, m) {
+  return [...new Set(lineOfRows(rows, m).map(({ r }) => r.h).filter((h) => h !== undefined))];
+}
+
+// A hunk's lines as they are after the change (the right side's range); none for a hunk that only deletes.
+function hunkRuns(view, h) {
+  const b = view.hunks[h]?.b;
+  return b && b[1] > b[0] ? [["r", b[0], b[1]]] : [];
+}
+
+// A press on a row: with Shift the selection reaches it from where it began, else it begins there.
+function press(m, row, side, shift) {
+  return shift && m ? { ...m, head: row } : { side, anchor: row, head: row };
 }
 
 // What a UTF-16 unit of a line takes at most, in cells (the width of an ASCII character), from what
