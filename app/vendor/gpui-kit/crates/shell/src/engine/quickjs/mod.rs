@@ -4184,6 +4184,8 @@ impl ShellRuntime {
             event_bounds.set("height", f32::from(bounds.size.height))?;
             payload.set("bounds", event_bounds)?;
             payload.set("modifiers", modifiers_object(&ctx, event.modifiers)?)?;
+            // yuzora(git-copy): whether the left button is down, for a script to tell a move in a drag from one after a release it was not told of.
+            payload.set("dragging", event.dragging())?;
             handler.call::<_, ()>((
                 payload,
                 context_object(ctx, ContextBinding::Call(generation))?,

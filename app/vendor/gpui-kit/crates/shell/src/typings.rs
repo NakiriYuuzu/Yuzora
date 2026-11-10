@@ -1153,6 +1153,9 @@ const CONTEXT_AND_VIEW: &str = r#"  /**
     local_position: Point;
     bounds: import("gpui-shell").ElementBounds;
     modifiers: Modifiers;
+    // yuzora(git-copy): `MouseMoveEvent::dragging`.
+    /** Whether the left button is down. */
+    dragging: boolean;
   }
 
   /**

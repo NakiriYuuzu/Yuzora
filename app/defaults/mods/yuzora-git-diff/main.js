@@ -418,8 +418,8 @@ export default class GitDiff extends View {
   //         yet let go of: no clock runs, the list does not scroll, nothing is selected. The release is the click the list reports.
   //   drag  The pointer has gone SLOP px or is over another row. The clock looks at it every TICK ms; at the list's edge the list scrolls;
   //         the selection runs from the row pressed to the row under the pointer ([`extend`]).
-  //   over  (`this.sweep` is null) The button is up, the pointer left the pane, a key reached the pane, or the diff is read again
-  //         ([`endSweep`]). The selection stays.
+  //   over  (`this.sweep` is null) The button is up (a release, or a move that says so), the pointer left the pane, a key reached
+  //         the pane, the pane lost the keyboard, or the diff is read again ([`endSweep`]). The selection stays.
   // No press on a fold (its click opens the file), on the numbers a line is picked by, or on the bar under the lines is any of these.
   pressed(e, cx) {
     const x = e.local_position?.x, y = e.local_position?.y, v = this.view;
@@ -464,6 +464,9 @@ export default class GitDiff extends View {
   // and a pointer held at the list's edge scrolls the list.
   beat(cx) {
     if (!this.sweep) return;
+    // Another pane has the keyboard (a shortcut of the app showed it or opened it): this one may not be shown, and the button's
+    // release will not be seen here.
+    if (!this.handle.is_focused()) { this.endSweep(); return; }
     this.extend(cx);
     this.clock = cx.timer.after(TICK, (cx) => this.beat(cx));
   }
@@ -534,7 +537,13 @@ export default class GitDiff extends View {
   // begins a sweep, and the release that ends it, ask for no frame.
   dragging(el) {
     return el
-      .on_mouse_move((e, cx) => { if (this.drag) this.dragTo(e.position.x, cx); else if (this.sweep) this.sweepTo(e.position, cx); })
+      .on_mouse_move((e, cx) => {
+        // The release of a button can be missed: a shortcut of the app takes a key from the pane, and after a key the window counts
+        // the pointer as over nothing till it moves. A move with the button up says it is up.
+        if (!e.dragging) { if (this.drag) this.drop(cx); this.endSweep(); }
+        else if (this.drag) this.dragTo(e.position.x, cx);
+        else if (this.sweep) this.sweepTo(e.position, cx);
+      })
       .on_mouse_up("left", (_e, cx) => { if (this.drag) this.drop(cx); this.endSweep(); })
       .on_mouse_down("left", (_e, cx) => { if (this.drag) this.drop(cx); })
       .on_hover((hovered, cx) => { if (!hovered) { if (this.drag) this.drop(cx); this.endSweep(); } });

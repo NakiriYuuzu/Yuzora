@@ -3274,28 +3274,27 @@ fn yuzora_diff_a_move_with_no_button_down_ends_a_drag_across_rows(cx: &mut TestA
     let bottom = pane.high as f64 - 8.;
     pane.press(TEXT_LEFT, row_y(3), 1);
     pane.drag(TEXT_LEFT, row_y(5));
-    assert_eq!(mark_of(&pane), json!(["left", 3, 5]));
+    pane.drag(TEXT_LEFT, bottom);
+    pane.wait(4, 50);
+    let (mark, scrolled) = (mark_of(&pane), scrolled_in_frame(&pane));
+    assert!(
+        scrolled >= 40.,
+        "held at the edge the list scrolls: {scrolled}"
+    );
     pane.hover(TEXT_LEFT, row_y(9));
-    assert_eq!(
-        mark_of(&pane),
-        json!(["left", 3, 5]),
-        "the pointer moving with no button down selects no more"
-    );
-    pane.hover(TEXT_LEFT, bottom);
-    pane.wait(10, 50);
-    near(
-        scrolled_in_frame(&pane),
-        0.,
-        "and held at the edge it scrolls nothing",
-    );
     let built = pane.script_renders();
     pane.wait(40, 50);
-    assert_eq!(pane.script_renders(), built, "and no clock builds a frame");
     assert_eq!(
-        selected(&mut pane),
-        Some(json!([["l", 3, 6]])),
-        "what was selected stays"
+        mark_of(&pane),
+        mark,
+        "the pointer moving with no button down selects no more"
     );
+    near(
+        scrolled_in_frame(&pane),
+        scrolled,
+        "and the list it left at the edge scrolls no more",
+    );
+    assert_eq!(pane.script_renders(), built, "no clock builds a frame");
     pane.close();
 }
 
