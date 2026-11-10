@@ -694,6 +694,41 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         assert!(covers("a", "a/b/c") && covers("a/b", "a/b") && !covers("a", "ab/c"));
     }
 
+    /// The change counts need only the list of changed files, so they start the moment it is read, and run
+    /// beside the listings of the whole work tree (the longest reads of a refresh) instead of after them.
+    #[cfg(unix)]
+    #[test]
+    fn the_change_counts_are_read_beside_the_listings_of_the_work_tree() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::Arc;
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        s.write("a.txt", "2\n");
+        let dir = s.dir.path().join("shim");
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls.log");
+        let real = String::from_utf8(std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap().stdout).unwrap().trim().to_owned();
+        // Each call notes when it starts and ends under the name of its command; `ls-files` takes a while.
+        let body = "#!/bin/sh\nname=\"$1\"\nfor a in \"$@\"; do case \"$a\" in ls-files|diff|status) name=$a; break ;; esac; done\necho \"s $name\" >> 'LOG'\n[ \"$name\" = ls-files ] && sleep 0.6\n'REAL' \"$@\"; rc=$?\necho \"e $name\" >> 'LOG'\nexit $rc\n"
+            .replace("LOG", &log.display().to_string())
+            .replace("REAL", &real);
+        let shim = dir.join("git");
+        std::fs::write(&shim, body).unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let place = crate::exec::Place { git: shim.to_string_lossy().into_owned(), ..s.repo.place.clone() };
+        let git_dir = s.repo.git_dir.clone();
+        let repo = Arc::new(Repo::new(s.repo.id.clone(), place, git_dir.clone(), git_dir));
+        refresh(&repo).unwrap();
+        let events: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().map(str::to_owned).collect();
+        let at = |what: &str, last: bool| {
+            let mut found = events.iter().enumerate().filter(|(_, e)| *e == what).map(|(i, _)| i);
+            if last { found.last() } else { found.next() }.unwrap_or_else(|| panic!("{what} never happened: {events:?}"))
+        };
+        assert!(at("s diff", false) < at("e ls-files", true), "the counts waited for the listings: {events:?}");
+        let c = repo.status.lock().unwrap();
+        assert_eq!(c.unstaged_stats["a.txt"].add, 1, "and still counted the change");
+    }
+
     #[test]
     fn refresh_reads_everything_then_only_the_dirty_paths() {
         let s = scratch();

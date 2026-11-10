@@ -1253,6 +1253,23 @@ mod tests {
         assert_eq!(m["last"], "two", "{m}");
     }
 
+    /// The sidebar reads these as it attaches, so each read costs it a process and a wait: the template and
+    /// the last message are read together, and no list of authors is read that nothing shows.
+    #[cfg(unix)]
+    #[test]
+    fn messages_reads_the_template_and_the_last_message_together_and_no_authors() {
+        use crate::repo::testing::{most_at_once, timed_git};
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let (repo, log) = timed_git(&s, None);
+        let m = messages(&repo).unwrap();
+        assert!(m["last"].as_str().unwrap().starts_with("first"), "{m}");
+        assert!(m.get("authors").is_none(), "{m}");
+        let started = std::fs::read_to_string(&log).unwrap().lines().filter(|l| *l == "s").count();
+        assert_eq!(started, 2, "git ran for more than the template and the last message");
+        assert_eq!(most_at_once(&log), 2, "the two reads ran one after the other");
+    }
+
     #[test]
     fn commit_remembers_messages_and_branches_list_tracking() {
         let s = scratch();
@@ -1267,7 +1284,6 @@ mod tests {
         assert!(body.contains("Signed-off-by: Yuzora Test"), "{body}");
         let m = messages(&s.repo).unwrap();
         assert!(m["last"].as_str().unwrap().starts_with("second"));
-        assert!(m["authors"][0].as_str().unwrap().starts_with("Yuzora Test"));
         assert!(commit(&s.repo, &CommitOptions::default()).is_err());
         branch_create(&s.repo, "feature", None, false).unwrap();
         let b = branches(&s.repo).unwrap();
