@@ -166,6 +166,14 @@ class WinProbe:
         """WM_CLOSE to the process's visible windows: what ending a window app politely does."""
         return self.run.sh([self.exe, "close", pid], 30).json() or {"windows": 0, "posted": 0}
 
+    def click_restart(self, pid, evidence_name=None):
+        """A real left click on the update pill's Restart button, found by its colour (winprobe.rs)."""
+        return self.run.sh([self.exe, "click-restart", pid], 90, name=evidence_name).json() or {"found": False, "why": "winprobe gave no answer"}
+
+    def click(self, pid, from_right, from_bottom, evidence_name=None):
+        """A real left click `from_right` and `from_bottom` px in from the window's bottom right corner."""
+        return self.run.sh([self.exe, "click", pid, from_right, from_bottom], 60, name=evidence_name).json() or {"found": False, "why": "winprobe gave no answer"}
+
     def version(self):
         return self.run.sh([self.exe, "ver"], 30, name="env/winprobe-ver.txt").json()
 

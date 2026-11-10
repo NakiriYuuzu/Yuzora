@@ -18,6 +18,11 @@ Two flavors of the same source (the workflow builds each):
   C2-C5    (testkey, herdr-core installed) an old app's core left alive in the install folder, and the
            installer run again over a working install; see chain_old_core and chain_overlay.
 
+  C6-C10   (testkey, herdr-core installed; round 3, `--chains new`) what a person sees when Restart cannot install
+           (a real click on the pill, the toast, Settings > Updates), the `hold` process of a terminal and where
+           its cwd is, `hc server restart` and `hc server stop` against a blocked swap, an installer over another
+           version, and a beta's core carried through an installer into the first automatic update.
+
 Newer versions come from the built exe itself with its version string replaced by one of
 the same length (release_server.py); each is checked with `--version` before use.
 Launching is like the Start menu shortcut: cwd = the folder the shortcut says, an ordinary
@@ -68,8 +73,8 @@ def version_word(text):
 
 
 class Ctx:
-    def __init__(self, run, probe, flavor, dist, work, budget):
-        self.run, self.probe, self.flavor, self.dist = run, probe, flavor, dist
+    def __init__(self, run, probe, flavor, dist, work, budget, dist2=None):
+        self.run, self.probe, self.flavor, self.dist, self.dist2 = run, probe, flavor, dist, dist2
         self.work = os.path.abspath(work)
         self.tracker = Tracker(run, probe)
         self.deadline = time.time() + budget
@@ -81,6 +86,7 @@ class Ctx:
         self.core = None  # path of herdr-core.exe once ensure_core installed it
         self.core_tried = False
         self.shots = 0
+        self.installer2 = None  # an installer around an exe of version v2: another version to install over the first
 
     def fresh_server(self, *versions):
         """A chain's own server state: nothing offered but `versions` (oldest first, so the last is the newest).
@@ -303,7 +309,7 @@ SHOT = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
 def screenshot(ctx, rel):
     """The runner's desktop as a PNG, to be looked at by a person (a message inside the app's window has no
     other way to be read). Returns the relative name, or None when the capture failed."""
-    if ctx.shots >= 8:
+    if ctx.shots >= 40:
         return None
     ctx.shots += 1
     path = os.path.join(ctx.run.out, rel)
@@ -924,6 +930,349 @@ def chain_overlay(ctx, cid, reader_ok, old_core, app_running):
 
 
 
+# ---- round 3 ----------------------------------------------------------------
+# What a person sees when Restart cannot install, where the core's other processes keep the folder, what
+# stops them, and an installer over another version. A line named claim_* is a verdict on a sentence in
+# docs/beta2/release.md (pass: the sentence is true); the swap_N lines around it are the raw facts.
+
+def oneline(text, limit=700):
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def claim(ctx, cid, rid, holds, said_true, said_false, evidence=()):
+    ctx.run.result("%s.%s" % (cid, rid), PASS if holds else FAIL, said_true if holds else said_false, list(evidence))
+
+
+def role_of(cmd):
+    """What a herdr-core process is, from its command line."""
+    for name in ("hold", "serve", "connect"):
+        if re.search(r"\b%s\b" % name, cmd or ""):
+            return name
+    return "other"
+
+
+def core_rows(ctx, cid, tag):
+    """Every herdr-core process now, with its role and where its cwd is (read from a duplicated cwd handle)."""
+    rows = []
+    for p in ctx.probe.ps():
+        if p["name"].lower() not in CORE_NAMES:
+            continue
+        ctx.tracker.add(p["pid"])
+        info = ctx.probe.procinfo(p["pid"], "%s/procinfo-%s-%d.txt" % (cid, tag, p["pid"]))
+        kind, cwd = cwd_class(info)
+        cmd = (info.get("peb") or {}).get("cmdline")
+        rows.append({"pid": p["pid"], "role": role_of(cmd), "kind": kind, "cwd": cwd, "cmd": cmd, "gone": info.get("alive") is False})
+    return rows
+
+
+def pinned(rows):
+    """The herdr-core processes that have the install folder (or what it was renamed to) as their cwd."""
+    return [r for r in rows if r["kind"] in ("inside-install", "inside-old") and not r["gone"]]
+
+
+def core_text(rows):
+    return "; ".join("%s pid %s cwd %s (%s)%s" % (r["role"], r["pid"], r["cwd"], r["kind"], " ended before it was read" if r["gone"] else "") for r in rows) or "none"
+
+
+def report_core(ctx, cid, tag, rows, reader_ok):
+    """The INFO line of core_rows(..., tag): every herdr-core process, its role and its cwd."""
+    ev = ["%s/procinfo-%s-%d.txt" % (cid, tag, r["pid"]) for r in rows]
+    ctx.run.result("%s.holders_%s" % (cid, tag.replace("-", "_")), INFO if reader_ok else NOT_MEASURED, "%d herdr-core process(es), %d with the install folder as cwd: %s" % (len(rows), len(pinned(rows)), core_text(rows)), ev)
+
+
+def status_overlays(ctx, home):
+    """What the window says is open (`yuzora status`, the mod of each overlay), or None."""
+    data = ctx.run.sh([ctx.cli, "status"], 20, env=app_env(ctx, home), cwd=ctx.elsewhere).json()
+    return data.get("overlays") if isinstance(data, dict) else None
+
+
+def app_shot(ctx, cid, home, rel):
+    """The window drawn by the app itself (`yuzora shot`): readable even where the desktop picture is not."""
+    path = os.path.join(ctx.run.out, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    shell = ctx.run.sh([ctx.cli, "shot", path], 60, env=app_env(ctx, home), cwd=ctx.elsewhere, name=rel + ".txt")
+    ok = shell.rc == 0 and os.path.exists(path)
+    ctx.run.log("app shot %s: %s" % (rel, "saved" if ok else "failed: %s" % oneline(shell.out + shell.err, 200)))
+    return rel if ok else None
+
+
+def skip_welcome(home):
+    """The first-run welcome is a window over the app that no key closes (the run 2 picture has it open, over the
+    place the update message shows). A person has finished it before they see an update; `frame.welcomed` is what
+    the welcome writes when it ends (defaults/frame/welcome/main.js, kept in shared.json of the app's home)."""
+    with open(os.path.join(home, "shared.json"), "w") as f:
+        f.write(json.dumps({"frame.welcomed": "skipped"}))
+
+
+def open_terminal(ctx, cid, home, k):
+    reply = run_cli(ctx, cid, home, "do", "terminal.open")
+    ctx.run.result("%s.terminal_%d" % (cid, k), INFO, "`yuzora do terminal.open` rc=%s: %s" % (reply.rc, oneline(reply.out or reply.err, 300)), [])
+    time.sleep(6)
+
+
+def old_core_setup(ctx, cid, reader_ok, terminals, offer=True):
+    """What a person who upgrades from a beta by hand has: a core that an app of the build before the fix started
+    from the install folder (`serve`, with that cwd), the new app on it, its welcome closed, and `terminals`
+    terminals opened (each started by that old core: its `hold` process is what C6 looks at). `offer`: the
+    stand-in server has v2 ready for the app to stage. Returns (home, app, old) or None."""
+    home = new_home(ctx, cid)
+    if not ensure_core(ctx):
+        ctx.run.result("%s.skipped" % cid, NOT_MEASURED, "herdr-core is not installed (see core.install)", [])
+        return None
+    install_fresh(ctx, cid)
+    ensure_cli(ctx)
+    ctx.fresh_server(*([ctx.v2] if offer else []))
+    old = start_old_core(ctx, cid, home)
+    if not old:
+        return None
+    skip_welcome(home)
+    app = start_app(ctx, cid, "app1", home, INSTALL)
+    if not wait_main_window(ctx, cid, home, app, 1):
+        return None
+    check_app_cwd(ctx, cid, app, True, reader_ok)
+    ctx.run.result("%s.overlays_at_start" % cid, INFO, "overlays open once the window is up (the welcome is skipped): %s" % status_overlays(ctx, home), [])
+    for k in range(1, terminals + 1):
+        open_terminal(ctx, cid, home, k)
+    return home, app, old
+
+
+def restart_attempt(ctx, cid, k, to_v, app, home, reader_ok, known):
+    """`yuzora do app.update` (what Restart runs), and what the folder did. Returns (swapped, reopened)."""
+    snap(ctx, cid, "before-swap%d" % k)
+    since = len(app.log_text())
+    reply = run_cli(ctx, cid, home, "do", "app.update")
+    ctx.run.result("%s.restart_command_%d" % (cid, k), INFO, "`yuzora do app.update` rc=%s: %s" % (reply.rc, oneline(reply.out or reply.err)), [])
+    return observe_swap(ctx, cid, k, to_v, app, home, True, known, reader_ok, since=since)
+
+
+def hc_core(ctx, cid, home, *words):
+    """The core's own command line (`hc server restart`), run from outside the install folder, as a person would from a terminal of their own."""
+    shell = ctx.run.sh([ctx.core] + list(words), 120, env=app_env(ctx, home), cwd=ctx.elsewhere, name="%s/hc-%s.txt" % (cid, "-".join(words)))
+    ctx.run.result("%s.hc_%s" % (cid, "_".join(words)), INFO, "`hc %s` rc=%s%s: %s" % (" ".join(words), shell.rc, " TIMED OUT" if shell.timed_out else "", oneline(shell.out + shell.err, 300)), ["%s/hc-%s.txt" % (cid, "-".join(words))])
+    return shell
+
+
+def chain_holders(ctx, reader_ok):
+    """C6: a terminal opened on the old core has a `hold` process; where is its cwd, does a terminal the new app opens add
+    one like it, and does `hc server restart` free the folder for the swap."""
+    cid = "C6"
+    got = old_core_setup(ctx, cid, reader_ok, terminals=1)
+    if not got:
+        return
+    home, app, old = got
+    rows = core_rows(ctx, cid, "after-terminal")
+    report_core(ctx, cid, "after-terminal", rows, reader_ok)
+    holds = [r for r in rows if r["role"] == "hold" and not r["gone"]]
+    if not reader_ok or not holds:
+        ctx.run.result("%s.claim_holder_has_install_cwd" % cid, NOT_MEASURED, "no `hold` process could be read after a terminal was opened (reader ok=%s): %s" % (reader_ok, core_text(rows)), [])
+    else:
+        claim(ctx, cid, "claim_holder_has_install_cwd", any(h in pinned(rows) for h in holds),
+              "a `hold` process has the install folder as its cwd: the terminal's holder keeps the folder, as release.md says",
+              "no `hold` process has the install folder as its cwd (%s): release.md's sentence about the holder is wrong" % core_text(holds))
+    first_holds = {h["pid"] for h in holds}
+    open_terminal(ctx, cid, home, 2)
+    rows2 = core_rows(ctx, cid, "after-second-terminal")
+    fresh = [r for r in rows2 if r["role"] == "hold" and r["pid"] not in first_holds and not r["gone"]]
+    ctx.run.result("%s.second_terminal" % cid, INFO if reader_ok else NOT_MEASURED, "a terminal opened by the new app (its cwd is not the install folder) on the old core: new `hold` processes %s; all now: %s" % (core_text(fresh) if fresh else "none (it joined an existing holder)", core_text(rows2)), [])
+    known = set()
+    if not stage_via_cli(ctx, cid, 1, ctx.v2, app, home):
+        return
+    swapped, _ = restart_attempt(ctx, cid, 1, ctx.v2, app, home, reader_ok, known)
+    claim(ctx, cid, "claim_swap_blocked_by_old_core", not swapped,
+          "the swap failed with the old core and its holder alive: Restart cannot install until they are gone, as release.md says",
+          "the swap went through with the old core and its holder alive: release.md's warning does not hold here")
+    if swapped:
+        return
+    hc_core(ctx, cid, home, "server", "restart")
+    time.sleep(10)
+    rows3 = core_rows(ctx, cid, "after-restart")
+    report_core(ctx, cid, "after-restart", rows3, reader_ok)
+    claim(ctx, cid, "claim_restart_leaves_the_folder_held", bool(pinned(rows3)),
+          "after `hc server restart` a herdr-core process still has the install folder as its cwd (%s): it is not a way out, as release.md says" % core_text(pinned(rows3)),
+          "after `hc server restart` no herdr-core process has the install folder as its cwd: release.md says it does not help, and here it might")
+    if not app.alive():
+        ctx.run.result("%s.swap_2_not_reached" % cid, NOT_MEASURED, "the app ended on its own after `hc server restart`", [])
+        return
+    swapped2, _ = restart_attempt(ctx, cid, 2, ctx.v2, app, home, reader_ok, known)
+    claim(ctx, cid, "claim_swap_after_restart_blocked", not swapped2,
+          "Restart still could not install after `hc server restart`",
+          "Restart installed the update after `hc server restart`: restart does free the folder, release.md's 'not a way out' is too strict")
+
+
+def chain_server_stop(ctx, reader_ok):
+    """C7: the same blocked swap, then `hc server stop` (the one release.md names for a person who would rather not restart the PC)."""
+    cid = "C7"
+    got = old_core_setup(ctx, cid, reader_ok, terminals=1)
+    if not got:
+        return
+    home, app, old = got
+    before = core_rows(ctx, cid, "before-stop")
+    report_core(ctx, cid, "before-stop", before, reader_ok)
+    known = set()
+    if not stage_via_cli(ctx, cid, 1, ctx.v2, app, home):
+        return
+    hc_core(ctx, cid, home, "server", "stop")
+    time.sleep(10)
+    after = core_rows(ctx, cid, "after-stop")
+    report_core(ctx, cid, "after-stop", after, reader_ok)
+    ended = [r["pid"] for r in before if r["role"] in ("serve", "hold") and not ctx.probe.alive(r["pid"])]
+    ctx.run.result("%s.old_processes_ended" % cid, INFO, "of the old serve/hold processes %s, ended: %s" % ([r["pid"] for r in before if r["role"] in ("serve", "hold")], ended), [])
+    claim(ctx, cid, "claim_stop_frees_the_folder", not pinned(after),
+          "after `hc server stop` no herdr-core process has the install folder as its cwd (what is left: %s)" % core_text(after),
+          "after `hc server stop` the folder is still held by %s: release.md's advice does not work" % core_text(pinned(after)))
+    if not app.alive():
+        ctx.run.result("%s.swap_1_not_reached" % cid, NOT_MEASURED, "the app ended on its own after `hc server stop`", [])
+        return
+    swapped, _ = restart_attempt(ctx, cid, 1, ctx.v2, app, home, reader_ok, known)
+    claim(ctx, cid, "claim_swap_after_stop_works", swapped,
+          "Restart installed the update after `hc server stop`, without restarting the PC",
+          "Restart still could not install after `hc server stop`")
+
+
+def chain_mouse(ctx, reader_ok):
+    """C8: the swap is blocked (an old core holds the folder), then a person's hand: the click on the pill's Restart, the
+    toast, a click on the toast, and Settings > Updates. Pictures of each; `yuzora status` says which overlays are open."""
+    cid = "C8"
+    got = old_core_setup(ctx, cid, reader_ok, terminals=0)
+    if not got:
+        return
+    home, app, old = got
+    if not stage_via_cli(ctx, cid, 1, ctx.v2, app, home):
+        return
+    time.sleep(4)  # the pill is drawn on the poll after the stage
+    screenshot(ctx, "%s/1-pill.png" % cid)
+    since = len(app.log_text())
+    hit = ctx.probe.click_restart(app.pid, "%s/click-restart.txt" % cid)
+    where = "capsule %s, clicked %s, pill colour %s; the row looked at: %s" % (hit.get("capsule"), hit.get("clicked"), hit.get("pill_color"), oneline(json.dumps(hit.get("row")), 400))
+    if not hit.get("found"):
+        ctx.run.result("%s.pill_found" % cid, FAIL, "no Restart button found on the pill by its colour: %s; %s" % (hit.get("why"), where), ["%s/click-restart.txt" % cid, "%s/1-pill.png" % cid])
+        return
+    ctx.run.result("%s.pill_found" % cid, PASS, "the Restart button of the pill was found by its colour and clicked with the mouse: %s" % where, ["%s/click-restart.txt" % cid, "%s/1-pill.png" % cid])
+    tried = wait_for(lambda: blocked_lines(app.log_text()[since:]), 25)
+    claim(ctx, cid, "click_reached_restart", bool(tried),
+          "the click ran app.update: the swap was tried and failed (%s)" % oneline(tried[0] if tried else "", 200),
+          "no swap was tried within 25 s of the click: it did not land on Restart (the picture 2-after-click.png shows where it went)",
+          ["%s/app1.log" % cid])
+    time.sleep(1.5)
+    screenshot(ctx, "%s/2-after-click.png" % cid)
+    app_shot(ctx, cid, home, "%s/2-after-click-app.png" % cid)
+    overlays = status_overlays(ctx, home)
+    claim(ctx, cid, "toast_shown", bool(overlays) and "toast" in overlays,
+          "a toast is open 1.5 s after the click (overlays: %s)" % overlays, "no toast is open 1.5 s after the click (overlays: %s)" % overlays, ["%s/2-after-click.png" % cid])
+    time.sleep(12)
+    screenshot(ctx, "%s/3-toast-13s.png" % cid)
+    overlays = status_overlays(ctx, home)
+    claim(ctx, cid, "toast_stays", bool(overlays) and "toast" in overlays,
+          "the toast is still open 13 s after the click (an error's usual 8 s would have closed it): overlays %s" % overlays,
+          "the toast is gone 13 s after the click: overlays %s" % overlays, ["%s/3-toast-13s.png" % cid])
+    hit2 = ctx.probe.click(app.pid, 186, 94, "%s/click-toast.txt" % cid)
+    time.sleep(2.5)
+    overlays = status_overlays(ctx, home)
+    screenshot(ctx, "%s/4-updates.png" % cid)
+    app_shot(ctx, cid, home, "%s/4-updates-app.png" % cid)
+    opened = bool(overlays) and any("settings" in str(o) for o in overlays)
+    claim(ctx, cid, "toast_click_opens_updates", opened and "toast" not in overlays,
+          "a click on the toast (at %s) opened the settings and closed the toast: overlays %s; 4-updates.png and 4-updates-app.png show whether the whole reason is on the page" % (hit2.get("clicked"), overlays),
+          "after a click on the toast (at %s) the overlays are %s: the settings did not open, or the toast stayed" % (hit2.get("clicked"), overlays), ["%s/click-toast.txt" % cid, "%s/4-updates.png" % cid])
+    # Later: closed and opened again, the reason is still on the page.
+    run_cli(ctx, cid, home, "do", "overlay.close")
+    time.sleep(2)
+    run_cli(ctx, cid, home, "do", "app.settings", "--section", "updates")
+    time.sleep(2)
+    screenshot(ctx, "%s/5-updates-again.png" % cid)
+    app_shot(ctx, cid, home, "%s/5-updates-again-app.png" % cid)
+    ctx.run.result("%s.reason_later" % cid, INFO, "the settings were closed and opened again on Updates: overlays %s; look at 5-updates-again.png and 5-updates-again-app.png for the paragraph" % status_overlays(ctx, home), ["%s/5-updates-again.png" % cid])
+    reply = run_cli(ctx, cid, home, "do", "app.update")
+    ctx.run.result("%s.cli_text" % cid, INFO, "`yuzora do app.update` rc=%s says: %s" % (reply.rc, oneline(reply.out or reply.err, 900)), [])
+
+
+def chain_other_version(ctx, reader_ok):
+    """C9: the installer of another version run (/S) over a working install while the app is open: does yuzora.exe change,
+    and what becomes of the old process."""
+    cid = "C9"
+    if not ctx.installer2:
+        ctx.run.result("%s.skipped" % cid, NOT_MEASURED, "no second installer was built for this job (--dist2)", [])
+        return
+    home = new_home(ctx, cid)
+    install_fresh(ctx, cid)
+    ctx.fresh_server()
+    app = start_app(ctx, cid, "app1", home, INSTALL)
+    time.sleep(12)
+    ctx.run.result("%s.app_up" % cid, INFO if app.alive() else NOT_MEASURED, "the first app (%s) is running before the installer: %s; windows %s" % (ctx.v1, app.alive(), [w.get("title") for w in ctx.probe.windows(app.pid) if w.get("visible")]), [])
+    info_before = ctx.probe.procinfo(app.pid, "%s/procinfo-app-before.txt" % cid)
+    snap(ctx, cid, "before-overlay")
+    shell = ctx.run.sh([ctx.installer2, "/S"], 240, name="%s/overlay-install.txt" % cid)
+    time.sleep(3)
+    after = snap(ctx, cid, "after-overlay")
+    says = folder_version(ctx, INSTALL)
+    old_says = folder_version(ctx, beside(".old"))
+    alive = app.alive()
+    info_after = ctx.probe.procinfo(app.pid, "%s/procinfo-app-after.txt" % cid) if alive else {}
+    claim(ctx, cid, "exe_replaced", says == ctx.v2,
+          "with the app open, the installer of %s replaced yuzora.exe: the install folder now runs %s (installer rc=%s%s); Yuzora.old runs %s; siblings %s" % (ctx.v2, says, shell.rc, " TIMED OUT" if shell.timed_out else "", old_says, sorted(after["siblings"])),
+          "with the app open, the install folder runs %s after the installer of %s (rc=%s%s): it did not replace yuzora.exe; Yuzora.old runs %s; siblings %s" % (says, ctx.v2, shell.rc, " TIMED OUT" if shell.timed_out else "", old_says, sorted(after["siblings"])),
+          ["%s/overlay-install.txt" % cid, "%s/snapshot-after-overlay.json" % cid])
+    ctx.run.result("%s.old_process" % cid, INFO, "the app that was open (pid %s): %s; image before %s, after %s; installed files (package list): %s" % (app.pid, "still running" if alive else "ended", (info_before.get("image_query")), info_after.get("image_query"), package_list_state()), ["%s/procinfo-app-before.txt" % cid])
+    app.stop()
+    again = start_app(ctx, cid, "app2-after-overlay", home, INSTALL)
+    time.sleep(14)
+    ctx.run.result("%s.start_after_overlay" % cid, PASS if again.alive() and folder_version(ctx, INSTALL) == says else FAIL, "the app started from the overlaid install: alive=%s, the folder runs %s; log: %s" % (again.alive(), folder_version(ctx, INSTALL), oneline(tail(again.log_text(), 3))), [again.log_rel])
+
+
+def chain_beta_to_stable(ctx, reader_ok):
+    """C10: a beta's core and a terminal's holder alive in the install folder; the installer of the next version run over
+    it with the app closed (what a person does: close Yuzora, run the installer); the new app started; the first automatic
+    update tried (does release.md's 'restart the PC once' describe what happens?), then `hc server stop`, then again."""
+    cid = "C10"
+    if not ctx.installer2:
+        ctx.run.result("%s.skipped" % cid, NOT_MEASURED, "no second installer was built for this job (--dist2)", [])
+        return
+    got = old_core_setup(ctx, cid, reader_ok, terminals=1, offer=False)
+    if not got:
+        return
+    home, app, old = got
+    before = core_rows(ctx, cid, "before-installer")
+    report_core(ctx, cid, "before-installer", before, reader_ok)
+    app.stop()
+    time.sleep(2)
+    snap(ctx, cid, "before-overlay")
+    shell = ctx.run.sh([ctx.installer2, "/S"], 240, name="%s/overlay-install.txt" % cid)
+    time.sleep(3)
+    after_snap = snap(ctx, cid, "after-overlay")
+    says = folder_version(ctx, INSTALL)
+    ctx.run.result("%s.installer" % cid, PASS if shell.rc == 0 and says == ctx.v2 else FAIL, "the installer of %s over the install with the app closed and the old core alive: rc=%s%s, the folder runs %s, Yuzora.old runs %s, siblings %s" % (ctx.v2, shell.rc, " TIMED OUT" if shell.timed_out else "", says, folder_version(ctx, beside(".old")), sorted(after_snap["siblings"])), ["%s/overlay-install.txt" % cid, "%s/snapshot-after-overlay.json" % cid])
+    mid = core_rows(ctx, cid, "after-installer")
+    report_core(ctx, cid, "after-installer", mid, reader_ok)
+    ctx.fresh_server(ctx.v3)
+    app2 = start_app(ctx, cid, "app2", home, INSTALL)
+    if not wait_main_window(ctx, cid, home, app2, 2):
+        return
+    check_app_cwd(ctx, cid, app2, True, reader_ok, tag="app2_cwd")
+    known = set()
+    if not stage_via_cli(ctx, cid, 1, ctx.v3, app2, home):
+        return
+    swapped, _ = restart_attempt(ctx, cid, 1, ctx.v3, app2, home, reader_ok, known)
+    after_try = snap(ctx, cid, "after-first-try")
+    ctx.run.result("%s.siblings_after_first_try" % cid, INFO, "after the first automatic update was tried: siblings %s, Yuzora.old files %s" % (sorted(after_try["siblings"]), after_try["old_files"][:6]), [])
+    claim(ctx, cid, "claim_first_auto_update_blocked", not swapped,
+          "the first automatic update after the installer failed with the beta's core alive, as release.md says (a restart or `hc server stop` is needed first)",
+          "the first automatic update after the installer WENT THROUGH with the beta's core alive: release.md's 'restart once' is not needed on this path")
+    if swapped:
+        return
+    if not app2.alive():
+        ctx.run.result("%s.swap_2_not_reached" % cid, NOT_MEASURED, "the app ended on its own after the failed swap", [])
+        return
+    hc_core(ctx, cid, home, "server", "stop")
+    time.sleep(10)
+    after = core_rows(ctx, cid, "after-stop")
+    report_core(ctx, cid, "after-stop", after, reader_ok)
+    swapped2, _ = restart_attempt(ctx, cid, 2, ctx.v3, app2, home, reader_ok, known)
+    claim(ctx, cid, "claim_auto_update_after_stop_works", swapped2,
+          "after `hc server stop` the automatic update installed",
+          "after `hc server stop` the automatic update still did not install")
+
+
 # ---- setup ----------------------------------------------------------------
 
 def prepare(ctx):
@@ -933,7 +1282,7 @@ def prepare(ctx):
     if len(found) != 1 or not os.path.exists(ctx.installer):
         raise RuntimeError("expected one windows archive and the installer in %s, found %s" % (ctx.dist, os.listdir(ctx.dist)))
     ctx.v1 = re.match(r"yuzora-(.+)-windows-x86_64\.tar\.gz$", os.path.basename(found[0])).group(1)
-    ctx.v2, ctx.v3 = rs.newer_versions(ctx.v1)
+    ctx.v2, ctx.v3, ctx.v4 = rs.newer_versions(ctx.v1, 3)
     unpacked = os.path.join(ctx.work, "v1")
     shutil.rmtree(unpacked, ignore_errors=True)
     with tarfile.open(found[0]) as tar:
@@ -942,8 +1291,8 @@ def prepare(ctx):
     with open(os.path.join(folder, "yuzora.exe"), "rb") as f:
         exe_bytes = f.read()
     os.makedirs(os.path.join(ctx.work, "archives"), exist_ok=True)
-    notes = ["built version %s, newer ones %s and %s" % (ctx.v1, ctx.v2, ctx.v3)]
-    for version in (ctx.v2, ctx.v3):
+    notes = ["built version %s, newer ones %s, %s and %s" % (ctx.v1, ctx.v2, ctx.v3, ctx.v4)]
+    for version in (ctx.v2, ctx.v3, ctx.v4):
         patched, count = rs.patch_version(exe_bytes, ctx.v1, version)
         if count == 0:
             raise RuntimeError("the version string %s is not in yuzora.exe" % ctx.v1)
@@ -960,6 +1309,14 @@ def prepare(ctx):
         ctx.archives[version] = archive
         notes.append("%s: %d copies of the version string replaced, exe says %r" % (version, count, said))
     run.result("setup.newer_builds", PASS, "; ".join(notes), ["setup/gate-%s.txt" % ctx.v2])
+    if ctx.dist2:
+        second = os.path.join(ctx.dist2, "Yuzora-windows-x64-setup.exe")
+        if os.path.exists(second):
+            ctx.installer2 = second
+            notes_second = "a second installer (around an exe that says %s) at %s" % (ctx.v2, second)
+        else:
+            notes_second = "no installer in --dist2 %s" % ctx.dist2
+        run.log(notes_second)
     ctx.server = rs.FakeGithub(ctx.key, os.path.join(run.out, "server.log")).start()
     run.log("stand-in server at %s" % ctx.server.base)
     os.makedirs(ctx.elsewhere, exist_ok=True)
@@ -997,10 +1354,12 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--work", required=True)
     parser.add_argument("--budget", type=int, default=1380)
+    parser.add_argument("--dist2", default=None, help="a folder with a second installer, around an exe that says the first newer version (second_installer.py)")
+    parser.add_argument("--chains", choices=["old", "new"], default="old", help="testkey flavor: the chains of rounds 1 and 2, or round 3's")
     args = parser.parse_args()
     run = Run(args.out)
     probe = WinProbe(run, args.probe)
-    ctx = Ctx(run, probe, args.flavor, os.path.abspath(args.dist), args.work, args.budget)
+    ctx = Ctx(run, probe, args.flavor, os.path.abspath(args.dist), args.work, args.budget, os.path.abspath(args.dist2) if args.dist2 else None)
     os.makedirs(ctx.work, exist_ok=True)
     run.log("observe: flavor=%s dist=%s work=%s budget=%ss" % (args.flavor, ctx.dist, ctx.work, args.budget))
     try:
@@ -1013,6 +1372,14 @@ def main():
         reader_ok = bool(run.guard("setup.cwd_reader_selfcheck", lambda: reader_selfcheck(ctx)))
         if args.flavor == "release":
             chains = [("R1-install", lambda: chain_release(ctx, "install", reader_ok), 150), ("R1-elsewhere", lambda: chain_release(ctx, "elsewhere", reader_ok), 150), ("R2", lambda: chain_release_extra(ctx, reader_ok), 120)]
+        elif args.chains == "new":
+            chains = [
+                ("C8", lambda: chain_mouse(ctx, reader_ok), 260),
+                ("C10", lambda: chain_beta_to_stable(ctx, reader_ok), 420),
+                ("C6", lambda: chain_holders(ctx, reader_ok), 380),
+                ("C7", lambda: chain_server_stop(ctx, reader_ok), 300),
+                ("C9", lambda: chain_other_version(ctx, reader_ok), 180),
+            ]
         else:
             chains = [
                 ("D1-install", lambda: chain_testkey(ctx, "install", reader_ok), 200),

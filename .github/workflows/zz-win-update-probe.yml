@@ -6,14 +6,21 @@
 # it updates itself. No secret is read, no release is touched, nothing is published:
 # the update server is a local stand-in and its key is made on the spot.
 #
-#   A  lower-bound       a stand-in program (not Yuzora) swaps its own folder, three rounds
-#   B  installed-release the shipped build; update files staged by hand, startup swap + relaunch
-#   C  installed-testkey the same source with debug assertions (the only build that trusts a
-#                        test key): check, download, verify, stage and swap for real, and
-#                        with herdr-core installed, `yuzora do app.update` (Restart)
+# Round 3 (PR #261 review r1). Rounds 1 and 2 (jobs A lower bound and B installed release
+# build) are in the evidence of those runs and are not run again.
+#
+#   C  installed-testkey  the chains of round 2 (D1, D2, C1-C5) on the merged fix: a regression check
+#   E  new-chains         round 3: C8 a real click on Restart and what the person sees, C10 a beta's core
+#                         through an installer into the first automatic update, C6 the `hold` process and
+#                         `hc server restart`, C7 `hc server stop`, C9 an installer of another version over
+#                         an open app (the second installer is the real one around a patched exe)
+#   F  red-baseline       the build from before the fix (64cb3d7e), checked with the new check-win-update.py:
+#                         it has to end with exit 1 at its control step
+#   G  five-characters    a throwaway version 0.1.0 (never in a product branch), checked with
+#                         check-win-update.py: does its version replacement work on a 5 character version
 #
 # Scripts and what they prove: app/scripts/yuzora/probe-win-update/. Results: the job
-# summary of each job, and the probe-* artifact (results.jsonl, raw outputs).
+# summary of each job, and the probe-* artifact (results.jsonl, raw outputs, pictures).
 name: Windows update probe
 
 on:
@@ -36,94 +43,8 @@ env:
   PYTHONIOENCODING: utf-8
 
 jobs:
-  lower-bound:
-    name: A lower bound
-    runs-on: windows-2022
-    timeout-minutes: 25
-    defaults:
-      run:
-        shell: bash
-    steps:
-      # The self-test checks a signed fixture byte for byte.
-      - name: Keep LF line endings
-        run: git config --global core.autocrlf false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - name: Probe self-test
-        run: python -I "$PROBE/selftest.py"
-      - name: Build the helper
-        run: mkdir -p out && rustc --edition 2021 -O -o out/winprobe.exe "$PROBE/winprobe.rs"
-      - name: Lower bound
-        timeout-minutes: 12
-        run: python "$PROBE/lower_bound.py" --probe out/winprobe.exe --out out/A --work "$RUNNER_TEMP/a"
-      - name: Results
-        if: always()
-        run: python "$PROBE/summarize.py" out/A
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: probe-A-lower-bound
-          path: out
-          retention-days: 14
-
-  installed-release:
-    name: B installed release build
-    runs-on: windows-2022
-    timeout-minutes: 60
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Keep LF line endings
-        run: git config --global core.autocrlf false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: ${{ env.ZIG_VERSION }}
-      - name: Windows build dependencies
-        run: |
-          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
-          if ! command -v makensis >/dev/null && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
-            choco install nsis --no-progress -y
-          fi
-      - name: Probe self-test
-        run: python -I "$PROBE/selftest.py"
-      - name: Build the helper
-        run: mkdir -p out && rustc --edition 2021 -O -o out/winprobe.exe "$PROBE/winprobe.rs"
-      - name: Build and pack (as shipped)
-        id: pack
-        timeout-minutes: 38
-        working-directory: app
-        run: scripts/yuzora/package
-      - name: Observe the installed app
-        if: steps.pack.outcome == 'success'
-        timeout-minutes: 20
-        env:
-          # Git Bash would turn /S into a drive path.
-          MSYS_NO_PATHCONV: "1"
-        run: python "$PROBE/observe.py" --flavor release --dist app/dist --probe out/winprobe.exe --out out/B-release --work "$RUNNER_TEMP/b" --budget 900
-      - name: Results
-        if: always()
-        run: python "$PROBE/summarize.py" out/B-release
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: probe-B-installed-release
-          path: out
-          retention-days: 14
-
   installed-testkey:
-    name: C installed test-key build
+    name: C round 2 chains on the merged fix (test-key build)
     runs-on: windows-2022
     timeout-minutes: 60
     defaults:
@@ -166,8 +87,7 @@ jobs:
           YUZORA_PACKAGE_BIN=target/release/herdr-app.exe scripts/yuzora/package
       - name: Observe the installed app
         if: steps.pack.outcome == 'success'
-        # Run 1: build ~24 min, observe 8.5 min. Eight chains now (about 17 min when all goes well);
-        # 24 + 27 stays under the 60 minute job cap with room for a slow build.
+        # Run 2: build ~24 min, observe 17 min. 24 + 27 stays under the 60 minute job cap.
         timeout-minutes: 27
         env:
           MSYS_NO_PATHCONV: "1"
@@ -179,5 +99,190 @@ jobs:
         if: always()
         with:
           name: probe-C-installed-testkey
+          path: out
+          retention-days: 14
+
+  new-chains:
+    name: E round 3 chains (test-key build)
+    runs-on: windows-2022
+    timeout-minutes: 110
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Windows build dependencies
+        run: |
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          if ! command -v makensis >/dev/null && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            choco install nsis --no-progress -y
+          fi
+      - name: Probe self-test
+        run: python -I "$PROBE/selftest.py"
+      - name: Build the helper
+        run: mkdir -p out && rustc --edition 2021 -O -o out/winprobe.exe "$PROBE/winprobe.rs"
+      # update.rs `keys` trusts YUZORA_UPDATE_TEST_KEY only when debug assertions are on and
+      # HERDR_APP_RELEASE was not set at build time. The release profile with debug
+      # assertions is the smallest change from what ships; the package script then makes the
+      # same archive and installer around that program.
+      - name: Build and pack (test-key flavor)
+        id: pack
+        timeout-minutes: 38
+        working-directory: app
+        run: |
+          [ -z "${HERDR_APP_RELEASE:-}" ]
+          CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true cargo build --release --locked
+          YUZORA_PACKAGE_BIN=target/release/herdr-app.exe scripts/yuzora/package
+      # The real installer around an exe that says another version: what C9 and C10 install over the first.
+      - name: Pack a second installer (an exe of another version)
+        id: second
+        if: steps.pack.outcome == 'success'
+        run: |
+          root=$(pwd)
+          version=$(python "$PROBE/second_installer.py" app/target/release/herdr-app.exe "$root/out/second-herdr-app.exe")
+          echo "the second installer carries an exe that says $version"
+          mkdir -p "$root/out/dist2"
+          (cd app && YUZORA_DIST="$root/out/dist2" YUZORA_PACKAGE_BIN="$root/out/second-herdr-app.exe" scripts/yuzora/package)
+          ls -l "$root/out/dist2"
+      - name: Observe the installed app
+        if: steps.second.outcome == 'success'
+        # Build ~24 min; five chains of 3 to 7 minutes each. The most it may take is 50 minutes; each chain
+        # checks the budget (seconds) before it starts, so a slow runner leaves later chains out rather than
+        # cutting one in half.
+        timeout-minutes: 52
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: python "$PROBE/observe.py" --flavor testkey --chains new --dist app/dist --dist2 out/dist2 --probe out/winprobe.exe --out out/E-new --work "$RUNNER_TEMP/e" --budget 2900
+      - name: Results
+        if: always()
+        run: python "$PROBE/summarize.py" out/E-new
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: probe-E-new-chains
+          path: out
+          retention-days: 14
+
+  red-baseline:
+    name: F the build before the fix, checked
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+      # 64cb3d7e: the test commit of PR #261, before the fix (its check and its tests are in, the fix is not).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 64cb3d7e172b51fc35d2fe923b1fa6fd3b446352
+          submodules: true
+          persist-credentials: false
+      # The check that is judged is the one in this branch, not the old one.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: probe-src
+          sparse-checkout: app/scripts/yuzora
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Windows build dependencies
+        run: |
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          if ! command -v makensis >/dev/null && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            choco install nsis --no-progress -y
+          fi
+      - name: Build and pack (as shipped, before the fix)
+        id: pack
+        timeout-minutes: 38
+        working-directory: app
+        run: scripts/yuzora/package
+      - name: The check on it
+        if: steps.pack.outcome == 'success'
+        timeout-minutes: 25
+        run: |
+          mkdir -p out
+          python "probe-src/$PROBE/run_check.py" --check probe-src/app/scripts/yuzora/check-win-update.py --setup app/dist/Yuzora-windows-x64-setup.exe --expect red --name F --out out/F-red-baseline
+      - name: Results
+        if: always()
+        run: python "probe-src/$PROBE/summarize.py" out/F-red-baseline
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: probe-F-red-baseline
+          path: out
+          retention-days: 14
+
+  five-characters:
+    name: G a five character version (0.1.0)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Windows build dependencies
+        run: |
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          if ! command -v makensis >/dev/null && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            choco install nsis --no-progress -y
+          fi
+      - name: Probe self-test
+        run: python -I "$PROBE/selftest.py"
+      # What release-prep will do to the version, here only: the workspace version and the lines of the
+      # workspace crates in Cargo.lock (cargo build --locked wants them to agree). Nothing is committed.
+      - name: A throwaway version, 0.1.0
+        working-directory: app
+        run: |
+          sed -i 's/^version = "0.1.0-beta.4"$/version = "0.1.0"/' Cargo.toml Cargo.lock
+          grep -n '^version = "0.1.0"$' Cargo.toml
+          [ "$(grep -c '^version = "0.1.0"$' Cargo.lock)" -ge 9 ]
+          [ "$(grep -c '0.1.0-beta' Cargo.toml)" = 0 ]
+      - name: Build and pack (as shipped, version 0.1.0)
+        id: pack
+        timeout-minutes: 38
+        working-directory: app
+        run: scripts/yuzora/package
+      - name: The check on it
+        if: steps.pack.outcome == 'success'
+        timeout-minutes: 25
+        run: |
+          mkdir -p out
+          python "$PROBE/run_check.py" --check app/scripts/yuzora/check-win-update.py --setup app/dist/Yuzora-windows-x64-setup.exe --expect green --name G --out out/G-five-characters
+      - name: Results
+        if: always()
+        run: python "$PROBE/summarize.py" out/G-five-characters
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: probe-G-five-characters
           path: out
           retention-days: 14

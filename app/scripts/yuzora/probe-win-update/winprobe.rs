@@ -6,6 +6,12 @@
 //   winprobe procinfo <pid>  image, command line, cwd (string and handle), parent, mitigation
 //   winprobe windows <pid>   top-level windows of the process
 //   winprobe close <pid>     WM_CLOSE to its visible top-level windows (what taskkill sends)
+//   winprobe click <pid> <from right> <from bottom>
+//                            a real left click (cursor and button) at that many pixels in from the
+//                            bottom right corner of the process's window; what a person's hand does
+//   winprobe click-restart <pid>
+//                            finds the filled "Restart" button of the update pill (bottom right) by
+//                            its colour, and clicks it; says what it saw
 //   winprobe hold <secs>     sleep (a stand-in process to look at)
 //   winprobe ver             Windows version
 //
@@ -26,6 +32,10 @@ const DUPLICATE_SAME_ACCESS: u32 = 0x2;
 const WM_CLOSE: u32 = 0x0010;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const PROCESS_REDIRECTION_TRUST_POLICY: i32 = 16;
+const SW_RESTORE: i32 = 9;
+const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
+const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
+const CLR_INVALID: u32 = 0xFFFF_FFFF;
 
 #[repr(C)]
 struct ProcessEntry32W {
@@ -49,6 +59,21 @@ struct ProcessBasicInformation {
     base_priority: i32,
     pid: usize,
     ppid: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Rect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+#[repr(C)]
+struct Point {
+    x: i32,
+    y: i32,
 }
 
 #[repr(C)]
@@ -91,6 +116,19 @@ extern "system" {
     fn GetWindowTextW(hwnd: Handle, buf: *mut u16, max: i32) -> i32;
     fn GetClassNameW(hwnd: Handle, buf: *mut u16, max: i32) -> i32;
     fn PostMessageW(hwnd: Handle, msg: u32, w: usize, l: isize) -> i32;
+    fn GetClientRect(hwnd: Handle, rect: *mut Rect) -> i32;
+    fn ClientToScreen(hwnd: Handle, point: *mut Point) -> i32;
+    fn SetCursorPos(x: i32, y: i32) -> i32;
+    fn mouse_event(flags: u32, dx: u32, dy: u32, data: u32, extra: usize);
+    fn SetForegroundWindow(hwnd: Handle) -> i32;
+    fn ShowWindow(hwnd: Handle, cmd: i32) -> i32;
+    fn GetDC(hwnd: Handle) -> Handle;
+    fn ReleaseDC(hwnd: Handle, dc: Handle) -> i32;
+}
+
+#[link(name = "gdi32")]
+extern "system" {
+    fn GetPixel(dc: Handle, x: i32, y: i32) -> u32;
 }
 
 // ---- JSON by hand ---------------------------------------------------------
@@ -313,6 +351,142 @@ fn windows_json(list: &[(usize, bool, String, String)]) -> String {
     format!("[{}]", items.join(","))
 }
 
+// ---- a real click ----------------------------------------------------------
+
+/// The window a person looks at: the process's visible top-level window that is largest (class and title
+/// are only for the evidence). Its client area in screen coordinates: left, top, width, height.
+fn main_window(pid: u32) -> Option<(usize, i32, i32, i32, i32)> {
+    let mut best: Option<(usize, i32, i32, i32, i32)> = None;
+    for (hwnd, visible, _class, _title) in windows_of(pid) {
+        if !visible {
+            continue;
+        }
+        let mut rect = Rect { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut origin = Point { x: 0, y: 0 };
+        unsafe {
+            if GetClientRect(hwnd as Handle, &mut rect) == 0 || ClientToScreen(hwnd as Handle, &mut origin) == 0 {
+                continue;
+            }
+        }
+        let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+        if w > 0 && h > 0 && best.map_or(true, |b| w * h > b.3 * b.4) {
+            best = Some((hwnd, origin.x, origin.y, w, h));
+        }
+    }
+    best
+}
+
+fn to_front(hwnd: usize) {
+    unsafe {
+        ShowWindow(hwnd as Handle, SW_RESTORE);
+        SetForegroundWindow(hwnd as Handle);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+}
+
+/// A left click at a screen point, as the hand does it: the cursor goes there, rests a moment (hover), then the button.
+fn click_at(x: i32, y: i32) {
+    let pause = |ms| std::thread::sleep(std::time::Duration::from_millis(ms));
+    unsafe {
+        SetCursorPos(x - 3, y);
+        pause(120);
+        SetCursorPos(x, y);
+        pause(250);
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        pause(90);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    }
+    pause(300);
+}
+
+fn hex(c: u32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c & 0xff, (c >> 8) & 0xff, (c >> 16) & 0xff)
+}
+
+/// Runs of the same colour along one screen row between `x0` and `x1`: (start x, end x, colour).
+fn runs_on_row(y: i32, x0: i32, x1: i32) -> Vec<(i32, i32, u32)> {
+    let mut runs: Vec<(i32, i32, u32)> = Vec::new();
+    unsafe {
+        let dc = GetDC(std::ptr::null_mut());
+        for x in x0..x1 {
+            let c = GetPixel(dc, x, y);
+            if c == CLR_INVALID {
+                continue;
+            }
+            match runs.last_mut() {
+                Some(last) if last.2 == c && last.1 == x - 1 => last.1 = x,
+                _ => runs.push((x, x, c)),
+            }
+        }
+        ReleaseDC(std::ptr::null_mut(), dc);
+    }
+    runs
+}
+
+fn runs_json(runs: &[(i32, i32, u32)]) -> String {
+    let items: Vec<String> = runs
+        .iter()
+        .map(|(a, b, c)| obj(&[("from", a.to_string()), ("to", b.to_string()), ("color", js(&hex(*c)))]))
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
+/// The update pill sits 16 px in from the window's right and bottom edges and is 34 px tall (src/window.rs,
+/// render_update_pill). Its "Restart" is the one filled capsule in it: a row 10 px above the pill's middle runs
+/// through the capsule's top, above the letters, as one colour that is not the pill's own. The pill's own
+/// colour is the longest run of that row; the capsule is a run of 30 to 110 px of another colour.
+fn click_restart(pid: u32) -> String {
+    let Some((hwnd, left, top, w, h)) = main_window(pid) else {
+        return obj(&[("found", "false".into()), ("why", js("no visible window"))]);
+    };
+    to_front(hwnd);
+    let middle = top + h - 16 - 17;
+    let right = left + w - 16;
+    let mut tries = Vec::new();
+    for _ in 0..20 {
+        let row = runs_on_row(middle - 10, right - 330, right);
+        let pill = row.iter().max_by_key(|r| r.1 - r.0).map(|r| r.2);
+        let capsule = row.iter().find(|r| {
+            let len = r.1 - r.0 + 1;
+            (30..=110).contains(&len) && Some(r.2) != pill
+        });
+        tries.push(row.len());
+        if let Some(&(a, b, color)) = capsule {
+            let x = (a + b) / 2;
+            click_at(x, middle);
+            return obj(&[
+                ("found", "true".into()),
+                ("hwnd", hwnd.to_string()),
+                ("client", obj(&[("left", left.to_string()), ("top", top.to_string()), ("w", w.to_string()), ("h", h.to_string())])),
+                ("clicked", obj(&[("x", x.to_string()), ("y", middle.to_string())])),
+                ("capsule", obj(&[("from", a.to_string()), ("to", b.to_string()), ("color", js(&hex(color)))])),
+                ("pill_color", js(&hex(pill.unwrap_or(0)))),
+                ("scans", tries.len().to_string()),
+                ("row", runs_json(&row)),
+            ]);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    let row = runs_on_row(middle - 10, right - 330, right);
+    obj(&[
+        ("found", "false".into()),
+        ("why", js("no filled capsule of 30 to 110 px in the pill's row after 20 looks")),
+        ("client", obj(&[("left", left.to_string()), ("top", top.to_string()), ("w", w.to_string()), ("h", h.to_string())])),
+        ("row", runs_json(&row)),
+    ])
+}
+
+/// A click `from_right` and `from_bottom` pixels in from the bottom right corner of the window's client area.
+fn click_corner(pid: u32, from_right: i32, from_bottom: i32) -> String {
+    let Some((hwnd, left, top, w, h)) = main_window(pid) else {
+        return obj(&[("found", "false".into()), ("why", js("no visible window"))]);
+    };
+    to_front(hwnd);
+    let (x, y) = (left + w - from_right, top + h - from_bottom);
+    click_at(x, y);
+    obj(&[("found", "true".into()), ("hwnd", hwnd.to_string()), ("clicked", obj(&[("x", x.to_string()), ("y", y.to_string())])), ("client_w", w.to_string()), ("client_h", h.to_string())])
+}
+
 // ---- the lower-bound chain ------------------------------------------------
 
 fn log_event(kind: &str, fields: &[(&str, String)]) {
@@ -501,6 +675,15 @@ fn main() {
             println!("{}", obj(&[("windows", list.len().to_string()), ("posted", posted.to_string())]));
             0
         }
+        Some("click") => {
+            let num = |i: usize| args.get(i).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+            println!("{}", click_corner(pid_arg(&args), num(3), num(4)));
+            0
+        }
+        Some("click-restart") => {
+            println!("{}", click_restart(pid_arg(&args)));
+            0
+        }
         Some("hold") => {
             hold(args.get(2).and_then(|v| v.parse().ok()).unwrap_or(30));
             0
@@ -514,7 +697,7 @@ fn main() {
             0
         }
         _ => {
-            eprintln!("winprobe: ps | procinfo <pid> | windows <pid> | close <pid> | hold <secs> | ver; with PROBE_LOG set and no argument: chain");
+            eprintln!("winprobe: ps | procinfo <pid> | windows <pid> | close <pid> | click <pid> <from right> <from bottom> | click-restart <pid> | hold <secs> | ver; with PROBE_LOG set and no argument: chain");
             64
         }
     };
