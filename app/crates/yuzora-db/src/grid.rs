@@ -972,7 +972,7 @@ fn long_message(r: &ResultSet) -> Option<(String, bool)> {
 
 /// Why an edit can't start now (`None`: it can).
 fn edit_blocked(r: &ResultSet) -> Option<String> {
-    if r.is_writing() { Some(t("edit.writing", &[])) } else { r.editing.blocked() }
+    if r.is_writing() { Some(t("edit.writing", &[])) } else { r.editing.blocked(r.complete) }
 }
 
 /// The input method's composition in `input`, as the UTF-16 range of the text
@@ -1043,7 +1043,14 @@ mod tests {
         );
         results::lock(&set).complete = false;
         assert_eq!(edit_blocked(&results::lock(&set)), Some(t("edit.loading", &[])));
-        for why in [ReadOnly::Query, ReadOnly::Connection, ReadOnly::NoKey, ReadOnly::NoInfo("denied".into()), ReadOnly::ReadFailed] {
+        for why in [
+            ReadOnly::Query,
+            ReadOnly::Connection,
+            ReadOnly::NoKey,
+            ReadOnly::NoInfo("denied".into()),
+            ReadOnly::ReadFailed,
+            ReadOnly::Changed,
+        ] {
             let set = result(Editing::ReadOnly(why.clone()));
             assert_eq!(edit_blocked(&results::lock(&set)), Some(why.reason()));
             assert!(!why.reason().is_empty());

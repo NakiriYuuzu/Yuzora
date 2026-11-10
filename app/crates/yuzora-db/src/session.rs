@@ -835,6 +835,10 @@ pub fn open_table(
                             names.iter().map(|n| r.columns.iter().position(|c| &c.name == n)).collect();
                         match (info.as_ref(), positions) {
                             (Err(e), _) => Editing::ReadOnly(ReadOnly::NoInfo(e.to_string())),
+                            // A write-back finds its row by the names of the key's columns and the values
+                            // the rows hold: where the description's names are not the rows', that is
+                            // another row, or another column.
+                            (Ok(described), _) if !described.describes(&r.columns) => Editing::ReadOnly(ReadOnly::Changed),
                             (Ok(_), Some(key)) if !key.is_empty() => Editing::Editable(Box::new(EditTarget {
                                 connection: connection.clone(),
                                 config: opened_with.clone(),
@@ -1067,7 +1071,9 @@ pub fn row_edits(set: &ResultSet) -> DbResult<(EditTarget, Vec<RowEdit>)> {
     let target = set
         .target()
         .cloned()
-        .ok_or_else(|| DbError::NotEditable(set.editing.blocked().unwrap_or_else(|| crate::i18n::t("edit.no_key", &[]))))?;
+        .ok_or_else(|| {
+            DbError::NotEditable(set.editing.blocked(set.complete).unwrap_or_else(|| crate::i18n::t("edit.no_key", &[])))
+        })?;
     let mut by_row: std::collections::BTreeMap<u32, Vec<(String, Cell)>> = Default::default();
     for ((row, column), value) in &set.edits {
         let name = set.columns.get(*column as usize).map(|c| c.name.clone()).unwrap_or_default();

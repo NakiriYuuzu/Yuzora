@@ -392,6 +392,16 @@ impl TableInfo {
         key.sort();
         key.into_iter().map(|(_, n)| n).collect()
     }
+
+    /// Whether `columns`, which `SELECT *` of the table came back with, are columns of this description
+    /// in the order it lists them. Not all of the description's need to be there: the catalogs list
+    /// columns that `SELECT *` leaves out (SQL Server's hidden ones, the sparse columns a column set
+    /// folds into its own). A column the description does not have, or has in another place, means the
+    /// rows were read from the table as it was and the description as it is now.
+    pub fn describes(&self, columns: &[Column]) -> bool {
+        let mut listed = self.columns.iter();
+        columns.iter().all(|c| listed.any(|l| l.name == c.name))
+    }
 }
 
 /// One row's write-back: find it by `key`, set `changes`.
@@ -404,6 +414,45 @@ pub struct RowEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn described(names: &[&str]) -> TableInfo {
+        let columns = names
+            .iter()
+            .map(|n| ColumnInfo {
+                name: (*n).into(),
+                type_name: String::new(),
+                nullable: true,
+                default: None,
+                primary_key: None,
+                generated: false,
+            })
+            .collect();
+        TableInfo { columns, ..TableInfo::default() }
+    }
+
+    fn read(names: &[&str]) -> Vec<Column> {
+        names.iter().map(|n| Column::new(*n, "")).collect()
+    }
+
+    #[test]
+    fn rows_are_of_the_table_a_description_names_when_their_columns_are_its_columns_in_its_order() {
+        let table = described(&["id", "code", "v"]);
+        assert!(table.describes(&read(&["id", "code", "v"])));
+        assert!(table.describes(&read(&["id", "v"])), "SELECT * leaves out a column the catalog lists");
+        assert!(table.describes(&read(&[])));
+        assert!(!table.describes(&read(&["code", "id", "v"])), "the same names in another order");
+        assert!(!table.describes(&read(&["id", "x", "v"])), "a column the table does not have");
+        assert!(!table.describes(&read(&["id", "code", "v", "w"])), "a column more than the table has");
+        assert!(!table.describes(&read(&["id", "id"])), "a column twice");
+        assert!(!table.describes(&read(&["ID"])), "names are compared as they are");
+        assert!(!described(&[]).describes(&read(&["id"])));
+    }
+
+    #[test]
+    fn two_columns_that_exchanged_names_or_a_key_that_took_another_name_are_not_the_columns_that_were_read() {
+        assert!(!described(&["code", "id", "v"]).describes(&read(&["id", "code", "v"])));
+        assert!(!described(&["code", "k", "v"]).describes(&read(&["id", "code", "v"])));
+    }
 
     #[test]
     fn cells_display_and_copy() {
