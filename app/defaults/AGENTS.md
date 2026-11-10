@@ -1143,6 +1143,10 @@ with these differences.
   (tone: muted, working, blocked, done or accent).
 - The agent states' shapes are `mods/yuzora-sidebar-workspace/status/<working|blocked|done|idle|unknown>.svg`;
   tint them with `tokens().status.<state>.mark`.
+- Yuzora's own animations are short (at most 180 ms) and name a speed instead of writing milliseconds:
+  `el.transition("left", motion("fast"))` with `motion` from `yuzora:core` (`"fast"` 120 ms, `"base"` 160 ms, both
+  ease-out; `tokens().motion` lists them). They go through `transition`, which follows the system's reduce-motion
+  setting; `loop` does not, and a mod cannot read that setting, so a Yuzora mod does not use `loop`.
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->

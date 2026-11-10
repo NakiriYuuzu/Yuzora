@@ -143,6 +143,12 @@ impl Rig {
         self.refresh();
     }
 
+    /// A call the fixture does not know would leave the mod half working under the test.
+    fn done(&self) {
+        let calls = self.calls.borrow();
+        assert!(calls.unexpected.is_empty(), "{:?}", calls.unexpected);
+    }
+
     fn script_renders(&self) -> u64 {
         self.runtime.read_metrics().script_renders()
     }
@@ -261,6 +267,7 @@ fn the_mode_bar_selection_slides_to_the_mode_picked(cx: &mut TestAppContext) {
     rig.advance(80);
     let back = selection(&mut rig).unwrap();
     assert!(back < first + 36.0 - 1.0 && back > first + 1.0, "it slides back too: {back}");
+    rig.done();
 }
 
 // Opening or closing the panel is not a slide: the selection is there with the panel and gone without it,
@@ -277,6 +284,7 @@ fn the_mode_bar_selection_does_not_slide_in_or_out_with_the_panel(cx: &mut TestA
     assert_eq!(selection(&mut rig), Some(first + 72.0), "it appears at the mode opened");
     rig.advance(80);
     assert_eq!(selection(&mut rig), Some(first + 72.0), "and stays");
+    rig.done();
 }
 
 #[gpui::test]
@@ -289,6 +297,7 @@ fn the_mode_bar_selection_jumps_when_the_system_asks_for_less_motion(cx: &mut Te
     rig.set_layout(bar_layout(Some("ssh")));
     assert_eq!(selection(&mut rig), Some(first + 108.0), "straight to the mode picked");
     assert_eq!(rig.pending_frames(), 0);
+    rig.done();
 }
 
 #[gpui::test]
@@ -352,6 +361,7 @@ fn the_resource_bars_follow_a_new_sample_by_category(cx: &mut TestAppContext) {
     }
     assert_eq!(rig.pending_frames(), 0, "at rest it asks for no frames");
     assert_eq!(rig.script_renders(), renders, "no frame of the tween ran the script");
+    rig.done();
 }
 
 fn settings_page(cx: &mut TestAppContext, staged: &Staged) -> Rig {
@@ -384,6 +394,7 @@ fn a_settings_switch_slides_its_knob(cx: &mut TestAppContext) {
     near(first_switch(&mut rig).1.0, track.0 + 18.0, "on: the knob is at the end");
     assert_eq!(rig.pending_frames(), 0, "at rest it asks for no frames");
     assert_eq!(rig.script_renders(), renders + 1, "no frame of the slide ran the script");
+    rig.done();
     let tree = describe(cx, &staged, "mods/yuzora-settings-general", false, props(), updates("current", "current"), None).unwrap();
     assert!(tree.contains(":transition(left, 120ms, 0ms, ease-out)"), "{tree}");
 }
@@ -398,4 +409,17 @@ fn a_settings_switch_jumps_when_the_system_asks_for_less_motion(cx: &mut TestApp
     rig.click(track.0 + 18.0, track.1 + 10.0);
     assert_eq!(first_switch(&mut rig).1.0, track.0 + 18.0, "straight to on");
     assert_eq!(rig.pending_frames(), 0);
+    rig.done();
+}
+
+// `loop` does not follow the system's reduce-motion setting, a mod cannot read that setting, and a loop keeps its
+// view drawing about 30 times a second. A Yuzora mod animates with `transition` (see docs/beta2/motion.md).
+#[test]
+fn no_yuzora_mod_loops_a_property() {
+    let loops: Vec<&str> = DEFAULT_MODS
+        .iter()
+        .filter(|(path, bytes)| path.starts_with("yuzora-") && path.ends_with(".js") && String::from_utf8_lossy(bytes).contains(".loop("))
+        .map(|(path, _)| *path)
+        .collect();
+    assert!(loops.is_empty(), "a loop never stops for reduced motion and keeps its view drawing, use transition: {loops:?}");
 }
