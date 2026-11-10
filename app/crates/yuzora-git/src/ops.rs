@@ -1275,6 +1275,26 @@ mod tests {
         assert_eq!(m["last"], "two", "{m}");
     }
 
+    /// Both reads start their commands the way the caller would (tests: with its `TEST_ENV`), the way the
+    /// status reads' threads are meant to; a thread of its own lost the caller's environment.
+    #[test]
+    fn messages_reads_the_template_with_the_environment_of_its_caller() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let template = s.dir.path().join("template.txt");
+        std::fs::write(&template, "subject line\n\nbody\n").unwrap();
+        crate::exec::TEST_ENV.with(|t| {
+            *t.borrow_mut() = vec![
+                ("GIT_CONFIG_COUNT".into(), "1".into()),
+                ("GIT_CONFIG_KEY_0".into(), "commit.template".into()),
+                ("GIT_CONFIG_VALUE_0".into(), template.to_string_lossy().into_owned()),
+            ]
+        });
+        let m = messages(&s.repo);
+        crate::exec::TEST_ENV.with(|t| t.borrow_mut().clear());
+        assert_eq!(m.unwrap()["template"], "subject line\n\nbody\n");
+    }
+
     /// The sidebar reads these as it attaches, so each read costs it a process and a wait: the template and
     /// the last message are read together, and no list of authors is read that nothing shows.
     #[cfg(unix)]
