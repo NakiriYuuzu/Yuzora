@@ -1375,9 +1375,11 @@ with these differences.
   is renamed; and, on a rename, a second started pane on a file whose document
   another pane already holds. The new pane is split off to the right of the old
   one and the old one is closed, so the pane id is new (read `panes()` again; don't
-  keep an id across a rename), the tab keeps the name it had, the pane before the
-  old one takes half of its share of the row (unless it was the first), the zoom of
-  its tab is cleared, and a tab not shown now remembers the new pane as its focus.
+  keep an id across a rename) and the tab keeps the name it had. In the tab shown
+  the new pane also takes the old one's place, share of the row and the tab's zoom.
+  In a tab not shown it does not: the pane before the old one takes half of its
+  share of the row (unless it was the first), the tab's zoom is cleared, and the
+  tab remembers the new pane as its focus.
 - The editor follows the disk: a file with no unsaved changes reloads when it
   changes; with unsaved changes the person is asked. While you (an agent) are
   working in a folder that holds an open file you just changed, its pane shows
