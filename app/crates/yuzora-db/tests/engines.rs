@@ -25,6 +25,8 @@ use yuzora_db::error::DbError;
 use yuzora_db::model::{Cell, Column, ObjectKind, ObjectRef, RowEdit};
 use yuzora_db::runtime;
 
+mod common;
+
 // ---------------------------------------------------------------- helpers
 
 fn run<T>(work: impl Future<Output = T>) -> T {
@@ -1041,6 +1043,102 @@ fn postgres_a_stop_pressed_before_the_statement_keeps_it_from_running() {
         assert_eq!(conn.execute("UPDATE yz_stop SET v = 2", &mut Stopped).await, Err(DbError::Cancelled));
         assert_eq!(scalar(&mut conn, "SELECT v FROM yz_stop").await, "1");
     });
+}
+
+/// The fixture through a relay that can hold the server back from hearing of
+/// a cancel (the relay lives as long as the test).
+async fn pg_through(relay: &common::LaggingPostgres, ssl: SslMode) -> Conn {
+    let mut spec = pg_spec("yuzora_full", ssl);
+    spec.config.port = Some(relay.port());
+    Conn::connect(&spec).await.expect("connect to the PostgreSQL fixture through the relay")
+}
+
+/// A stop is a request to the server about whatever the connection runs when
+/// the request gets there. Once the engine says the stop is done, nothing that
+/// the connection runs afterwards may be its target.
+#[test]
+fn postgres_a_stop_that_the_server_hears_late_is_not_felt_by_what_runs_after_it() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    for ssl in [SslMode::Prefer, SslMode::Disable] {
+        run(async {
+            let mut conn = pg_through(&relay, ssl).await;
+            query(&mut conn, "CREATE TEMP TABLE yz_late (v int); INSERT INTO yz_late VALUES (1)").await.unwrap();
+            relay.hold_connections(Duration::from_millis(250));
+            conn.canceller().cancel().await;
+            relay.release();
+            assert_eq!(conn.execute("UPDATE yz_late SET v = 2", &mut Stopped).await, Err(DbError::Cancelled));
+            let after = query(&mut conn, "SELECT v, pg_sleep(1.5) FROM yz_late").await.map(|_| ());
+            assert_eq!(after, Ok(()), "{ssl:?}: the stop, still on its way, cancelled the statement that ran after it");
+            assert_eq!(scalar(&mut conn, "SELECT v FROM yz_late").await, "1");
+        });
+    }
+}
+
+#[test]
+fn postgres_a_stop_the_server_hears_late_still_ends_the_statement_it_was_for() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    run(async {
+        let mut conn = pg_through(&relay, SslMode::Prefer).await;
+        relay.hold_connections(Duration::from_millis(250));
+        let canceller = conn.canceller();
+        runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            canceller.cancel().await;
+        });
+        let started = Instant::now();
+        assert_eq!(conn.execute("SELECT pg_sleep(30)", &mut Collect::default()).await, Err(DbError::Cancelled));
+        let took = started.elapsed();
+        assert!((Duration::from_millis(450)..Duration::from_secs(5)).contains(&took), "{took:?}");
+        relay.release();
+        assert!(!conn.is_closed());
+        assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
+    });
+}
+
+/// The write-back is a run of statements of its own, each of them a target of
+/// a stop that is late: the UPDATE, and the COMMIT, which a deferred trigger
+/// keeps busy for a while.
+fn a_write_back_after_a_stop_the_server_hears_late(ddl: &str) {
+    let relay = common::LaggingPostgres::start();
+    run(async {
+        let mut conn = pg_through(&relay, SslMode::Prefer).await;
+        query(&mut conn, "CREATE TEMP TABLE yz_wb (id int PRIMARY KEY, v text); INSERT INTO yz_wb VALUES (1, 'a')")
+            .await
+            .unwrap();
+        query(&mut conn, ddl).await.unwrap();
+        let t = pg_object(&pg_temp_schema(&mut conn).await, "yz_wb");
+        relay.hold_connections(Duration::from_millis(250));
+        conn.canceller().cancel().await;
+        relay.release();
+        assert_eq!(
+            conn.apply_edits(&t, &[one_edit("z")]).await,
+            Ok(1),
+            "the stop, still on its way, cut the write-back short"
+        );
+        assert_eq!(scalar(&mut conn, "SELECT v FROM yz_wb").await, "z");
+        assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
+    });
+}
+
+#[test]
+fn postgres_a_write_back_is_not_cut_short_in_its_update_by_a_stop_the_server_hears_late() {
+    only_with!("postgres");
+    a_write_back_after_a_stop_the_server_hears_late(
+        "CREATE FUNCTION pg_temp.slow_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1.5); RETURN NEW; END $$;
+         CREATE TRIGGER slow_update BEFORE UPDATE ON yz_wb FOR EACH ROW EXECUTE FUNCTION pg_temp.slow_update();",
+    );
+}
+
+#[test]
+fn postgres_a_write_back_is_not_cut_short_in_its_commit_by_a_stop_the_server_hears_late() {
+    only_with!("postgres");
+    a_write_back_after_a_stop_the_server_hears_late(
+        "CREATE FUNCTION pg_temp.slow_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1.5); RETURN NULL; END $$;
+         CREATE CONSTRAINT TRIGGER slow_commit AFTER UPDATE ON yz_wb DEFERRABLE INITIALLY DEFERRED
+           FOR EACH ROW EXECUTE FUNCTION pg_temp.slow_commit();",
+    );
 }
 
 #[test]

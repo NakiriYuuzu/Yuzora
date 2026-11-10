@@ -7,8 +7,6 @@
 //! overrides the fixture's password). Each of those tests makes a schema or a
 //! database of its own and drops it again.
 
-use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::sync::mpsc;
@@ -20,6 +18,8 @@ use yuzora_db::error::DbError;
 use yuzora_db::model::{Cell, ObjectRef};
 use yuzora_db::session::{self, JobId, JobState};
 use yuzora_db::{results, runtime};
+
+mod common;
 
 /// The app home and the row cap are process-wide; every test starts here.
 static HOME: LazyLock<PathBuf> = LazyLock::new(|| {
@@ -1207,48 +1207,6 @@ impl Drop for PgRole {
 
 // ---------------------------------------------------------------- a stop reaches nothing but the write-back
 
-/// A TCP relay in front of the PostgreSQL fixture that holds a cancel request
-/// back for `delay`. Cancelling is a message to the server about whatever the
-/// connection runs when it gets there; this makes it as late as it can ever be.
-struct SlowCancels {
-    port: u16,
-}
-
-impl SlowCancels {
-    fn start(delay: Duration) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for client in listener.incoming().flatten() {
-                std::thread::spawn(move || relay(client, delay));
-            }
-        });
-        SlowCancels { port }
-    }
-}
-
-fn relay(mut client: TcpStream, delay: Duration) {
-    let mut first = [0u8; 8];
-    if client.read_exact(&mut first).is_err() {
-        return;
-    }
-    // A cancel request: length 16, then the code 80877102.
-    if first == [0, 0, 0, 16, 4, 210, 22, 46] {
-        std::thread::sleep(delay);
-    }
-    let Ok(mut server) = TcpStream::connect("127.0.0.1:55432") else { return };
-    if server.write_all(&first).is_err() {
-        return;
-    }
-    let (mut from_client, mut to_server) = (client.try_clone().unwrap(), server.try_clone().unwrap());
-    std::thread::spawn(move || {
-        let _ = std::io::copy(&mut from_client, &mut to_server);
-        let _ = to_server.shutdown(Shutdown::Write);
-    });
-    let _ = std::io::copy(&mut server, &mut client);
-    let _ = client.shutdown(Shutdown::Both);
-}
-
 fn raw_postgres(database: &str) -> tokio_postgres::Client {
     runtime::block_on(async {
         let (client, connection) = tokio_postgres::connect(
@@ -1294,9 +1252,10 @@ fn postgres_a_stopped_write_back_cannot_be_felt_by_what_the_pane_runs_next() {
     let scratch = PgScratchDatabase::new("yz_wb_latecancel");
     let direct = scratch.connection();
     run(&direct, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');");
-    let relay = SlowCancels::start(Duration::from_millis(900));
+    let relay = common::LaggingPostgres::start();
+    relay.hold_cancels(Duration::from_millis(900));
     let through = save(
-        json!({"name": "pg-late-cancel", "engine": "postgres", "host": "127.0.0.1", "port": relay.port,
+        json!({"name": "pg-late-cancel", "engine": "postgres", "host": "127.0.0.1", "port": relay.port(),
                "user": "yuzora_full", "database": "yz_wb_latecancel", "ssl": "disable"}),
         Some(&password()),
     );
@@ -1328,6 +1287,96 @@ fn postgres_a_stopped_write_back_cannot_be_felt_by_what_the_pane_runs_next() {
     again.edit(again.row_where("id", "1"), "name", Some("mine"));
     assert_eq!(runtime::block_on(session::write_back_set(&again.set)), Ok(1), "the pane can write again");
     assert_eq!(first_row(&direct, "SELECT name FROM t WHERE id = 1"), ["mine"]);
+}
+
+/// A pane's connection through a relay of its own that is holding cancels back
+/// (`ssl` is off: the relay tells a cancel request by its first bytes).
+fn postgres_behind_slow_cancels(name: &str, database: &str, relay: &common::LaggingPostgres) -> String {
+    save(
+        json!({"name": name, "engine": "postgres", "host": "127.0.0.1", "port": relay.port(),
+               "user": "yuzora_full", "database": database, "ssl": "disable"}),
+        Some(&password()),
+    )
+}
+
+/// A Stop pressed as a query ends has nothing left to stop, but the request is
+/// still on its way to the server, and finds what the connection runs when it
+/// gets there: whatever the pane does next must not be that.
+#[test]
+fn postgres_a_stop_pressed_as_a_query_ends_is_not_felt_by_the_next_run() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    let id = postgres_behind_slow_cancels("pg-late-run", "yuzora_p8", &relay);
+    let pane = owner(&id, "late-run");
+    assert_eq!(wait(session::start_query(&id, None, &pane, "SELECT 1")).error, None);
+    relay.hold_cancels(Duration::from_millis(900));
+
+    let first = session::start_query(&id, None, &pane, "DO $$ BEGIN PERFORM pg_sleep(0.3); END $$");
+    std::thread::sleep(Duration::from_millis(150));
+    session::cancel(first);
+    assert_eq!(within(Duration::from_secs(10), "the query that ended by itself", move || wait(first)).error, None);
+
+    let next = session::start_query(&id, None, &pane, "SELECT pg_sleep(2)");
+    let state = within(Duration::from_secs(30), "the next run", move || wait(next));
+    assert_eq!(state.error, None, "the Stop reached the run after the query it was for: {state:?}");
+    assert!(!state.cancelled);
+    assert!(state.elapsed_ms >= 2000, "the next run was cut short: {state:?}");
+}
+
+/// The same, with the pane opening a table next (its read is what the request finds).
+#[test]
+fn postgres_a_stop_pressed_as_a_query_ends_is_not_felt_by_the_table_the_pane_opens_next() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_lateopen");
+    let direct = scratch.connection();
+    run(
+        &direct,
+        "setup",
+        "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');
+         CREATE VIEW slow AS SELECT id, pg_sleep(0.8)::text AS waited FROM t;",
+    );
+    let relay = common::LaggingPostgres::start();
+    let id = postgres_behind_slow_cancels("pg-late-open", "yz_wb_lateopen", &relay);
+    let pane = owner(&id, "late-open");
+    assert_eq!(wait(session::start_query(&id, None, &pane, "SELECT 1")).error, None);
+    relay.hold_cancels(Duration::from_millis(700));
+
+    let first = session::start_query(&id, None, &pane, "DO $$ BEGIN PERFORM pg_sleep(0.3); END $$");
+    std::thread::sleep(Duration::from_millis(150));
+    session::cancel(first);
+    assert_eq!(within(Duration::from_secs(10), "the query that ended by itself", move || wait(first)).error, None);
+
+    let opened = session::open_table(&id, None, &pane, &table("public", "slow"), None);
+    let state = within(Duration::from_secs(30), "the table", move || wait(opened));
+    assert_eq!(state.error, None, "the Stop reached the table the pane opened after the query: {state:?}");
+    assert_eq!(state.results.first().map(|r| (r.rows, r.error.clone())), Some((1, None)), "{state:?}");
+}
+
+/// The Stop and the end of the query a few hundred microseconds apart either
+/// way, over and over, with no relay: the next run is never the one it stops.
+#[test]
+fn postgres_a_stop_timed_with_the_end_of_a_query_is_never_felt_by_the_next_run() {
+    only_with!("postgres");
+    let rounds: usize = std::env::var("YUZORA_STOP_SWEEP_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(150);
+    let id = postgres_connection("pg-stop-sweep-run");
+    let pane = owner(&id, "sweep-run");
+    assert_eq!(wait(session::start_query(&id, None, &pane, "SELECT 1")).error, None);
+    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+    for round in 0..rounds {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let offset = (seed % 4001) as i64 - 2000;
+        let first = session::start_query(&id, None, &pane, "DO $$ BEGIN PERFORM pg_sleep(0.03); END $$");
+        let stop_at = Instant::now() + Duration::from_micros((30_000 + offset + 1_500) as u64);
+        while Instant::now() < stop_at {
+            std::hint::spin_loop();
+        }
+        session::cancel(first);
+        let next = session::start_query(&id, None, &pane, "SELECT pg_sleep(0.05)");
+        let state = wait(next);
+        assert_eq!(state.error, None, "round {round} (offset {offset} µs): the Stop reached the next run");
+    }
 }
 
 /// The same stop, timed against the moment the lock is let go, over and over:
