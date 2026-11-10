@@ -340,9 +340,9 @@ def watch_exit(ctx, old, timeout, since=0):
 def failure_signals(ctx, cid, k, old, since):
     """What a person could have noticed after a swap that failed while the app kept running: the app's own
     output since the trigger, its windows, and a picture of the desktop a few seconds later."""
-    time.sleep(4)
     if not old.alive():
         return "the app ended on its own, so there was no window left to show a message in"
+    time.sleep(4)
     shot = screenshot(ctx, "%s/failure-%d.png" % (cid, k))
     windows = [{"title": w.get("title"), "class": w.get("class")} for w in ctx.probe.windows(old.pid) if w.get("visible")]
     new_lines = [line for line in old.log_text()[since:].splitlines() if line.strip()]
@@ -369,6 +369,8 @@ def observe_swap(ctx, cid, k, to_version, old, home, expect_relaunch, known, rea
     run.evidence("%s/home-after-swap%d.json" % (cid, k), json.dumps(sorted(os.listdir(home)) if os.path.isdir(home) else None))
     evidence = ["%s/snapshot-after-swap%d.json" % (cid, k)] + ([old.log_rel] if old.log_rel else [])
     if post["install_version"] != to_version:
+        if signals is None:
+            signals = failure_signals(ctx, cid, k, old, since)  # the app may word its failure differently from the log lines above
         tries = len(blocked_lines(old.log_text()[since:])) if old.log_path else None
         run.result("%s.swap_%d" % (cid, k), FAIL, "the folder still runs %s, not %s. old process exited=%s. failure line: %s. times the failure was logged: %s. its update lines: %s" % (
             post["install_version"], to_version, exited, failure or "none seen", tries, update_lines(old.log_text()) if old.log_path else "(no log kept for this process)"), evidence)
@@ -443,7 +445,7 @@ def check_app_cwd(ctx, cid, inst, started_inside, reader_ok, tag="app_cwd"):
     elif not started_inside:
         ctx.run.result(rid, INFO, "started elsewhere; its cwd handle is %s (%s)" % (cwd, kind), ev)
     elif kind in ("inside-install", "inside-old"):
-        ctx.run.result(rid, FAIL, "started with the install folder as cwd, as the shortcut does; its cwd handle is still %s" % cwd, ev)
+        ctx.run.result(rid, FAIL, "started with the install folder as cwd, as the shortcut does; its cwd handle is still %s (a check of the fix's design: a fix that gets the swap done another way shows it in swap_N, not here)" % cwd, ev)
     else:
         ctx.run.result(rid, PASS, "started with the install folder as cwd, as the shortcut does; its cwd handle is now %s (%s)" % (cwd, kind), ev)
 
@@ -462,14 +464,34 @@ def list_holders(ctx, cid, app_pid, tag):
             ctx.tracker.add(p["pid"])
             info = ctx.probe.procinfo(p["pid"], "%s/procinfo-%s-%d.txt" % (cid, tag, p["pid"]))
             kind, cwd = cwd_class(info)
-            found.append({"name": p["name"], "pid": p["pid"], "ppid": p.get("ppid"), "kind": kind, "cwd": cwd, "gone": info.get("alive") is False, "cmd": (info.get("peb") or {}).get("cmdline")})
+            found.append({"name": p["name"], "pid": p["pid"], "ppid": p.get("ppid"), "parent_name": ctx.probe.name_of(p.get("ppid")), "kind": kind, "cwd": cwd, "gone": info.get("alive") is False, "cmd": (info.get("peb") or {}).get("cmdline")})
     return found
 
 
 def holder_text(h):
     if h["gone"]:
-        return "%s pid %s ended before it could be read (a short-lived helper, not a holder)" % (h["name"], h["pid"])
+        return "%s pid %s (parent pid %s %s) ended before it could be read (a short-lived helper, not a holder)" % (h["name"], h["pid"], h["ppid"], h.get("parent_name") or "?")
     return "%s pid %s parent %s `%s` cwd %s (%s)" % (h["name"], h["pid"], h["ppid"], h["cmd"], h["cwd"], h["kind"])
+
+
+def census(ctx, cid, app_pid, seconds=6):
+    """Polls the process list for a few seconds after the app started and reads each program of the core's
+    family the moment it is first seen (run 1 saw a herdr-core and a conhost that were gone before they
+    could be read, and so could not say what they were)."""
+    seen, begin = {}, time.time()
+    while time.time() - begin < seconds:
+        rows = ctx.probe.ps()
+        kids = ctx.probe.descendants(app_pid, rows)
+        for p in rows:
+            if p["pid"] not in kids and p["name"].lower() not in CORE_NAMES:
+                continue
+            if p["pid"] not in seen:
+                info = ctx.probe.procinfo(p["pid"])
+                seen[p["pid"]] = {"name": p["name"], "ppid": p.get("ppid"), "parent": ctx.probe.name_of(p.get("ppid")), "cmd": (info.get("peb") or {}).get("cmdline"), "cwd": cwd_class(info)[1], "first": round(time.time() - begin, 1)}
+            seen[p["pid"]]["last"] = round(time.time() - begin, 1)
+        time.sleep(0.1)
+    lines = ["%s pid %s parent %s %s `%s` cwd %s, seen %.1f-%.1f s after the start" % (v["name"], pid, v["ppid"], v["parent"], v["cmd"], v["cwd"], v["first"], v["last"]) for pid, v in sorted(seen.items())]
+    ctx.run.result("%s.process_census" % cid, INFO, "%d program(s) of the app's family in the first %d s: %s" % (len(seen), seconds, "; ".join(lines) or "none"), [])
 
 
 def report_holders(ctx, cid, rows, reader_ok, tag, verdict_id=None):
@@ -484,7 +506,7 @@ def report_holders(ctx, cid, rows, reader_ok, tag, verdict_id=None):
         if not reader_ok or not core:
             ctx.run.result(verdict_id, NOT_MEASURED, "no herdr-core process could be read (reader self-check ok=%s)" % reader_ok, ev)
         elif core_inside:
-            ctx.run.result(verdict_id, FAIL, "%d of %d herdr-core process(es) have the install folder as cwd and will stop a swap: %s" % (len(core_inside), len(core), "; ".join(holder_text(h) for h in core_inside)), ev)
+            ctx.run.result(verdict_id, FAIL, "%d of %d herdr-core process(es) have the install folder as cwd and will stop a swap (a check of the fix's design; swap_N is the verdict that counts): %s" % (len(core_inside), len(core), "; ".join(holder_text(h) for h in core_inside)), ev)
         else:
             ctx.run.result(verdict_id, PASS, "all %d herdr-core process(es) read have a cwd outside the install folder: %s" % (len(core), "; ".join(holder_text(h) for h in core)), ev)
 
@@ -524,7 +546,7 @@ def chain_release(ctx, mode, reader_ok):
         known |= {p["pid"] for p in ctx.probe.named("yuzora.exe")}
 
 
-def chain_release_extra(ctx):
+def chain_release_extra(ctx, reader_ok):
     """R2/R3: a clean install keeps itself clean while running; one stray file stops updates without a word."""
     cid = "R2"
     home = new_home(ctx, cid)
@@ -535,6 +557,8 @@ def chain_release_extra(ctx):
     state = package_list_state()
     asked = ctx.ua_seen(ctx.v1, mark)
     alive = app.alive()
+    if alive:
+        check_app_cwd(ctx, cid, app, True, reader_ok, tag="clean_run_app_cwd")  # the shipped build's own cwd, read directly
     app.stop()
     clean = not state["extra"] and not state["missing"]
     ctx.run.result("R3.app_leaves_install_folder_alone", PASS if clean and asked and alive else (FAIL if (not clean and alive) else NOT_MEASURED),
@@ -779,6 +803,7 @@ def chain_core(ctx, reader_ok):
     ctx.fresh_server(ctx.v2)
     known = set()
     app = start_app(ctx, cid, "app1", home, INSTALL)
+    census(ctx, cid, app.pid)
     for k, to_v in [(1, ctx.v2), (2, ctx.v3)]:
         if not wait_main_window(ctx, cid, home, app, k):
             return
@@ -870,14 +895,26 @@ def chain_overlay(ctx, cid, reader_ok, old_core, app_running):
     before_core = [h["pid"] for h in rows if h["name"].lower() in CORE_NAMES and not h["gone"]]
     app_was = app.alive()
     snap(ctx, cid, "before-overlay")
+    # The installer is the same version, so "the exe says v1" would also hold if it had skipped the files.
+    # A marker written over yuzora.png (never locked) is put back only if the installer wrote the folder's
+    # files in place; if it moved the folder aside, Yuzora.old holds the marker and the new folder a fresh png.
+    png = os.path.join(INSTALL, "yuzora.png")
+    marker = b"overlay-canary"
+    with open(png, "wb") as f:
+        f.write(marker)
     shell = ctx.run.sh([ctx.installer, "/S"], 240, name="%s/overlay-install.txt" % cid)
     time.sleep(3)
     state = package_list_state()
     after = snap(ctx, cid, "after-overlay")
     running = ctx.run.sh([EXE, "--version"], 30, name="%s/overlay-version.txt" % cid)
-    ok = shell.rc == 0 and version_word(running.out) == ctx.v1 and not state["extra"] and not state["missing"]
-    ctx.run.result("%s.overlay_install" % cid, PASS if ok else FAIL, "installer %s rc=%s (state: app %s, old-style core %s); installed exe says %r; folder vs yuzora.package: extra=%s missing=%s; siblings %s; Yuzora.old files %s" % (
-        "TIMED OUT" if shell.timed_out else "ended", shell.rc, "running" if app_running else "closed", old_core, running.out.strip(), state["extra"], state["missing"], sorted(after["siblings"]), after["old_files"][:6]), ["%s/overlay-install.txt" % cid, "%s/snapshot-after-overlay.json" % cid])
+    moved_aside = "Yuzora.old" in after["siblings"] and "yuzora.exe" in after["old_files"]
+    png_now = read_text(png) if os.path.exists(png) else None
+    written_in_place = png_now is not None and png_now != marker.decode()
+    replaced = moved_aside or written_in_place
+    branch = "moved the folder aside (Yuzora.old holds yuzora.exe) and installed fresh" if moved_aside else ("wrote the files in place over the old ones" if written_in_place else "left the folder's files as they were")
+    ok = shell.rc == 0 and replaced and version_word(running.out) == ctx.v1 and not state["extra"] and not state["missing"]
+    ctx.run.result("%s.overlay_install" % cid, PASS if ok else FAIL, "installer %s rc=%s (state: app %s, old-style core %s); it %s (replaced=%s); installed exe says %r; folder vs yuzora.package: extra=%s missing=%s; siblings %s; Yuzora.old files %s" % (
+        "TIMED OUT" if shell.timed_out else "ended", shell.rc, "running" if app_running else "closed", old_core, branch, replaced, running.out.strip(), state["extra"], state["missing"], sorted(after["siblings"]), after["old_files"][:6]), ["%s/overlay-install.txt" % cid, "%s/snapshot-after-overlay.json" % cid])
     survivors = [pid for pid in before_core if ctx.probe.alive(pid)]
     ctx.run.result("%s.core_after_overlay" % cid, INFO, "herdr-core processes before %s, alive after %s: the installer %s the core. app was running before=%s, running after=%s" % (before_core, survivors, "left" if survivors == before_core else "stopped some of", app_was, app.alive()), [])
     if not app.alive():
@@ -975,7 +1012,7 @@ def main():
             return
         reader_ok = bool(run.guard("setup.cwd_reader_selfcheck", lambda: reader_selfcheck(ctx)))
         if args.flavor == "release":
-            chains = [("R1-install", lambda: chain_release(ctx, "install", reader_ok), 150), ("R1-elsewhere", lambda: chain_release(ctx, "elsewhere", reader_ok), 150), ("R2", lambda: chain_release_extra(ctx), 120)]
+            chains = [("R1-install", lambda: chain_release(ctx, "install", reader_ok), 150), ("R1-elsewhere", lambda: chain_release(ctx, "elsewhere", reader_ok), 150), ("R2", lambda: chain_release_extra(ctx, reader_ok), 120)]
         else:
             chains = [
                 ("D1-install", lambda: chain_testkey(ctx, "install", reader_ok), 200),
