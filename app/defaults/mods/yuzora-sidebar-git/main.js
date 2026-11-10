@@ -96,8 +96,9 @@ function repoView(repo = null) {
 const KEEP_REPOS = 8, KEEP_PLACES = 64;
 const rowKey = (v, it) => `${v.key}|${it.head ? `h:${it.section}` : `${it.section}:${it.f.path}`}`;
 // What a view holds that the person would miss, and so is not let go of when the repos kept are cut to KEEP_REPOS: a commit
-// being written (a message that is only the commit template is not theirs), a question waiting for an answer, an action going on.
-const holds = (v) => Boolean(v.busy || v.warnings || v.draft.amend || v.draft.author.trim() || (v.draft.text.trim() && v.draft.text !== v.history.template));
+// being written (a message that is only the commit template is not theirs), a question waiting for an answer, an action going on,
+// the error an action ended with (the next action clears it).
+const holds = (v) => Boolean(v.busy || v.warnings || v.note?.tone === "error" || v.draft.amend || v.draft.author.trim() || (v.draft.text.trim() && v.draft.text !== v.history.template));
 // What an arrival throws when the place it was for was left while it waited.
 const MOVED = Symbol("moved");
 
