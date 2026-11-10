@@ -67,6 +67,31 @@ fn keeps_given(settings: &serde_json::Value, running: &str, version: &str) -> bo
     Channel::chosen_from(settings, running).takes(version, false)
 }
 
+/// Why the last swap failed, in words for the person.
+static SWAP_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// `swap` (src/update.rs) could not move the folders: keeps what "Restart" will say.
+pub fn note_swap_failure(e: &std::io::Error) {
+    let _ = e;
+}
+
+/// What `app.update` says when `apply` returned false: the swap's failure if it had one, else that nothing is waiting.
+pub fn apply_failure() -> String {
+    let _ = &SWAP_FAILURE;
+    "no update is ready yet".into()
+}
+
+/// Windows says "in use" with sharing violation (32), access denied (5) or lock violation (33).
+fn busy_code(code: Option<i32>) -> bool {
+    let _ = code;
+    false
+}
+
+fn swap_failure_text(busy: bool, error: &str) -> String {
+    let _ = (busy, error);
+    String::new()
+}
+
 /// Upstream's `check`, for Yuzora: Ok(Some(version)) once a newer version is
 /// downloaded, checked and staged beside `root`.
 pub fn check(root: &Path) -> Result<Option<String>, String> {
@@ -225,6 +250,38 @@ mod tests {
         // GitHub's download URLs inside, so those stay GitHub's.
         let source = Source { list: format!("{base}/repos/{REPO}/releases?per_page={PER_PAGE}"), downloads: Source::github().downloads };
         (source, serve_on(listener, routes, requests))
+    }
+
+    #[test]
+    fn a_folder_in_use_is_what_windows_calls_32_5_and_33() {
+        assert!([32, 5, 33].into_iter().all(|code| busy_code(Some(code))));
+        assert!(!busy_code(Some(183)) && !busy_code(Some(2)) && !busy_code(None));
+    }
+
+    #[test]
+    fn a_folder_in_use_says_what_to_close_and_where_the_installer_is() {
+        let text = swap_failure_text(true, "The process cannot access the file because it is being used by another process. (os error 32)");
+        assert!(text.contains("another program is using its install folder"), "{text}");
+        assert!(text.contains("Restart"), "{text}");
+        assert!(text.contains("restart your PC"), "{text}");
+        assert!(text.contains("https://github.com/NakiriYuuzu/Yuzora/releases"), "{text}");
+    }
+
+    #[test]
+    fn any_other_swap_failure_carries_the_system_error() {
+        let text = swap_failure_text(false, "Cannot create a file when that file already exists. (os error 183)");
+        assert!(text.contains("os error 183"), "{text}");
+        assert!(text.contains("https://github.com/NakiriYuuzu/Yuzora/releases"), "{text}");
+        assert!(!text.contains("install folder"), "{text}");
+    }
+
+    #[test]
+    fn restart_names_the_failure_once_and_then_the_default() {
+        assert_eq!(apply_failure(), "no update is ready yet");
+        note_swap_failure(&std::io::Error::other("no"));
+        let said = apply_failure();
+        assert!(said.contains("could not install the update"), "{said}");
+        assert_eq!(apply_failure(), "no update is ready yet");
     }
 
     #[test]

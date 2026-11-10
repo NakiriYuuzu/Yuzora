@@ -14,6 +14,7 @@
 pub(crate) mod channel;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod cli_link;
+pub(crate) mod cwd;
 pub(crate) mod manifest;
 pub(crate) mod notes;
 pub(crate) mod update;

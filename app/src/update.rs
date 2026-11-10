@@ -506,10 +506,12 @@ fn swap(root: &Path) -> bool {
     let _ = std::fs::remove_dir_all(&old);
     if let Err(e) = std::fs::rename(root, &old) {
         tracing::warn!("update: cannot move {} aside: {e}", root.display());
+        crate::yuzora::release::update::note_swap_failure(&e); // yuzora(win-update): what "Restart" tells the person
         return false;
     }
     if let Err(e) = std::fs::rename(&staged, root) {
         tracing::warn!("update: cannot put the new version in place: {e}");
+        crate::yuzora::release::update::note_swap_failure(&e); // yuzora(win-update): as above
         if let Err(rollback) = std::fs::rename(&old, root) {
             tracing::error!("update: cannot restore the previous version: {rollback}");
         }
