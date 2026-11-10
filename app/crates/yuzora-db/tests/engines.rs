@@ -1094,6 +1094,24 @@ fn postgres_a_stop_from_the_background_is_on_its_way_before_it_returns() {
     });
 }
 
+/// A stop that was not heard to be dealt with may still arrive: the connection
+/// it was for is not trusted with another statement.
+#[test]
+fn postgres_a_stop_the_server_does_not_answer_retires_the_connection() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    run(async {
+        let mut conn = pg_through(&relay, SslMode::Disable).await;
+        relay.hold_cancels(Duration::from_secs(8));
+        let started = Instant::now();
+        conn.canceller().cancel().await;
+        assert!(started.elapsed() < Duration::from_secs(7), "{:?}", started.elapsed());
+        assert!(conn.is_closed(), "the connection is kept for statements a stop can still arrive in");
+        relay.release();
+        assert_eq!(scalar(&mut pg_through(&relay, SslMode::Disable).await, "SELECT 'new'").await, "new");
+    });
+}
+
 #[test]
 fn postgres_a_stop_the_server_hears_late_still_ends_the_statement_it_was_for() {
     only_with!("postgres");
