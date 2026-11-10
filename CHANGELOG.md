@@ -2,6 +2,36 @@
 
 <samp>English · <a href="CHANGELOG.zh-TW.md">繁體中文</a></samp>
 
+## [0.1.0-beta.4] - 2026-11-10
+
+The tools move to a right-hand dock, the left side becomes Herdr's own Spaces and Agents, and the official herdr-app is synced to v0.1.14.
+
+### Added
+
+- **Right-hand dock.** A layout with a side panel (main, and the default yuzora) gets a 40px mode bar next to the panel with Files, Git, Database and SSH. A layout without one (terminals, win98, your own) gets a drawer on the right edge, and a mode you click opens in a window. The open mode stays put when you switch Spaces, and changing the layout no longer makes Yuzora's tools disappear.
+- **Herdr's own Spaces and Agents on the left.** The default yuzora layout now uses Herdr's native Spaces and Agents lists (the top left reads "Herdr"), and Files, Git, Database and SSH moved to the right-hand dock. The Space color set in Yuzora shows on the avatar in the left list. If you edited `yuzora.json`, your copy is kept as `yuzora-edited`; an unedited one is replaced automatically.
+- **A dock setting for each layout, and one for startup.** Settings › Mods › Layouts lets each layout set its right-hand dock to Auto, Drawer or Off, which takes priority over the layout file's own setting. Settings › General › When Yuzora opens picks whether the dock opens in Files, Git, Database or SSH, or stays collapsed.
+- **`Cmd+Alt+B` (macOS) / `Ctrl+Alt+B` toggles the right-hand dock.** An unedited beta.2 or beta.3 `keys.json` is updated to the new defaults automatically (this includes Herdr's terminal search, Cmd/Ctrl+F). An edited one is left alone: add `"cmd-alt-b": "yuzora-modebar.toggle"` (or `ctrl-alt-b`) yourself.
+- **Synced with the official herdr-app v0.1.14.** A herdr-core connection error now shows its reason and a retry, terminal search (Cmd/Ctrl+F) and scroll commands, a scrollbar on panes, `pane.swap` for mods, and Add machine now tells you the command to run. The herdr-core requirement is unchanged (0.1.11 or newer, generation 1). One step of v0.1.14 is left out: after an update it downloads Herdr's core installer and runs it, to turn a herdr-core that is still a single executable into the Herdr Core app. Yuzora doesn't run a downloaded script by itself; if you want that, run the official herdr-core installer yourself.
+
+### Fixed
+
+- Git: when an open repository's `.git` goes missing, Git commands (fetch, push, status and the rest) no longer fall through to a repository around it and run there. `GIT_CEILING_DIRECTORIES` stops the search; where the path above contains `:` or `;` and no ceiling can hold, each command first asks Git which repository it found and is refused unless it is this one. Hooks get no extra `GIT_DIR`.
+- Git Log: a very long commit message can no longer be cut off by the render time limit on a slow machine (each paragraph is now a single text element).
+
+### Known limitations
+
+- In the drawer window, Files' "show hidden files" setting resets every time the window opens.
+- The screenshots in the README still show the old left side; they will be retaken.
+
+### Installation notes
+
+- beta.3 does not update itself to beta.4 (a beta build only updates to a stable release). Download beta.4 by hand from the `v0.1.0-beta.4` Pre-release on GitHub and install it over beta.3.
+- The macOS app supports only Apple Silicon and has only an ad-hoc signature, with no Apple Developer ID signature or notarization, so Gatekeeper blocks the first open. Go to "System Settings › Privacy & Security" and click "Open Anyway" (or run `xattr -dr com.apple.quarantine /Applications/Yuzora.app`).
+- Windows uses a per-user NSIS installer that needs no admin rights, `Yuzora_<version>_x64-setup.exe`. Authenticode isn't enabled yet, so SmartScreen may show a warning.
+- Linux (experimental) provides `yuzora-<version>-linux-<arch>.tar.gz` for x86_64 and aarch64. Unpack it and run `yuzora/install`. It has only passed CI and hasn't been tried on a real machine.
+- The known limitations of beta.2 still apply.
+
 ## [0.1.0-beta.3] - 2026-11-05
 
 Fixes for beta.2, mostly on Windows, and faster Git and Files on large folders and remote machines.
