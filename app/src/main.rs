@@ -122,6 +122,7 @@ fn main() {
         )
         .init();
 
+    yuzora::release::cwd::leave_install_dir(); // yuzora(win-update): before the swap below and before hc connect starts herdr-core; Windows will not rename a folder that is a working directory
     if update::apply_on_startup() {
         return;
     }

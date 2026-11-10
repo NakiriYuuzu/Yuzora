@@ -133,6 +133,19 @@ export function appUpdates(version) {
   return { title: `${APP} ${version}`, about: t("updates.app_off") };
 }
 
+/** Updates: why Restart did not switch to the new version, as one wrapped paragraph under the app's row. */
+export function updateFailure(th, reason) {
+  return v_flex()
+    .id("st-app-update-failure")
+    .w_full()
+    .py(12)
+    .gap(3)
+    .border_b(1)
+    .border_color(th.border)
+    .child(div().text_size(14).text_color(th.blocked ?? th.foreground).child(t("updates.failed")))
+    .child(div().text_size(12.5).line_height("18px").text_color(th.dim).child(reason));
+}
+
 export function updatesFooter() {
   return t("updates.footer");
 }

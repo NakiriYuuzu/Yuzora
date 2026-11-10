@@ -1312,6 +1312,9 @@ fn postgres_a_stopped_write_back_cannot_be_felt_by_what_the_pane_runs_next() {
 
     let next = session::start_query(&through, None, &session::table_owner(&pane.owner), "SELECT pg_sleep(2.5)");
     results::lock(&pane.set).stop_write();
+    // The lock goes only after the write-back has sent its Stop: otherwise a write-back that has not
+    // looked at the Stop yet is stopped by the commit step instead, and no Stop is ever sent to be late.
+    until("the write-back never sent its Stop", || relay.stops_arrived() == 1);
     runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
     assert_eq!(
         within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()),
@@ -1361,7 +1364,7 @@ fn postgres_a_stopped_write_back_is_rolled_back_only_after_the_server_has_dealt_
     );
     runtime::block_on(locker.batch_execute("ROLLBACK")).unwrap();
     assert_eq!(
-        relay.heard(),
+        relay.heard_until(2),
         [common::Heard::StopDealtWith, common::Heard::RollBack],
         "the write-back was rolled back before the server had dealt with the stop, which could land on the ROLLBACK"
     );
@@ -1734,8 +1737,9 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
         seed ^= seed << 13;
         seed ^= seed >> 7;
         seed ^= seed << 17;
-        // Microseconds between the Stop and the lock being let go; negative: the Stop first. The
-        // cancel lands late when the two are within a millisecond or two of each other.
+        // Microseconds between the Stop and the lock being let go; negative: the Stop first, which
+        // is the order they are called in, whatever the write-back's task got to see of them when.
+        // The cancel lands late when the two are within a millisecond or two of each other.
         let offset = (seed % 1601) as i64 - 1500;
         let pane = open(&id, "sweep-pane", &t);
         pane.edit(pane.row_where("id", "1"), "name", Some(&format!("mine-{round}")));
@@ -1750,22 +1754,19 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
                 std::hint::spin_loop();
             }
         };
-        let (stopped_at, released_at);
-        if offset >= 0 {
-            released_at = Instant::now();
-            runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
-            spin(offset);
-            stopped_at = Instant::now();
+        let stop_first = offset < 0;
+        if stop_first {
             results::lock(&pane.set).stop_write();
+            spin(offset);
+            runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
         } else {
-            stopped_at = Instant::now();
-            results::lock(&pane.set).stop_write();
-            spin(offset);
-            released_at = Instant::now();
             runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
+            spin(offset);
+            results::lock(&pane.set).stop_write();
         }
         let written = writer.join().unwrap();
-        let stop_first = released_at > stopped_at + Duration::from_micros(300);
+        let nothing_written = results::lock(&pane.set).write_failure().map(str::to_owned)
+            == Some(yuzora_db::i18n::t("edit.stopped", &[]));
 
         let state = wait(next);
         assert_eq!(
@@ -1782,13 +1783,79 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
                 name, "holder",
                 "round {round} (offset {offset} µs): a write-back stopped before the lock let go wrote anyway"
             );
+            assert!(nothing_written, "round {round} (offset {offset} µs): it did not say that nothing was written");
         } else {
-            assert!(name == "holder" || name == format!("mine-{round}"), "round {round} (offset {offset} µs): {name}");
+            let (mine, holder) = (name == format!("mine-{round}"), name == "holder");
+            assert!(mine || holder, "round {round} (offset {offset} µs): {name}");
+            assert!(
+                written != Ok(1) || mine,
+                "round {round} (offset {offset} µs): it said it wrote, and {name} is there"
+            );
+            assert!(
+                !nothing_written || holder,
+                "round {round} (offset {offset} µs): it said nothing was written, and {name} is there"
+            );
         }
         runtime::block_on(locker.batch_execute("UPDATE t SET name = 'a' WHERE id = 1")).unwrap();
         session::release_owner(&pane.owner);
     }
     assert!(stop_came_first >= rounds / 4, "only {stop_came_first} of {rounds} rounds had the Stop first");
+}
+
+/// What the write-back is doing is not up to when it gets to look at the Stop:
+/// a Stop pressed before COMMIT is sent means no COMMIT, whether or not the
+/// write-back has noticed it yet. The write-back is polled by hand and left
+/// alone from the moment it waits on the lock until its UPDATE has gone
+/// through on the server, so the Stop is pressed while it cannot see anything.
+#[test]
+fn postgres_a_stop_pressed_before_the_commit_is_sent_writes_nothing_though_the_write_back_has_not_seen_it() {
+    use std::future::Future;
+    use std::task::Poll;
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_unseen");
+    let direct = scratch.connection();
+    run(&direct, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');");
+    let locker = raw_postgres("yz_wb_unseen");
+    let pane = open(&direct, "unseen-pane", &table("public", "t"));
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
+    let count = |state: &'static str| {
+        let locker = &locker;
+        async move {
+            let sql = format!("SELECT count(*)::int FROM pg_stat_activity WHERE datname = 'yz_wb_unseen' AND {state}");
+            locker.query_one(sql.as_str(), &[]).await.unwrap().get::<_, i32>(0)
+        }
+    };
+
+    let set = pane.set.clone();
+    let written = runtime::block_on(async {
+        let mut write = Box::pin(session::write_back_set(&set));
+        let mut polls = 0;
+        while count("wait_event_type = 'Lock'").await == 0 {
+            assert!(std::future::poll_fn(|cx| Poll::Ready(write.as_mut().poll(cx))).await.is_pending());
+            polls += 1;
+            assert!(polls < 2000, "the write-back never got to wait on the lock");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        results::lock(&pane.set).stop_write();
+        locker.batch_execute("COMMIT").await.unwrap();
+        let mut waited = 0;
+        while count("state = 'idle in transaction'").await == 0 {
+            waited += 1;
+            assert!(waited < 2000, "the UPDATE never went through once the lock was let go");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tokio::time::timeout(Duration::from_secs(10), write).await.expect("the write-back ends once it is polled again")
+    });
+
+    assert_eq!(written, Err(DbError::Cancelled));
+    assert_eq!(
+        results::lock(&pane.set).write_failure().map(str::to_owned),
+        Some(yuzora_db::i18n::t("edit.stopped", &[])),
+        "COMMIT had not been sent when the Stop was pressed, so the message must not say the database may have saved it"
+    );
+    assert_eq!(first_row(&direct, "SELECT name FROM t WHERE id = 1"), ["holder"], "a Stop before COMMIT wrote anyway");
+    assert_eq!(wait(session::start_query(&direct, None, &session::table_owner(&pane.owner), "SELECT 1")).error, None);
 }
 
 /// SQLite waits for another writer's lock inside the file, where an interrupt

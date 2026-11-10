@@ -450,7 +450,9 @@ fn apply_edits(
     }
     // Marked before the last look for a stop, so a stop that finds the mark
     // unset is one this thread has not yet looked for, and gives way to.
-    commit.mark();
+    if !commit.mark() {
+        return Err(DbError::Cancelled);
+    }
     if stopped.is_set() {
         commit.reset();
         return Err(DbError::Cancelled);
