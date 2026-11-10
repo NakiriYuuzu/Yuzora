@@ -2088,18 +2088,19 @@ fn yuzora_diff_a_line_longer_than_a_frame_is_laid_out_alone_and_scrolled_to_its_
     assert!(gap.is_some_and(|g| (g - 12.).abs() <= 1.5), "{gap:?} left after the end of a line of 40,000 letters, when it is 12");
 }
 
-// yuzora(v010): a line drawn in thousands of pieces (4,000 of 2 letters; 56,000px) costs a frame by itself in the
-// pieces alone, and is built as 4,000 elements in the frame that lays it out, which has the 50 ms of a render: it is
-// drawn, and the range ends where it does.
+// yuzora(v010): a line drawn in a thousand pieces (1,000 of 32 letters; 224,000px) costs a frame by itself, and is
+// built as 1,000 elements in the frame that lays it out, which has the 50 ms of a render: it is drawn, and the range
+// ends where it does. (4,000 pieces of 2 letters took 46 ms of those 50 here, with the probe's handlers on each, so a
+// slower machine would not have drawn the frame.)
 #[gpui::test]
-fn yuzora_diff_a_line_in_thousands_of_pieces_is_laid_out_in_a_frame_and_scrolled_to_its_end(cx: &mut TestAppContext) {
+fn yuzora_diff_a_line_in_a_thousand_pieces_is_laid_out_in_a_frame_and_scrolled_to_its_end(cx: &mut TestAppContext) {
     let mut rows: Vec<Value> = (0..100).map(|_| text_row(Some("a short line"), Some("b"))).collect();
-    rows.push(row_in_pieces('a', &[2; 4000]));
+    rows.push(row_in_pieces('a', &[32; 1000]));
     let pane = DiffPane::mount(cx, Value::Array(rows), 1200., &Shared::default());
     let (ranges, pending) = (pane.ranges(), pane.pending());
     let drawn = pane.rendered().iter().filter(|(view, error)| view == "d1" && error.is_null()).count();
     pane.close();
-    let wanted = 4000. * 14. + 6. + 12. - 555.5;
+    let wanted = 1000. * 224. + 6. + 12. - 555.5;
     assert!(drawn >= 2 && !pending, "drawn {drawn} times, and lines left to lay out: {pending}");
     assert!(ranges.last().is_some_and(|r| (r - wanted).abs() <= 1.5), "the lines scroll {:?}px, and the widest needs {wanted}", ranges.last());
 }
