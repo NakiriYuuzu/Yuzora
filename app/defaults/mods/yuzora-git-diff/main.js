@@ -50,8 +50,9 @@ const GRAB = 5, BAR = 8, REST = 18;
 // ASCII besides that (SLOW); how many of those a line may have to be sorted by kind (SORT); and the most
 // cells a UTF-16 unit takes (WORST).
 const WIDEST = 4, LAYOUT = 1 << 18, LOOK = 4e6, LINE = 1 << 20, TOLL = 200, SLOW = 25, SORT = 1 << 16, WORST = 3;
-// The width of a run of this over its length is what a cell takes in the font.
-const RULER = "W".repeat(32);
+// The width of a run of this over its length is what a cell takes in the font. The layout rounds that width up
+// to a pixel, which on a cell is the less the longer the run.
+const RULER = "W".repeat(256);
 // Every length this pane writes is multiplied by the zoom, and what comes back, the size an element reports,
 // where a pointer is and how far a wheel went, is in window pixels. The pane keeps and works out lengths in
 // the unit it writes; this is where what comes back is turned into it, wherever it is read.
