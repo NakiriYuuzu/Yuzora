@@ -1588,6 +1588,23 @@ return JSON.stringify([a, b, c, d]); }})()"#
     }
 
     #[test]
+    fn a_pane_of_another_mod_holding_the_same_path_is_not_the_files_pane() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "", "yuzora-git-diff", { path: "/r/a.rs", on: null, cwd: "/r" }, { beside: true });
+            restore("s1", "", "yuzora-editor", { path: "/r/a.png", on: null, opened: 1 }, { beside: true });
+            openFile("/r/a.rs", null); flush();
+            openFile("/r/a.png", null); flush();
+            return [strip("s1")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            ["[shell, git-diff /r/a.rs, editor /r/a.png] [editor /r/a.rs] [image /r/a.png]* [shell]"]
+        );
+    }
+
+    #[test]
     fn a_restored_pane_is_found_under_the_name_its_file_was_renamed_to() {
         let seen = in_the_open(
             r#"
