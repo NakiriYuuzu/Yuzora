@@ -10,6 +10,9 @@ use std::{
     time::Instant,
 };
 
+// yuzora(motion): the tests of Yuzora's mod animations, a child so they use these fixtures.
+mod motion_tests;
+
 struct Staged(PathBuf);
 impl Staged {
     fn new() -> Self {
