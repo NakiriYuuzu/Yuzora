@@ -215,7 +215,7 @@ export default class SidebarGit extends View {
     const going = () => this.visit === visit && this.v === v;
     cx.spawn(async (cx) => {
       try {
-        await this.reload(cx, v);
+        await this.reload(cx, v, false, true);
         this.loadMessages(cx, v);
         // Local repos: the watcher bumps the generation. Remote ones: no
         // watcher, so each ~25 s wait without news reads status again.
@@ -232,7 +232,9 @@ export default class SidebarGit extends View {
     });
   }
 
-  async reload(cx, v, force = false) {
+  // `first`: the first read since `v` was shown. What a repo showed before is kept on screen while it is read
+  // again, so if that read fails the list is dropped for the error: it is no longer known to be true.
+  async reload(cx, v, force = false, first = false) {
     const repo = v.repo;
     if (!repo) return;
     try {
@@ -240,6 +242,7 @@ export default class SidebarGit extends View {
       v.error = null;
     } catch (e) {
       v.error = String(e);
+      if (first) v.st = null;
       const here = this.place;
       if (here?.pin && this.v === v && await this.unpinIfGone(here)) { this.attach(cx); return; }
     }

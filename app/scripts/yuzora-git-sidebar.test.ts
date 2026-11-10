@@ -451,6 +451,27 @@ test("a push going on in one repo does not hold back the buttons of another", as
   expect(s.pending("pushPreview").map((g) => g.args[0]).sort()).toEqual([":/a", ":/b"]);
 });
 
+test("a repo whose status cannot be read when it is shown again shows the error, not the list it had", async () => {
+  const s = world();
+  await s.settle();
+  s.go("/b");
+  s.frame();
+  await s.settle();
+  s.go("/a");
+  expect(s.frame().files).toEqual(["x.txt", "only-a.txt"]);
+  await s.settle();
+  s.go("/b");
+  s.frame();
+  await s.settle();
+  s.go("/a");
+  s.frame();
+  await s.answer(s.pending("open")[0], info("/a"));
+  await s.fail(s.pending("status")[0], new Error("fatal: cannot change to '/a'"));
+  const f = s.frame();
+  expect(f.files).toEqual([]);
+  expect(f.texts).toContain("Error: fatal: cannot change to '/a'");
+});
+
 test("a repo that is no longer shown is not read again when it changes", async () => {
   const s = world();
   await s.settle();
