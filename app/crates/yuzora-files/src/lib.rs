@@ -1358,7 +1358,10 @@ return JSON.stringify([a, b, c, d]); }})()"#
         );
         assert_eq!(
             seen,
-            ["[shell, editor /r/a.rs, editor /r/b.rs]* [shell] [editor /r/a.rs]", "4"]
+            [
+                "[shell, editor /r/a.rs, editor /r/b.rs]* [shell] [editor /r/a.rs]",
+                "4"
+            ]
         );
     }
 
@@ -1471,7 +1474,10 @@ return JSON.stringify([a, b, c, d]); }})()"#
             return [String(panes().some(p => p.pane === waiting)), String(panes().some(p => p.pane === other)), JSON.stringify(revealed), strip("s3"), given[focused().pane].line + ""];
         "#,
         );
-        assert_eq!(seen, ["false", "true", "[]", "[shell] [editor /r/a.rs]*", "5"]);
+        assert_eq!(
+            seen,
+            ["false", "true", "[]", "[shell] [editor /r/a.rs]*", "5"]
+        );
     }
 
     #[test]
@@ -1500,7 +1506,13 @@ return JSON.stringify([a, b, c, d]); }})()"#
             return [strip("s1"), strip("s3")];
         "#,
         );
-        assert_eq!(seen, ["[shell]* [shell] [editor /x/a.rs]", "[shell]* [image /x/a.png]"]);
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [shell] [editor /x/a.rs]",
+                "[shell]* [image /x/a.png]"
+            ]
+        );
     }
 
     #[test]
@@ -1517,7 +1529,10 @@ return JSON.stringify([a, b, c, d]); }})()"#
         );
         assert_eq!(
             seen,
-            ["[shell] [markdown /srv/README.md]* [editor /srv/b.rs]", "markdown /srv/README.md"]
+            [
+                "[shell] [markdown /srv/README.md]* [editor /srv/b.rs]",
+                "markdown /srv/README.md"
+            ]
         );
     }
 
@@ -1887,10 +1902,14 @@ return JSON.stringify([a, b, c, d]); }})()"#
     "#;
 
     #[test]
-    fn a_pane_not_started_is_replaced_when_its_file_is_renamed_though_another_pane_holds_the_document() {
+    fn a_pane_not_started_is_replaced_when_its_file_is_renamed_though_another_pane_holds_the_document()
+     {
         for (dormant_first, strip) in [
             (false, "[shell, editor /r/a.rs]* [shell] [editor /r/b.rs]"),
-            (true, "[shell] [shell] [editor /r/b.rs] [editor /r/x.rs, editor /r/a.rs]*"),
+            (
+                true,
+                "[shell] [shell] [editor /r/b.rs] [editor /r/x.rs, editor /r/a.rs]*",
+            ),
         ] {
             let seen = in_the_open(&[
                 TWO_PANES_ON_A_FILE,
@@ -1905,12 +1924,17 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 ),
             ]
             .join("\n"));
-            assert_eq!(seen, [strip, "the started pane"], "the waiting pane first: {dormant_first}");
+            assert_eq!(
+                seen,
+                [strip, "the started pane"],
+                "the waiting pane first: {dormant_first}"
+            );
         }
     }
 
     #[test]
-    fn a_pane_whose_document_was_renamed_is_not_given_the_document_of_another_file_at_its_old_name() {
+    fn a_pane_whose_document_was_renamed_is_not_given_the_document_of_another_file_at_its_old_name()
+    {
         let seen = in_the_open(
             r#"
             const out = [];
@@ -1930,7 +1954,10 @@ return JSON.stringify([a, b, c, d]); }})()"#
             return out;
         "#,
         );
-        assert_eq!(seen, ["the pane of the new file", "the pane of the renamed"]);
+        assert_eq!(
+            seen,
+            ["the pane of the new file", "the pane of the renamed"]
+        );
     }
 
     #[test]
@@ -1987,7 +2014,8 @@ return JSON.stringify([a, b, c, d]); }})()"#
     }
 
     #[test]
-    fn a_line_asked_of_a_markdown_file_in_a_pane_not_started_of_a_remote_space_is_given_to_the_pane_that_takes_its_place() {
+    fn a_line_asked_of_a_markdown_file_in_a_pane_not_started_of_a_remote_space_is_given_to_the_pane_that_takes_its_place()
+     {
         let seen = in_the_open(
             r#"
             restore("s2", "R.md", "yuzora-markdown", { path: "/srv/R.md", on: "lab", opened: 1 }, { pane: "lab/pm1" });
@@ -2133,12 +2161,16 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 return calls;
             "#
             ));
-            assert!(seen.iter().all(|c| !c.starts_with("note ")), "{kind}: {seen:?}");
+            assert!(
+                seen.iter().all(|c| !c.starts_with("note ")),
+                "{kind}: {seen:?}"
+            );
         }
     }
 
     #[test]
-    fn a_pane_gives_its_document_to_the_pane_with_the_keys_when_its_editor_or_its_keys_say_it_is_that_pane() {
+    fn a_pane_gives_its_document_to_the_pane_with_the_keys_when_its_editor_or_its_keys_say_it_is_that_pane()
+     {
         let seen = in_a_doc_pane(
             r#"
             propsNow = { path: "/srv/a", on: "lab", opened: 1 };
