@@ -30,7 +30,7 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
   const world = {
     spaces,
     toasts: [] as any[], opened: [] as { path: string; on: string | null; space: string }[], log: [] as string[], lists: [] as { id: string; count: number }[],
-    keys: [] as string[], onClick: null as any, onSecondary: null as any, menus: [] as any[],
+    query: "", keys: [] as string[], onClick: null as any, onSecondary: null as any, menus: [] as any[],
     timers: [] as { ms: number; fn: () => void; fired: boolean }[],
     calls: { list: [] as Call[], git: [] as Call[], stat: [] as Call[], watch: [] as Call[] },
   };
@@ -51,7 +51,7 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
     },
   });
   const maker = () => chain;
-  const input = { on() {}, value: () => "", set_value() {}, focus() {}, set_selected_range() {} };
+  const input = { on() {}, value: () => world.query, set_value() {}, focus() {}, set_selected_range() {} };
   const stubs: Record<string, any> = {
     View: class {},
     div: maker, svg: maker, v_flex: maker, h_flex: maker,
@@ -453,4 +453,33 @@ test("a clean repo that becomes untrusted says so", async () => {
   s.view.reload(s.cx, true);
   await s.settle(A, { ...repo("/a"), untrusted: true });
   expect(s.frame().texts).toContain("git.untrusted");
+});
+
+test("a folder that cannot be opened says so in the Space it was opened in, and in no other", async () => {
+  const s = sidebar([{ id: "s1", active: true, folder: "/a", machine: null }, { id: "s2", active: false, folder: "/a", machine: null }]);
+  await s.settle(A, repo("/a"));
+  s.press(s.frame(), SRC);
+  await flush();
+  s.show("s2");
+  s.frame();
+  await s.fail(s.pending("list").find(c => c.args[0] === "/a/src")!, new Error("cannot read /a/src"));
+  await s.answer(s.pending("stat")[0], { len: 0, mtime_ms: 1 });
+  expect(s.world.toasts).toEqual([]);
+});
+
+test("a refresh asked for while the timer's read runs makes an open search follow the files; the timer's reads alone leave it to the watcher", async () => {
+  const s = sidebar();
+  await s.settle(A, repo("/a"));
+  s.world.query = "x";
+  s.view.searching = true;
+  const searches = () => s.world.timers.filter(t => t.ms === 60).length;
+  const before = searches();
+  s.view.reload(s.cx, true);
+  await flush();
+  s.view.reload(s.cx);
+  await s.settle(A, repo("/a"));
+  expect(searches() - before).toBe(1);
+  s.view.reload(s.cx, true);
+  await s.settle(A, repo("/a"));
+  expect(searches() - before).toBe(1);
 });

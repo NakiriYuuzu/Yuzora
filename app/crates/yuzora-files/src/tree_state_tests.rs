@@ -177,7 +177,7 @@ const h = host(), store = createStore(h.io);
 const a = store.enter(loc("/a"));
 await load(store, h, a, { git: repo("/a"), "": listing("docs/") });
 // Opening docs asks for its listing; a reload that starts meanwhile asks again.
-const opened = store.expand(a, "docs", () => {});
+const opened = store.expand(a, "/a", "docs", () => {});
 await flush();
 const reload = store.reload(a, () => {});
 await flush();
@@ -247,19 +247,19 @@ store.reload(a, () => {});
 await flush();
 const shown = { kind: panel(a).kind, fresh: panel(a).fresh, rows: names(a) };
 
-const gone = store.confirm(a, "gone.txt", () => {});
+const gone = store.confirm(a, "/a", "gone.txt", () => {});
 await flush();
 h.answer(h.pending("exists")[0], false);
 const goneResult = await gone;
 const afterGone = names(a);
 
-const kept = store.confirm(a, "kept.txt", () => {});
+const kept = store.confirm(a, "/a", "kept.txt", () => {});
 await flush();
 h.answer(h.pending("exists")[0], true);
 const keptResult = await kept;
 const afterKept = names(a);
 
-const folder = store.expand(a, "src", () => {});
+const folder = store.expand(a, "/a", "src", () => {});
 await flush();
 h.fail(h.pending("list").filter(c => c.folder === "src").pop(), new Error("no such folder"));
 await flush();
@@ -289,7 +289,7 @@ fn a_folder_that_cannot_be_listed_but_is_there_stays_closed_with_its_error() {
 const h = host(), store = createStore(h.io);
 const a = store.enter(loc("/a"));
 await load(store, h, a, { git: repo("/a"), "": listing("locked/") });
-const opened = store.expand(a, "locked", () => {});
+const opened = store.expand(a, "/a", "locked", () => {});
 await flush();
 h.fail(h.pending("list")[0], new Error("permission denied"));
 await flush();
@@ -407,7 +407,7 @@ for (const c of h.pending("list")) {
 }
 await flush();
 const ran = await run;
-const failed = { ran, panel: panel(a).kind, fresh: panel(a).fresh, rows: names(a), notes, open: [...a.open] };
+const failed = { ran: ran.ok, panel: panel(a).kind, fresh: panel(a).fresh, rows: names(a), notes, open: [...a.open] };
 await load(store, h, a, { git: repo("/a"), "": listing("src/", "x.txt"), src: listing("a.js") });
 return JSON.stringify({ failed, healed: panel(a).fresh });
 "#);
@@ -415,7 +415,7 @@ return JSON.stringify({ failed, healed: panel(a).fresh });
         got["failed"],
         serde_json::json!({
             "ran": false, "panel": "showing", "fresh": { "stale": "offline" },
-            "rows": ["src", "x.txt"], "notes": 1, "open": []
+            "rows": ["src", "x.txt"], "notes": 2, "open": []
         })
     );
     assert_eq!(got["healed"], "fresh");
@@ -437,13 +437,13 @@ const roots = h.calls.list.map(c => c.root);
 const between = panel(a).kind;
 h.answer(h.pending("list")[0], listing("right.txt"));
 await run;
-return JSON.stringify({ roots, between, root: a.root, rows: names(a), sure: a.rootSure });
+return JSON.stringify({ roots, between, root: a.root, rows: names(a), treeRoot: a.tree.root });
 "#);
     assert_eq!(got["roots"], serde_json::json!(["/repo/sub", "/repo"]));
     assert_eq!(got["between"], "empty");
     assert_eq!(got["root"], "/repo");
     assert_eq!(got["rows"], serde_json::json!(["right.txt"]));
-    assert_eq!(got["sure"], true);
+    assert_eq!(got["treeRoot"], "/repo");
 }
 
 #[test]
@@ -470,8 +470,13 @@ const first = store.reload(a, () => {});
 const second = await store.reload(a, () => {});
 await flush();
 const asked = [h.pending("git").length, h.pending("list").length];
-for (const c of h.pending("git")) h.answer(c, repo("/a"));
-for (const c of h.pending("list")) h.answer(c, listing("x.txt"));
+for (let turn = 0, done = false; !done; turn++) {
+  if (turn > 20) throw new Error("never finished");
+  await flush();
+  for (const c of h.pending("git")) h.answer(c, repo("/a"));
+  for (const c of h.pending("list")) h.answer(c, listing("x.txt"));
+  done = !a.reloading;
+}
 await first;
 const twin = store.enter(loc("/a", "s2"));
 store.forget(new Set(["s2"]));
@@ -662,8 +667,120 @@ const latest = store.enter(loc("/latest", "slatest"));
 await load(store, h, latest, { git: repo("/latest"), "": listing("x.txt") });
 return JSON.stringify({ shown, reloaded, markedKept: Boolean(marked.tree), crowdKept: Boolean(crowd.tree) });
 "#);
-    assert_eq!(got["shown"], serde_json::json!({ "kind": "showing", "tree": true }));
-    assert_eq!(got["reloaded"], serde_json::json!({ "kind": "showing", "tree": true }));
+    assert_eq!(
+        got["shown"],
+        serde_json::json!({ "kind": "showing", "tree": true })
+    );
+    assert_eq!(
+        got["reloaded"],
+        serde_json::json!({ "kind": "showing", "tree": true })
+    );
     assert_eq!(got["crowdKept"], true);
     assert_eq!(got["markedKept"], false);
+}
+
+#[test]
+fn a_check_that_cannot_tell_says_nothing_about_the_file_and_the_row_stays() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/a"));
+a.open.add("src");
+await load(store, h, a, { git: repo("/a"), "": listing("src/", "x.txt"), src: listing("a.js") });
+const checked = store.confirm(a, "/a", "x.txt", () => {});
+await flush();
+h.fail(h.pending("exists")[0], new Error("machine m1 is not connected"));
+const told = await checked;
+const folder = store.expand(a, "/a", "src", () => {});
+await flush();
+h.fail(h.pending("list").pop(), new Error("machine m1 is not connected"));
+await flush();
+h.fail(h.pending("exists")[0], new Error("machine m1 is not connected"));
+const failure = await folder;
+return JSON.stringify({ told, rows: names(a), folder: failure.gone, open: [...a.open] });
+"#);
+    assert_eq!(got["told"], serde_json::Value::Null);
+    assert_eq!(got["rows"], serde_json::json!(["src", "x.txt"]));
+    assert_eq!(got["folder"], false);
+    assert_eq!(got["open"], serde_json::json!([]));
+}
+
+#[test]
+fn a_folder_opened_in_a_root_that_was_left_changes_nothing_in_the_root_that_replaced_it() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/repo/sub"));
+const run = store.reload(a, () => {});
+await flush();
+h.answer(h.pending("list")[0], listing("docs/"));
+await flush();
+const stale = a.tree;
+const opened = store.expand(a, "/repo/sub", "docs", () => {});
+await flush();
+const oldRead = h.pending("list").find(c => c.root === "/repo/sub" && c.folder === "docs");
+h.answer(h.pending("git")[0], repo("/repo"));
+await flush();
+h.answer(h.pending("list").find(c => c.root === "/repo"), listing("docs/", "sub/"));
+await run;
+const again = store.expand(a, "/repo", "docs", () => {});
+await flush();
+h.fail(oldRead, new Error("gone"));
+await flush();
+const exists = h.pending("exists").length;
+const lateOpen = await opened;
+const mine = h.pending("list").find(c => c.root === "/repo" && c.folder === "docs");
+h.answer(mine, listing("new.md"));
+await again;
+return JSON.stringify({ lateOpen, exists, root: a.root, treeRoot: a.tree.root, staleRoot: stale.root, open: [...a.open], docs: names(a, "docs"), top: names(a) });
+"#);
+    assert_eq!(got["lateOpen"], serde_json::Value::Null);
+    assert_eq!(got["exists"], 0);
+    assert_eq!(got["root"], "/repo");
+    assert_eq!(got["treeRoot"], "/repo");
+    assert_eq!(got["staleRoot"], "/repo/sub");
+    assert_eq!(got["open"], serde_json::json!(["docs"]));
+    assert_eq!(got["docs"], serde_json::json!(["new.md"]));
+    assert_eq!(got["top"], serde_json::json!(["docs", "sub"]));
+}
+
+#[test]
+fn a_read_that_ends_with_a_request_from_the_timer_only_is_a_timers_read() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/a"));
+const finish = async promise => {
+  let done = false;
+  promise.then(() => { done = true; });
+  for (let turn = 0; !done; turn++) { if (turn > 50) throw new Error("never finished"); await flush(); for (const c of h.pending("git")) h.answer(c, repo("/a")); for (const c of h.pending("list")) h.answer(c, listing("x.txt")); }
+  return promise;
+};
+const alone = await finish(store.reload(a, () => {}, { timed: true }));
+const manual = await finish(store.reload(a, () => {}));
+const first = store.reload(a, () => {}, { timed: true });
+await flush();
+store.reload(a, () => {}, { timed: true });
+store.reload(a, () => {}, { timed: false });
+store.reload(a, () => {}, { timed: true });
+const merged = await finish(first);
+const timers = store.reload(a, () => {}, { timed: true });
+await flush();
+store.reload(a, () => {}, { timed: true });
+const onlyTimers = await finish(timers);
+return JSON.stringify({ alone, manual, merged, onlyTimers });
+"#);
+    assert_eq!(
+        got["alone"],
+        serde_json::json!({ "ok": true, "timed": true })
+    );
+    assert_eq!(
+        got["manual"],
+        serde_json::json!({ "ok": true, "timed": false })
+    );
+    assert_eq!(
+        got["merged"],
+        serde_json::json!({ "ok": true, "timed": false })
+    );
+    assert_eq!(
+        got["onlyTimers"],
+        serde_json::json!({ "ok": true, "timed": true })
+    );
 }

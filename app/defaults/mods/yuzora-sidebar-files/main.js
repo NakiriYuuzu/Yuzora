@@ -15,6 +15,16 @@ import { createStore, panel, info } from "./tree-state.js";
 const ME = "yuzora-sidebar-files";
 const PER_FOLDER = 2000, ROWS = 20000;
 const REQUEST = "yuzora.files.request", REFRESH = "yuzora.files.refresh";
+// How long a click waits to learn that the file is still there; after that it opens, and the pane says what is wrong.
+const CHECK_MS = 1500;
+
+// What `promise` says, or null when it says nothing within `ms`.
+function within(cx, ms, promise) {
+  return new Promise(resolve => {
+    cx.timer.after(ms, () => resolve(null));
+    promise.then(resolve, () => resolve(null));
+  });
+}
 
 // Where the tree is: the focused pane's folder, on its space's machine. A tool
 // pane (no folder of its own) keeps the folder already shown in that space.
@@ -38,7 +48,6 @@ export default class FilesSidebar extends View {
       listDir: (root, folder, options) => listDir(folder ? join(root, folder) : root, { ...options, limit: PER_FOLDER }),
       readGit: (cwd, options) => readGit(gitStatus, cwd, options),
       exists: (root, r, on) => stat(r ? join(root, r) : root, { on }).then(found => found !== null),
-      rel,
     });
     this.hidden = localStorage.getItem("hidden") === "1";
     this.rows = []; this.rowsEntry = null; this.rowsVersion = -1; this.version = 0;
@@ -50,7 +59,7 @@ export default class FilesSidebar extends View {
     this.edit = null;
     this.lastRequest = shared(REQUEST)?.seq ?? 0;
     this.lastRefresh = shared(REFRESH) ?? 0;
-    this.loc = null; this.here = null; this.watching = null; this.watchSeq = 0;
+    this.loc = null; this.here = null; this.watching = null; this.watchedRoot = null; this.watchSeq = 0;
     this.relocate(cx);
     this.countUnsaved();
     cx.timer.every(10000, cx => {
@@ -94,32 +103,34 @@ export default class FilesSidebar extends View {
     const here = this.here;
     if (!here?.cwd) return;
     cx.spawn(async cx => {
-      const ran = await this.store.reload(here, () => { this.version++; cx.notify(); });
-      if (!ran || !this.current(here)) return;
+      const read = await this.store.reload(here, () => { this.version++; cx.notify(); }, { timed });
+      if (!read?.ok || !this.current(here)) return;
       // An open search follows the files too (the new root's, after a move).
-      if (this.searching && !(timed && this.watching === here)) this.search(cx, !timed);
+      if (this.searching && !(read.timed && this.watching === here)) this.search(cx, !read.timed);
       this.watch(here, cx);
     });
   }
 
   // Watches are recursive on macOS: the home folder (or /) itself is left to the timer.
   watch(here, cx) {
-    if (here.on || this.watching === here || here.root === "/" || here.root === home()) return;
-    this.watching = here;
+    const root = here.root;
+    if (here.on || (this.watching === here && this.watchedRoot === root) || root === "/" || root === home()) return;
+    this.watching = here; this.watchedRoot = root;
     const token = ++this.watchSeq;
     const same = () => this.watching === here && this.watchSeq === token;
     cx.spawn(async cx => {
       try {
         while (same()) {
-          await watchFolder(here.root);
+          await watchFolder(root);
           if (same()) this.reload(cx);
         }
       } catch { if (same()) this.watching = null; }
     });
   }
 
-  toggle(folder, cx) {
-    const here = this.here;
+  // `row`: from the tree on screen; the folder is opened under the root that tree was listed from.
+  toggle(row, cx) {
+    const here = this.here, loc = this.loc, folder = row.rel, root = here.tree.root;
     if (here.open.has(folder)) {
       for (const f of [...here.open]) if (f === folder || f.startsWith(folder + "/")) here.open.delete(f);
       this.version++; cx.notify();
@@ -127,9 +138,9 @@ export default class FilesSidebar extends View {
     }
     this.version++;
     cx.spawn(async cx => {
-      const failed = await this.store.expand(here, folder, () => { this.version++; cx.notify(); });
-      if (!failed || !this.current(here)) return;
-      if (failed.gone) notify({ title: t("error.gone", { name: base(folder) }), level: "warning" });
+      const failed = await this.store.expand(here, root, folder, () => { this.version++; cx.notify(); });
+      if (!failed || this.loc !== loc) return;
+      if (failed.gone) notify({ title: t("error.gone", { name: row.name }), level: "warning" });
       else notify({ title: t("error.list"), body: String(failed.error?.message ?? failed.error), level: "error" });
     });
     cx.notify();
@@ -143,7 +154,7 @@ export default class FilesSidebar extends View {
   visible() {
     const here = this.here;
     if (this.rowsEntry === here && this.rowsVersion === this.version) return this.rows;
-    const folders = here.tree?.folders;
+    const folders = here.tree?.folders, root = here.tree?.root;
     const out = [];
     let capped = false;
     const walk = (folder, depth) => {
@@ -153,7 +164,7 @@ export default class FilesSidebar extends View {
         if (out.length >= ROWS) { capped = true; return; }
         const r = folder ? `${folder}/${e.name}` : e.name;
         const open = e.dir && here.open.has(r);
-        out.push({ rel: r, name: e.name, dir: e.dir, link: e.link, depth, open });
+        out.push({ rel: r, abs: join(root, r), name: e.name, dir: e.dir, link: e.link, depth, open });
         if (open) walk(r, depth + 1);
       }
     };
@@ -162,30 +173,28 @@ export default class FilesSidebar extends View {
     return out;
   }
 
-  abs(r) {
-    return r ? join(this.here.root, r) : this.here.root;
-  }
-
   mark(row) {
     const git = this.here.git;
-    const m = git?.marks[this.abs(row.rel)];
+    const m = git?.marks[row.abs];
     if (m) return m;
-    return row.dir && !row.open && git?.dirMarks.has(row.rel) ? "•" : null;
+    return row.dir && !row.open && git?.dirMarks.has(row.abs) ? "•" : null;
   }
 
-  click(r, cx) {
-    const row = this.visible().find(x => x.rel === r);
+  // A row is told by its path: whatever the tree is by the time the click is heard, it is that file or none.
+  click(key, cx) {
+    const row = this.visible().find(x => x.abs === key);
     if (!row) return;
-    const here = this.here;
-    here.selected = r; this.version++;
-    if (row.dir) this.toggle(r, cx);
-    else if (panel(here).fresh === "fresh") { openFile(this.abs(r), here.on); cx.notify(); }
-    // A tree still being read again may show what is gone.
+    const here = this.here, loc = this.loc, root = here.tree.root;
+    here.selected = row.rel; this.version++;
+    if (row.dir) this.toggle(row, cx);
+    else if (panel(here).fresh === "fresh") { openFile(row.abs, here.on); cx.notify(); }
+    // A tree still being read again may show what is gone. The file is that of the row, in the Space of the click.
     else {
       cx.spawn(async cx => {
-        const there = await this.store.confirm(here, r, () => { this.version++; cx.notify(); });
-        if (there) openFile(join(here.root, r), here.on);
-        else if (this.current(here)) notify({ title: t("error.gone", { name: base(r) }), level: "warning" });
+        const there = await within(cx, CHECK_MS, this.store.confirm(here, root, row.rel, () => { this.version++; cx.notify(); }));
+        if (this.loc !== loc) return;
+        if (there === false) notify({ title: t("error.gone", { name: row.name }), level: "warning" });
+        else openFile(row.abs, here.on);
       });
       cx.notify();
     }
@@ -345,7 +354,7 @@ export default class FilesSidebar extends View {
   selectedDir() {
     const row = this.here.selected ? this.visible().find(r => r.rel === this.here.selected) : null;
     if (!row) return this.here.root;
-    return row.dir ? this.abs(row.rel) : parent(this.abs(row.rel));
+    return row.dir ? row.abs : parent(row.abs);
   }
 
   renderEdit(th) {
@@ -372,7 +381,7 @@ export default class FilesSidebar extends View {
     // One list per folder: a list keeps its scroll position under its id, and another folder's is not this one's.
     const list = `tree:${here.key}`;
     const tree = v_flex().flex_1().min_h(0).relative()
-      .child(uniform_list(list, rows.length, i => rows[i].rel, range => rows.slice(range.start, range.end).map(row => {
+      .child(uniform_list(list, rows.length, i => rows[i].abs, range => rows.slice(range.start, range.end).map(row => {
         const m = this.mark(row), sel = row.rel === here.selected;
         return h_flex().h(25).pl(6 + row.depth * 13 + 6).pr(12).mx(6).gap(6).items_center().rounded(5)
           .bg(sel ? th.selected : "#00000000").hover(s => s.bg(sel ? th.selected : th.hover))
@@ -428,13 +437,13 @@ export default class FilesSidebar extends View {
 
   // The right-click popup.
 
-  openMenu(r, e, cx) {
-    const row = this.visible().find(x => x.rel === r);
+  openMenu(key, e, cx) {
+    const row = this.visible().find(x => x.abs === key);
     if (!row) return;
-    this.here.selected = r; this.version++; cx.notify();
-    const items = menuItems({ abs: this.abs(r), dir: row.dir, root: this.here.root, on: this.here.on });
-    openOverlay({ mod: ME, kind: "popup", width: 236, height: 12 + items.filter(i => i).length * 28 + items.filter(i => !i).length * 9,
-      props: { menu: { abs: this.abs(r), rel: r, dir: row.dir, root: this.here.root, on: this.here.on } } });
+    const here = this.here, menu = { abs: row.abs, rel: row.rel, dir: row.dir, root: here.tree.root, on: here.on };
+    here.selected = row.rel; this.version++; cx.notify();
+    const items = menuItems(menu);
+    openOverlay({ mod: ME, kind: "popup", width: 236, height: 12 + items.filter(i => i).length * 28 + items.filter(i => !i).length * 9, props: { menu } });
   }
 
   renderMenu(cx) {
