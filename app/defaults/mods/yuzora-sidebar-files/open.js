@@ -16,43 +16,50 @@ const holds = (p, path, on) => p.props?.path === path && (p.props.on ?? null) ==
 
 /**
  * The pane showing a document, and the document if it is open. The pane its document was last seen in, which
- * follows a rename; else a pane whose props name the file and that no document claims. A pane the layout restored
- * is one: its tab may not have been shown since the app started, and then it has no document at all.
+ * follows a rename; else a pane whose props name the file and that no document claims, one that has started ahead
+ * of one that has not: a document says nothing about a pane that never ran, the other pane may be the one with it.
  */
 function docPane(path, on) {
   const open = documentFor(path, { on });
   const all = panes();
-  if (open?.pane && all.some(p => p.pane === open.pane)) return { pane: open.pane, doc: open.doc };
-  const there = all.find(p => DOC_MODS.includes(p.mod) && holds(p, path, on) && !paneDocument(p.pane));
-  return there ? { pane: there.pane, doc: open?.doc ?? null } : null;
+  const seen = open?.pane && all.find(p => p.pane === open.pane);
+  if (seen) return { pane: seen, doc: open.doc };
+  const mine = all.filter(p => DOC_MODS.includes(p.mod) && holds(p, path, on) && !paneDocument(p.pane));
+  const there = mine.find(p => p.started) ?? mine[0];
+  return there ? { pane: there, doc: there.started ? open?.doc ?? null : null } : null;
 }
 
 // An image has no document: its pane is the one whose props name it.
 function imagePane(path, on) {
   const there = panes().find(p => p.mod === MOD.image && holds(p, path, on));
-  return there ? { pane: there.pane, doc: null } : null;
+  return there ? { pane: there, doc: null } : null;
 }
 
 /**
  * Opens a file: shows the pane (or tab) already showing it, else opens a new tab of the Space shown
  * (`place` "tab", the default) or splits the focused pane to the right ("side"; a tab when no pane has focus).
- * `at`: {line, column}.
+ * `at`: {line, column}. A line asked of a pane that has not started has no document to go to, and the pane
+ * holds nothing, so a pane with the line takes its place: that is what a file that is not open gets.
  */
 export function openFile(path, on, { place = "tab", ...at } = {}) {
   if (!PLACES.includes(place)) throw new Error(`unknown place: ${place}`);
   const kind = kindOf(path);
+  const props = { path, on: on ?? null, opened: Date.now(), ...(at.line ? { line: at.line, column: at.column ?? 1 } : {}) };
   const open = kind === "image" ? imagePane(path, on) : docPane(path, on);
   if (open) {
-    run("pane.focus", { pane: open.pane });
-    // A pane that has not started has no document to ask: it opens at the top, and its pane takes the keys.
-    // A preview there switches to the source for the line.
-    if (open.doc != null) {
-      if (at.line) revealLine(open.doc, at.line, at.column ?? 1);
-      else focusDocument(open.doc);
+    const { pane, doc } = open;
+    if (!pane.started && at.line) {
+      replace(pane, props);
+      run("tab.select", { id: pane.tab });
+      return;
+    }
+    run("pane.focus", { pane: pane.pane });
+    if (doc != null) {
+      if (at.line) revealLine(doc, at.line, at.column ?? 1);
+      else focusDocument(doc);
     }
     return;
   }
-  const props = { path, on: on ?? null, opened: Date.now(), ...(at.line ? { line: at.line, column: at.column ?? 1 } : {}) };
   const f = focused();
   const beside = place === "side" && f?.pane ? panes().find(p => p.pane === f.pane) : null;
   if (beside) run("pane.split", { direction: "right", pane: beside.pane, mod: MOD[kind], props });
