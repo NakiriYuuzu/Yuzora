@@ -488,7 +488,7 @@ export default class Probed extends GitDiff {
   }
   batch(name) {
     const batch = super.batch(name);
-    if (batch.lines.length) { this.asked = true; this.cost = Math.max(this.cost, batch.cost); }
+    if (batch.lines.length) { this.asked = true; this.cost = Math.max(this.cost, batch.cost); note("batch", name, batch.from); }
     return batch;
   }
   probes(...rest) {
@@ -816,6 +816,19 @@ impl DiffPane {
             self.visual.run_until_parked();
         }
         self.script_renders() - start
+    }
+
+    /// How many different batches of lines were asked to be laid out out of sight (a side, and where in its order it
+    /// began), since the diff was opened: a batch asked for again, after a frame was cut off, is one.
+    fn batches(&self) -> usize {
+        let asked: std::collections::BTreeSet<(String, i64)> = self
+            .notes
+            .borrow()
+            .iter()
+            .filter(|n| n[0] == "batch")
+            .map(|n| (n[1].to_string(), n[2].as_i64().unwrap_or(-1)))
+            .collect();
+        asked.len()
     }
 
     /// How many frames asked for lines to be laid out out of sight, since the diff was opened.
@@ -1379,9 +1392,9 @@ fn yuzora_diff_an_ordinary_diff_scrolls_to_where_its_longest_line_ends(cx: &mut 
     }));
     let mut pane = DiffPane::mount(cx, Value::Array(rows), 1200., &Shared::default());
     assert!(
-        pane.asked_frames() <= 3,
-        "{} frames asked for something out of sight: an ordinary diff is ranked in one, and measured in one, the lines that cannot be wider than the widest laid out are not laid out",
-        pane.asked_frames()
+        pane.batches() <= 2,
+        "{} batches of lines were laid out: an ordinary diff is measured with one a side, the lines that cannot be wider than the widest laid out are not laid out",
+        pane.batches()
     );
     pane.wheel(100., 100., -100000., 0.);
     let end = text_start(&mut pane, "a") + pane.text_width("a");
@@ -1398,9 +1411,9 @@ fn yuzora_diff_a_whole_file_in_context_is_measured_in_one_round(cx: &mut TestApp
     let rows = Value::Array((0..10_000).map(|i| json!({"k": "=", "l": i + 1, "r": i + 1, "t": format!("{}{}", "a".repeat(30), "b".repeat(130 - i % 131))})).collect());
     let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
     assert!(
-        pane.asked_frames() <= 4,
-        "{} frames asked for something out of sight: the rows are ranked in a few slices, the lines laid out in one round",
-        pane.asked_frames()
+        pane.batches() <= 2,
+        "{} batches of lines were laid out, when one a side is enough",
+        pane.batches()
     );
     pane.wheel(100., 100., -100000., 0.);
     let end = text_start(&mut pane, "a") + pane.text_width("a");
@@ -2151,13 +2164,13 @@ fn added_lines(rows: usize) -> Value {
 
 // yuzora(v010): taking a diff in goes through none of its rows, and the frames after it through a slice of them at a time:
 // an event has 500 ms, a diff has up to a million rows. Counted (the rows each slice ranked, the reads of their properties),
-// not timed. 60,000 rows and 200,000 take the same slice at most; all the rows are ranked by the end, and the frames in
+// not timed. No slice of 60,000 rows or of 200,000 goes through more rows than a slice allows (a machine that is slow
+// enough to have a slice cut off ranks fewer, which it is meant to); all the rows are ranked by the end, and the frames in
 // between are drawn with the diff in them and read none of them.
 #[gpui::test]
 fn yuzora_diff_taking_a_diff_in_goes_through_none_of_its_rows_and_the_frames_after_it_through_a_slice_at_a_time(
     cx: &mut TestAppContext,
 ) {
-    let mut most = Vec::new();
     let mut failures = Vec::new();
     for rows in [60_000usize, 200_000] {
         let pane = DiffPane::mount(cx, added_lines(rows), 1200., &Shared::default());
@@ -2205,15 +2218,11 @@ fn yuzora_diff_taking_a_diff_in_goes_through_none_of_its_rows_and_the_frames_aft
                 pane.rendered().last()
             ));
         }
-        most.push(ranked.iter().copied().fold(0., f64::max));
+        let most = ranked.iter().copied().fold(0., f64::max);
+        if most > 7_000. {
+            failures.push(format!("{rows} rows: a slice ranked {most} of them, which a slice of two million units does not"));
+        }
         pane.close();
-    }
-    if let [few, many] = most[..]
-        && (many - few).abs() > few * 0.05
-    {
-        failures.push(format!(
-            "a slice of a diff of 200,000 rows ranked {many} rows at most, of 60,000 {few}"
-        ));
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
