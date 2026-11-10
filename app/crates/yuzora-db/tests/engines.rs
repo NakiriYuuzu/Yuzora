@@ -1133,7 +1133,7 @@ fn postgres_a_stop_the_server_does_not_answer_retires_the_connection() {
     only_with!("postgres");
     let relay = common::LaggingPostgres::start();
     run(async {
-        let mut conn = pg_through(&relay, SslMode::Disable).await;
+        let conn = pg_through(&relay, SslMode::Disable).await;
         relay.hold_cancels(Duration::from_secs(8));
         let started = Instant::now();
         conn.canceller().cancel().await;
