@@ -254,7 +254,7 @@ fi
 if [ "\${method:-}" = DELETE ]; then id=\${2##*/}; jq --argjson i $id 'map(select(.id != $i))' "$D/assets.json" > "$D/assets.tmp" && mv "$D/assets.tmp" "$D/assets.json"; exit 0; fi
 case "$2" in
   repos/*/releases/*/assets\\?per_page=100) src="$D/assets.json";;
-  repos/*/releases\\?per_page=100) src="$D/releases.json";;
+  repos/*/releases\\?per_page=100) if [ -f "$D/fail_list" ]; then echo "gh: HTTP 502 Bad Gateway" >&2; exit 1; fi; src="$D/releases.json";;
   repos/*/releases/assets/*) cat "$D/content_\${2##*/}"; exit 0;;
   *) echo "fake gh: unexpected $*" >&2; exit 9;;
 esac
@@ -319,6 +319,31 @@ if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "$src"; else cat "$src"; fi
     expect(r.status, r.err).toBe(0);
     expect(r.calls).toContain("--method DELETE");
     expect(r.out).toContain("uploaded  a.txt");
+  });
+
+  describe("the draft step, when GitHub does not answer the list of releases", () => {
+    const draft = (bin: string) =>
+      spawnSync("bash", ["-c", workflow.jobs.draft.steps.find((s) => s.name === "Draft the release and upload")!.run!], {
+        cwd: dir,
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: dir, GH_REPO: "NakiriYuuzu/Yuzora", TAG: "v0.1.0", PRERELEASE: "false", NOTES: "notes", UPLOAD_PLAN: "" },
+        encoding: "utf8",
+      });
+    const calls = () => readFileSync(join(dir, "calls.log"), "utf8");
+
+    test("a failed list is a failure: no release is created on the strength of it", () => {
+      const bin = setup([]);
+      writeFileSync(join(dir, "fail_list"), "");
+      const r = draft(bin);
+      expect(r.status).not.toBe(0);
+      expect(calls()).not.toContain("release create");
+    });
+
+    test("a list without the tag's release is when one is created", () => {
+      const bin = setup([]);
+      writeFileSync(join(dir, "releases.json"), JSON.stringify([{ id: 9, tag_name: "v0.0.19" }]));
+      draft(bin);
+      expect(calls()).toContain("release create v0.1.0");
+    });
   });
 
   test("the release for a tag, drafts included, must be one", () => {
