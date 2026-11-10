@@ -356,6 +356,7 @@ test("the author typed for one repo's commit is not used for another's", async (
   expect(s.w.author.value).toBe("Mallory <m@example.com>");
   s.go("/b");
   s.frame();
+  await s.settle();
   s.type("beta message");
   s.frame().button("commit.button")!.handlers.on_click({}, s.cx);
   await flush();
@@ -681,17 +682,18 @@ test("the amend ticked for one repo is not ticked for another, and the other's c
 
 // ---- what a repo holds is not let go of -------------------------------------------------------------------------
 
-test("a commit message, author and amend typed for a repo are there when it is shown again, after any number of other repos", async () => {
-  const s = world();
-  await s.settle();
-  s.type("feat: a long message I wrote for A");
-  s.w.author.value = "Pair <p@example.com>";
-  click(s, s.frame(), "amend");
-  await visit(s, 12, "keep");
-  s.go("/a"); s.frame(); await s.settle();
-  expect(s.w.box.value).toBe("feat: a long message I wrote for A");
-  expect(s.w.author.value).toBe("Pair <p@example.com>");
-  expect(s.frame().texts).toContain("commit.amendButton");
+test("a commit message, an author, or an amend typed for a repo is there when it is shown again, after any number of other repos", async () => {
+  for (const kind of ["message", "author", "amend"]) {
+    const s = world();
+    await s.settle();
+    if (kind === "message") s.type("feat: a long message I wrote for A");
+    if (kind === "author") s.w.author.value = "Pair <p@example.com>";
+    if (kind === "amend") click(s, s.frame(), "amend");
+    await visit(s, 12, `keep-${kind}-`);
+    s.go("/a"); s.frame(); await s.settle();
+    expect([kind, s.w.box.value, s.w.author.value, s.frame().texts.includes("commit.amendButton")]).toEqual([
+      kind, kind === "message" ? "feat: a long message I wrote for A" : "", kind === "author" ? "Pair <p@example.com>" : "", kind === "amend"]);
+  }
 });
 
 test("a repo whose push is going on, or whose commit waits on a question, is not let go of either", async () => {
@@ -710,6 +712,7 @@ test("a repo whose push is going on, or whose commit waits on a question, is not
   q.frame().button("commit.button")!.handlers.on_click({}, q.cx);
   await flush();
   await q.answer(q.pending("commitChecks")[0], [{ kind: "todo", files: ["x.txt"] }]);
+  q.type("");
   await visit(q, 12, "ask");
   q.go("/a"); q.frame(); await q.settle();
   expect(q.frame().texts).toContain("commit.anyway");
@@ -752,7 +755,7 @@ test("a pinned repo's open that fails does not put its error over the place the 
     expect(f.files).toEqual(["y.txt", "x.txt"]);
     expect(f.texts.join("\n")).not.toMatch(/dubious|machine away/);
     expect(s.badge()).toBe(2);
-    await s.answer(s.pending("changed", (g) => g.args[0] === ":/b")[0], 5);
+    await s.answer(s.pending("changed", (g) => g.args[0] === ":/b").at(-1)!, 5);
     await s.settle();
     expect(s.w.asks.status.length).toBe(reads + 1);
   }
@@ -967,4 +970,35 @@ test("while a place is being opened the header still says what is on screen: its
   expect(header(s.frame())).toEqual({ dot: false, name: "a" });
   await s.answer(s.pending("open", (g) => g.args[0] === "/p")[0], info("/p"));
   expect(header(s.frame())).toEqual({ dot: true, name: "p" });
+});
+
+test("the Yes of a discard asked about discards the file it names, though another was asked about since", async () => {
+  const s = world();
+  await s.settle();
+  const f = s.frame();
+  s.aim(f, 1); s.press(f, f.keyOf("x.txt"));
+  const asked = s.frame();
+  s.aim(asked, 1); s.press(asked, asked.keyOf("only-a.txt"));
+  click(s, asked, "discard-yes");
+  await flush();
+  expect(s.w.asks.discard).toEqual([]);
+  expect(s.frame().texts).toContain("discard.ask");
+  click(s, s.frame(), "discard-yes");
+  await flush();
+  expect(s.w.asks.discard.map((g) => g.args)).toEqual([[":/a", ["only-a.txt"]]]);
+});
+
+test("a quiet fetch waits for the repo to be read in this visit, like any other write", async () => {
+  const s = world({ autoFetchMinutes: 1 });
+  await s.settle();
+  const fetchTimer = () => { s.view.fetchedAt = 0; s.w.timers.filter((t) => t.ms === 60000).forEach((t) => t.fn(s.cx)); };
+  s.go("/b"); s.frame(); await s.settle();
+  s.go("/a"); s.frame();
+  fetchTimer();
+  await flush();
+  expect(s.w.asks.fetch).toEqual([]);
+  await s.settle();
+  fetchTimer();
+  await flush();
+  expect(s.w.asks.fetch.map((g) => g.args)).toEqual([[":/a", { auto: true }]]);
 });
