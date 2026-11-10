@@ -375,10 +375,13 @@ impl MsConn {
 
     /// `sql` with parameters; the rows of its first result.
     ///
-    /// It only reads, so a socket the server closed while the connection sat
-    /// idle is replaced and the query runs again, once.
+    /// It only reads (the catalog), so a socket the server closed while the
+    /// connection sat idle is replaced and the query runs again, once, and a
+    /// read the server chose as the victim of a deadlock with someone's DDL runs
+    /// again, as the server's message asks, a few times at most.
     async fn rows(&mut self, sql: &str, params: &[&dyn ToSql]) -> DbResult<Vec<Row>> {
         let mut reused = self.client.is_some();
+        let mut reruns = 0;
         loop {
             let mut client = self.take_client().await?;
             match first_result(&mut client, sql, params).await {
@@ -387,6 +390,11 @@ impl MsConn {
                     return Ok(rows);
                 }
                 Err(e) if reused && dropped(&e) => reused = false,
+                Err(e) if deadlock_victim(&e) && reruns < DEADLOCK_RERUNS => {
+                    reruns += 1;
+                    self.client = Some(client);
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * reruns)).await;
+                }
                 Err(e) => {
                     if !fatal(&e) {
                         self.client = Some(client);
@@ -714,6 +722,16 @@ fn type_name(t: ColumnType) -> &'static str {
 fn dropped(e: &TdsError) -> bool {
     matches!(e, TdsError::Io { .. })
 }
+
+/// The server rolled the statement back because it picked this connection to
+/// give way in a deadlock (Msg 1205), and says to run it again.
+fn deadlock_victim(e: &TdsError) -> bool {
+    matches!(e, TdsError::Server(token) if token.code() == 1205)
+}
+
+/// How often a read that was a deadlock victim is run again before its error is
+/// the answer (50, 100, 150 and 200 ms apart).
+const DEADLOCK_RERUNS: u64 = 4;
 
 /// The connection can't be used after this one.
 fn fatal(e: &TdsError) -> bool {

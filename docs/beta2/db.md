@@ -75,6 +75,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - footer 的訊息（寫回失敗、唯讀原因）只顯示第一行，點一下展開全文；新的寫回失敗會自動展開（伺服器的 DETAIL、HINT 行在第二行以後）。展開的訊息會依 pane 寬度換行。
 - Database dock 開著時，表格 pane 只有約 110–230 px 寬：footer 的狀態文字各佔一行、太長就截斷，Discard／Write back（寫回中只有 Stop）按鈕放不下時換到下一行，只要 pane 比 footer 本身高，就完整在 pane 內，不會被切掉（110 px 寬時 footer 約 115 px 高）。展開的失敗訊息有 140 px 的高度上限、可捲，pane 放不下時它先縮，不推擠 footer，所以按鈕和「▾ 訊息」開關永遠在；代價是 pane 很矮時表格區被壓到 0，收起訊息就回來。工具列也一樣：資料表名稱和分頁放不下時換行，Run／Stop 按鈕在最後一行靠右。
 - SQL Server 的連線被伺服器關掉（閒置逾時、防火牆、重啟、`KILL`）時，下一次使用才會發現：寫回的第一句（檢查未結束交易）和 metadata 查詢遇到這種斷線會自動換一條新連線重試一次（這時還沒寫入任何東西）；SQL 頁籤的語句不重試，因為答案遺失不代表語句沒執行。
+- SQL Server 的目錄查詢（`databases`、`objects`、`describe`，都經 `MsConn::rows`）被伺服器選為死結的犧牲者（Msg 1205）時，會照伺服器訊息說的再跑一次，最多四次（隔 50、100、150、200 毫秒）。原因：這些查詢在目錄列上持有共用鎖，同一個資料庫裡另一個連線正在建立或刪除物件時，兩邊會互等；伺服器挑回滾成本較低的那邊，也就是只讀的目錄查詢（本機 `system_health` 的死結紀錄就是這個形狀）。沒有這道重跑時，結構列表會顯示「Transaction … was deadlocked … Rerun the transaction」而不是物件清單。只有 `rows` 做這件事：SQL 頁籤的語句與寫回不重跑，它們不一定可以重複執行。測試：`tests/mssql_catalog_deadlock.rs` 在自己的資料庫裡讓這個死結照指定的順序發生。
 - SQL Server 驅動（tiberius）讀不了 `geography`／`geometry`／`hierarchyid` 等 CLR 型別和 `sql_variant`：開這種表會以 `unsupported column type` 結束，不會再卡在載入。要看這些欄位請在 SQL 頁籤自己轉型（`col.ToString()`、`CAST(col AS nvarchar(max))`）。
 
 - 只有「開表」產生的結果集可以編輯，而且資料表必須有 primary key；沒有就停用並顯示原因（`edit.no_key`）。連線設成唯讀（SQLite 的 `readOnly`）時也會停用（`edit.read_only`）。
