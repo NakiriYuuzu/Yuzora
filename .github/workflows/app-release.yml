@@ -404,9 +404,10 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           if [ -n "$RUN_ID" ]; then
-            # An earlier build of the same bytes under the version being signed for.
+            # An earlier build of the same bytes under the version being signed for. Renamed, not copied: the old
+            # names would match the manifest's pattern for this version as targets that do not exist.
             for f in dist/yuzora-"$CARGO_VERSION"-*.tar.gz; do
-              [ "$CARGO_VERSION" = "$VERSION" ] || cp "$f" "dist/yuzora-$VERSION-${f#dist/yuzora-"$CARGO_VERSION"-}"
+              [ "$CARGO_VERSION" = "$VERSION" ] || mv "$f" "dist/yuzora-$VERSION-${f#dist/yuzora-"$CARGO_VERSION"-}"
             done
           else
             for target in macos-aarch64 windows-x86_64 linux-x86_64 linux-aarch64; do
