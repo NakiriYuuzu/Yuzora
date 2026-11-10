@@ -1395,7 +1395,10 @@ fn postgres_a_stop_pressed_as_a_query_ends_is_not_felt_by_the_next_run() {
     assert!(state.elapsed_ms >= 2000, "the next run was cut short: {state:?}");
 }
 
-/// The same, with the pane opening a table next (its read is what the request finds).
+/// The same, with the table opening next (its read is what the request finds):
+/// the stop is for a statement on the table's own connection, which is the one
+/// the table is read on. A SQL tab's stop is for another connection, and no
+/// request of it can find the table (see the test below).
 #[test]
 fn postgres_a_stop_pressed_as_a_query_ends_is_not_felt_by_the_table_the_pane_opens_next() {
     only_with!("postgres");
@@ -1410,10 +1413,11 @@ fn postgres_a_stop_pressed_as_a_query_ends_is_not_felt_by_the_table_the_pane_ope
     let relay = common::LaggingPostgres::start();
     let id = postgres_behind_slow_cancels("pg-late-open", "yz_wb_lateopen", &relay);
     let pane = owner(&id, "late-open");
-    assert_eq!(wait(session::start_query(&id, None, &pane, "SELECT 1")).error, None);
+    let tables_connection = session::table_owner(&pane);
+    assert_eq!(wait(session::start_query(&id, None, &tables_connection, "SELECT 1")).error, None);
     relay.hold_cancels(Duration::from_millis(700));
 
-    let first = session::start_query(&id, None, &pane, "DO $$ BEGIN PERFORM pg_sleep(0.3); END $$");
+    let first = session::start_query(&id, None, &tables_connection, "DO $$ BEGIN PERFORM pg_sleep(0.3); END $$");
     std::thread::sleep(Duration::from_millis(150));
     session::cancel(first);
     assert_eq!(within(Duration::from_secs(10), "the query that ended by itself", move || wait(first)).error, None);
@@ -1422,6 +1426,212 @@ fn postgres_a_stop_pressed_as_a_query_ends_is_not_felt_by_the_table_the_pane_ope
     let state = within(Duration::from_secs(30), "the table", move || wait(opened));
     assert_eq!(state.error, None, "the Stop reached the table the pane opened after the query: {state:?}");
     assert_eq!(state.results.first().map(|r| (r.rows, r.error.clone())), Some((1, None)), "{state:?}");
+}
+
+/// A stop is for one connection. With a request for `stopped` held back from
+/// the server (the relay has not let it through, however long this takes), the
+/// pane's `other` connection is leased and used at once, and `stopped` is not
+/// handed to new work before the server has dealt with the request.
+fn a_stop_on_the_way_holds_back_only_its_own_connection(
+    relay: &common::LaggingPostgres,
+    id: &str,
+    stopped: &str,
+    other: &str,
+) {
+    relay.hold_cancels_until_released();
+    let before = relay.heard().len();
+    let mut lease = runtime::block_on(session::lease(id, None, stopped)).unwrap();
+    lease.conn().canceller().cancel_in_background();
+    drop(lease);
+
+    let (connection, alone) = (id.to_owned(), other.to_owned());
+    let used =
+        within(Duration::from_secs(10), "the other connection, while a stop is on its way for this one", move || {
+            wait(session::start_query(&connection, None, &alone, "SELECT 1"))
+        });
+    assert_eq!(used.error, None, "{used:?}");
+    assert_eq!(
+        relay.heard().len(),
+        before,
+        "the request got to the server through the relay that holds it: the premise is gone"
+    );
+
+    let (heard, outcome) = mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let leased = runtime::block_on(session::lease(id, None, stopped)).map(|_| ());
+            let _ = heard.send((leased, relay.heard().split_off(before)));
+        });
+        let early = outcome.recv_timeout(Duration::from_millis(500));
+        relay.release();
+        assert!(
+            early.is_err(),
+            "the connection was handed to new work with a stop still on its way to the server: {early:?}"
+        );
+        let (leased, heard) = outcome
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the connection, once the server has dealt with the stop");
+        assert_eq!(leased, Ok(()));
+        assert_eq!(
+            heard,
+            [common::Heard::StopDealtWith],
+            "the connection was handed on before the server had dealt with the stop"
+        );
+    });
+    let after = wait(session::start_query(id, None, stopped, "SELECT 1"));
+    assert_eq!(after.error, None, "the connection the stop was dealt with on is still whole: {after:?}");
+}
+
+/// The pane's SQL tab and its table are two connections and keep their stops
+/// apart: a stop on the way for the table is waited for by the table alone,
+/// and the same for the tab. (`open_lease` is where it is waited for, and a
+/// lease is per connection.)
+#[test]
+fn postgres_a_stop_on_the_tables_connection_is_settled_there_and_holds_back_only_the_table() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    let id = postgres_behind_slow_cancels("pg-own-stop", "yuzora_p8", &relay);
+    let pane = owner(&id, "own-stop");
+    let (tab, table_connection) = (pane.clone(), session::table_owner(&pane));
+    for owner in [&tab, &table_connection] {
+        assert_eq!(wait(session::start_query(&id, None, owner, "SELECT 1")).error, None);
+    }
+    a_stop_on_the_way_holds_back_only_its_own_connection(&relay, &id, &table_connection, &tab);
+    a_stop_on_the_way_holds_back_only_its_own_connection(&relay, &id, &tab, &table_connection);
+}
+
+/// The same on SQL Server, where a stop ends the connection it is for: the
+/// write-back's ends the table's socket and the SQL tab's statement goes on.
+#[test]
+fn mssql_a_sql_tab_statement_and_a_waiting_write_back_are_stopped_apart() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_wb_twostops");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE dbo.t(id int PRIMARY KEY, name nvarchar(20)); INSERT INTO dbo.t VALUES (1, N'a');");
+    let pane = open(&id, "two-stops", &table("dbo", "t"));
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    run(&id, "locker", "BEGIN TRANSACTION; UPDATE dbo.t SET name = N'locked' WHERE id = 1");
+    let writer = {
+        let set = pane.set.clone();
+        std::thread::spawn(move || runtime::block_on(session::write_back_set(&set)))
+    };
+    let count = |what: &str| {
+        first_row(
+            &id,
+            &format!(
+                "SELECT CAST(count(*) AS varchar(5)) FROM sys.dm_exec_requests WHERE {what} AND database_id = DB_ID(N'yz_wb_twostops')"
+            ),
+        )
+    };
+    until("the server never saw the write-back wait for the lock", || count("blocking_session_id <> 0") == ["1"]);
+    let waiting = || count("command = N'WAITFOR'") == ["1"];
+
+    let query = session::start_query(&id, None, &pane.owner, "WAITFOR DELAY '00:01:00'");
+    until("the SQL tab's statement never ran beside the write-back that waits", waiting);
+    session::cancel(query);
+    assert!(within(Duration::from_secs(10), "the SQL tab's Stop", move || wait(query)).cancelled);
+    assert!(results::lock(&pane.set).is_writing(), "the SQL tab's Stop ended the write-back");
+    assert_eq!(count("blocking_session_id <> 0"), ["1"]);
+
+    let query = session::start_query(&id, None, &pane.owner, "WAITFOR DELAY '00:01:00'");
+    until("the SQL tab's second statement never ran", waiting);
+    results::lock(&pane.set).stop_write();
+    assert_eq!(
+        within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()),
+        Err(DbError::Cancelled)
+    );
+    assert!(waiting(), "the write-back's Stop ended the SQL tab's statement");
+    assert!(session::job_state(query).unwrap().running);
+    session::cancel(query);
+    assert!(within(Duration::from_secs(10), "the SQL tab's Stop", move || wait(query)).cancelled);
+    run(&id, "locker", "ROLLBACK TRANSACTION");
+    assert_eq!(first_row(&id, "SELECT name FROM dbo.t WHERE id = 1"), ["a"], "the stopped write-back wrote");
+}
+
+/// What a value is shown and written by is set where a connection is opened,
+/// on every connection of the pane (the SQL tab's, the table's, the count's)
+/// and on the one that takes the place of a connection that was retired,
+/// whatever the database says as its own.
+#[test]
+fn postgres_every_connection_of_a_pane_is_opened_with_the_settings_a_value_is_read_and_written_by() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_printread");
+    let db = scratch.name.clone();
+    run(
+        &scratch.maintenance,
+        "style",
+        &format!("ALTER DATABASE {db} SET datestyle = 'SQL, DMY'; ALTER DATABASE {db} SET extra_float_digits = 0"),
+    );
+    let id = scratch.connection();
+    let pane = owner(&id, "print-read");
+    let says = |on: &str| -> Vec<String> {
+        let sql = "SELECT current_setting('datestyle'), current_setting('extra_float_digits'), pg_backend_pid()::text";
+        let state = wait(session::start_query(&id, None, on, sql));
+        assert_eq!(state.error, None);
+        let set = results::get(state.results.last().expect("a result").id).expect("result");
+        let r = results::lock(&set);
+        r.rows[0].iter().map(|c| c.display().into_owned()).collect()
+    };
+    let table_connection = session::table_owner(&pane);
+    let mut pids = Vec::new();
+    for on in [pane.clone(), table_connection.clone(), session::count_owner(&pane)] {
+        let answer = says(&on);
+        assert_eq!(answer[..2], ["ISO, DMY", "3"], "{on}");
+        pids.push(answer[2].clone());
+    }
+    let mut lease = runtime::block_on(session::lease(&id, None, &table_connection)).unwrap();
+    runtime::block_on(lease.conn().canceller().abandon());
+    drop(lease);
+    let again = says(&table_connection);
+    assert_eq!(again[..2], ["ISO, DMY", "3"], "the connection that took the place of the retired one");
+    assert_ne!(again[2], pids[1], "the retired connection was used again");
+}
+
+/// The query in the SQL tab and the write-back of the table run side by side,
+/// each on its connection: neither waits behind the other, and the Stop of one
+/// does not end the other.
+#[test]
+fn postgres_a_sql_tab_statement_and_a_waiting_write_back_are_stopped_apart() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_twostops");
+    let direct = scratch.connection();
+    run(&direct, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');");
+    let locker = raw_postgres("yz_wb_twostops");
+    let pane = open(&direct, "two-stops", &table("public", "t"));
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
+    let writer = writing_on_a_row_lock(&pane, &locker, "yz_wb_twostops");
+    // Not the locker: inside its transaction the server shows it the activity as it was at the first look.
+    let watcher = raw_postgres("yz_wb_twostops");
+    let sleeping = || {
+        let found = runtime::block_on(watcher.query_one(
+            "SELECT count(*)::int FROM pg_stat_activity WHERE datname = 'yz_wb_twostops' AND state = 'active' \
+             AND query LIKE '%pg_sleep(60)%' AND pid <> pg_backend_pid()",
+            &[],
+        ))
+        .unwrap();
+        found.get::<_, i32>(0) == 1
+    };
+
+    let query = session::start_query(&direct, None, &pane.owner, "SELECT pg_sleep(60)");
+    until("the SQL tab's statement never ran beside the write-back that waits", sleeping);
+    session::cancel(query);
+    assert!(within(Duration::from_secs(10), "the SQL tab's Stop", move || wait(query)).cancelled);
+    assert!(results::lock(&pane.set).is_writing(), "the SQL tab's Stop ended the write-back");
+
+    let query = session::start_query(&direct, None, &pane.owner, "SELECT pg_sleep(60)");
+    until("the SQL tab's second statement never ran", sleeping);
+    results::lock(&pane.set).stop_write();
+    assert_eq!(
+        within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()),
+        Err(DbError::Cancelled)
+    );
+    assert!(sleeping(), "the write-back's Stop ended the SQL tab's statement");
+    assert!(session::job_state(query).unwrap().running);
+    session::cancel(query);
+    assert!(within(Duration::from_secs(10), "the SQL tab's Stop", move || wait(query)).cancelled);
+    runtime::block_on(locker.batch_execute("ROLLBACK")).unwrap();
+    assert_eq!(first_row(&direct, "SELECT name FROM t WHERE id = 1"), ["a"], "the stopped write-back wrote");
 }
 
 /// The Stop and the end of the query a few hundred microseconds apart either
@@ -1633,8 +1843,9 @@ fn postgres_a_write_back_does_not_wait_for_a_count_that_borrowed_the_panes_conne
     assert_eq!(session::status(&limited).state, session::State::Connected);
 }
 
-/// Whatever else asks for the pane's connection — the SQL tab, a refresh, a
-/// save — gets it at once when a count has borrowed it.
+/// Whatever else asks for the table's connection — a refresh, a save — gets it
+/// at once when a count has borrowed it. (A SQL tab's query has a connection of
+/// its own: `a_count_on_the_tables_connection_steps_aside_for_the_tables_work_and_not_for_the_sql_tabs`.)
 #[cfg(unix)]
 #[test]
 fn sqlite_a_count_that_borrowed_the_panes_connection_steps_aside_for_whoever_asks() {
