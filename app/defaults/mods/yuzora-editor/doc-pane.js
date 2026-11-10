@@ -339,8 +339,7 @@ export class DocPane extends View {
       button("overwrite", t("banner.overwrite"), (_e, cx) => this.save(true, cx), true),
     ]));
     else if (s.deleted) out.push(banner(t("banner.deleted"), "warn", s.readonly ? [] : [button("restore", t("banner.restore"), (_e, cx) => this.save(true, cx), true)]));
-    if (s.remote) out.push(banner(t("banner.remote"), "info"));
-    else if (s.notUtf8) out.push(banner(t("banner.not_utf8"), "info"));
+    if (s.notUtf8) out.push(banner(t("banner.not_utf8"), "info"));
     else if (s.large && !s.binary && !s.tooLarge) out.push(banner(t("banner.large"), "info"));
     return out;
   }

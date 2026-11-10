@@ -25,7 +25,8 @@ use gpui_base::input::{EditorState, InputEvent, Position, Rope};
 use yuzora_core::{HostObject, HostValue};
 
 use crate::editor::{self, CodeEditorOptions, Look};
-use crate::fsops::{self, Eol, Stamp, TextFile, WriteError};
+use crate::fsops::{self, Eol, Seen, Stamp, TextFile, WriteError};
+use crate::remote_write::posix_crc;
 use crate::highlight::{self, Lang};
 
 /// Files above this are not opened at all.
@@ -274,7 +275,7 @@ impl Facts {
             binary: false,
             too_large: false,
             not_utf8: false,
-            readonly: key.on.is_some(),
+            readonly: false,
             large: false,
         }
     }
@@ -288,7 +289,7 @@ impl Facts {
             binary: f.binary,
             too_large: f.too_large,
             not_utf8: f.not_utf8,
-            readonly: f.readonly || f.not_utf8 || key.on.is_some(),
+            readonly: f.readonly || f.not_utf8,
             large: f.size > highlight::MAX_HIGHLIGHT_BYTES as u64,
         }
     }
@@ -356,6 +357,8 @@ pub struct DocView {
     baseline: Rope,
     disk: Option<Stamp>,
     disk_hash: u64,
+    /// [`TextFile::crc`] of the same read: what a save on another machine is held to.
+    disk_crc: u32,
     /// The permission bits last seen ([`fsops::mode`]), here only.
     disk_mode: Option<u32>,
     /// What a check found on disk while there were unsaved changes.
@@ -429,19 +432,6 @@ pub(crate) async fn blocking<T: Send + 'static>(
     rx.await.ok()
 }
 
-/// The bytes `fsops::write_text` puts on disk, for the content hash.
-fn encoded(text: &str, eol: Eol, bom: bool) -> Vec<u8> {
-    let mut out = Vec::with_capacity(text.len() + 3);
-    if bom {
-        out.extend_from_slice(b"\xEF\xBB\xBF");
-    }
-    match eol {
-        Eol::Lf => out.extend_from_slice(text.as_bytes()),
-        Eol::Crlf => out.extend_from_slice(text.replace('\n', "\r\n").as_bytes()),
-    }
-    out
-}
-
 impl DocView {
     fn new(id: u64, key: DocKey) -> Self {
         let facts = Facts::new(&key);
@@ -456,6 +446,7 @@ impl DocView {
             baseline: Rope::new(),
             disk: None,
             disk_hash: 0,
+            disk_crc: 0,
             disk_mode: None,
             incoming: None,
             unconfirmed: None,
@@ -601,6 +592,7 @@ impl DocView {
         self.facts = Facts::from_file(&self.key, &file);
         self.disk = Some(file.stamp);
         self.disk_hash = file.hash;
+        self.disk_crc = file.crc;
         self.saw(file.stamp);
         if !self.facts.editable_text() || self.facts.large != large {
             self.state = None;
@@ -766,10 +758,6 @@ impl DocView {
             let _ = tx.send(Saved::error("not loaded"));
             return rx;
         };
-        if self.key.on.is_some() {
-            let _ = tx.send(Saved::error("remote"));
-            return rx;
-        }
         if self.facts.readonly {
             let _ = tx.send(Saved::error("readonly"));
             return rx;
@@ -783,14 +771,22 @@ impl DocView {
         let expected = if force {
             None
         } else {
-            self.disk.map(|stamp| (stamp, self.disk_hash))
+            self.disk.map(|stamp| Seen {
+                stamp,
+                hash: self.disk_hash,
+                crc: self.disk_crc,
+            })
         };
-        let (path, eol, bom) = (self.key.path.clone(), self.facts.eol, self.facts.bom);
+        let (path, on) = (self.key.path.clone(), self.key.on.clone());
+        let (eol, bom) = (self.facts.eol, self.facts.bom);
         self.saving = true;
         self.bump(cx);
         cx.spawn(async move |this, cx| {
-            let hash = fsops::content_hash(&encoded(&text, eol, bom));
-            let result = blocking(move || fsops::write_text(&path, &text, eol, bom, expected))
+            let bytes = fsops::encode_text(&text, eol, bom);
+            let (hash, crc) = (fsops::content_hash(&bytes), posix_crc(&bytes));
+            let result = blocking(move || {
+                fsops::write_on(&path, on.as_deref(), &text, eol, bom, expected)
+            })
                 .await
                 .unwrap_or_else(|| Err(WriteError::Io("could not start a worker".into())));
             let _ = this.update(cx, |doc, cx| {
@@ -799,6 +795,7 @@ impl DocView {
                     Ok(stamp) => {
                         doc.disk = Some(stamp);
                         doc.disk_hash = hash;
+                        doc.disk_crc = crc;
                         doc.saw(stamp);
                         doc.facts.size = stamp.len;
                         doc.baseline = rope;
@@ -824,7 +821,7 @@ impl DocView {
                             error: None,
                         }
                     }
-                    Err(WriteError::Remote) => Saved::error("remote"),
+                    Err(WriteError::Refused(why)) => Saved::error(why.to_string()),
                     Err(WriteError::Io(e)) => Saved::error(e),
                 };
                 doc.bump(cx);
@@ -853,6 +850,7 @@ impl DocView {
         if let Some(file) = self.incoming.take() {
             self.disk = Some(file.stamp);
             self.disk_hash = file.hash;
+            self.disk_crc = file.crc;
         }
         self.conflict = false;
         self.bump(cx);
@@ -947,7 +945,7 @@ impl DocView {
     /// The permission bits on disk: whether the file can be written now.
     fn access_seen(&mut self, mode: u32, readonly: bool, cx: &mut Context<Self>) {
         self.disk_mode = Some(mode);
-        let readonly = readonly || self.facts.not_utf8 || self.key.on.is_some();
+        let readonly = readonly || self.facts.not_utf8;
         if readonly != self.facts.readonly {
             self.facts.readonly = readonly;
             self.sync_readonly(cx);
@@ -1388,8 +1386,11 @@ mod tests {
 
     #[test]
     fn encoded_matches_what_write_text_puts_on_disk() {
-        assert_eq!(encoded("a\nb", Eol::Lf, false), b"a\nb");
-        assert_eq!(encoded("a\nb", Eol::Crlf, true), b"\xEF\xBB\xBFa\r\nb");
+        assert_eq!(fsops::encode_text("a\nb", Eol::Lf, false), b"a\nb");
+        assert_eq!(
+            fsops::encode_text("a\nb", Eol::Crlf, true),
+            b"\xEF\xBB\xBFa\r\nb"
+        );
     }
 
     #[test]
@@ -1405,7 +1406,7 @@ mod tests {
             on: Some("lab".into()),
             path: "/x/a.md".into(),
         };
-        assert!(Facts::new(&remote).readonly);
+        assert!(!Facts::new(&remote).readonly);
     }
 
     /// A document with its editor drawn in a test window.
@@ -1413,10 +1414,36 @@ mod tests {
         path: &std::path::Path,
         cx: &mut gpui::TestAppContext,
     ) -> (Entity<DocView>, gpui::AnyWindowHandle) {
-        let key = DocKey {
-            on: None,
-            path: path.to_string_lossy().into_owned(),
-        };
+        editing_at(
+            DocKey {
+                on: None,
+                path: path.to_string_lossy().into_owned(),
+            },
+            cx,
+        )
+    }
+
+    /// [`editing`] for a file on a machine, answered by the stand-in `hc`.
+    #[cfg(unix)]
+    fn editing_on(
+        machine: &str,
+        path: &std::path::Path,
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<DocView>, gpui::AnyWindowHandle) {
+        crate::remote_write::testing::fake_hc();
+        editing_at(
+            DocKey {
+                on: Some(machine.into()),
+                path: path.to_string_lossy().into_owned(),
+            },
+            cx,
+        )
+    }
+
+    fn editing_at(
+        key: DocKey,
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<DocView>, gpui::AnyWindowHandle) {
         let id = cx.update(|cx| open(key, cx));
         cx.run_until_parked();
         let view = cx.update(|cx| get(id, cx).unwrap());
@@ -1618,6 +1645,144 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n");
         cx.update(|cx| assert!(!view.read(cx).dirty && !view.read(cx).conflict));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_file_on_a_machine_is_edited_and_saved(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "\u{feff}one\r\ntwo\r\n").unwrap();
+        let (view, window) = editing_on("lab", &path, cx);
+        cx.update(|cx| assert!(!view.read(cx).facts.readonly));
+        type_text(&view, window, "mine ", cx);
+        cx.update(|cx| assert!(view.read(cx).dirty));
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        let saved = futures::executor::block_on(saved).unwrap();
+        assert_eq!((saved.ok, saved.conflict, saved.error), (true, false, None));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            "\u{feff}mine one\r\ntwo\r\n".as_bytes()
+        );
+        cx.update(|cx| assert!(!view.read(cx).dirty && !view.read(cx).conflict));
+        // What the save left is what the next one is held to.
+        type_text(&view, window, "more ", cx);
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        assert!(futures::executor::block_on(saved).unwrap().ok);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            "\u{feff}mine more one\r\ntwo\r\n".as_bytes()
+        );
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn an_edit_on_a_machine_meets_a_change_made_there(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let (view, window) = editing_on("lab", &path, cx);
+        type_text(&view, window, "mine ", cx);
+        std::fs::write(&path, "theirs, longer\n").unwrap();
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        let saved = futures::executor::block_on(saved).unwrap();
+        assert_eq!((saved.ok, saved.conflict), (false, true));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs, longer\n");
+        cx.update(|cx| {
+            let doc = view.read(cx);
+            assert!(doc.conflict && doc.dirty && doc.incoming.is_some());
+            assert_eq!(doc.text(cx).as_ref(), "mine one\n");
+        });
+        // Keep mine: the next save holds to what is there now, and goes through.
+        view.update(cx, |doc, cx| doc.keep_mine(cx));
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        assert!(futures::executor::block_on(saved).unwrap().ok);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n");
+        cx.update(|cx| assert!(!view.read(cx).dirty && !view.read(cx).conflict));
+        // Gone there: a save is a conflict, saving it again (forced) makes it.
+        type_text(&view, window, "again ", cx);
+        std::fs::remove_file(&path).unwrap();
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        assert!(futures::executor::block_on(saved).unwrap().conflict);
+        assert!(!path.exists());
+        cx.update(|cx| assert!(view.read(cx).deleted));
+        let saved = view.update(cx, |doc, cx| doc.save(true, cx));
+        cx.run_until_parked();
+        assert!(futures::executor::block_on(saved).unwrap().ok);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine again one\n");
+        cx.update(|cx| assert!(!view.read(cx).deleted && !view.read(cx).dirty));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_file_on_a_machine_that_cannot_be_written_opens_read_only(cx: &mut gpui::TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+        // SAFETY: a plain syscall with no arguments.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let (view, _window) = editing_on("lab", &path, cx);
+        cx.update(|cx| assert!(view.read(cx).facts.readonly));
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        let saved = futures::executor::block_on(saved).unwrap();
+        assert_eq!(
+            (saved.ok, saved.error.as_deref()),
+            (false, Some("readonly"))
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n");
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_folder_that_cannot_be_entered_does_not_make_a_file_deleted(cx: &mut gpui::TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+        // SAFETY: a plain syscall with no arguments.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        for machine in [None, Some("lab")] {
+            let dir = tempfile::tempdir().unwrap();
+            let sub = dir.path().join("sub");
+            std::fs::create_dir(&sub).unwrap();
+            let path = sub.join("a.txt");
+            std::fs::write(&path, "one\n").unwrap();
+            let (view, window) = match machine {
+                Some(m) => editing_on(m, &path, cx),
+                None => editing(&path, cx),
+            };
+            type_text(&view, window, "mine ", cx);
+            std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+            cx.run_until_parked();
+            let saved = futures::executor::block_on(saved).unwrap();
+            std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                !saved.ok && !saved.conflict && saved.error.is_some(),
+                "{machine:?}: {saved:?}"
+            );
+            cx.update(|cx| assert!(!view.read(cx).deleted && view.read(cx).dirty, "{machine:?}"));
+            // The folder opens again and someone else wrote the file: a save is held to what was read.
+            std::fs::write(&path, "theirs, written after the read\n").unwrap();
+            let again = view.update(cx, |doc, cx| doc.save(false, cx));
+            cx.run_until_parked();
+            let again = futures::executor::block_on(again).unwrap();
+            assert!(again.conflict, "{machine:?}: {again:?}");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "theirs, written after the read\n",
+                "{machine:?}"
+            );
+        }
     }
 
     #[gpui::test]
