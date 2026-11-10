@@ -2008,6 +2008,53 @@ fn yuzora_diff_a_selection_made_while_the_rows_are_ranked_stays_through_it_and_g
     pane.close();
 }
 
+// yuzora(v010-git-copy): at any zoom a click and a right-click select on the side the pointer is on, and Shift reaches
+// to a row on the other side without changing the side. The pointer comes back in window pixels and the sides are
+// worked out in the unit the pane writes lengths in, so a point on the left side at 250 would be on the right at zoom 2
+// (500 of 299.5), and one on the right side at 900 on the left at zoom 0.8 (720 of 749.5), if it were not brought in.
+#[gpui::test]
+fn yuzora_diff_a_click_and_a_right_click_select_on_the_side_they_are_on_at_every_zoom(cx: &mut TestAppContext) {
+    if !alone("yuzora_diff_a_click_and_a_right_click_select_on_the_side_they_are_on_at_every_zoom") {
+        return;
+    }
+    let rows = json!([
+        {"k": "~", "h": 0, "l": 1, "li": 0, "lt": "a".repeat(300), "r": 1, "ri": 0, "rt": "b".repeat(300)},
+        {"k": "~", "h": 0, "l": 2, "li": 1, "lt": "a".repeat(300), "r": 2, "ri": 1, "rt": "b".repeat(300)},
+    ]);
+    let mut failures = Vec::new();
+    for zoom in ZOOMS {
+        let z = zoom as f64;
+        let mut pane = DiffPane::zoomed(cx, rows.clone(), zoom, json!({"real": true}));
+        let (left, right) = (250. * z, pane.width("l") + z + 100. * z);
+        let marked_side = |pane: &DiffPane| pane.noted("shade").last().and_then(|n| n[1].as_str().map(str::to_owned));
+        let menu_runs = |pane: &DiffPane| pane.noted("overlay").last().map(|n| n[1]["props"]["menu"]["runs"].clone());
+        pane.click(left, 38. * z, false);
+        if marked_side(&pane).as_deref() != Some("l") {
+            failures.push(format!("zoom {zoom}: a click at {left} marked {:?}, wanted the left side", marked_side(&pane)));
+        }
+        pane.click(right, 38. * z, false);
+        if marked_side(&pane).as_deref() != Some("r") {
+            failures.push(format!("zoom {zoom}: a click at {right} marked {:?}, wanted the right side", marked_side(&pane)));
+        }
+        pane.right_press(left, 58. * z);
+        if menu_runs(&pane) != Some(json!([["l", 1, 2]])) {
+            failures.push(format!("zoom {zoom}: a right-click at {left} offered {:?}, wanted row 2 of the left side", menu_runs(&pane)));
+        }
+        pane.right_press(right, 38. * z);
+        if menu_runs(&pane) != Some(json!([["r", 0, 1]])) {
+            failures.push(format!("zoom {zoom}: a right-click at {right} offered {:?}, wanted row 1 of the right side", menu_runs(&pane)));
+        }
+        pane.click(left, 38. * z, false);
+        pane.click(right, 58. * z, true);
+        pane.right_press(left, 58. * z);
+        if menu_runs(&pane) != Some(json!([["l", 0, 2]])) {
+            failures.push(format!("zoom {zoom}: Shift from the left side to a row on the right offered {:?}, wanted both rows of the left side", menu_runs(&pane)));
+        }
+        pane.close();
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 // yuzora(v010): an ordinary diff (thousands of lines, a few with wide characters) scrolls sideways
 // to where its longest line ends and not past it: the room that is left for lines that were not
 // laid out is what they could take at most, and for plain text that is what they take.
