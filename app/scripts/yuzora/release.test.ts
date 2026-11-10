@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { DEFAULT_LOCAL_DOWNLOADS, GITHUB_DOWNLOADS, checkRun, checkTag, parseInputs, plan, releaseBody, sectionOf, uploadPlan } from "./release";
+import { DEFAULT_LOCAL_DOWNLOADS, GITHUB_DOWNLOADS, api, checkRun, checkTag, parseInputs, plan, releaseBody, sectionOf, uploadPlan } from "./release";
 
 const SHA = "a".repeat(40);
 const OTHER = "b".repeat(40);
@@ -276,6 +276,17 @@ describe("plan, against a fake gh and a throwaway repository", () => {
     expect(out).toMatchObject({ stage: "dry-run", version: "0.2.0", sha, run_id: "", cargo_version: "0.1.0", downloads: DEFAULT_LOCAL_DOWNLOADS });
     expect(readFileSync(output, "utf8")).toContain("run_id=\n");
     expect(out.notes).toBeUndefined();
+  });
+
+  test("GitHub's answer can be bigger than a megabyte (compare lists every commit and file of a long branch)", () => {
+    accepted();
+    reply(`repos/NakiriYuuzu/Yuzora/compare/main...${sha}`, 200, { status: "behind", files: ["x".repeat(3_000_000)] });
+    expect(plan(env()).sha).toBe(sha);
+  });
+
+  test("when gh cannot answer at all, the error says why instead of an HTTP status line", () => {
+    process.env.PATH = join(fixtures, "no-gh");
+    expect(() => api("repos/NakiriYuuzu/Yuzora/compare/main...abc")).toThrow("ENOENT");
   });
 
   test("a changed workflow file is only a warning", () => {
