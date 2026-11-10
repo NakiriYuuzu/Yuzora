@@ -332,8 +332,8 @@ export default class extends View {
 fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut TestAppContext) {
     let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
     let (from, to) = (
-        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
-        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, t, tokens, open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, gitSettings } from \"fixture\";",
+        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
+        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify, t, tokens, open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, gitSettings } from \"fixture\";",
     );
     assert_eq!(source.matches(from).count(), 1, "the diff mod no longer has: {from}");
     source = source.replacen(from, to, 1);
@@ -378,7 +378,7 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
         ] {
             module = module.function(name, move |_| Ok(to_host(&value)));
         }
-        for name in ["shared", "setShared", "run", "panes", "focused", "closeOverlay", "diffStage", "diffUnstage", "diffDiscard"] {
+        for name in ["shared", "setShared", "run", "panes", "focused", "closeOverlay", "openOverlay", "notify", "diffText", "diffPatch", "diffStage", "diffUnstage", "diffDiscard"] {
             module = module.function(name, |_| Ok(HostValue::Null));
         }
         module = module.function("t", |a| Ok(a.string(0)?.into()));
@@ -426,10 +426,11 @@ export default class Probed extends GitDiff {
     note("pick", side, index);
     super.toggleLine(h, side, index, cx);
   }
-  shade(...rest) {
-    const el = super.shade(...rest);
-    return this.probing ? el.id("probe-shade").on_size_change((s) => note("shade", s.width, s.height)) : el;
+  shade(th, left, side) {
+    const el = super.shade(th, left, side);
+    return this.probing ? el.id(`probe-shade-${side}`).on_size_change((s) => note("shade", side, s.width)) : el;
   }
+
   segments(segs, text, ...rest) {
     const el = super.segments(segs, text, ...rest);
     return this.probing ? el.id(`probe-text-${text[0]}`).on_size_change((s) => note("text", text[0], s.width)).on_mouse_move((e) => note("over", text[0], e.local_position.x)) : el;
@@ -443,7 +444,10 @@ export default class Probed extends GitDiff {
       this.probing = false;
       root = root.child(div().absolute().top(300).left(0).w_full().text_size(11.5).child(row));
     }
-    if (props().real) root = root.child(div().id("t-unified").absolute().top(520).left(0).w(60).h(20).on_click((_e, cx) => { this.layout = "unified"; this.relayout(cx); }));
+    if (props().real) {
+      root = root.child(div().id("t-unified").absolute().top(520).left(0).w(60).h(20).on_click((_e, cx) => { this.layout = "unified"; this.relayout(cx); }));
+      root = root.child(div().id("t-other").absolute().top(520).left(70).w(60).h(20).on_click((_e, cx) => { setShared("yuzora.git.diff", { cwd: "/r", on: null, path: "other.ts", mode: "unstaged", at: 99 }); cx.notify(); }));
+    }
     return pane ? div().w(pane).h_full().child(root) : root;
   }
 }
@@ -573,7 +577,8 @@ impl DiffPane {
             calls.borrow_mut().push(Value::Array((0..4).filter_map(|i| a.get(i).map(from_host)).collect()));
             Ok(HostValue::Null)
         });
-        let mut policy = Policy::new();
+        // As the app grants every mod: the clipboard is the test window's own.
+        let mut policy = Policy::new().with_capabilities(Capabilities::new().clipboard_write(true));
         for module in [herdr, git, core, fixture_module] {
             policy = policy.with_host_module(module).unwrap();
         }
@@ -654,6 +659,10 @@ impl DiffPane {
     /// The text on the clipboard of this test window (a platform clipboard of its own, not the system's).
     fn clipboard(&self) -> Option<String> {
         self.visual.read_from_clipboard().and_then(|item| item.text())
+    }
+
+    fn set_clipboard(&self, text: &str) {
+        self.visual.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_owned()));
     }
 
     /// The notes of one kind, in order.
@@ -1165,24 +1174,21 @@ fn yuzora_diff_the_divider_and_the_pick_numbers_do_not_select(cx: &mut TestAppCo
 }
 
 // yuzora(v010): a selection names rows of the diff as it was: another layout and another file
-// leave none. (`t-unified` is the probe's own control for what the layout pill does.)
+// leave none. (`t-unified` and `t-other` are the probe's own controls: what the layout pill does,
+// and another file asked for through the shared state.)
 #[gpui::test]
 fn yuzora_diff_the_selection_goes_with_the_rows_it_named(cx: &mut TestAppContext) {
-    let shared = Shared::default();
-    let mut pane = DiffPane::mount_diff(cx, side_diff(), 1200., 1200., &shared, json!({"real": true}));
-    pane.click(TEXT_LEFT, row_y(1), false);
-    pane.click(10., 530., false);
-    pane.keys("cmd-c");
-    assert_eq!(pane.clipboard(), None, "another layout: the rows are others");
-    pane.close();
-
-    let mut pane = DiffPane::mount_diff(cx, side_diff(), 1200., 1200., &shared, json!({"real": true}));
-    pane.click(TEXT_LEFT, row_y(1), false);
-    shared.borrow_mut().insert("yuzora.git.diff".into(), json!({"cwd": "/r", "on": null, "path": "other.ts", "mode": "unstaged", "at": 99}));
-    pane.settle();
-    pane.keys("cmd-c");
-    assert_eq!(pane.clipboard(), None, "another file");
-    pane.close();
+    for (control, what) in [(10., "another layout: the rows are others"), (100., "another file")] {
+        let mut pane = DiffPane::mount_diff(cx, side_diff(), 1200., 1200., &Shared::default(), json!({"real": true}));
+        pane.click(TEXT_LEFT, row_y(1), false);
+        pane.keys("cmd-c");
+        assert_eq!(pane.clipboard().as_deref(), Some("\tlet a = 1;"), "{what}: the selection copies until it goes");
+        pane.set_clipboard("untouched");
+        pane.click(control, 530., false);
+        pane.keys("cmd-c");
+        assert_eq!(pane.clipboard().as_deref(), Some("untouched"), "{what}: nothing is selected now");
+        pane.close();
+    }
 }
 
 /// The menu a right-click on `(x, row)` asked for, as a popup of the diff opened with what it was given.
