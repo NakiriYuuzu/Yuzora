@@ -1248,6 +1248,35 @@ return JSON.stringify([a, b, c, d]); }})()"#
     }
 
     #[test]
+    fn an_image_pane_that_cannot_be_told_from_another_that_came_with_it_is_not_guessed() {
+        let seen = in_the_open(
+            r#"
+            run("tab.new", { name: "other", mod: "yuzora-files-image", props: { path: "/r/other.png", on: null } });
+            openFile("/r/a.png", null); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.png", null); flush();
+            return [focus()];
+        "#,
+        );
+        assert_eq!(seen, ["image /r/a.png"]);
+    }
+
+    #[test]
+    fn an_arrival_that_was_not_told_apart_is_not_settled_by_what_is_left_later() {
+        let seen = in_the_open(
+            r#"
+            run("tab.new", { name: "other", mod: "yuzora-files-image", props: { path: "/r/other.png", on: null } });
+            openFile("/r/a.png", null, { place: "side" }); flush();
+            openFile("/r/b.rs", null); flush();
+            run("pane.close", { pane: paneOf("/r/a.png") }); flush();
+            openFile("/r/a.png", null); flush();
+            return [focus()];
+        "#,
+        );
+        assert_eq!(seen, ["image /r/a.png"]);
+    }
+
+    #[test]
     fn a_renamed_image_in_a_tab_not_shown_is_found_by_its_own_pane() {
         let seen = in_the_open(
             r#"

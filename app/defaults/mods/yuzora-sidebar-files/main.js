@@ -496,6 +496,7 @@ function menuItems(m) {
   const relPath = rel(m.root, m.abs) ?? m.abs;
   return [
     m.dir ? null : { label: t("menu.open"), run: () => openFile(m.abs, m.on) },
+    m.dir ? null : { label: t("menu.open_side"), run: () => openFile(m.abs, m.on, { place: "side" }) },
     { label: t("menu.terminal"), run: () => run("terminal.open", { folder, place: "right" }) },
     null,
     { label: t("menu.new_file"), run: () => request("new-file", m, { dir: folder }) },

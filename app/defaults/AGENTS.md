@@ -1226,10 +1226,14 @@ with these differences.
 <!-- yuzora:lane:L5:start -->
 ### Files and the editor
 
-- The right dock's Files mode shows the focused pane's repo. Files open beside the
-  focused pane: `yuzora-editor` (code), `yuzora-markdown` (`.md`: preview or
-  source), `yuzora-files-image` (images and SVG). Open one yourself with
-  `pane.split {direction: "right", mod: "yuzora-editor", props: {path: "/abs/file.rs", line: 12}}`
+- The right dock's Files mode shows the focused pane's repo. A file opens in a tab
+  of its own, after the selected tab of the shown Space, and "Open to the Side" in
+  its right-click menu opens it beside the focused pane instead. A file that is
+  already open is shown where it is. The panes are `yuzora-editor` (code),
+  `yuzora-markdown` (`.md`: preview or source), `yuzora-files-image` (images and
+  SVG). Open one yourself with
+  `tab.new {name: "file.rs", mod: "yuzora-editor", props: {path: "/abs/file.rs", line: 12}}`
+  or beside a pane with `pane.split {direction: "right", mod: "yuzora-editor", props: {path: "/abs/file.rs", line: 12}}`
   (`on`: a machine for a remote space's file).
 - The editor follows the disk: a file with no unsaved changes reloads when it
   changes; with unsaved changes the person is asked. While you (an agent) are

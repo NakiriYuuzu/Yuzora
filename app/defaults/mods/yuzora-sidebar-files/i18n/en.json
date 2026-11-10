@@ -44,6 +44,7 @@
   },
   "menu": {
     "open": "Open",
+    "open_side": "Open to the Side",
     "terminal": "Open in terminal",
     "new_file": "New file…",
     "new_folder": "New folder…",
