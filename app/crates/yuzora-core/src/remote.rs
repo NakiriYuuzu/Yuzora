@@ -6,7 +6,7 @@
 //!
 //! Blocking: call it from a worker thread (the `yuzora:core` `exec` does).
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -169,6 +169,9 @@ pub fn hc_exec_args(req: &ExecRequest) -> Option<Vec<String>> {
     for (k, v) in &req.env {
         args.extend(["--env".into(), format!("{k}={v}")]);
     }
+    if req.stdin.is_some() {
+        args.push("--stdin".into());
+    }
     args.push("--".into());
     args.push(req.program.clone());
     args.extend(req.args.iter().cloned());
@@ -220,7 +223,7 @@ pub fn run(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
                 timeout: req.timeout + REMOTE_GRACE,
                 max_output: answer,
                 env: Vec::new(),
-                stdin: None,
+                stdin: req.stdin.clone(),
             };
             let out = run_local(&local)?;
             if out.stdout.len() as u64 >= answer {
@@ -235,7 +238,8 @@ pub fn run(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
 /// The program `req` names, set up as [`run_local`] starts it here.
 fn command(req: &ExecRequest) -> Command {
     let mut cmd = Command::new(&req.program);
-    cmd.args(&req.args).envs(req.env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&req.args).envs(req.env.iter().map(|(k, v)| (k, v))).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(if req.stdin.is_some() { Stdio::piped() } else { Stdio::null() });
     cmd.current_dir(req.cwd.as_ref().map(PathBuf::from).unwrap_or_else(crate::paths::home_dir));
     // The app has no console on Windows: without this every call opens a window.
     crate::spawn::no_window(&mut cmd);
@@ -248,6 +252,14 @@ fn command(req: &ExecRequest) -> Command {
 fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     let mut cmd = command(req);
     let mut child = cmd.spawn().map_err(|e| ExecError::Spawn(format!("cannot run {}: {e}", req.program)))?;
+    // Fed from its own thread: a program that reads little, or nothing, must not hold this one up. The
+    // pipe closes when the thread is done, or fails when the program ends (it is not waited for).
+    if let Some(input) = req.stdin.clone() {
+        let mut pipe = child.stdin.take().expect("piped stdin");
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&input);
+        });
+    }
     let out = Drain::start(child.stdout.take().expect("piped stdout"), req.max_output);
     let err = Drain::start(child.stderr.take().expect("piped stderr"), req.max_output);
     // yuzora(perf): no 10 ms polling: the answer comes the moment it exits. The `Child` stays here
