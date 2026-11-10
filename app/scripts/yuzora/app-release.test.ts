@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { DEFAULT_LOCAL_DOWNLOADS, uploadPlan } from "./release";
 import { listedTargets, unlistedTargets } from "./manifest";
+import { commandWords } from "./shell-commands";
 
 // The release workflow's contract (.github/workflows/app-release.yml): which
 // job can write, which can read the signing key, what runs repository code.
@@ -25,6 +26,33 @@ const jobs = () => Object.entries(workflow.jobs);
 const runs = (job: Job) => job.steps.map((s) => s.run ?? "").join("\n");
 const writers = () => jobs().filter(([, job]) => job.permissions?.contents === "write");
 const checksOut = (job: Job) => job.steps.some((s) => s.uses?.startsWith("actions/checkout@"));
+const label = (s: Step) => (s.uses ? s.uses.split("@")[0] : (s.name ?? s.run!));
+
+// The four jobs that write to the repository's releases: when each starts, what it waits for, its steps.
+const WRITERS: Record<string, { if: string; needs: string | string[]; steps: string[] }> = {
+  draft: {
+    if: "needs.plan.outputs.stage == 'draft'",
+    needs: "plan",
+    steps: ["Helpers", "actions/download-artifact", "Check the files against the run's own manifest", "Tag the commit", "Draft the release and upload"],
+  },
+  publish: {
+    if: "needs.plan.outputs.stage == 'publish'",
+    needs: "plan",
+    steps: ["Helpers", "Check the draft", "Publish without making it Latest", "Check what the public gets"],
+  },
+  "upload-manifest": {
+    if: "needs.plan.outputs.stage == 'manifest' && needs.verify-manifest.result == 'success'",
+    needs: ["plan", "verify-manifest"],
+    steps: ["Helpers", "actions/download-artifact", "Upload", "Check what the public gets"],
+  },
+  latest: {
+    if: "needs.plan.outputs.stage == 'latest'",
+    needs: "plan",
+    steps: ["Helpers", "Set Latest", "Check the links that follow Latest"],
+  },
+};
+// $ok holds true or false; the rest is gh, jq, curl, sha256sum, the helper functions and plain shell.
+const WRITER_COMMANDS = ["$ok", "[", "asset_row", "basename", "break", "cat", "cd", "comm", "cp", "curl", "cut", "diff", "echo", "exit", "export", "gh", "grep", "held_sha256", "jq", "local", "ls", "mkdir", "printf", "read", "release_json", "return", "rm", "sed", "set", "sha256_of", "sha256sum", "sleep", "sort", "tee", "true", "upload_asset"];
 
 describe("who can do what", () => {
   test("it starts by hand and nothing else: no push, so no branch can start a run by being pushed", () => {
@@ -49,13 +77,22 @@ describe("who can do what", () => {
     expect(runs(verify)).toContain('import { listedTargets } from "./app/scripts/yuzora/manifest.ts"; console.log(listedTargets(process.env.VERSION ?? "").join(","))');
   });
 
-  test("no job that writes can start in a dry run", () => {
-    const stages: Record<string, string> = { draft: "draft", publish: "publish", "upload-manifest": "manifest", latest: "latest" };
-    expect(writers().map(([name]) => name).sort()).toEqual(Object.keys(stages).sort());
+  test("the jobs that write are four, each starts at its own stage alone, and each has the steps listed and no others", () => {
+    expect(writers().map(([name]) => name).sort()).toEqual(Object.keys(WRITERS).sort());
     for (const [name, job] of writers()) {
-      expect(job.if, name).toContain(`needs.plan.outputs.stage == '${stages[name]}'`);
-      expect(job.if, name).not.toContain("dry-run");
+      expect(job.if, name).toBe(WRITERS[name].if);
+      expect(job.needs, name).toEqual(WRITERS[name].needs);
       expect(job.environment, name).toBe("yuzora-release");
+      expect(job.permissions?.contents, name).toBe("write");
+      expect(job.steps.map(label), name).toEqual(WRITERS[name].steps);
+    }
+  });
+
+  test("no scope but contents is ever written, and only by those four", () => {
+    for (const [name, job] of jobs()) {
+      for (const [scope, level] of Object.entries(job.permissions ?? {})) {
+        if (level === "write") expect([scope, name in WRITERS], name).toEqual(["contents", true]);
+      }
     }
   });
 
@@ -63,7 +100,14 @@ describe("who can do what", () => {
     for (const [name, job] of writers()) {
       expect(checksOut(job), name).toBe(false);
       expect(runs(job), name).not.toMatch(/\b(?:bun|bunx|node|npm|cargo|python3?)\b|scripts\/|\.\/node_modules/);
-      expect(JSON.stringify(job), name).not.toContain("secrets.");
+    }
+  });
+
+  test("and the only programs it runs are gh, jq, curl, sha256sum and plain shell, whatever files it holds", () => {
+    const library = 'source "$RUNNER_TEMP/release-lib.sh"';
+    for (const [name, job] of writers()) {
+      const ran = new Set(job.steps.flatMap((s) => commandWords((s.run ?? "").replaceAll(library, ""))));
+      expect([...ran].filter((command) => !WRITER_COMMANDS.includes(command)), name).toEqual([]);
     }
   });
 
@@ -75,24 +119,36 @@ describe("who can do what", () => {
     }
   });
 
-  test("only the sign job names the signing secrets, and only in the step that signs", () => {
-    const holders = jobs().filter(([, job]) => JSON.stringify(job).includes("secrets.")).map(([name]) => name);
-    expect(holders).toEqual(["sign"]);
-    expect(text.match(/secrets\./g)).toHaveLength(2);
-    expect(text).toContain("secrets.TAURI_SIGNING_PRIVATE_KEY }}");
-    expect(text).toContain("secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}");
+  test("the signing secrets are named twice in the whole workflow: two variables of the step that signs", () => {
+    // Contexts are case-insensitive, and a key called secrets (a reusable workflow's) counts like a value.
+    expect(JSON.stringify(workflow).match(/\bsecrets\b/gi)).toHaveLength(2);
     const sign = workflow.jobs.sign;
+    const signing = sign.steps.filter((s) => /\bsecrets\b/i.test(JSON.stringify(s)));
+    expect(signing.map((s) => s.name)).toEqual(["Sign"]);
+    expect(signing[0].env).toEqual({
+      TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}",
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
+    });
+    for (const [name, job] of jobs()) {
+      expect(job.uses, name).toBeUndefined();
+      expect(job.secrets, name).toBeUndefined();
+    }
+  });
+
+  test("the job that signs does exactly this, in this order, and runs nothing else with the key", () => {
+    const sign = workflow.jobs.sign;
+    expect(sign.needs).toEqual(["plan", "build-manifest"]);
+    expect(sign.if).toBe("needs.build-manifest.outputs.have_signature != 'true'");
     expect(sign.permissions).toEqual({ contents: "read" });
     expect(sign.environment).toBe("yuzora-release");
-    const withSecrets = sign.steps.filter((s) => JSON.stringify(s).includes("secrets."));
-    expect(withSecrets.map((s) => s.name)).toEqual(["Sign"]);
+    expect(sign.steps.map(label)).toEqual(["actions/checkout", "oven-sh/setup-bun", "bun install --frozen-lockfile --ignore-scripts", "actions/download-artifact", "Sign", "actions/upload-artifact"]);
     const install = sign.steps.find((s) => s.run?.startsWith("bun install"))!;
-    expect(install.run).toContain("--frozen-lockfile --ignore-scripts");
     expect(install.env).toBeUndefined();
     // The CLI reads the key and password from the environment: nothing secret on a command line.
-    const signing = withSecrets[0].run!;
+    const signing = sign.steps.find((s) => s.name === "Sign")!.run!;
     expect(signing).toContain("./node_modules/.bin/tauri signer sign signing/yuzora-update.json");
     expect(signing).not.toMatch(/\s-(?:k|p|f)\b|--private-key|--password/);
+    expect([...new Set(commandWords(signing))].sort()).toEqual(["./node_modules/.bin/tauri", "[", "echo", "exit", "set", "test"]);
   });
 
   test("every action is pinned to a commit, and no script takes a workflow expression", () => {
@@ -110,7 +166,9 @@ describe("who can do what", () => {
     expect(verify).toContain("cd app/scripts/yuzora/verify-manifest");
     // The repository's cargo config sends builds to src-tauri/target: the binary is run from its own.
     expect(verify).toContain('cargo build --locked --release --target-dir "$PWD/target"');
-    expect(verify).toContain("--targets");
+    const calls = verify.split("\n").filter((line) => line.includes('"$verify"'));
+    expect(calls).toHaveLength(2);
+    for (const call of calls) expect(call, call).toContain('--targets "$targets"');
     for (const file of readdirSync(WORKFLOWS)) expect(readFileSync(join(WORKFLOWS, file), "utf8"), file).not.toContain("--extra-key");
   });
 
