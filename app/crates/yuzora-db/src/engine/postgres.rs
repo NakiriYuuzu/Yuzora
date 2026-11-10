@@ -66,7 +66,7 @@ pub struct PgCanceller {
     /// the server's "canceled" error then reads as [`DbError::Cancelled`].
     cancelled: Arc<AtomicBool>,
     /// A stop reached the statement it was for: the server answered it with
-    /// "canceled". Until it does, the request is still on its way.
+    /// "canceled". One that did not found the statement already over.
     landed: Arc<AtomicBool>,
     /// The connection is not to be used again (see [`PgCanceller::abandon`], and
     /// a request the server was not heard to deal with).
