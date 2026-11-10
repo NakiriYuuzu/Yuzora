@@ -1054,3 +1054,107 @@ test("the file menu is opened with the kind of change its file was listed as", a
   f.list!.handlers.on_item_secondary_click(f.keyOf("x.txt"), {}, s.cx);
   expect(s.w.overlays.at(-1).props.menu).toMatchObject({ path: "x.txt", section: "unstaged", kind: "M" });
 });
+
+// ---- v0.1.0 E1 r2: what the second review found ------------------------------------------------------------------
+
+test("the failure of a push or a commit-and-push started in a repo is still there when it is shown again, after any number of other repos", async () => {
+  const p = world();
+  await p.settle();
+  p.frame().button("push")!.handlers.on_click({}, p.cx);
+  await flush();
+  p.go("/b"); p.frame(); await p.settle();
+  await p.fail(p.pending("pushPreview")[0], new Error("rejected"));
+  await visit(p, 9, "pushfail");
+  p.go("/a"); p.frame(); await p.settle();
+  expect(p.frame().texts).toContain("Error: rejected");
+
+  const c = world();
+  await c.settle();
+  c.type("feat: x");
+  c.frame().button("commit.andPush")!.handlers.on_click({}, c.cx);
+  await flush();
+  await c.answer(c.pending("commitChecks")[0], []);
+  c.go("/b"); c.frame(); await c.settle();
+  await c.answer(c.pending("commit")[0], { ok: true, output: "" });
+  await c.settle();
+  await c.fail(c.pending("pushPreview")[0], new Error("! [rejected] main -> main (fetch first)"));
+  await c.settle();
+  await visit(c, 9, "cpfail");
+  c.go("/a"); c.frame(); await c.settle();
+  expect(c.frame().texts.join("\n")).toContain("rejected");
+});
+
+test("a failure that was seen and gone from the screen does not keep its repo from being let go of once the next action clears it", async () => {
+  const s = world();
+  await s.settle();
+  s.frame().button("push")!.handlers.on_click({}, s.cx);
+  await flush();
+  await s.fail(s.pending("pushPreview")[0], new Error("rejected"));
+  await s.settle();
+  expect(s.frame().texts).toContain("Error: rejected");
+  s.frame().button("push")!.handlers.on_click({}, s.cx);
+  await flush();
+  await s.answer(s.pending("pushPreview").at(-1)!, { upstream: "origin/main" });
+  await s.answer(s.pending("push")[0], { ok: true, output: "" });
+  await s.settle();
+  await visit(s, 12, "cleared");
+  s.go("/a");
+  s.frame();
+  await s.answer(s.pending("open")[0], info("/a"));
+  expect(s.frame().texts).toContain("loading");
+});
+
+test("an untracked file asked about is still asked about after the list is read again, and Yes deletes it once git still lists it as untracked", async () => {
+  const s = world();
+  const untracked = [{ path: "new.txt", kind: "?", add: 0, del: 0, binary: false }];
+  s.w.status["/a"] = { untracked };
+  await s.settle();
+  const f = s.frame();
+  s.aim(f, 1); s.press(f, f.keyOf("new.txt"));
+  expect(s.frame().texts).toContain("discard.ask");
+  await s.answer(s.pending("changed")[0], 2);
+  await s.settle();
+  expect(s.frame().texts).toContain("discard.ask");
+  click(s, s.frame(), "discard-yes");
+  await flush();
+  const read = s.pending("status").at(-1)!;
+  expect(read.args).toEqual([":/a", { force: true }]);
+  expect(s.w.asks.discard).toEqual([]);
+  await s.answer(read, { ...statusOf("/a"), untracked });
+  expect(s.w.asks.discard.map((g) => g.args)).toEqual([[":/a", ["new.txt"]]]);
+});
+
+test("on a repo shown again and not yet read, what only looks still answers: the graph, the branch, the repo picker, the history", async () => {
+  const s = world();
+  s.w.history = ["one"];
+  await s.settle();
+  s.go("/b"); s.frame(); await s.settle();
+  s.go("/a");
+  const back = s.frame();
+  expect(s.view.v.confirmed).toBe(false);
+  const before = () => s.w.overlays.length + s.w.runs.length;
+  for (const name of ["graph", "branch", "repo-pick"]) {
+    const was = before();
+    click(s, back, name);
+    expect([name, before() - was]).toEqual([name, 1]);
+  }
+  click(s, back, "history-toggle");
+  click(s, s.frame(), "m-0");
+  expect(s.w.box.value).toBe("one");
+});
+
+test("Cancel on the checks' warnings, then Commit anyway from the same frame, does not commit", async () => {
+  const s = world();
+  await s.settle();
+  s.type("feat: x");
+  s.frame().button("commit.button")!.handlers.on_click({}, s.cx);
+  await flush();
+  await s.answer(s.pending("commitChecks")[0], [{ kind: "todo", files: ["x.txt"] }]);
+  const f = s.frame();
+  expect(f.texts).toContain("commit.anyway");
+  click(s, f, "w-no");
+  click(s, f, "w-yes");
+  await flush();
+  expect(s.w.asks.commit).toEqual([]);
+  expect(s.w.asks.commitChecks.length).toBe(1);
+});
