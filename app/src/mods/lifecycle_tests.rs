@@ -785,6 +785,15 @@ fn yuzora_diff_a_long_line_stays_on_its_side(cx: &mut TestAppContext) {
     pane.close();
 }
 
+/// Where the first row's left text starts, from where the pointer is over it (its first character must be "a").
+fn left_text_start(pane: &mut DiffPane) -> f64 {
+    let before = pane.over().len();
+    pane.hover(100., 310.);
+    let (first, from) = pane.over().split_off(before).pop().expect("over the left text");
+    assert_eq!(first, "a");
+    100. - from
+}
+
 // yuzora(v010): lines wider than their side scroll sideways (a wheel or swipe), both sides together,
 // as far as the widest line ends and no further; a line that fits does not, and a vertical wheel (or
 // swipe, with a little sideways in it) is not a sideways one.
@@ -792,14 +801,7 @@ fn yuzora_diff_a_long_line_stays_on_its_side(cx: &mut TestAppContext) {
 fn yuzora_diff_long_lines_scroll_sideways_to_their_end(cx: &mut TestAppContext) {
     const GUTTER: f64 = 44.;
     let rows = |left: usize| json!([diff_row(Some((left, "a")), Some((5, "b")))]);
-    // Where the left text starts, from where the pointer is over it.
-    let start = |pane: &mut DiffPane| {
-        let before = pane.over().len();
-        pane.hover(100., 310.);
-        let (first, from) = pane.over().split_off(before).pop().expect("over the left text");
-        assert_eq!(first, "a");
-        100. - from
-    };
+    let start = left_text_start;
     let mut pane = DiffPane::mount(cx, rows(300), 1200., &Shared::default());
     near(start(&mut pane), GUTTER + 6., "not scrolled: after the numbers and the indent");
     pane.wheel(100., 100., -200., 0.);
@@ -828,6 +830,46 @@ fn yuzora_diff_long_lines_scroll_sideways_to_their_end(cx: &mut TestAppContext) 
     let mut fits = DiffPane::mount(cx, rows(20), 1200., &Shared::default());
     fits.wheel(100., 100., -200., 0.);
     near(start(&mut fits), GUTTER + 6., "lines that fit do not scroll");
+    fits.close();
+}
+
+// yuzora(v010): the bar under the lines drags them: its thumb's travel stands for the lines' (the lines
+// go farther than the thumb), to the end and back, and lines that fit have no bar to grab.
+#[gpui::test]
+fn yuzora_diff_the_bar_under_the_lines_drags_them(cx: &mut TestAppContext) {
+    let rows = |left: usize| json!([diff_row(Some((left, "a")), Some((5, "b")))]);
+    // The 8px bar at the bottom of the 600px window, its thumb in the middle of that. At the left end the
+    // thumb covers 527 of the 1200px, and is as long as the lines are shown of what they need.
+    let bar = 596.;
+    let mut pane = DiffPane::mount(cx, rows(300), 1200., &Shared::default());
+    let home = left_text_start(&mut pane);
+    pane.wheel(100., 100., -100000., 0.);
+    let farthest = home - left_text_start(&mut pane);
+    pane.wheel(100., 100., 100000., 0.);
+    near(left_text_start(&mut pane), home, "home");
+
+    pane.press(100., bar, 1);
+    pane.drag(200., bar);
+    pane.release(200., bar);
+    let moved = home - left_text_start(&mut pane);
+    assert!(moved > 100. && moved < farthest, "the thumb moved 100px and the lines {moved}, of the {farthest} they can");
+    // The thumb is at 100..627 now.
+    pane.press(300., bar, 1);
+    pane.drag(1199., bar);
+    pane.release(1199., bar);
+    near(home - left_text_start(&mut pane), farthest, "dragged to the end");
+    // And at 673..1200.
+    pane.press(1000., bar, 1);
+    pane.drag(0., bar);
+    pane.release(0., bar);
+    near(left_text_start(&mut pane), home, "dragged back");
+    pane.close();
+
+    let mut fits = DiffPane::mount(cx, rows(20), 1200., &Shared::default());
+    fits.press(100., bar, 1);
+    fits.drag(900., bar);
+    fits.release(900., bar);
+    near(left_text_start(&mut fits), home, "lines that fit have no bar");
     fits.close();
 }
 
