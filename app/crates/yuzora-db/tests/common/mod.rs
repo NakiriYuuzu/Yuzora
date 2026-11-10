@@ -1,5 +1,14 @@
 //! What the integration tests share. Each test binary uses part of it.
 //!
+//! A delay line between the app and a database server ([`DelayLine`]) is shared
+//! by the measurements (`perf_open_table.rs`) and the tests that count round
+//! trips (`open_rounds.rs`). Every chunk is held for the one-way delay before
+//! it passes on, so pipelined requests stay pipelined and a large result is not
+//! slowed by it. There is no bandwidth limit, no loss and no jitter. The line
+//! logs the direction of every chunk of every connection, so a round trip is
+//! counted, not guessed: a flight of server data that follows a flight of
+//! client data.
+//!
 //! Which engines a run selects:
 //!
 //! `YUZORA_DATABASE_TEST_ENGINES` picks the engines whose fixtures a run uses;
@@ -13,8 +22,9 @@
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The PostgreSQL fixture of `tests/database/docker-compose.yml`.
 const UPSTREAM: &str = "127.0.0.1:55432";
@@ -194,4 +204,154 @@ pub fn enabled(engine: &str) -> bool {
         "{engine} is in YUZORA_DATABASE_REQUIRE_ENGINES but not in YUZORA_DATABASE_TEST_ENGINES"
     );
     selected
+}
+
+// ---------------------------------------------------------------- the delay line
+
+pub fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dir {
+    Up,
+    Down,
+}
+
+#[derive(Default)]
+pub struct ConnLog {
+    accepted: Option<Instant>,
+    events: Vec<(Instant, Dir, usize)>,
+}
+
+/// What one connection through the line did during a sample.
+#[derive(Debug, Clone)]
+pub struct ConnStat {
+    /// The connection was already open when the sample began.
+    pub pooled: bool,
+    /// When its first chunk went by in the sample, from the start of the sample.
+    pub first_ms: f64,
+    /// When its last chunk went by, from the start of the sample.
+    pub last_ms: f64,
+    /// Flights of server data that follow a flight of client data: round trips.
+    pub exchanges: usize,
+    pub up: usize,
+    pub down: usize,
+}
+
+pub struct DelayLine {
+    pub addr: SocketAddr,
+    log: Arc<Mutex<Vec<ConnLog>>>,
+}
+
+impl DelayLine {
+    /// Passes `listener`'s connections to `target`, every chunk held for `one_way` each way.
+    pub fn start(target: SocketAddr, one_way: Duration) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let log: Arc<Mutex<Vec<ConnLog>>> = Arc::default();
+        let shared = log.clone();
+        std::thread::spawn(move || {
+            for client in listener.incoming().flatten() {
+                let Ok(server) = TcpStream::connect(target) else { continue };
+                let _ = client.set_nodelay(true);
+                let _ = server.set_nodelay(true);
+                let index = {
+                    let mut all = shared.lock().unwrap();
+                    all.push(ConnLog { accepted: Some(Instant::now()), events: Vec::new() });
+                    all.len() - 1
+                };
+                let (c2, s2) = (client.try_clone().unwrap(), server.try_clone().unwrap());
+                let (up_log, down_log) = (shared.clone(), shared.clone());
+                std::thread::spawn(move || pump(client, s2, Dir::Up, one_way, up_log, index));
+                std::thread::spawn(move || pump(server, c2, Dir::Down, one_way, down_log, index));
+            }
+        });
+        DelayLine { addr, log }
+    }
+
+    /// The connections that carried anything since `since`, in the order they first did.
+    pub fn window(&self, since: Instant) -> Vec<ConnStat> {
+        self.window_between(since, None)
+    }
+
+    /// [`window`](Self::window), looking only at what went by up to `until`.
+    pub fn window_between(&self, since: Instant, until: Option<Instant>) -> Vec<ConnStat> {
+        let all = self.log.lock().unwrap();
+        let mut stats: Vec<ConnStat> = all
+            .iter()
+            .filter_map(|c| {
+                let events: Vec<_> =
+                    c.events.iter().filter(|e| e.0 >= since && until.is_none_or(|u| e.0 <= u)).collect();
+                let (first, last) = (events.first()?, events.last()?);
+                let (mut exchanges, mut previous, mut up, mut down) = (0, None, 0, 0);
+                for (_, dir, n) in &events {
+                    if *dir == Dir::Down && previous == Some(Dir::Up) {
+                        exchanges += 1;
+                    }
+                    previous = Some(*dir);
+                    match dir {
+                        Dir::Up => up += n,
+                        Dir::Down => down += n,
+                    }
+                }
+                Some(ConnStat {
+                    pooled: c.accepted.is_some_and(|a| a < since),
+                    first_ms: ms(first.0 - since),
+                    last_ms: ms(last.0 - since),
+                    exchanges,
+                    up,
+                    down,
+                })
+            })
+            .collect();
+        stats.sort_by(|a, b| a.first_ms.partial_cmp(&b.first_ms).unwrap());
+        stats
+    }
+}
+
+fn pump(mut from: TcpStream, to: TcpStream, dir: Dir, delay: Duration, log: Arc<Mutex<Vec<ConnLog>>>, index: usize) {
+    let (tx, rx) = mpsc::channel::<(Instant, Option<Vec<u8>>)>();
+    let writer = std::thread::spawn(move || {
+        let mut to = to;
+        while let Ok((due, data)) = rx.recv() {
+            // The OS timer overshoots by milliseconds: sleep most of it, spin the rest.
+            if let Some(wait) = due.checked_duration_since(Instant::now()) {
+                if wait > Duration::from_millis(3) {
+                    std::thread::sleep(wait - Duration::from_millis(3));
+                }
+                while Instant::now() < due {
+                    std::hint::spin_loop();
+                }
+            }
+            match data {
+                Some(data) => {
+                    if to.write_all(&data).is_err() {
+                        break;
+                    }
+                }
+                None => {
+                    let _ = to.shutdown(Shutdown::Write);
+                    break;
+                }
+            }
+        }
+    });
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        match from.read(&mut buf) {
+            Ok(0) | Err(_) => {
+                let _ = tx.send((Instant::now() + delay, None));
+                break;
+            }
+            Ok(n) => {
+                let now = Instant::now();
+                log.lock().unwrap()[index].events.push((now, dir, n));
+                if tx.send((now + delay, Some(buf[..n].to_vec()))).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    let _ = writer.join();
 }
