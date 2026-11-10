@@ -511,6 +511,62 @@ fn sqlite_a_stop_pressed_before_the_statement_keeps_it_from_running() {
     });
 }
 
+/// A sink that lets go of the file's lock the moment it is told the statement began, and keeps the
+/// order of what it was told.
+struct ReleaseOnStart {
+    holder: Option<rusqlite::Connection>,
+    events: Vec<&'static str>,
+    began: Option<Instant>,
+    released: Option<Instant>,
+}
+
+impl RowSink for ReleaseOnStart {
+    fn started(&mut self, at: Instant) {
+        self.events.push("started");
+        self.began = Some(at);
+        self.released = Some(Instant::now());
+        if let Some(holder) = self.holder.take() {
+            holder.execute_batch("ROLLBACK").unwrap();
+        }
+    }
+
+    fn columns(&mut self, _: Vec<Column>) {
+        self.events.push("columns");
+    }
+
+    fn rows(&mut self, _: Vec<Vec<Cell>>) -> bool {
+        self.events.push("rows");
+        true
+    }
+
+    fn done(&mut self, _: Option<u64>) {
+        self.events.push("done");
+    }
+}
+
+/// SQLite names the columns of a statement once it has produced its first row, and it waits for a
+/// lock on the file before that: the sink hears the statement began while it waits, so the time of the
+/// result is the statement's, not the time since its first row. The lock is let go of by the sink
+/// when it hears, so a sink that is told later never gets a row.
+#[test]
+fn sqlite_a_statement_waiting_for_its_first_row_is_said_to_have_begun_while_it_waits() {
+    let db = TempDb::new("CREATE TABLE t (v INTEGER); INSERT INTO t VALUES (1);");
+    run(async {
+        let mut conn = db.open().await;
+        let holder = rusqlite::Connection::open(&db.0).unwrap();
+        holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let mut sink = ReleaseOnStart { holder: Some(holder), events: Vec::new(), began: None, released: None };
+        let outcome = conn.execute("SELECT v FROM t", &mut sink).await;
+        assert!(
+            sink.released.is_some(),
+            "the sink was not told the statement began while it waited for the lock: {outcome:?}"
+        );
+        assert_eq!(outcome, Ok(()));
+        assert_eq!(sink.events, ["started", "columns", "rows", "done"]);
+        assert!(sink.began.unwrap() <= sink.released.unwrap());
+    });
+}
+
 /// The refusal to write back inside a transaction the SQL tab left open.
 fn open_transaction() -> DbError {
     DbError::NotEditable(yuzora_db::i18n::t("edit.open_transaction", &[]))

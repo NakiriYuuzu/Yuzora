@@ -1244,6 +1244,22 @@ mod tests {
         supersede("sink-test");
     }
 
+    /// A result's time is the statement's, from when it began: an engine that only knows the columns
+    /// once the statement has produced a row says when it began (`RowSink::started`) before that.
+    #[test]
+    fn a_result_counts_its_time_from_when_its_statement_began() {
+        let id = new_job("began-test");
+        let mut sink = JobSink::new(id, "began-test", "select 1");
+        let began = Instant::now();
+        std::thread::sleep(Duration::from_millis(50));
+        sink.started(began);
+        sink.columns(vec![Column::new("x", "int4")]);
+        sink.finish(None);
+        let elapsed = results::lock(sink.last.as_ref().unwrap()).elapsed_ms;
+        supersede("began-test");
+        assert!(elapsed >= 50, "the result took {elapsed} ms of a statement that began 50 ms before its columns");
+    }
+
     /// The stop is counted on its way under the lock `Serving` lets go of its
     /// stop under, which the job does before it lets go of the connection. The
     /// race this closes (the connection handed to the next work between the
