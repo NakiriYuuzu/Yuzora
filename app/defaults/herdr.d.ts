@@ -192,8 +192,10 @@ export interface PaneInfo {
   /** The props a mod pane was given (`tab.new {mod, props}`, `pane.split {mod, props}`), as the layout keeps
    *  them. Listed for a pane in a tab not shown since the app started too, though its mod has not started. */
   props?: any;
-  /** A mod pane only: a copy of its mod is running. A restored layout starts only the tab shown, and a copy
-   *  keeps running when its tab is put away, so false means nothing has opened what its props name. */
+  /** A mod pane only: a copy of its mod has been made for it, one that failed to load too. A restored layout starts
+   *  only the tab shown, and a copy keeps running when its tab is put away, so false means nothing has opened what
+   *  its props name (or its copy was dropped, by a props change from outside or a retry of a failed load, and the
+   *  pane has not been shown since). */
   started?: boolean;
   tab: string;
   /** The terminal's title (what the program set), or the mod's name. */
