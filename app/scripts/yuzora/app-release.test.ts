@@ -1,8 +1,10 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { DEFAULT_LOCAL_DOWNLOADS, uploadPlan } from "./release";
+import { listedTargets, unlistedTargets } from "./manifest";
 
 // The release workflow's contract (.github/workflows/app-release.yml): which
 // job can write, which can read the signing key, what runs repository code.
@@ -125,6 +127,64 @@ describe("who can do what", () => {
         expect(r.status, `${name}: ${step.name}\n${r.stderr}`).toBe(0);
       }
     }
+  });
+});
+
+describe("a dry run from the dispatch alone", () => {
+  const stepText = (name: string) => workflow.jobs["build-manifest"].steps.find((s) => s.name === name)!.run!;
+
+  // The two build-manifest steps of a dry run, over the files of an App package run (what uploadPlan takes from it, and
+  // its unsigned manifest) under the version that run was built as.
+  function dryRun(env: { VERSION: string; CARGO_VERSION: string; RUN_ID: string }) {
+    const work = mkdtempSync(join(tmpdir(), "yuzora-dryrun-"));
+    symlinkSync(join(ROOT, "app"), join(work, "app"));
+    mkdirSync(join(work, "dist"));
+    if (env.RUN_ID) {
+      const files = new Set(uploadPlan(env.CARGO_VERSION).map((p) => p.src));
+      for (const name of [...files, "yuzora-update.json"]) writeFileSync(join(work, "dist", name), `${name} of the run`);
+    }
+    const all = {
+      ...process.env,
+      STAGE: "dry-run",
+      EXCLUDE: unlistedTargets(env.VERSION).join(","),
+      DOWNLOADS: DEFAULT_LOCAL_DOWNLOADS,
+      PUB_DATE: "2026-11-12T03:04:05+00:00",
+      YUZORA_VERSION: env.VERSION,
+      ...env,
+    };
+    const run = (name: string) => spawnSync("bash", ["-c", stepText(name)], { cwd: work, env: all, encoding: "utf8" });
+    const named = run("Name them for the version (dry run)");
+    const written = named.status === 0 ? run("Write the manifest") : named;
+    const manifest = written.status === 0 ? JSON.parse(readFileSync(join(work, "dist/yuzora-update.json"), "utf8")) : null;
+    return { status: written.status, err: named.stderr + written.stderr, manifest, files: readdirSync(join(work, "dist")).sort() };
+  }
+
+  test("without a package run it signs for made-up archives and lists what the version's table lists", () => {
+    const r = dryRun({ VERSION: "0.1.0", CARGO_VERSION: "0.1.0", RUN_ID: "" });
+    expect(r.status, r.err).toBe(0);
+    expect(Object.keys(r.manifest.targets)).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64"]);
+    expect(r.manifest.targets["macos-aarch64"].url).toBe(`${DEFAULT_LOCAL_DOWNLOADS}/v0.1.0/yuzora-0.1.0-macos-aarch64.tar.gz`);
+    expect(r.files).toContain("yuzora-0.1.0-windows-x86_64.tar.gz");
+  });
+
+  test("a candidate built as the version being signed for is used as it is", () => {
+    const r = dryRun({ VERSION: "0.1.0", CARGO_VERSION: "0.1.0", RUN_ID: "42" });
+    expect(r.status, r.err).toBe(0);
+    expect(Object.keys(r.manifest.targets)).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64"]);
+    expect(r.manifest.notes.url).toBe(`${DEFAULT_LOCAL_DOWNLOADS}/v0.1.0/changelog.md`);
+  });
+
+  test("a run built as a beta can be signed for 0.1.0 under the new names, with the old names gone", () => {
+    const r = dryRun({ VERSION: "0.1.0", CARGO_VERSION: "0.1.0-beta.4", RUN_ID: "42" });
+    expect(r.status, r.err).toBe(0);
+    expect(Object.keys(r.manifest.targets)).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64"]);
+    expect(r.files.filter((f) => f.includes("beta.4"))).toEqual([]);
+    expect(r.files).toContain("yuzora-0.1.0-windows-x86_64.tar.gz");
+  });
+
+  test("a stable version's dry run lists exactly what the verify step will ask for", () => {
+    const r = dryRun({ VERSION: "0.1.0", CARGO_VERSION: "0.1.0", RUN_ID: "" });
+    expect(Object.keys(r.manifest.targets).sort()).toEqual([...listedTargets("0.1.0")].sort());
   });
 });
 
