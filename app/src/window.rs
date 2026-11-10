@@ -5672,6 +5672,64 @@ export default class Probe extends View {
         }
     }
 
+    #[test]
+    fn a_mod_pane_in_a_tab_not_shown_yet_is_listed_with_its_props_but_has_not_started() {
+        in_own_process("pane_props_listed");
+    }
+
+    // yuzora(v0.1.0 files-open): a restored layout starts only the tab shown, so the mods of its other tabs'
+    // panes have no copy to ask: `panes()` is the one place that says which file such a pane holds.
+    #[gpui::test]
+    fn pane_props_listed(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("pane_props_listed") {
+            return;
+        }
+        let probe = r#"import { View, div } from "gpui-kit";
+import { panes, props, shared, setShared } from "herdr";
+
+export default class Probe extends View {
+  init() {
+    if (props()?.path) setShared("probe.started", [...(shared("probe.started") ?? []), props().path]);
+  }
+  render() {
+    if (!props()?.path) setShared("probe.panes", panes());
+    return div();
+  }
+}
+"#;
+        let layout = json!({ "id": "root", "type": "row", "children": [
+            { "id": "tabs", "type": "block", "content": { "tab": "active" } },
+            { "id": "probe", "type": "block", "content": { "mod": "pane-probe" } }
+        ] });
+        let (view, cx) = open_window(cx, "pane-probe", probe, layout);
+        let props = json!({ "path": "/srv/a.rs", "on": "lab", "opened": 1 });
+        let settle = |cx: &mut gpui::VisualTestContext| {
+            cx.executor().advance_clock(std::time::Duration::from_secs(1));
+            cx.run_until_parked();
+        };
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.add_space("sp1", "", "/tmp", crate::model::Tab::new("tb1", "", "p1", "t1"));
+            let pane = crate::layout::Node::block("lab/pa175", crate::layout::Content::Mod { name: "pane-probe".into(), props: props.clone() });
+            this.model.add_tab("sp1", crate::model::Tab::with_pane("tb2", "a.rs", pane));
+            this.model.select_tab("tb1");
+            this.sync(window, cx);
+        }));
+        settle(cx);
+        let listed = |id: &str| crate::mods::shared("probe.panes").and_then(|v| v.as_array()?.iter().find(|p| p["pane"] == id).cloned());
+        let pane = listed("lab/pa175").expect("the pane of the tab not shown is listed");
+        assert_eq!((&pane["mod"], &pane["props"]), (&json!("pane-probe"), &props));
+        assert!(listed("p1").expect("the terminal is listed").get("props").is_none());
+        assert_eq!(crate::mods::shared("probe.started"), None, "its tab has not been shown: no copy of the mod has started");
+        assert!(!view.read_with(cx, |this, _| this.copies.contains_key("lab/pa175")));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.select_tab("tb2");
+            this.sync(window, cx);
+        }));
+        settle(cx);
+        assert_eq!(crate::mods::shared("probe.started"), Some(json!(["/srv/a.rs"])), "shown, it starts with the props it is listed with");
+    }
+
     include!("window/pane_size_tests.rs");
 
     #[test]

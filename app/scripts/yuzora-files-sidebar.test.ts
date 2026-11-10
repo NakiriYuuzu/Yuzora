@@ -969,6 +969,17 @@ for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null
   });
 }
 
+for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null]] as const) {
+  test(`${where}: a click on a file a pane restored with the layout shows goes to that pane, not to a tab of its own`, async () => {
+    const s = await realSidebarAt(machine);
+    const pane = machine ? "lab/pa175" : "pa175";
+    s.world.paneList.push({ pane, tab: "t9", mod: "yuzora-editor", props: { path: "/srv/a.txt", on: machine, opened: 1 } });
+    s.press(s.frame(), A_ROW);
+    expect(opens(s)).toEqual([]);
+    expect(s.world.runs).toEqual([["pane.focus", { pane }]]);
+  });
+}
+
 test("the menu of a folder has no Open and no Open to the Side", async () => {
   const s = await realSidebarAt(null);
   s.pressRight(s.frame(), SRC_ROW);

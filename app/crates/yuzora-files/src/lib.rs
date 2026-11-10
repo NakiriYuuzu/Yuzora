@@ -1106,10 +1106,14 @@ return JSON.stringify([a, b, c, d]); }})()"#
 
     /// A fake Herdr that follows window.rs. `run` only queues a command; `flush()` applies the queue and
     /// publishes what `panes()`, `spaces()` and `focused()` read, as the window does a moment after a mod
-    /// asked. `tab.new` selects the new tab (after the selected one) and its Space, a split focuses inside its
-    /// own tab, `pane.focus` selects the pane's tab and Space. A focused editor notes its pane on its document,
-    /// as `doc-pane.js` does. `strip(space)` is the tab strip with the panes in each tab and `*` on the
-    /// selected tab, `focus()` the pane that has the keys.
+    /// asked (a mod pane lists its props, a terminal does not). `tab.new` selects the new tab (after the
+    /// selected one) and its Space, a split focuses inside its own tab, `pane.focus` selects the pane's tab and
+    /// Space. A mod pane starts (and opens its document) when its tab is first shown, not before; the pane
+    /// that has the keys notes itself on its document, as `doc-pane.js` does, and no other does.
+    /// `restore(...)` puts a pane there that the layout had before this run: in a tab of its own that has not
+    /// been shown, or with `beside` in the tab shown. `rename(from, to)` follows a file renamed, as `docs.rs` does.
+    /// `strip(space)` is the tab strip with the panes in each tab and `*` on the selected tab, `focus()` the
+    /// pane that has the keys.
     const HERDR_WORLD: &str = r##"
         const world = [
           { id: "s1", machine: null, active: true, selected: "t1", tabs: [
@@ -1118,8 +1122,8 @@ return JSON.stringify([a, b, c, d]); }})()"#
           { id: "s2", machine: "lab", active: false, selected: "t3", tabs: [
             { id: "t3", name: "", focus: "p3", panes: [{ pane: "p3", mod: null }] } ] },
         ];
-        const given = {}, queue = [], noted = {}, revealed = [];
-        let serial = 10, snapshot = null, nobody = false;
+        const given = {}, queue = [], revealed = [], docs = new Map(), opens = {}, started = new Set();
+        let serial = 10, docs_made = 0, snapshot = null, nobody = false;
         const shown = () => world.find(s => s.active);
         const tabShown = () => shown().tabs.find(t => t.id === shown().selected);
         const tabOf = pane => world.flatMap(s => s.tabs).find(t => t.panes.some(p => p.pane === pane));
@@ -1128,6 +1132,8 @@ return JSON.stringify([a, b, c, d]); }})()"#
           s.selected = tab.id;
           for (const x of world) x.active = x === s;
         };
+        const keyOf = (path, on) => `${on ?? ""}\0${path}`;
+        const DOC_PANES = ["yuzora-editor", "yuzora-markdown"];
         function apply(name, a) {
           if (name === "tab.new") {
             const s = a.space ? world.find(x => x.id === a.space) : shown(), pane = `p${++serial}`;
@@ -1151,11 +1157,20 @@ return JSON.stringify([a, b, c, d]); }})()"#
           } else throw new Error(name);
         }
         function publish() {
-          const tab = tabShown(), here = tab.panes.find(p => p.pane === tab.focus), at = given[here.pane];
-          if (at?.path && (here.mod === "yuzora-editor" || here.mod === "yuzora-markdown")) noted[`${at.on ?? ""}\0${at.path}`] = here.pane;
+          const tab = tabShown();
+          for (const p of tab.panes) {
+            const at = given[p.pane];
+            if (started.has(p.pane)) continue;
+            started.add(p.pane);
+            if (!DOC_PANES.includes(p.mod) || !at?.path) continue;
+            if (!docs.has(keyOf(at.path, at.on))) docs.set(keyOf(at.path, at.on), { id: ++docs_made, pane: null });
+            opens[p.pane] = docs.get(keyOf(at.path, at.on));
+          }
+          const here = tab.panes.find(p => p.pane === tab.focus);
+          if (opens[here.pane]) opens[here.pane].pane = here.pane;
           snapshot = {
             spaces: world.map(s => ({ id: s.id, machine: s.machine, active: s.active, tabs: s.tabs.map(t => ({ id: t.id, name: t.name, active: s.selected === t.id })) })),
-            panes: world.flatMap(s => s.tabs.flatMap(t => t.panes.map(p => ({ pane: p.pane, mod: p.mod ?? undefined, tab: t.id })))),
+            panes: world.flatMap(s => s.tabs.flatMap(t => t.panes.map(p => ({ pane: p.pane, mod: p.mod ?? undefined, ...(p.mod ? { props: given[p.pane] } : {}), tab: t.id })))),
             focused: { space: shown().id, tab: tab.id, pane: nobody ? null : tab.focus },
           };
         }
@@ -1164,10 +1179,29 @@ return JSON.stringify([a, b, c, d]); }})()"#
         const run = (name, args) => { queue.push([name, args]); };
         const spaces = () => snapshot.spaces, panes = () => snapshot.panes, focused = () => snapshot.focused;
         const kindOf = p => (/\.png$/.test(p) ? "image" : /\.md$/.test(p) ? "markdown" : "text");
-        const documentFor = (path, o) => { const pane = noted[`${o?.on ?? ""}\0${path}`]; return pane ? { doc: 1, pane } : null; };
+        const documentFor = (path, o) => { const d = docs.get(keyOf(path, o?.on)); return d ? { doc: d.id, pane: d.pane } : null; };
+        const paneDocument = pane => { for (const [key, d] of docs) if (d.pane === pane) return { path: key.split("\0")[1] }; return null; };
+        const notePane = (doc, pane) => { for (const d of docs.values()) if (d.id === doc) d.pane = pane; };
         const focusDocument = () => {};
         const revealLine = (doc, line, column) => revealed.push([line, column]);
         const show = id => { for (const s of world) s.active = s.id === id; publish(); };
+        const restore = (space, name, mod, props, { beside = false, pane = null } = {}) => {
+          const s = world.find(x => x.id === space), n = ++serial;
+          pane ??= `r${n}`;
+          given[pane] = props;
+          if (beside) tabShown().panes.push({ pane, mod });
+          else s.tabs.push({ id: `tr${n}`, name, focus: pane, panes: [{ pane, mod }] });
+          publish();
+          return pane;
+        };
+        const rename = (from, to, on = null) => {
+          for (const [key, d] of [...docs]) {
+            const [machine, path] = key.split("\0");
+            if (machine !== (on ?? "") || !(path === from || path.startsWith(from + "/"))) continue;
+            docs.delete(key);
+            docs.set(keyOf(to + path.slice(from.length), on), d);
+          }
+        };
         const label = p => (p.mod === null ? "shell" : `${p.mod.replace(/^yuzora-(files-)?/, "")} ${given[p.pane].path}`);
         const strip = id => {
           const s = world.find(x => x.id === id);
@@ -1470,6 +1504,194 @@ return JSON.stringify([a, b, c, d]); }})()"#
             [
                 "[shell] [image /r/b.png]* [image /r/c.png] [shell]",
                 "image /r/b.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_in_a_tab_the_layout_restored_and_nobody_has_shown_yet_is_shown_not_opened_again() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            const files = [["yuzora-editor", "/r/a.rs"], ["yuzora-markdown", "/r/README.md"], ["yuzora-files-image", "/r/a.png"]];
+            for (const [mod, path] of files) restore("s1", path.split("/").pop(), mod, { path, on: null, opened: 1 });
+            const before = strip("s1");
+            for (const [, path] of files) { openFile(path, null); flush(); out.push(focus()); }
+            out.push(before, strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "editor /r/a.rs",
+                "markdown /r/README.md",
+                "image /r/a.png",
+                "[shell]* [shell] [editor /r/a.rs] [markdown /r/README.md] [image /r/a.png]",
+                "[shell] [shell] [editor /r/a.rs] [markdown /r/README.md] [image /r/a.png]*",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_in_a_pane_the_layout_restored_beside_the_one_shown_is_shown_not_opened_again() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            const files = [["yuzora-editor", "/r/a.rs"], ["yuzora-markdown", "/r/README.md"], ["yuzora-files-image", "/r/a.png"]];
+            for (const [mod, path] of files) restore("s1", "", mod, { path, on: null, opened: 1 }, { beside: true });
+            out.push(String(documentFor("/r/a.rs").pane));
+            for (const [, path] of files) { openFile(path, null); flush(); out.push(focus()); }
+            out.push(strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "null",
+                "editor /r/a.rs",
+                "markdown /r/README.md",
+                "image /r/a.png",
+                "[shell, editor /r/a.rs, markdown /r/README.md, image /r/a.png]* [shell]",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_of_a_remote_space_restored_with_its_layout_is_shown_not_opened_again() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            restore("s2", "a.rs", "yuzora-editor", { path: "/srv/a.rs", on: "lab", opened: 1 }, { pane: "lab/pa175" });
+            restore("s2", "b.rs", "yuzora-editor", { path: "/srv/b.rs", on: "lab", opened: 1 }, { pane: "lab/pb176" });
+            show("s2");
+            restore("s2", "", "yuzora-editor", { path: "/srv/c.rs", on: "lab", opened: 1 }, { beside: true, pane: "lab/pc177" });
+            for (const path of ["/srv/a.rs", "/srv/c.rs"]) { openFile(path, "lab"); flush(); out.push(focused().pane); }
+            out.push(strip("s1"), strip("s2"), shown().id);
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "lab/pa175",
+                "lab/pc177",
+                "[shell]* [shell]",
+                "[shell, editor /srv/c.rs]* [editor /srv/a.rs] [editor /srv/b.rs]",
+                "s2",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_restored_pane_is_for_its_own_machine_only() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "a.rs", "yuzora-editor", { path: "/srv/a.rs", on: "lab", opened: 1 });
+            openFile("/srv/a.rs", null); flush();
+            return [strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["[shell] [editor /srv/a.rs]* [shell] [editor /srv/a.rs]"]);
+    }
+
+    #[test]
+    fn a_restored_pane_is_found_under_the_name_its_file_was_renamed_to() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "", "yuzora-editor", { path: "/r/d/a.rs", on: null, opened: 1 }, { beside: true });
+            rename("/r/d/a.rs", "/r/d/b.rs"); moved("/r/d/a.rs", "/r/d/b.rs", null); flush();
+            openFile("/r/d/b.rs", null); flush();
+            const file = strip("s1");
+            rename("/r/d", "/r/e"); moved("/r/d", "/r/e", null); flush();
+            openFile("/r/e/b.rs", null); flush();
+            const folder = strip("s1");
+            // The old name is free again: a file made under it is a new one, not the pane of the renamed.
+            openFile("/r/d/a.rs", null); flush();
+            return [file, folder, strip("s1")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell, editor /r/d/a.rs]* [shell]",
+                "[shell, editor /r/d/a.rs]* [shell]",
+                "[shell, editor /r/d/a.rs] [editor /r/d/a.rs]* [shell]",
+            ]
+        );
+    }
+
+    #[test]
+    fn with_two_panes_on_one_file_the_one_its_document_was_last_seen_in_is_shown() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            const at = { path: "/r/a.rs", on: null, opened: 1 };
+            const a = restore("s1", "", "yuzora-editor", at, { beside: true }), b = restore("s1", "", "yuzora-editor", at, { beside: true });
+            const is = pane => (pane === a ? "first" : pane === b ? "second" : pane);
+            openFile("/r/a.rs", null); flush();
+            out.push(is(focused().pane));
+            run("pane.focus", { pane: b }); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.rs", null); flush();
+            out.push(is(focused().pane), strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            ["first", "second", "[shell, editor /r/a.rs, editor /r/a.rs]* [shell]"]
+        );
+    }
+
+    #[test]
+    fn a_line_asked_of_a_file_in_a_restored_pane_goes_there_once_the_pane_has_started() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "", "yuzora-editor", { path: "/r/a.rs", on: null, opened: 1 }, { beside: true });
+            restore("s1", "b.rs", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1 });
+            openFile("/r/a.rs", null, { line: 40, column: 2 }); flush();
+            const asked = JSON.stringify(revealed);
+            openFile("/r/b.rs", null, { line: 7 }); flush();
+            return [asked, JSON.stringify(revealed), focus(), strip("s1")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[[40,2]]",
+                "[[40,2]]",
+                "editor /r/b.rs",
+                "[shell, editor /r/a.rs] [shell] [editor /r/b.rs]*",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_image_restored_with_the_layout_is_replaced_under_its_new_path_when_renamed() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            restore("s1", "", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 }, { beside: true });
+            restore("s1", "c.png", "yuzora-files-image", { path: "/r/img/c.png", on: null, opened: 1 });
+            moved("/r/a.png", "/r/b.png", null); flush();
+            out.push(strip("s1") + " " + focus());
+            openFile("/r/b.png", null); flush();
+            out.push(strip("s1") + " " + focus());
+            moved("/r/img", "/r/pics", null); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/pics/c.png", null); flush();
+            out.push(strip("s1") + " " + focus());
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell, image /r/b.png]* [shell] [image /r/img/c.png] shell",
+                "[shell, image /r/b.png]* [shell] [image /r/img/c.png] image /r/b.png",
+                "[shell, image /r/b.png] [shell] [image /r/pics/c.png]* image /r/pics/c.png",
             ]
         );
     }
