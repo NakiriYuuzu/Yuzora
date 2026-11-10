@@ -373,6 +373,15 @@ fn remove_dir_all_or_absent(dir: &Path) -> std::io::Result<()> {
 fn chain() -> i32 {
     let round: u32 = std::env::var("PROBE_ROUND").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
     let rounds: u32 = std::env::var("PROBE_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    // PROBE_CHDIR: what a fix that moves the app's own cwd away at startup would do (first round only,
+    // the reopened programs inherit what this one has by then).
+    if round == 1 {
+        if let Some(dir) = std::env::var_os("PROBE_CHDIR") {
+            let before = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            let moved = std::env::set_current_dir(&dir);
+            log_event("chdir", &[("before", js(&before)), ("to", js(&dir.to_string_lossy())), ("result", result_json(&moved))]);
+        }
+    }
     // find_root: the canonical path of the running program, `\\?\C:\...` on Windows.
     let exe = match std::env::current_exe().and_then(|p| p.canonicalize()) {
         Ok(p) => p,

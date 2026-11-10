@@ -15,6 +15,9 @@ Two flavors of the same source (the workflow builds each):
            `yuzora do app.update`, the Restart button). D2 does the second update from the
            program PowerShell reopened, which needs no herdr-core.
 
+  C2-C5    (testkey, herdr-core installed) an old app's core left alive in the install folder, and the
+           installer run again over a working install; see chain_old_core and chain_overlay.
+
 Newer versions come from the built exe itself with its version string replaced by one of
 the same length (release_server.py); each is checked with `--version` before use.
 Launching is like the Start menu shortcut: cwd = the folder the shortcut says, an ordinary
@@ -32,11 +35,12 @@ import re
 import shutil
 import subprocess
 import tarfile
+import threading
 import time
 
 import common
 import release_server as rs
-from common import FAIL, INFO, NOT_MEASURED, PASS, PROBE_ERROR, Run, Tracker, WinProbe, inventory, read_text, tail, wait_for
+from common import FAIL, INFO, NOT_MEASURED, PASS, PROBE_ERROR, Run, Tracker, WinProbe, inventory, read_text, strip_ansi, tail, wait_for
 
 PROGRAMS = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")
 INSTALL = os.path.join(PROGRAMS, "Yuzora")
@@ -74,6 +78,23 @@ class Ctx:
         self.server = None
         self.archives = {}
         self.cli = None
+        self.core = None  # path of herdr-core.exe once ensure_core installed it
+        self.core_tried = False
+        self.shots = 0
+
+    def fresh_server(self, *versions):
+        """A chain's own server state: nothing offered but `versions` (oldest first, so the last is the newest).
+        Without this an earlier chain's newest release is served first and the app stages that one."""
+        self.server.reset()
+        for version in versions:
+            self.offer(version)
+        self.run.log("the stand-in server was reset, it offers %s" % (", ".join(versions) or "nothing"))
+
+    def sweep(self):
+        """Stops what the chain left running: the app, the core and its helpers (only programs of those names)."""
+        for name in ("yuzora.exe", "hc.exe", "herdr-core.exe"):
+            self.tracker.add(*[p["pid"] for p in self.probe.named(name)])
+        self.tracker.kill_all()
 
     def time_left(self):
         return self.deadline - time.time()
@@ -119,9 +140,7 @@ def package_list_state():
 
 def install_fresh(ctx, cid):
     # A reopen that came late from the last chain, and herdr-core, are ours to stop.
-    for name in ("yuzora.exe", "hc.exe", "herdr-core.exe"):
-        ctx.tracker.add(*[p["pid"] for p in ctx.probe.named(name)])
-    ctx.tracker.kill_all()
+    ctx.sweep()
     time.sleep(2)
     uninstall_all(ctx, cid)
     left = [n for n in os.listdir(PROGRAMS) if n.startswith("Yuzora")] if os.path.isdir(PROGRAMS) else []
@@ -175,14 +194,14 @@ class Instance:
         return wait_for(lambda: not self.alive(), timeout) is not None
 
     def log_text(self):
-        return read_text(self.log_path) if self.log_path else ""
+        return strip_ansi(read_text(self.log_path)) if self.log_path else ""
 
     def stop(self):
         """What a person ends a window app with, then the end for one that will not."""
         if self.alive():
             self.ctx.probe.close(self.pid)
             if not self.wait_exit(15):
-                self.ctx.tracker.kill_all()
+                self.ctx.tracker.kill_some({self.pid})  # only this one: herdr-core may be a part of what a chain is measuring
                 self.wait_exit(10)
 
 
@@ -271,21 +290,91 @@ def cwd_class(info):
     return "other", cwd
 
 
-def observe_swap(ctx, cid, k, to_version, old, home, expect_relaunch, known, reader_ok):
+BLOCKED = ("cannot move", "cannot put the new version", "cannot restore the previous version")
+
+SHOT = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
+        "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen; "
+        "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height; "
+        "$g=[System.Drawing.Graphics]::FromImage($bmp); "
+        "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); "
+        "$bmp.Save('%s',[System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $bmp.Dispose()")
+
+
+def screenshot(ctx, rel):
+    """The runner's desktop as a PNG, to be looked at by a person (a message inside the app's window has no
+    other way to be read). Returns the relative name, or None when the capture failed."""
+    if ctx.shots >= 8:
+        return None
+    ctx.shots += 1
+    path = os.path.join(ctx.run.out, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    shell = ctx.run.sh(["powershell", "-NoProfile", "-NonInteractive", "-Command", SHOT % path.replace("'", "''")], 60, name=rel + ".txt")
+    ok = shell.rc == 0 and os.path.exists(path) and os.path.getsize(path) > 0
+    ctx.run.log("screenshot %s: %s" % (rel, "saved" if ok else "failed (rc=%s)" % shell.rc))
+    return rel if ok else None
+
+
+def blocked_lines(text):
+    return [line.strip() for line in text.splitlines() if any(m in line for m in BLOCKED)]
+
+
+def watch_exit(ctx, old, timeout, since=0):
+    """Waits for `old` to end. A swap that fails says so in the app's log and the app then goes on running,
+    so that line ends the wait early (a few seconds later, for whatever the app does about it).
+    Returns (exited, failure line or None)."""
+    seen = {"line": None}
+
+    def done():
+        ctx.probe.ps()  # also remembers who is running, for a parent that is gone when it is asked about
+        if not old.alive():
+            return True
+        lines = blocked_lines(old.log_text()[since:])
+        if lines:
+            seen["line"] = lines[0]
+            return True
+        return False
+    wait_for(done, timeout, 1)
+    return (not old.alive()), seen["line"]
+
+
+def failure_signals(ctx, cid, k, old, since):
+    """What a person could have noticed after a swap that failed while the app kept running: the app's own
+    output since the trigger, its windows, and a picture of the desktop a few seconds later."""
+    time.sleep(4)
+    if not old.alive():
+        return "the app ended on its own, so there was no window left to show a message in"
+    shot = screenshot(ctx, "%s/failure-%d.png" % (cid, k))
+    windows = [{"title": w.get("title"), "class": w.get("class")} for w in ctx.probe.windows(old.pid) if w.get("visible")]
+    new_lines = [line for line in old.log_text()[since:].splitlines() if line.strip()]
+    return "still running; visible windows %s; screenshot %s; its output since the trigger (%d lines): %s" % (
+        json.dumps(windows), shot or "not taken", len(new_lines), " | ".join(new_lines[-8:]) or "(none)")
+
+
+def observe_swap(ctx, cid, k, to_version, old, home, expect_relaunch, known, reader_ok, since=0, exit_timeout=30):
     """After `old` was told to apply an update: did the folder change, and did a new process appear?
+    `since` is how much of the app's log existed before the trigger (earlier failures are not this one's).
     Returns (swapped, reopened): whether the folder now runs `to_version`, and the Instance the app
     reopened itself as (None when it did not, or when `expect_relaunch` is off)."""
     run, probe = ctx.run, ctx.probe
     mark = len(ctx.server_entries())
     known.add(old.pid)
-    exited = old.wait_exit(90)
+    exited, failure = watch_exit(ctx, old, exit_timeout, since)
+    signals = None
+    if failure:
+        signals = failure_signals(ctx, cid, k, old, since)
+        exited = old.wait_exit(8)
     time.sleep(1)
     post = snap(ctx, cid, "after-swap%d" % k)
     marker = os.path.exists(os.path.join(home, ".updated"))
     run.evidence("%s/home-after-swap%d.json" % (cid, k), json.dumps(sorted(os.listdir(home)) if os.path.isdir(home) else None))
     evidence = ["%s/snapshot-after-swap%d.json" % (cid, k)] + ([old.log_rel] if old.log_rel else [])
     if post["install_version"] != to_version:
-        run.result("%s.swap_%d" % (cid, k), FAIL, "the folder still runs %s, not %s. old process exited=%s. its update lines: %s" % (post["install_version"], to_version, exited, update_lines(old.log_text()) if old.log_path else "(no log kept for this process)"), evidence)
+        tries = len(blocked_lines(old.log_text()[since:])) if old.log_path else None
+        run.result("%s.swap_%d" % (cid, k), FAIL, "the folder still runs %s, not %s. old process exited=%s. failure line: %s. times the failure was logged: %s. its update lines: %s" % (
+            post["install_version"], to_version, exited, failure or "none seen", tries, update_lines(old.log_text()) if old.log_path else "(no log kept for this process)"), evidence)
+        if signals:
+            shot = "%s/failure-%d.png" % (cid, k)
+            run.result("%s.failure_visible_%d" % (cid, k), INFO, "after the failed swap: %s; Yuzora.new kept=%s, receipt kept=%s" % (signals, bool(post["new_version"]), bool(post["receipt"])), evidence + ([shot] if os.path.exists(os.path.join(run.out, shot)) else []))
         return False, None
     run.result("%s.swap_%d" % (cid, k), PASS, "the folder now runs %s; old process exited=%s; Yuzora.old runs %s; .updated marker=%s; siblings=%s" % (post["install_version"], exited, post["old_version"], marker, sorted(post["siblings"])), evidence)
     if not expect_relaunch:
@@ -301,7 +390,10 @@ def observe_swap(ctx, cid, k, to_version, old, home, expect_relaunch, known, rea
     ev = ["%s/procinfo-relaunch%d.txt" % (cid, k)]
     image = info.get("image_query")
     ok_image = image is not None and norm(image) == norm(EXE)
-    run.result("%s.relaunch_%d" % (cid, k), PASS if ok_image else FAIL, "pid %s runs %s, parent %s (pid %s), command line %s" % (pid, image, info.get("parent_name"), info.get("ppid"), peb.get("cmdline")), ev)
+    parent = info.get("parent_name")
+    if parent is None and info.get("ppid") is not None:
+        parent = "%s (already gone when asked, name from an earlier process list)" % (probe.name_of(info.get("ppid")) or "unknown")
+    run.result("%s.relaunch_%d" % (cid, k), PASS if ok_image else FAIL, "pid %s runs %s, parent %s (pid %s), command line %s" % (pid, image, parent, info.get("ppid"), peb.get("cmdline")), ev)
     kind, cwd = cwd_class(info)
     if not reader_ok or kind == "unknown":
         run.result("%s.relaunch_%d_cwd" % (cid, k), NOT_MEASURED, "cwd not read (reader self-check ok=%s)" % reader_ok, ev)
@@ -311,7 +403,7 @@ def observe_swap(ctx, cid, k, to_version, old, home, expect_relaunch, known, rea
         run.result("%s.relaunch_%d_cwd" % (cid, k), PASS, "the reopened app's cwd handle is %s (%s); PEB string %s" % (cwd, kind, peb.get("cwd_dos")), ev)
     trust = info.get("redirection_trust") or {}
     if trust.get("measured"):
-        run.result("%s.relaunch_%d_redirection_trust" % (cid, k), INFO, "EnforceRedirectionTrust=%s AuditRedirectionTrust=%s (flags %s); parent was %s" % (trust.get("enforce"), trust.get("audit"), trust.get("flags"), info.get("parent_name")), ev)
+        run.result("%s.relaunch_%d_redirection_trust" % (cid, k), INFO, "EnforceRedirectionTrust=%s AuditRedirectionTrust=%s (flags %s); parent was %s" % (trust.get("enforce"), trust.get("audit"), trust.get("flags"), parent), ev)
     else:
         run.result("%s.relaunch_%d_redirection_trust" % (cid, k), NOT_MEASURED, "GetProcessMitigationPolicy(RedirectionTrust) failed with Win32 error %s on this Windows" % trust.get("win32_error"), ev)
     asked = wait_for(lambda: ctx.ua_seen(to_version, mark), 40)
@@ -324,6 +416,78 @@ def observe_swap(ctx, cid, k, to_version, old, home, expect_relaunch, known, rea
         verdict, note = NOT_MEASURED, "ended before its first check at 10 s; if the same build survives when started by hand, suspect the in-place version patch or the window, not the updater"
     run.result("%s.relaunch_%d_alive" % (cid, k), verdict, "the reopened app (pid %s) %s" % (pid, note), ["server.log"])
     return True, Instance(ctx, pid, "relaunched-%d" % k)
+
+
+def staged_version():
+    try:
+        return json.loads(read_text(beside(".new.json"))).get("version")
+    except ValueError:
+        return None
+
+
+def not_reached(ctx, cid, k, why):
+    """The updates after the k-th were never tried, because the k-th did not get that far."""
+    for later in range(k + 1, 3):
+        ctx.run.result("%s.update_%d_not_reached" % (cid, later), NOT_MEASURED, "update %d was never tried: %s" % (later, why), [])
+
+
+def check_app_cwd(ctx, cid, inst, started_inside, reader_ok, tag="app_cwd"):
+    """Where the running app's own cwd is, read from a duplicated cwd handle (the path string goes stale
+    after a rename). A fix that moves it at startup shows here."""
+    info = ctx.probe.procinfo(inst.pid, "%s/procinfo-%s-%d.txt" % (cid, tag, inst.pid))
+    kind, cwd = cwd_class(info)
+    ev = ["%s/procinfo-%s-%d.txt" % (cid, tag, inst.pid)]
+    rid = "%s.%s" % (cid, tag)
+    if not reader_ok or kind == "unknown":
+        ctx.run.result(rid, NOT_MEASURED, "the app's cwd could not be read (reader self-check ok=%s, process answered %s)" % (reader_ok, json.dumps(info)[:200]), ev)
+    elif not started_inside:
+        ctx.run.result(rid, INFO, "started elsewhere; its cwd handle is %s (%s)" % (cwd, kind), ev)
+    elif kind in ("inside-install", "inside-old"):
+        ctx.run.result(rid, FAIL, "started with the install folder as cwd, as the shortcut does; its cwd handle is still %s" % cwd, ev)
+    else:
+        ctx.run.result(rid, PASS, "started with the install folder as cwd, as the shortcut does; its cwd handle is now %s (%s)" % (cwd, kind), ev)
+
+
+CORE_NAMES = ("hc.exe", "herdr-core.exe")
+
+
+def list_holders(ctx, cid, app_pid, tag):
+    """Every program the app started or that serves it, with cwd and command line read now. A program that
+    ends between the process list and the read is marked as gone (a short-lived helper), not as unknown."""
+    rows = ctx.probe.ps()
+    kids = ctx.probe.descendants(app_pid, rows) if app_pid else set()
+    found = []
+    for p in rows:
+        if p["name"].lower() in CORE_NAMES or p["pid"] in kids:
+            ctx.tracker.add(p["pid"])
+            info = ctx.probe.procinfo(p["pid"], "%s/procinfo-%s-%d.txt" % (cid, tag, p["pid"]))
+            kind, cwd = cwd_class(info)
+            found.append({"name": p["name"], "pid": p["pid"], "ppid": p.get("ppid"), "kind": kind, "cwd": cwd, "gone": info.get("alive") is False, "cmd": (info.get("peb") or {}).get("cmdline")})
+    return found
+
+
+def holder_text(h):
+    if h["gone"]:
+        return "%s pid %s ended before it could be read (a short-lived helper, not a holder)" % (h["name"], h["pid"])
+    return "%s pid %s parent %s `%s` cwd %s (%s)" % (h["name"], h["pid"], h["ppid"], h["cmd"], h["cwd"], h["kind"])
+
+
+def report_holders(ctx, cid, rows, reader_ok, tag, verdict_id=None):
+    """The INFO line with every holder, and (verdict_id) PASS/FAIL on whether any herdr-core process has the
+    install folder as its cwd."""
+    ev = ["%s/procinfo-%s-%d.txt" % (cid, tag, h["pid"]) for h in rows]
+    inside = [h for h in rows if h["kind"] in ("inside-install", "inside-old")]
+    ctx.run.result("%s.holders_%s" % (cid, tag), INFO if reader_ok else NOT_MEASURED, "%d program(s) the app started or that serve it; %d with a cwd in the install folder: %s" % (len(rows), len(inside), "; ".join(holder_text(h) for h in rows)), ev)
+    if verdict_id:
+        core = [h for h in rows if h["name"].lower() in CORE_NAMES and not h["gone"] and h["kind"] != "unknown"]
+        core_inside = [h for h in core if h in inside]
+        if not reader_ok or not core:
+            ctx.run.result(verdict_id, NOT_MEASURED, "no herdr-core process could be read (reader self-check ok=%s)" % reader_ok, ev)
+        elif core_inside:
+            ctx.run.result(verdict_id, FAIL, "%d of %d herdr-core process(es) have the install folder as cwd and will stop a swap: %s" % (len(core_inside), len(core), "; ".join(holder_text(h) for h in core_inside)), ev)
+        else:
+            ctx.run.result(verdict_id, PASS, "all %d herdr-core process(es) read have a cwd outside the install folder: %s" % (len(core), "; ".join(holder_text(h) for h in core)), ev)
+
 
 
 # ---- chains -----------------------------------------------------------------
@@ -350,8 +514,9 @@ def chain_release(ctx, mode, reader_ok):
         app = start_app(ctx, cid, "app%d" % k, home, cwd)
         swapped, reopened = observe_swap(ctx, cid, k, version, app, home, True, known, reader_ok)
         if not swapped:
-            for later in range(k + 1, 3):
-                ctx.run.result("%s.swap_%d" % (cid, later), NOT_MEASURED, "update %d did not complete" % k, [])
+            if app.alive():
+                check_app_cwd(ctx, cid, app, cwd == INSTALL, reader_ok)
+            not_reached(ctx, cid, k, "update %d was not applied" % k)
             break
         if reopened:
             reopened.stop()
@@ -394,7 +559,9 @@ def chain_release_extra(ctx):
 
 
 def wait_staged_and_window(ctx, inst, version, timeout):
-    """Waits for `version` to be staged by the app's own check. Also notes whether a window showed."""
+    """Waits for `version` to be staged by the app's own check. Also notes whether a window showed, and
+    stops early when the app staged some other version (the stand-in server offered something else:
+    the probe's fault, said as such)."""
     seen = {"window": None}
 
     def done():
@@ -402,9 +569,11 @@ def wait_staged_and_window(ctx, inst, version, timeout):
             visible = [w for w in ctx.probe.windows(inst.pid) if w.get("visible")]
             if visible:
                 seen["window"] = visible
-        return staged(version) or not inst.alive()
+        other = staged_version()
+        return staged(version) or other not in (None, version) or not inst.alive()
     wait_for(done, timeout, 2)
-    return staged(version), seen["window"], inst.alive()
+    other = staged_version()
+    return staged(version), seen["window"], inst.alive(), (other if other not in (None, version) else None)
 
 
 def chain_testkey(ctx, mode, reader_ok, startup_first=False):
@@ -416,16 +585,20 @@ def chain_testkey(ctx, mode, reader_ok, startup_first=False):
     home = new_home(ctx, cid)
     cwd = INSTALL if mode == "install" else ctx.elsewhere
     install_fresh(ctx, cid)
-    ctx.offer(ctx.v2)
+    ctx.fresh_server(ctx.v2)
     known = set()
     app = start_app(ctx, cid, "app1", home, cwd)
     for k, from_v, to_v in [(1, ctx.v1, ctx.v2), (2, ctx.v2, ctx.v3)]:
         mark = len(ctx.server_entries())
-        ok, window, alive = wait_staged_and_window(ctx, app, to_v, 170)
+        ok, window, alive, other = wait_staged_and_window(ctx, app, to_v, 100)
         if k == 1:
             ctx.run.result("%s.window_opened" % cid, INFO if window else NOT_MEASURED, "visible top-level windows of the app: %s" % (json.dumps(window) if window else "none seen"), [])
-        requests = [e["path"].split("?")[0] for e in ctx.server_entries()[mark:]]
+        requests = [e.get("path", "").split("?")[0] for e in ctx.server_entries()[mark:]]
         ev = ["server.log"] + ([app.log_rel] if app.log_rel else [])
+        if other:
+            ctx.run.result("%s.stage_%d" % (cid, k), PROBE_ERROR, "the app staged %s while the probe expected %s: the stand-in server offered %s (a probe fault, nothing about the product)" % (other, to_v, [v for v, _ in ctx.server.releases]), ev)
+            not_reached(ctx, cid, k, "the probe's server state was wrong")
+            return
         if not ok:
             checked = ctx.ua_seen(from_v, mark)
             detail = "%s was not staged: app alive=%s (exit code %s), asked the server=%s, requests seen=%s, update lines: %s" % (to_v, alive, app.proc.poll() if app.proc else "n/a", checked, requests, update_lines(app.log_text()) if app.log_path else "(no log kept for this process)")
@@ -433,13 +606,15 @@ def chain_testkey(ctx, mode, reader_ok, startup_first=False):
                 ctx.run.result("%s.stage_%d" % (cid, k), FAIL, detail, ev)
             else:
                 ctx.run.result("%s.stage_%d" % (cid, k), NOT_MEASURED, "the app ended before its first check at 10 s, so the update path never ran (a window or startup problem, not an update result): " + detail, ev)
-            for later in range(k + 1, 3):
-                ctx.run.result("%s.stage_%d" % (cid, later), NOT_MEASURED, "update %d was not staged" % k, [])
+            not_reached(ctx, cid, k, "update %d was not staged" % k)
             return
         ctx.run.result("%s.stage_%d" % (cid, k), PASS, "check, download, signature, checksum, unpack and stage all ran in the app: requests %s; Yuzora.new + receipt for %s" % (requests, to_v), ev)
+        if k == 1:
+            check_app_cwd(ctx, cid, app, cwd == INSTALL, reader_ok)
         ctx.offer(ctx.v3)
         snap(ctx, cid, "before-swap%d" % k)
         forced = startup_first and k == 1
+        since = len(app.log_text())
         closed = {"windows": "not asked", "posted": 0} if forced else ctx.probe.close(app.pid)
         quit_path = bool(closed.get("posted"))
         if forced:
@@ -450,10 +625,9 @@ def chain_testkey(ctx, mode, reader_ok, startup_first=False):
             note = "no window to close (%s windows found): the app was ended and started again, so the staged files are applied at startup" % closed.get("windows")
         ctx.run.result("%s.trigger_%d" % (cid, k), INFO, note, [])
         if quit_path:
-            swapped, _ = observe_swap(ctx, cid, k, to_v, app, home, False, known, reader_ok)
+            swapped, _ = observe_swap(ctx, cid, k, to_v, app, home, False, known, reader_ok, since=since)
             if not swapped:
-                for later in range(k + 1, 3):
-                    ctx.run.result("%s.stage_%d" % (cid, later), NOT_MEASURED, "update %d was not applied" % k, [])
+                not_reached(ctx, cid, k, "update %d was not applied" % k)
                 return
             app = start_app(ctx, cid, "app%d" % (k + 1), home, cwd)
             up = wait_for(lambda: ctx.ua_seen(to_v, mark), 60)
@@ -470,17 +644,44 @@ def chain_testkey(ctx, mode, reader_ok, startup_first=False):
             restarted = start_app(ctx, cid, "app%d-restart" % k, home, cwd)
             swapped, reopened = observe_swap(ctx, cid, k, to_v, restarted, home, True, known, reader_ok)
             if not swapped:
-                for later in range(k + 1, 3):
-                    ctx.run.result("%s.stage_%d" % (cid, later), NOT_MEASURED, "update %d was not applied" % k, [])
+                not_reached(ctx, cid, k, "update %d was not applied" % k)
                 return
             # A reopen that did not happen is itself a result; a person would start the app again.
             app = reopened or start_app(ctx, cid, "app%d-by-hand" % (k + 1), home, cwd)
 
 
-def run_cli(ctx, home, *words, timeout=60):
-    """The control client, run from a copy of the exe outside the install folder: a client inside
-    it would be one more program the swap has to move past."""
-    return ctx.run.sh([ctx.cli] + list(words), timeout, env=app_env(ctx, home), cwd=ctx.elsewhere, name="C1/cli-%s-%d.txt" % ("-".join(words).replace(".", "_"), int(time.time())))
+# ---- chains with herdr-core ---------------------------------------------------
+
+HELLO = b'{"jsonrpc":"2.0","id":0,"method":"hello","params":{"framed":true}}\n'
+
+
+def ensure_core(ctx):
+    """herdr-core from its own installer, once per job. Returns its path, or None (and says why, once)."""
+    if ctx.core or ctx.core_tried:
+        return ctx.core
+    ctx.core_tried = True
+    shell = ctx.run.sh(["powershell", "-NoProfile", "-NonInteractive", "-Command", CORE_INSTALLER], 300, name="core/install.txt")
+    core = next((p for p in (os.path.join(PROGRAMS, "herdr-core", n) for n in ("herdr-core.exe", "hc.exe")) if os.path.exists(p)), None)
+    version = ctx.run.sh([core, "--version"], 30, name="core/version.txt").out.strip() if core else ""
+    if version.startswith("hc "):
+        ctx.core = core
+        ctx.run.result("core.install", PASS, "%s at %s" % (version, core), ["core/install.txt"])
+    else:
+        ctx.run.result("core.install", NOT_MEASURED, "herdr-core did not install from releases.herdr.dev (rc=%s, found=%s %r): no main window, no Restart button, no core cwd holders" % (shell.rc, core, version), ["core/install.txt"])
+    return ctx.core
+
+
+def ensure_cli(ctx):
+    """The control client, a copy of the exe outside the install folder: a client inside it would be one more
+    program the swap has to move past."""
+    if not ctx.cli:
+        os.makedirs(os.path.join(ctx.work, "cli"), exist_ok=True)
+        ctx.cli = os.path.join(ctx.work, "cli", "yuzora.exe")
+        shutil.copy(EXE, ctx.cli)
+
+
+def run_cli(ctx, cid, home, *words, timeout=60):
+    return ctx.run.sh([ctx.cli] + list(words), timeout, env=app_env(ctx, home), cwd=ctx.elsewhere, name="%s/cli-%s-%d.txt" % (cid, "-".join(words).replace(".", "_"), int(time.time())))
 
 
 def main_window_up(ctx, home):
@@ -488,58 +689,202 @@ def main_window_up(ctx, home):
     return shell.rc == 0 and isinstance(shell.json(), dict)
 
 
+def wait_main_window(ctx, cid, home, app, k, timeout=90):
+    up = wait_for(lambda: main_window_up(ctx, home) or not app.alive(), timeout, 3)
+    if not up or not app.alive():
+        ctx.run.result("%s.main_window_%d" % (cid, k), NOT_MEASURED, "no main window answered `yuzora status` (app alive=%s): the setup screen does not serve commands. log: %s" % (app.alive(), tail(app.log_text(), 6).replace("\n", " | ")), [app.log_rel] if app.log_rel else [])
+        return False
+    ctx.run.result("%s.main_window_%d" % (cid, k), PASS, "`yuzora status` answered: the main window is up on herdr-core", [])
+    return True
+
+
+def stage_via_cli(ctx, cid, k, to_v, app, home):
+    """`yuzora do app.check_updates`, then wait for the app to stage `to_v` on its own."""
+    run_cli(ctx, cid, home, "do", "app.check_updates")
+    got = wait_for(lambda: staged(to_v) or staged_version() not in (None, to_v), 60, 2)
+    other = staged_version()
+    if got and staged(to_v):
+        ctx.run.result("%s.stage_%d" % (cid, k), PASS, "staged %s by the app's own check" % to_v, ["server.log"])
+        return True
+    if got and other not in (None, to_v):
+        ctx.run.result("%s.stage_%d" % (cid, k), PROBE_ERROR, "the app staged %s while the probe expected %s: the stand-in server offered %s (a probe fault, nothing about the product)" % (other, to_v, [v for v, _ in ctx.server.releases]), ["server.log"])
+        return False
+    ctx.run.result("%s.stage_%d" % (cid, k), FAIL, "%s not staged within 60 s of `app.check_updates`; log: %s" % (to_v, tail(app.log_text(), 6).replace("\n", " | ")), ["server.log"] + ([app.log_rel] if app.log_rel else []))
+    return False
+
+
+def start_old_core(ctx, cid, home):
+    """The state an app of the build before the fix leaves behind: `herdr-core connect` started from the folder
+    the app was started in (the app spawns it with the cwd it has), and the `serve` that connect starts, which
+    stays when the client goes. Done with the same call hc.rs makes, so it needs no old build in this job.
+    Returns {"serve": [pids]} when a serve with its cwd in the install folder survived the client, else None."""
+    run, probe = ctx.run, ctx.probe
+    before = {p["pid"] for p in probe.named("herdr-core.exe")}
+    proc = subprocess.Popen([ctx.core, "connect"], cwd=INSTALL, env=app_env(ctx, home), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    ctx.tracker.add(proc.pid)
+    got = []
+
+    def read_reply():
+        try:
+            got.append(proc.stdout.readline())
+        except (OSError, ValueError) as e:
+            got.append(("read failed: %s" % e).encode())
+    reader = threading.Thread(target=read_reply, daemon=True)
+    reader.start()
+    notes = []
+    try:
+        proc.stdin.write(HELLO)
+        proc.stdin.flush()
+    except OSError as e:
+        notes.append("could not write hello: %s" % e)
+    reader.join(30)
+    reply = (got[0] if got else b"").decode("utf-8", "replace").strip()
+    time.sleep(1)
+    infos = []
+    for p in probe.named("herdr-core.exe"):
+        if p["pid"] in before or p["pid"] == proc.pid:
+            continue
+        ctx.tracker.add(p["pid"])
+        infos.append((p["pid"], probe.procinfo(p["pid"], "%s/procinfo-oldcore-%d.txt" % (cid, p["pid"]))))
+    serve = [pid for pid, info in infos if re.search(r"\bserve\b", (info.get("peb") or {}).get("cmdline") or "")]
+    proc.kill()  # the client goes, as it does when the app that started it ends
+    try:
+        _, err = proc.communicate(timeout=10)
+    except Exception as e:
+        err = ("communicate: %s" % e).encode()
+    time.sleep(3)
+    survivors = [pid for pid in serve if probe.alive(pid)]
+    inside = []
+    for pid in survivors:
+        kind, cwd = cwd_class(probe.procinfo(pid, "%s/procinfo-oldcore-after-%d.txt" % (cid, pid)))
+        if kind in ("inside-install", "inside-old"):
+            inside.append(pid)
+    run.evidence("%s/old-core.txt" % cid, "hello reply: %s\nnew herdr-core processes: %s\nserve: %s\nstill alive after the client was ended: %s\ncwd inside install: %s\nclient stderr: %s\nnotes: %s\n" % (reply[:600], [(pid, (i.get("peb") or {}).get("cmdline")) for pid, i in infos], serve, survivors, inside, err.decode("utf-8", "replace")[:600], notes))
+    if inside:
+        run.result("%s.old_core_state" % cid, PASS, "`herdr-core connect` started with cwd = the install folder (as an app of the build before the fix does) left a `serve` (pid %s) that outlives the client and has the install folder as its cwd" % inside, ["%s/old-core.txt" % cid])
+        return {"serve": survivors}
+    run.result("%s.old_core_state" % cid, PROBE_ERROR, "could not build the state of an old app's core: hello reply %r, new herdr-core processes %s, serve %s, alive after the client ended %s, cwd inside %s" % (reply[:200], [pid for pid, _ in infos], serve, survivors, inside), ["%s/old-core.txt" % cid])
+    return None
+
+
 def chain_core(ctx, reader_ok):
     """C1: herdr-core installed, the main window up, the update applied by `yuzora do app.update`."""
     cid = "C1"
     home = new_home(ctx, cid)
-    shell = ctx.run.sh(["powershell", "-NoProfile", "-NonInteractive", "-Command", CORE_INSTALLER], 300, name="C1/core-install.txt")
-    core = next((p for p in (os.path.join(PROGRAMS, "herdr-core", n) for n in ("herdr-core.exe", "hc.exe")) if os.path.exists(p)), None)
-    version = ctx.run.sh([core, "--version"], 30, name="C1/core-version.txt").out.strip() if core else ""
-    if not version.startswith("hc "):
-        ctx.run.result("C1.core_install", NOT_MEASURED, "herdr-core did not install from releases.herdr.dev (rc=%s, found=%s %r): no main window, no Restart button, no foreign cwd holders" % (shell.rc, core, version), ["C1/core-install.txt"])
+    if not ensure_core(ctx):
+        ctx.run.result("C1.skipped", NOT_MEASURED, "herdr-core is not installed (see core.install)", [])
         return
-    ctx.run.result("C1.core_install", PASS, "%s at %s" % (version, core), ["C1/core-install.txt"])
     install_fresh(ctx, cid)
-    os.makedirs(os.path.join(ctx.work, "cli"), exist_ok=True)
-    ctx.cli = os.path.join(ctx.work, "cli", "yuzora.exe")
-    shutil.copy(EXE, ctx.cli)
-    ctx.offer(ctx.v2)
+    ensure_cli(ctx)
+    ctx.fresh_server(ctx.v2)
     known = set()
     app = start_app(ctx, cid, "app1", home, INSTALL)
     for k, to_v in [(1, ctx.v2), (2, ctx.v3)]:
-        up = wait_for(lambda: main_window_up(ctx, home) or not app.alive(), 150, 3)
-        if not up or not app.alive():
-            ctx.run.result("%s.main_window_%d" % (cid, k), NOT_MEASURED, "no main window answered `yuzora status` (app alive=%s): the setup screen does not serve commands. log: %s" % (app.alive(), tail(app.log_text(), 6).replace("\n", " | ")), [app.log_rel] if app.log_rel else [])
+        if not wait_main_window(ctx, cid, home, app, k):
             return
-        ctx.run.result("%s.main_window_%d" % (cid, k), PASS, "`yuzora status` answered: the main window is up on herdr-core", [])
         if k == 1:
-            rows = ctx.probe.ps()
-            holders = [p for p in rows if p["name"].lower() in ("hc.exe", "herdr-core.exe") or p["pid"] in ctx.probe.descendants(app.pid, rows)]
-            lines, inside = [], []
-            for p in holders:
-                ctx.tracker.add(p["pid"])
-                info = ctx.probe.procinfo(p["pid"], "%s/procinfo-holder-%d.txt" % (cid, p["pid"]))
-                kind, cwd = cwd_class(info)
-                lines.append("%s pid %s cwd %s (%s)" % (p["name"], p["pid"], cwd, kind))
-                if kind in ("inside-install", "inside-old"):
-                    inside.append(p["pid"])
-            ctx.run.result("C1.foreign_cwd_holders", INFO if reader_ok else NOT_MEASURED, "%d program(s) the app started or that serve it; %d with a cwd in the install folder: %s" % (len(holders), len(inside), "; ".join(lines)), ["%s/procinfo-holder-%d.txt" % (cid, p["pid"]) for p in holders])
-        run_cli(ctx, home, "do", "app.check_updates")
-        if not wait_for(lambda: staged(to_v), 90, 2):
-            ctx.run.result("%s.stage_%d" % (cid, k), FAIL, "%s not staged within 90 s of `app.check_updates`; log: %s" % (to_v, tail(app.log_text(), 6).replace("\n", " | ")), ["server.log"])
+            check_app_cwd(ctx, cid, app, True, reader_ok)
+            report_holders(ctx, cid, list_holders(ctx, cid, app.pid, "core"), reader_ok, "core", "C1.core_cwd_outside_install")
+        if not stage_via_cli(ctx, cid, k, to_v, app, home):
             return
-        ctx.run.result("%s.stage_%d" % (cid, k), PASS, "staged %s by the app's own check" % to_v, ["server.log"])
         ctx.offer(ctx.v3)
         snap(ctx, cid, "before-swap%d" % k)
-        reply = run_cli(ctx, home, "do", "app.update")
+        since = len(app.log_text())
+        reply = run_cli(ctx, cid, home, "do", "app.update")
         ctx.run.result("%s.restart_command_%d" % (cid, k), INFO, "`yuzora do app.update` rc=%s: %s" % (reply.rc, (reply.out or reply.err).strip().replace("\n", " ")), [])
-        swapped, reopened = observe_swap(ctx, cid, k, to_v, app, home, True, known, reader_ok)
+        swapped, reopened = observe_swap(ctx, cid, k, to_v, app, home, True, known, reader_ok, since=since)
         if not swapped:
+            not_reached(ctx, cid, k, "update %d was not applied" % k)
             return
         app = reopened or start_app(ctx, cid, "app%d-by-hand" % (k + 1), home, INSTALL)
-    time.sleep(45)
+    time.sleep(30)
     after = snap(ctx, cid, "after-core-update")
-    ctx.run.result("C1.old_folder_after_core_update", INFO, "45 s after the second update: Yuzora.old %s (%s); marker .updated %s" % ("is still there" if "Yuzora.old" in after["siblings"] else "is gone", after["old_files"][:6], "still there" if os.path.exists(os.path.join(home, ".updated")) else "consumed"), ["C1/snapshot-after-core-update.json"])
+    ctx.run.result("C1.old_folder_after_core_update", INFO, "30 s after the second update: Yuzora.old %s (%s); marker .updated %s" % ("is still there" if "Yuzora.old" in after["siblings"] else "is gone", after["old_files"][:6], "still there" if os.path.exists(os.path.join(home, ".updated")) else "consumed"), ["C1/snapshot-after-core-update.json"])
+
+
+def chain_old_core(ctx, reader_ok):
+    """C2: a herdr-core from before the fix is still alive with the install folder as its cwd (what a person
+    upgrading by hand from the beta has), then the new app updates itself with Restart. If the swap fails,
+    the person is told nothing the probe can read, so the follow-up is what they would try: end the old core
+    and close the app, which applies the staged update on quit."""
+    cid = "C2"
+    home = new_home(ctx, cid)
+    if not ensure_core(ctx):
+        ctx.run.result("C2.skipped", NOT_MEASURED, "herdr-core is not installed (see core.install)", [])
+        return
+    install_fresh(ctx, cid)
+    ensure_cli(ctx)
+    ctx.fresh_server(ctx.v2)
+    old = start_old_core(ctx, cid, home)
+    if not old:
+        return
+    app = start_app(ctx, cid, "app1", home, INSTALL)
+    if not wait_main_window(ctx, cid, home, app, 1):
+        return
+    check_app_cwd(ctx, cid, app, True, reader_ok)
+    report_holders(ctx, cid, list_holders(ctx, cid, app.pid, "with-old-core"), reader_ok, "with-old-core")
+    if not stage_via_cli(ctx, cid, 1, ctx.v2, app, home):
+        return
+    snap(ctx, cid, "before-swap1")
+    since = len(app.log_text())
+    reply = run_cli(ctx, cid, home, "do", "app.update")
+    ctx.run.result("C2.restart_command_1", INFO, "`yuzora do app.update` rc=%s: %s" % (reply.rc, (reply.out or reply.err).strip().replace("\n", " ")), [])
+    known = set()
+    swapped, reopened = observe_swap(ctx, cid, 1, ctx.v2, app, home, True, known, reader_ok, since=since)
+    alive_after = [pid for pid in old["serve"] if ctx.probe.alive(pid)]
+    ctx.run.result("C2.old_core_after_attempt", INFO, "the old serve process(es) %s: still alive %s (the app %s stop it)" % (old["serve"], alive_after, "did not" if alive_after else "did"), [])
+    if swapped:
+        return
+    if not app.alive():
+        ctx.run.result("C2-retry.swap_1", NOT_MEASURED, "the app ended by itself after the failed swap, so there was no staged update left to apply by closing it", [])
+        return
+    ctx.tracker.kill_some(old["serve"])
+    time.sleep(2)
+    since = len(app.log_text())
+    closed = ctx.probe.close(app.pid)
+    ctx.run.result("C2-retry.trigger_1", INFO, "ended the old core, then closed %s window(s) with WM_CLOSE: the app quits and applies the staged update" % closed.get("posted"), [])
+    observe_swap(ctx, "C2-retry", 1, ctx.v2, app, home, False, known, reader_ok, since=since)
+
+
+def chain_overlay(ctx, cid, reader_ok, old_core, app_running):
+    """C3-C5: the installer run again (/S) over a working install with herdr-core alive, as a person does who
+    installs the next build by hand. `old_core`: the core is the one a build before the fix leaves (cwd in the
+    install folder). `app_running`: the app is still open (otherwise it was closed and only the core lives)."""
+    home = new_home(ctx, cid)
+    if not ensure_core(ctx):
+        ctx.run.result("%s.skipped" % cid, NOT_MEASURED, "herdr-core is not installed (see core.install)", [])
+        return
+    install_fresh(ctx, cid)
+    ensure_cli(ctx)
+    ctx.fresh_server()  # nothing to offer: the app must not stage anything while the installer runs
+    if old_core and not start_old_core(ctx, cid, home):
+        return
+    app = start_app(ctx, cid, "app1", home, INSTALL)
+    if not wait_main_window(ctx, cid, home, app, 1):
+        return
+    if not app_running:
+        app.stop()
+        time.sleep(2)
+    rows = list_holders(ctx, cid, app.pid if app_running else None, "before-overlay")
+    report_holders(ctx, cid, rows, reader_ok, "before-overlay")
+    before_core = [h["pid"] for h in rows if h["name"].lower() in CORE_NAMES and not h["gone"]]
+    app_was = app.alive()
+    snap(ctx, cid, "before-overlay")
+    shell = ctx.run.sh([ctx.installer, "/S"], 240, name="%s/overlay-install.txt" % cid)
+    time.sleep(3)
+    state = package_list_state()
+    after = snap(ctx, cid, "after-overlay")
+    running = ctx.run.sh([EXE, "--version"], 30, name="%s/overlay-version.txt" % cid)
+    ok = shell.rc == 0 and version_word(running.out) == ctx.v1 and not state["extra"] and not state["missing"]
+    ctx.run.result("%s.overlay_install" % cid, PASS if ok else FAIL, "installer %s rc=%s (state: app %s, old-style core %s); installed exe says %r; folder vs yuzora.package: extra=%s missing=%s; siblings %s; Yuzora.old files %s" % (
+        "TIMED OUT" if shell.timed_out else "ended", shell.rc, "running" if app_running else "closed", old_core, running.out.strip(), state["extra"], state["missing"], sorted(after["siblings"]), after["old_files"][:6]), ["%s/overlay-install.txt" % cid, "%s/snapshot-after-overlay.json" % cid])
+    survivors = [pid for pid in before_core if ctx.probe.alive(pid)]
+    ctx.run.result("%s.core_after_overlay" % cid, INFO, "herdr-core processes before %s, alive after %s: the installer %s the core. app was running before=%s, running after=%s" % (before_core, survivors, "left" if survivors == before_core else "stopped some of", app_was, app.alive()), [])
+    if not app.alive():
+        again = start_app(ctx, cid, "app2-after-overlay", home, INSTALL)
+        up = wait_for(lambda: main_window_up(ctx, home) or not again.alive(), 60, 3)
+        ctx.run.result("%s.start_after_overlay" % cid, PASS if up and again.alive() else FAIL, "the app started from the overlaid install: main window answered=%s, alive=%s; log: %s" % (bool(up and again.alive()), again.alive(), tail(again.log_text(), 4).replace("\n", " | ")), [again.log_rel] if again.log_rel else [])
+
 
 
 # ---- setup ----------------------------------------------------------------
@@ -614,7 +959,7 @@ def main():
     parser.add_argument("--probe", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--work", required=True)
-    parser.add_argument("--budget", type=int, default=1100)
+    parser.add_argument("--budget", type=int, default=1380)
     args = parser.parse_args()
     run = Run(args.out)
     probe = WinProbe(run, args.probe)
@@ -632,15 +977,24 @@ def main():
         if args.flavor == "release":
             chains = [("R1-install", lambda: chain_release(ctx, "install", reader_ok), 150), ("R1-elsewhere", lambda: chain_release(ctx, "elsewhere", reader_ok), 150), ("R2", lambda: chain_release_extra(ctx), 120)]
         else:
-            chains = [("D1-install", lambda: chain_testkey(ctx, "install", reader_ok), 300), ("D2-install", lambda: chain_testkey(ctx, "install", reader_ok, startup_first=True), 300), ("D1-elsewhere", lambda: chain_testkey(ctx, "elsewhere", reader_ok), 300), ("C1", lambda: chain_core(ctx, reader_ok), 420)]
+            chains = [
+                ("D1-install", lambda: chain_testkey(ctx, "install", reader_ok), 200),
+                ("D2-install", lambda: chain_testkey(ctx, "install", reader_ok, startup_first=True), 200),
+                ("D1-elsewhere", lambda: chain_testkey(ctx, "elsewhere", reader_ok), 200),
+                ("C1", lambda: chain_core(ctx, reader_ok), 300),
+                ("C2", lambda: chain_old_core(ctx, reader_ok), 240),
+                ("C3", lambda: chain_overlay(ctx, "C3", reader_ok, old_core=False, app_running=True), 160),
+                ("C4", lambda: chain_overlay(ctx, "C4", reader_ok, old_core=True, app_running=True), 160),
+                ("C5", lambda: chain_overlay(ctx, "C5", reader_ok, old_core=True, app_running=False), 160),
+            ]
         for name, fn, need in chains:
             if ctx.time_left() < need:
                 run.result("%s.skipped" % name, NOT_MEASURED, "not enough of the time budget left (%ds) to start it" % ctx.time_left(), [])
                 continue
             run.guard(name + ".chain", fn)
-            ctx.tracker.kill_all()
+            ctx.sweep()
     finally:
-        ctx.tracker.kill_all()
+        ctx.sweep()
         if ctx.server:
             ctx.server.stop()
         uninstall_all(ctx, "cleanup")

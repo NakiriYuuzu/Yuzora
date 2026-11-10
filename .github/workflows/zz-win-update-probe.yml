@@ -166,10 +166,12 @@ jobs:
           YUZORA_PACKAGE_BIN=target/release/herdr-app.exe scripts/yuzora/package
       - name: Observe the installed app
         if: steps.pack.outcome == 'success'
-        timeout-minutes: 24
+        # Run 1: build ~24 min, observe 8.5 min. Eight chains now (about 17 min when all goes well);
+        # 24 + 27 stays under the 60 minute job cap with room for a slow build.
+        timeout-minutes: 27
         env:
           MSYS_NO_PATHCONV: "1"
-        run: python "$PROBE/observe.py" --flavor testkey --dist app/dist --probe out/winprobe.exe --out out/C-testkey --work "$RUNNER_TEMP/c" --budget 1150
+        run: python "$PROBE/observe.py" --flavor testkey --dist app/dist --probe out/winprobe.exe --out out/C-testkey --work "$RUNNER_TEMP/c" --budget 1300
       - name: Results
         if: always()
         run: python "$PROBE/summarize.py" out/C-testkey

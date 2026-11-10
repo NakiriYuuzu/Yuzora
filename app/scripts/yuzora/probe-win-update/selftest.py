@@ -158,6 +158,37 @@ class Server(unittest.TestCase):
                 server.stop()
 
 
+class Reset(unittest.TestCase):
+    def test_a_reset_server_offers_only_what_is_added_after_it(self):
+        """The first run's stage failures: a chain began with the last chain's newest release still on offer."""
+        with tempfile.TemporaryDirectory() as tmp:
+            server = rs.FakeGithub(rs.TestKey(), os.path.join(tmp, "server.log")).start()
+            try:
+                def listed():
+                    with urllib.request.urlopen(urllib.request.Request(server.base + "/repos/%s/releases?per_page=100" % rs.REPO, headers={"User-Agent": "t"})) as response:
+                        return [r["tag_name"] for r in json.loads(response.read())]
+                server.add_release("99999999.9.1", b"one")
+                server.add_release("99999999.9.2", b"two")
+                self.assertEqual(listed()[:2], ["v99999999.9.2", "v99999999.9.1"])
+                server.reset()
+                self.assertEqual(listed(), ["v0.0.19"])
+                server.add_release("99999999.9.1", b"one")
+                self.assertEqual(listed()[0], "v99999999.9.1")
+                self.assertNotIn("v99999999.9.2", listed())
+                with self.assertRaises(urllib.error.HTTPError):
+                    urllib.request.urlopen(urllib.request.Request(server.base + "/%s/releases/download/v99999999.9.2/yuzora-update.json" % rs.REPO))
+            finally:
+                server.stop()
+
+
+class Text(unittest.TestCase):
+    def test_colour_codes_are_removed_from_app_log_lines(self):
+        import common
+        raw = "\x1b[2m2026-11-10T14:13:05Z\x1b[0m \x1b[33m WARN\x1b[0m \x1b[2mherdr_app::update\x1b[0m\x1b[2m:\x1b[0m update: cannot move X aside"
+        self.assertEqual(common.strip_ansi(raw), "2026-11-10T14:13:05Z  WARN herdr_app::update: update: cannot move X aside")
+        self.assertEqual(common.strip_ansi(""), "")
+
+
 class Archive(unittest.TestCase):
     def test_archive_has_the_package_layout_with_the_new_exe(self):
         with tempfile.TemporaryDirectory() as tmp:

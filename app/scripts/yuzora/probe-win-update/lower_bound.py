@@ -9,6 +9,8 @@ If this fails, the real app fails; if it passes, nothing is promised about the r
   A1  nothing but the program itself is in X; it was started with another folder as cwd
   A2  as A1, started with X as its cwd (what the Start menu shortcut does)
   A3  as A1, and a second program that lives on keeps X as its cwd (what herdr-core would)
+  A4  as A2, but the program moves its own cwd out of X first thing (what a fix that does
+      that at startup amounts to); the swap and the reopen should now work
 
 usage: python lower_bound.py --probe winprobe.exe --out <dir> --work <dir>
 """
@@ -65,7 +67,7 @@ def swap_outcome(evs, round_number):
     return FAIL, "stopped early: " + ("; ".join(steps) or "no step logged")
 
 
-def run_scenario(run, probe, tracker, work, sid, label, cwd_inside, foreign, plain, reader_ok):
+def run_scenario(run, probe, tracker, work, sid, label, cwd_inside, foreign, plain, reader_ok, chdir=False):
     base = os.path.join(work, sid)
     shutil.rmtree(base, ignore_errors=True)
     root = os.path.join(base, "Yuzora")
@@ -89,6 +91,8 @@ def run_scenario(run, probe, tracker, work, sid, label, cwd_inside, foreign, pla
     env = dict(os.environ, PROBE_LOG=log, PROBE_ROUNDS=str(ROUNDS), PROBE_ROUND="1")
     if plain:
         env["PROBE_RELAUNCH"] = "plain"
+    if chdir:
+        env["PROBE_CHDIR"] = elsewhere
     first = subprocess.Popen([os.path.join(root, "winprobe.exe")], cwd=root if cwd_inside else elsewhere, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     tracker.add(first.pid)
 
@@ -107,6 +111,11 @@ def run_scenario(run, probe, tracker, work, sid, label, cwd_inside, foreign, pla
         verdict, text = swap_outcome(evs, number)
         run.result("%s.%s" % (sid, ordinal), verdict, "%s: %s" % (label, text), [ev_name])
 
+    if chdir:
+        moved = [e for e in evs if e.get("ev") == "chdir"]
+        first_start = starts[0] if starts else {}
+        text = ("set_current_dir(%s) from %s: %s; round 1 then read its own cwd handle as %s" % (moved[0].get("to"), moved[0].get("before"), step_text(moved[0]), (first_start.get("peb") or {}).get("cwd_final"))) if moved else "the program logged no chdir event"
+        run.result("%s.chdir" % sid, INFO if moved else PROBE_ERROR, text, [ev_name])
     cwd_notes = []
     for e in starts:
         peb = e.get("peb") or {}
@@ -177,13 +186,16 @@ def main():
         # Each twice: reopened with the path the app uses (\\?\ prefix), and without it, so that a
         # reopen that fails on the prefix does not hide what the later swaps do.
         for plain in (False, True):
-            for sid, label, inside, foreign in [
-                ("A1.exe_only", "the program alone in X, cwd elsewhere", False, False),
-                ("A2.own_cwd_inside", "the program alone in X, cwd = X", True, False),
-                ("A3.foreign_cwd_inside", "cwd elsewhere, another live program has X as its cwd", False, True),
+            for sid, label, inside, foreign, chdir in [
+                ("A1.exe_only", "the program alone in X, cwd elsewhere", False, False, False),
+                ("A2.own_cwd_inside", "the program alone in X, cwd = X", True, False, False),
+                ("A3.foreign_cwd_inside", "cwd elsewhere, another live program has X as its cwd", False, True, False),
+                ("A4.cwd_moved_away", "the program alone in X, started with cwd = X and moving its own cwd out of X first", True, False, True),
             ]:
+                if plain and chdir:
+                    continue
                 name = sid + (".plainpath" if plain else "")
-                run.guard(name, lambda: run_scenario(run, probe, tracker, work, name, label + (" (reopened without the \\\\?\\ prefix)" if plain else ""), inside, foreign, plain, reader_ok))
+                run.guard(name, lambda: run_scenario(run, probe, tracker, work, name, label + (" (reopened without the \\\\?\\ prefix)" if plain else ""), inside, foreign, plain, reader_ok, chdir))
     finally:
         tracker.kill_all()
 

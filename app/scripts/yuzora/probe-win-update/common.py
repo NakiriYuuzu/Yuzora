@@ -11,6 +11,7 @@ A result has one of five states, and the first two are the product's:
 """
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -22,6 +23,11 @@ PASS, FAIL, INFO, NOT_MEASURED, PROBE_ERROR = "pass", "fail", "info", "not-measu
 
 def now():
     return time.strftime("%H:%M:%S")
+
+
+def strip_ansi(text):
+    """The app logs with colour codes even into a file; results are read as plain text."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text or "")
 
 
 class Run:
@@ -125,6 +131,7 @@ class WinProbe:
 
     def __init__(self, run, exe):
         self.run, self.exe = run, os.path.abspath(exe)
+        self.seen = {}  # pid -> name of every process any ps() call listed: a parent that is gone by the time it is asked about
 
     def ps(self):
         shell = self.run.sh([self.exe, "ps"], 30)
@@ -134,7 +141,13 @@ class WinProbe:
                 rows.append(json.loads(line))
             except ValueError:
                 pass
+        for row in rows:
+            self.seen[row["pid"]] = row["name"]
         return rows
+
+    def name_of(self, pid):
+        """The name of a process, also one that has exited if ps() ever listed it."""
+        return self.seen.get(pid)
 
     def named(self, name):
         return [p for p in self.ps() if p["name"].lower() == name.lower()]
@@ -177,9 +190,10 @@ class Tracker:
     # A process id can be reused once its owner is gone: only programs of these names are ever stopped.
     STOPPABLE = {"winprobe.exe", "yuzora.exe", "cmd.exe", "ping.exe", "hc.exe", "herdr-core.exe"}
 
-    def kill_all(self):
+    def kill_some(self, pids):
+        """Stops just these (that are tracked); the rest stay tracked."""
         alive = {p["pid"]: p["name"].lower() for p in self.probe.ps()}
-        for pid in sorted(self.pids & set(alive)):
+        for pid in sorted(set(pids) & self.pids & set(alive)):
             if alive[pid] not in self.STOPPABLE:
                 continue
             try:
@@ -187,6 +201,10 @@ class Tracker:
                 self.run.log("stopped pid %d" % pid)
             except OSError as e:
                 self.run.log("could not stop pid %d: %s" % (pid, e))
+        self.pids -= set(pids)
+
+    def kill_all(self):
+        self.kill_some(set(self.pids))
         self.pids.clear()
 
 

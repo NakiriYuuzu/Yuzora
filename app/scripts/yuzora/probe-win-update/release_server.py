@@ -267,6 +267,12 @@ class FakeGithub:
         with self.lock, open(self.log_path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
+    def reset(self):
+        """No release at all (the Tauri app's v0.0.19 entry stays, it is always listed). A chain starts
+        from here, so what an earlier chain offered cannot be served first."""
+        with self.lock:
+            self.releases.clear()
+
     def add_release(self, version, archive_bytes, archive_sha256=None, sign=True):
         """A stable release `version` with a signed manifest and its archive, newest first."""
         name = "yuzora-%s-%s.tar.gz" % (version, TARGET)
