@@ -5,15 +5,26 @@ import { View, div, svg, uniform_list } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
 import { spaces, panes, focused, theme, run, home, props, openOverlay, closeOverlay, shared, setShared, notify, watchFolder, window } from "herdr";
 import { t, tokens } from "yuzora:core";
-import { listDir, gitStatus, createFile, createFolder, rename, trash, reveal, copyText, findFiles, grep, unsavedCount } from "yuzora:files";
+import { listDir, gitStatus, stat, createFile, createFolder, rename, trash, reveal, copyText, findFiles, grep, unsavedCount } from "yuzora:files";
 import { openFile, moved, join, parent, base, rel } from "./open.js";
 import { fileIcon } from "./icons.js";
 import { heading } from "./paths.js";
 import { readGit } from "./git-state.js";
+import { createStore, panel, info } from "./tree-state.js";
 
 const ME = "yuzora-sidebar-files";
 const PER_FOLDER = 2000, ROWS = 20000;
 const REQUEST = "yuzora.files.request", REFRESH = "yuzora.files.refresh";
+// How long a click waits to learn that the file is still there; after that it opens, and the pane says what is wrong.
+const CHECK_MS = 1500;
+
+// What `promise` says, or null when it says nothing within `ms`.
+function within(cx, ms, promise) {
+  return new Promise(resolve => {
+    cx.timer.after(ms, () => resolve(null));
+    promise.then(resolve, () => resolve(null));
+  });
+}
 
 // Where the tree is: the focused pane's folder, on its space's machine. A tool
 // pane (no folder of its own) keeps the folder already shown in that space.
@@ -33,15 +44,13 @@ export default class FilesSidebar extends View {
   init(_p, cx) {
     this.menu = props()?.menu ?? null;
     if (this.menu) return;
-    this.saved = new Map();
-    this.entries = new Map();
-    this.open = new Set();
-    this.pending = new Set();
-    this.marks = {};
-    this.dirMarks = new Map();
+    this.store = createStore({
+      listDir: (root, folder, options) => listDir(folder ? join(root, folder) : root, { ...options, limit: PER_FOLDER }),
+      readGit: (cwd, options) => readGit(gitStatus, cwd, options),
+      exists: (root, r, on) => stat(r ? join(root, r) : root, { on }).then(found => found !== null),
+    });
     this.hidden = localStorage.getItem("hidden") === "1";
-    this.rows = []; this.rowsVersion = -1; this.version = 0;
-    this.selected = null;
+    this.rows = []; this.rowsEntry = null; this.rowsVersion = -1; this.version = 0;
     this.searching = false; this.searchMode = "name"; this.results = []; this.searchSeq = 0;
     this.searchInput = InputState.new({ placeholder: t("search.placeholder") });
     this.searchInput.on("change", (_e, cx) => this.search(cx));
@@ -50,10 +59,15 @@ export default class FilesSidebar extends View {
     this.edit = null;
     this.lastRequest = shared(REQUEST)?.seq ?? 0;
     this.lastRefresh = shared(REFRESH) ?? 0;
-    this.here = null;
+    this.loc = null; this.here = null; this.watching = null; this.watchedRoot = null; this.watchSeq = 0;
+    // The last file click whose check is not over: files open in the order they were clicked.
+    this.opening = null;
     this.relocate(cx);
     this.countUnsaved();
-    cx.timer.every(10000, cx => { this.reload(cx, true); this.countUnsaved(); });
+    cx.timer.every(10000, cx => {
+      this.reload(cx, true); this.countUnsaved();
+      this.store.forget(new Set(spaces().map(s => s.id)));
+    });
   }
 
   // The mode bar's badge: unsaved documents. The editor panes keep it current;
@@ -67,14 +81,13 @@ export default class FilesSidebar extends View {
 
   // Context.
 
+  // The tree of a folder seen before is there from the first frame, and read again behind it.
   relocate(cx) {
-    const next = where(this.here);
-    if (next?.key === this.here?.key && next?.space === this.here?.space) return;
-    if (this.here?.root) this.saved.set(this.here.key, { open: this.open, selected: this.selected });
-    const saved = next ? this.saved.get(next.key) : null;
-    this.here = next ? { ...next, root: null, top: null, branch: null, error: null, loading: true, limited: false, rootCut: false, skipped: false, marksCut: false, gitFailed: null } : null;
-    this.entries = new Map(); this.open = new Set(saved?.open); this.pending = new Set();
-    this.marks = {}; this.dirMarks = new Map(); this.selected = saved?.selected ?? null; this.version++;
+    const next = where(this.loc);
+    if (next?.key === this.loc?.key && next?.space === this.loc?.space) return;
+    this.loc = next;
+    this.here = next ? this.store.enter(next) : null;
+    this.version++;
     this.watching = null;
     // A name being typed is for the folder it was started in.
     this.edit = null;
@@ -90,135 +103,123 @@ export default class FilesSidebar extends View {
   // `timed`: the 10 s timer's, which a watched folder doesn't need for search.
   reload(cx, timed = false) {
     const here = this.here;
-    if (!here?.cwd || here.reloading) return;
-    here.reloading = true;
+    if (!here?.cwd) return;
     cx.spawn(async cx => {
-      try {
-        const { git, failed } = await readGit(gitStatus, here.cwd, { on: here.on });
-        if (!this.current(here)) return;
-        here.gitFailed = failed;
-        here.top = git?.top ?? null; here.branch = git?.branch ?? null;
-        here.ahead = git?.ahead ?? 0; here.behind = git?.behind ?? 0; here.untrusted = Boolean(git?.untrusted);
-        here.marksCut = Boolean(git?.truncated);
-        if (!here.root) here.root = here.top ?? here.cwd;
-        this.setMarks(git?.marks ?? {}, here);
-        for (const folder of ["", ...[...this.open].sort()]) {
-          if (!this.current(here)) return;
-          if (folder && !this.open.has(folder)) continue;
-          await this.loadFolder(folder, here).catch(e => { if (!folder) throw e; this.open.delete(folder); });
-        }
-        here.error = null;
-        // An open search follows the files too (the new root's, after a move).
-        if (this.searching && !(timed && this.watching === here.root)) this.search(cx, !timed);
-        this.watch(here, cx);
-      } catch (e) {
-        if (this.current(here)) here.error = String(e?.message ?? e);
-      } finally {
-        here.loading = false; here.reloading = false;
-        if (this.current(here)) { this.version++; cx.notify(); }
-      }
+      const read = await this.store.reload(here, () => { this.version++; cx.notify(); }, { timed });
+      if (!read?.ok || !this.current(here)) return;
+      // An open search follows the files too (the new root's, after a move).
+      if (this.searching && !(read.timed && this.watching === here)) this.search(cx, !read.timed);
+      this.watch(here, cx);
     });
   }
 
   // Watches are recursive on macOS: the home folder (or /) itself is left to the timer.
   watch(here, cx) {
-    if (here.on || this.watching === here.root || here.root === "/" || here.root === home()) return;
-    this.watching = here.root;
+    const root = here.root;
+    if (here.on || (this.watching === here && this.watchedRoot === root) || root === "/" || root === home()) return;
+    this.watching = here; this.watchedRoot = root;
+    const token = ++this.watchSeq;
+    const same = () => this.watching === here && this.watchSeq === token;
     cx.spawn(async cx => {
       try {
-        while (this.current(here) && this.watching === here.root) {
-          await watchFolder(here.root);
-          if (this.current(here)) this.reload(cx);
+        while (same()) {
+          await watchFolder(root);
+          if (same()) this.reload(cx);
         }
-      } catch { if (this.current(here)) this.watching = null; }
+      } catch { if (same()) this.watching = null; }
     });
   }
 
-  setMarks(marks, here) {
-    this.marks = marks;
-    const dirs = new Map();
-    for (const [path, mark] of Object.entries(marks)) {
-      let r = rel(here.root, path);
-      if (r === null) continue;
-      while (r.includes("/")) {
-        r = r.slice(0, r.lastIndexOf("/"));
-        if (!dirs.has(r)) dirs.set(r, mark);
-      }
-    }
-    this.dirMarks = dirs;
-  }
-
-  async loadFolder(folder, here) {
-    const path = folder ? join(here.root, folder) : here.root;
-    const { entries, truncated, skipped } = await listDir(path, { on: here.on, limit: PER_FOLDER });
-    if (!this.current(here)) return;
-    this.entries.set(folder, entries);
-    if (truncated) here.limited = true;
-    if (skipped) here.skipped = true;
-    if (!folder) here.rootCut = truncated;
-    this.version++;
-  }
-
-  toggle(folder, cx) {
-    if (this.open.has(folder)) {
-      for (const f of [...this.open]) if (f === folder || f.startsWith(folder + "/")) this.open.delete(f);
+  // `row`: from the tree on screen; the folder is opened under the root that tree was listed from.
+  toggle(row, cx) {
+    const here = this.here, loc = this.loc, folder = row.rel, root = here.tree.root;
+    if (here.open.has(folder)) {
+      for (const f of [...here.open]) if (f === folder || f.startsWith(folder + "/")) here.open.delete(f);
       this.version++; cx.notify();
       return;
     }
-    this.open.add(folder); this.version++;
-    // Listed again on every open: what is kept from before shows meanwhile.
-    if (this.pending.has(folder)) { cx.notify(); return; }
-    const here = this.here;
-    this.pending.add(folder);
+    this.version++;
     cx.spawn(async cx => {
-      try { await this.loadFolder(folder, here); }
-      catch (e) { if (this.current(here)) { this.open.delete(folder); notify({ title: t("error.list"), body: String(e?.message ?? e), level: "error" }); } }
-      finally { this.pending.delete(folder); this.version++; cx.notify(); }
+      const failed = await this.store.expand(here, root, folder, () => { this.version++; cx.notify(); });
+      if (!failed || this.loc !== loc) return;
+      if (failed.gone) notify({ title: t("error.gone", { name: row.name }), level: "warning" });
+      else notify({ title: t("error.list"), body: String(failed.error?.message ?? failed.error), level: "error" });
     });
     cx.notify();
   }
 
   collapse(cx) {
-    this.open.clear(); this.version++; cx.notify();
+    this.here.open.clear(); this.version++; cx.notify();
   }
 
   // The visible rows, rebuilt only when something they show changed.
   visible() {
-    if (this.rowsVersion === this.version) return this.rows;
+    const here = this.here;
+    if (this.rowsEntry === here && this.rowsVersion === this.version) return this.rows;
+    const folders = here.tree?.folders, root = here.tree?.root;
     const out = [];
     let capped = false;
     const walk = (folder, depth) => {
-      for (const e of this.entries.get(folder) ?? []) {
+      for (const e of folders?.get(folder)?.list ?? []) {
         if (e.hidden && !this.hidden) continue;
         // One more row than fits: the tree is cut, and says so.
         if (out.length >= ROWS) { capped = true; return; }
         const r = folder ? `${folder}/${e.name}` : e.name;
-        const open = e.dir && this.open.has(r);
-        out.push({ rel: r, name: e.name, dir: e.dir, link: e.link, depth, open });
+        const open = e.dir && here.open.has(r);
+        out.push({ rel: r, abs: join(root, r), name: e.name, dir: e.dir, link: e.link, depth, open });
         if (open) walk(r, depth + 1);
       }
     };
     walk("", 0);
-    this.rows = out; this.rowsCapped = capped; this.rowsVersion = this.version;
+    this.rows = out; this.rowsCapped = capped; this.rowsEntry = here; this.rowsVersion = this.version;
     return out;
   }
 
-  abs(r) {
-    return r ? join(this.here.root, r) : this.here.root;
-  }
-
   mark(row) {
-    const m = this.marks[this.abs(row.rel)];
+    const git = this.here.git;
+    const m = git?.marks[row.abs];
     if (m) return m;
-    return row.dir && !row.open && this.dirMarks.has(row.rel) ? "•" : null;
+    return row.dir && !row.open && git?.dirMarks.has(row.abs) ? "•" : null;
   }
 
-  click(r, cx) {
-    const row = this.visible().find(x => x.rel === r);
-    if (!row) return;
-    this.selected = r; this.version++;
-    if (row.dir) this.toggle(r, cx);
-    else { openFile(this.abs(r), this.here.on); cx.notify(); }
+  // What a click or a right click on `key` is on: a row of the tree on screen, or else a file of the tree that
+  // was replaced just before (the frame the click was made on was drawn from it).
+  target(key) {
+    const here = this.here, row = this.visible().find(x => x.abs === key);
+    if (row) return { abs: row.abs, rel: row.rel, name: row.name, dir: row.dir, root: here.tree.root, row };
+    const was = this.store.listed(here, key);
+    return was ? { abs: key, ...was, row: null } : null;
+  }
+
+  // A row is told by its path: whatever the tree is by the time the click is heard, it is that file or none.
+  click(key, cx) {
+    const at = this.target(key);
+    if (!at) return;
+    const here = this.here;
+    if (at.row) here.selected = at.rel;
+    this.version++;
+    if (at.dir) { if (at.row) this.toggle(at.row, cx); return; }
+    // A tree still being read again, or one that is gone, may show what is not there.
+    this.openChecked(at, Boolean(at.row) && panel(here).fresh === "fresh", cx);
+  }
+
+  // Opens the file in the Space of the click, once it is known to be there when that is in doubt. Files open in
+  // the order they were clicked: a click waits for the checks of those before it.
+  openChecked(file, sure, cx) {
+    const here = this.here, loc = this.loc, ahead = this.opening;
+    if (sure && !ahead) { openFile(file.abs, here.on); cx.notify(); return; }
+    const mine = new Promise(done => cx.spawn(async cx => {
+      try {
+        const there = sure || await within(cx, CHECK_MS, this.store.confirm(here, file.root, file.rel, () => { this.version++; cx.notify(); }));
+        if (ahead) await ahead;
+        if (this.loc !== loc) return;
+        if (there === false) notify({ title: t("error.gone", { name: file.name }), level: "warning" });
+        else openFile(file.abs, here.on);
+      } finally { done(); }
+    }));
+    this.opening = mine;
+    mine.then(() => { if (this.opening === mine) this.opening = null; });
+    cx.notify();
   }
 
   // Requests from the popup copy (rename, new file …) and refreshes after its actions.
@@ -226,7 +227,7 @@ export default class FilesSidebar extends View {
     const req = shared(REQUEST);
     if (req?.seq && req.seq > this.lastRequest) {
       this.lastRequest = req.seq;
-      if (this.here?.root && req.root === this.here.root) this.startEdit(req.action, req.path, req.dir, cx);
+      if (this.here?.root && this.store.owns(this.here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
     }
     const refresh = shared(REFRESH) ?? 0;
     if (refresh > this.lastRefresh) { this.lastRefresh = refresh; this.reload(cx); }
@@ -259,8 +260,8 @@ export default class FilesSidebar extends View {
         else if (edit.kind === "new-folder") await createFolder(target);
         else if (target !== edit.path) { await rename(edit.path, target); moved(edit.path, target); }
         const r = rel(here.root, edit.dir);
-        if (r) this.open.add(r);
-        this.selected = rel(here.root, target);
+        if (r) here.open.add(r);
+        here.selected = rel(here.root, target);
       } catch (e) { notify({ title: t(`error.${edit.kind}`), body: String(e?.message ?? e), level: "error" }); }
       finally { this.reload(cx); cx.notify(); }
     });
@@ -324,9 +325,10 @@ export default class FilesSidebar extends View {
   render(cx) {
     if (this.menu) return this.renderMenu(cx);
     this.requests(cx);
-    if (where(this.here)?.key !== this.here?.key) this.relocate(cx);
+    const now = where(this.loc);
+    if (now?.key !== this.loc?.key || now?.space !== this.loc?.space) this.relocate(cx);
     const th = theme(), tk = tokens(), here = this.here;
-    const local = !here?.on;
+    const local = !here?.on, note = here ? info(here) : null;
     // Ghost icon buttons, as on the other sidebars' title rows; a toggle that's on is selected.
     const action = (id, icon, label, onClick, on = false, enabled = true) =>
       div().id(id).size(22).flex().flex_none().items_center().justify_center().rounded(5)
@@ -338,7 +340,7 @@ export default class FilesSidebar extends View {
     const canAdd = local && Boolean(here?.root);
     const addTip = label => (local ? label : t("remote.readonly"));
     // The folder above (shrinks first) and the folder's own name; "~" only on this machine.
-    const head = here?.root ? heading(here.root, local ? home() : null, here.branch) : null;
+    const head = here?.root ? heading(here.root, local ? home() : null, note.branch) : null;
     return v_flex().id("root").size_full().min_h(0).bg(th.chrome).text_color(th.foreground).text_size(12.5)
       .child(h_flex().h(32).px(12).flex_none().items_center()
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(t("title")))
@@ -366,15 +368,15 @@ export default class FilesSidebar extends View {
           .child(svg("mods/workspace-chrome/git-branch.svg").size(13).flex_none())
           .child(div().min_w(0).truncate().child(head.branch))))))
       .when(!head, el => el.child(div().h(6).flex_none()))
-      .when(Boolean(here?.untrusted), el => el.child(div().flex_none().px(12).pb(6).text_size(11).text_color(th.dim).child(t("git.untrusted"))))
+      .when(Boolean(note?.untrusted), el => el.child(div().flex_none().px(12).pb(6).text_size(11).text_color(th.dim).child(t("git.untrusted"))))
       .when(Boolean(this.edit), el => el.child(this.renderEdit(th)))
-      .child(this.searching ? this.renderSearch(th) : this.renderTree(th, tk));
+      .child(this.searching ? this.renderSearch(th) : this.renderTree(th, tk, note));
   }
 
   selectedDir() {
-    const row = this.selected ? this.visible().find(r => r.rel === this.selected) : null;
+    const row = this.here.selected ? this.visible().find(r => r.rel === this.here.selected) : null;
     if (!row) return this.here.root;
-    return row.dir ? this.abs(row.rel) : parent(this.abs(row.rel));
+    return row.dir ? row.abs : parent(row.abs);
   }
 
   renderEdit(th) {
@@ -386,20 +388,23 @@ export default class FilesSidebar extends View {
       .child(div().text_size(10.5).text_color(th.dim).child(t("edit.hint")));
   }
 
-  renderTree(th, tk) {
-    const here = this.here;
-    if (!here?.cwd) return div().p(12).text_size(12).text_color(th.dim).child(t("empty.no_folder"));
-    if (here.error && !this.entries.get("")) return div().p(12).text_size(12).text_color(th.blocked).child(here.error);
+  renderTree(th, tk, note) {
+    const here = this.here, shown = panel(here);
+    if (shown.kind === "none") return div().p(12).text_size(12).text_color(th.dim).child(t("empty.no_folder"));
+    // Nothing listed yet: loading, or why it could not be.
+    if (shown.kind === "empty") return div().p(12).text_size(12).text_color(shown.error ? th.blocked : th.dim).child(shown.error ?? t("empty.loading"));
     const rows = this.visible();
     // The folder was cut, and every entry that made the cut is hidden: there may be more.
-    const empty = here.loading ? t("empty.loading") : here.rootCut ? t("empty.hidden_only", { count: PER_FOLDER })
-      : here.skipped ? t("empty.skipped") : t("empty.no_files");
+    const empty = note.rootCut ? t("empty.hidden_only", { count: PER_FOLDER })
+      : note.skipped ? t("empty.skipped") : t("empty.no_files");
     if (!rows.length) return div().p(12).text_size(12).text_color(th.dim).child(empty);
     const fs = tk.file_status ?? {};
     const markColor = m => m === "A" ? fs.added : m === "D" || m === "U" ? fs.deleted : m === "?" ? fs.untracked : fs.modified;
+    // One list per folder: a list keeps its scroll position under its id, and another folder's is not this one's.
+    const list = `tree:${here.key}`;
     const tree = v_flex().flex_1().min_h(0).relative()
-      .child(uniform_list("tree", rows.length, i => rows[i].rel, range => rows.slice(range.start, range.end).map(row => {
-        const m = this.mark(row), sel = row.rel === this.selected;
+      .child(uniform_list(list, rows.length, i => rows[i].abs, range => rows.slice(range.start, range.end).map(row => {
+        const m = this.mark(row), sel = row.rel === here.selected;
         return h_flex().h(25).pl(6 + row.depth * 13 + 6).pr(12).mx(6).gap(6).items_center().rounded(5)
           .bg(sel ? th.selected : "#00000000").hover(s => s.bg(sel ? th.selected : th.hover))
           .child(row.dir ? svg(`mods/${ME}/icons/chevron-${row.open ? "down" : "right"}.svg`).size(10).flex_none().text_color(th.dim) : div().w(10).flex_none())
@@ -410,16 +415,16 @@ export default class FilesSidebar extends View {
         .flex_1().min_h(0)
         .on_item_click((key, cx) => this.click(key, cx))
         .on_item_secondary_click((key, e, cx) => this.openMenu(key, e, cx)))
-      .child(Scrollbar.vertical("tree").absolute().inset_0())
-      .when(here.limited, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.limited", { count: PER_FOLDER }))))
-      .when(here.skipped, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.skipped"))))
-      .when(Boolean(here.gitFailed), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("git.failed"))))
-      .when(Boolean(here.marksCut), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("git.truncated"))))
+      .child(Scrollbar.vertical(list).absolute().inset_0())
+      .when(note.limited, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.limited", { count: PER_FOLDER }))))
+      .when(note.skipped, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.skipped"))))
+      .when(Boolean(note.gitFailed), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("git.failed"))))
+      .when(note.marksCut, el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("git.truncated"))))
       .when(Boolean(this.rowsCapped), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("empty.rows", { count: ROWS }))));
     // The folder could not be listed again: the rows are from before.
-    if (!here.error) return tree;
+    if (typeof shown.fresh !== "object") return tree;
     return v_flex().flex_1().min_h(0)
-      .child(div().flex_none().px(12).pb(6).text_size(11.5).text_color(th.blocked).child(here.error))
+      .child(div().flex_none().px(12).pb(6).text_size(11.5).text_color(th.blocked).child(shown.fresh.stale))
       .child(tree);
   }
 
@@ -454,13 +459,14 @@ export default class FilesSidebar extends View {
 
   // The right-click popup.
 
-  openMenu(r, e, cx) {
-    const row = this.visible().find(x => x.rel === r);
-    if (!row) return;
-    this.selected = r; this.version++; cx.notify();
-    const items = menuItems({ abs: this.abs(r), dir: row.dir, root: this.here.root, on: this.here.on });
-    openOverlay({ mod: ME, kind: "popup", width: 236, height: 12 + items.filter(i => i).length * 28 + items.filter(i => !i).length * 9,
-      props: { menu: { abs: this.abs(r), rel: r, dir: row.dir, root: this.here.root, on: this.here.on } } });
+  openMenu(key, e, cx) {
+    const at = this.target(key);
+    if (!at) return;
+    const here = this.here, menu = { abs: at.abs, rel: at.rel, dir: at.dir, root: at.root, on: here.on };
+    if (at.row) here.selected = at.rel;
+    this.version++; cx.notify();
+    const items = menuItems(menu);
+    openOverlay({ mod: ME, kind: "popup", width: 236, height: 12 + items.filter(i => i).length * 28 + items.filter(i => !i).length * 9, props: { menu } });
   }
 
   renderMenu(cx) {

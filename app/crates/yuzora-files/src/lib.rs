@@ -622,6 +622,9 @@ pub fn host_module() -> HostModule {
 }
 
 #[cfg(test)]
+mod tree_state_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -724,9 +727,8 @@ return JSON.stringify([a, b, c, d]); }})()"#
     fn the_files_sidebar_is_wired_to_git_failures_and_long_queries() {
         let main = include_str!("../../../defaults/mods/yuzora-sidebar-files/main.js");
         for needle in [
-            "await readGit(gitStatus, here.cwd, { on: here.on })",
-            "here.gitFailed = failed;",
-            r#"Boolean(here.gitFailed), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("git.failed")))"#,
+            "readGit: (cwd, options) => readGit(gitStatus, cwd, options),",
+            r#"Boolean(note.gitFailed), el => el.child(div().flex_none().px(12).py(6).text_size(11).text_color(th.dim).child(t("git.failed")))"#,
             r#"found.tooLong ? t("search.too_long")"#,
         ] {
             assert_eq!(main.matches(needle).count(), 1, "{needle}");
