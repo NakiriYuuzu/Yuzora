@@ -4,6 +4,7 @@
     scripts/files_bench.py fixtures --dir D
     scripts/files_bench.py run --dir D --example <reload_cost binary> --out a.json
     scripts/files_bench.py compare a.json
+    scripts/files_bench.py sub --dir D --example <reload_cost binary> --out a.json --sub d00
 
 `fixtures` builds two git repos under D (small ~5k files, large ~30k) with a few
 changed files. `run` drives `reload_cost` (crates/yuzora-files/examples) over
@@ -105,8 +106,10 @@ def wrappers(dir_, log, rtt_ms):
     return hc
 
 
-def reload_cost(example, root, on, open_, only, runs, env, hc=None):
+def reload_cost(example, root, on, open_, only, runs, env, hc=None, sub=None):
     cmd = [example, "--root", root, "--open", ",".join(open_), "-n", str(runs)]
+    if sub:
+        cmd += ["--sub", sub]
     if only:
         cmd += ["--only", only]
     if on:
@@ -170,6 +173,31 @@ def cmd_run(a):
     json.dump(result, open(a.out, "w"), indent=1)
 
 
+def cmd_sub(a):
+    """The first view of a folder inside a repo: when its rows can be used, and when the repo's top replaces them."""
+    home = tempfile.mkdtemp(prefix="yzbench-", dir=a.dir)
+    base = dict(os.environ, YUZORA_APP_HOME=os.path.join(home, "app"))
+    remote = None if a.local_only else Remote(home)
+    result = {"rtt_ms": a.rtt_ms, "runs": a.runs, "sub": a.sub, "cases": {}}
+    try:
+        for size in SIZES:
+            root = os.path.join(a.dir, size)
+            for where in ([None] if remote is None else [None, "lab"]):
+                env = dict(remote.env, YUZORA_APP_HOME=base["YUZORA_APP_HOME"]) if where else base
+                hc = wrappers(os.path.join(home, "rtt"), os.path.join(home, "rtt.log"), a.rtt_ms) if where and a.rtt_ms else None
+                timed = reload_cost(a.example, root, where, [], None, a.runs, env, hc, sub=a.sub)
+                key = f"{size}/{where or 'local'}"
+                result["cases"][key] = {order: {m: stats(timed[order][m]) for m in ("t_tree", "t_full")} for order in ("serial", "previous", "now")}
+                for order, c in result["cases"][key].items():
+                    print(f"{key:14} {order:8} usable {c['t_tree']['median']:>7} [{c['t_tree']['p25']}..{c['t_tree']['p75']}]  "
+                          f"top {c['t_full']['median']:>7} [{c['t_full']['p25']}..{c['t_full']['p75']}]", flush=True)
+    finally:
+        if remote:
+            remote.close()
+        shutil.rmtree(home, ignore_errors=True)
+    json.dump(result, open(a.out, "w"), indent=1)
+
+
 def cmd_compare(a):
     data = json.load(open(a.a))
     print(f"{'case':22} {'metric':7} {'serial':>8} {'parallel':>8} {'delta':>8}  verdict")
@@ -197,10 +225,18 @@ def main():
     r.add_argument("--runs", type=int, default=20)
     r.add_argument("--rtt-ms", type=int, default=0)
     r.add_argument("--local-only", action="store_true")
+    s = sub.add_parser("sub")
+    s.add_argument("--dir", required=True)
+    s.add_argument("--example", required=True)
+    s.add_argument("--out", required=True)
+    s.add_argument("--sub", required=True)
+    s.add_argument("--runs", type=int, default=20)
+    s.add_argument("--rtt-ms", type=int, default=0)
+    s.add_argument("--local-only", action="store_true")
     c = sub.add_parser("compare")
     c.add_argument("a")
     a = ap.parse_args()
-    {"fixtures": cmd_fixtures, "run": cmd_run, "compare": cmd_compare}[a.cmd](a)
+    {"fixtures": cmd_fixtures, "run": cmd_run, "sub": cmd_sub, "compare": cmd_compare}[a.cmd](a)
 
 
 if __name__ == "__main__":

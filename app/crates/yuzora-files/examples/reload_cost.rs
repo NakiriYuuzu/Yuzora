@@ -37,6 +37,7 @@ struct Args {
     open: Vec<String>,
     runs: usize,
     only: Option<bool>,
+    sub: Option<String>,
 }
 
 fn parse() -> Args {
@@ -46,6 +47,7 @@ fn parse() -> Args {
         open: Vec::new(),
         runs: 20,
         only: None,
+        sub: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -62,6 +64,7 @@ fn parse() -> Args {
             }
             "-n" => args.runs = value().parse().expect("-n takes a number"),
             "--only" => args.only = Some(value() == "parallel"),
+            "--sub" => args.sub = Some(value()),
             "--hc" => {
                 let hc = PathBuf::from(value());
                 yuzora_core::remote::set_hc_program(move || hc.clone());
@@ -135,8 +138,89 @@ fn parallel(a: &Args) -> (f64, f64) {
     (tree, start.elapsed().as_secs_f64() * 1000.0)
 }
 
+/// The first view of `sub` inside the repo at `a.root`, in the three orders the sidebar has used.
+fn first_view(a: &Args, order: &str) -> (f64, f64) {
+    let start = Instant::now();
+    let on = a.on.as_deref();
+    let sub = a.sub.as_deref().unwrap();
+    let cwd = format!("{}/{sub}", a.root);
+    let ms = || start.elapsed().as_secs_f64() * 1000.0;
+    match order {
+        "serial" => {
+            let _ = git::status(&cwd, on, MARKS);
+            list(&a.root, "", on);
+            let t = ms();
+            (t, t)
+        }
+        "previous" => {
+            let git_done = {
+                let (cwd, on) = (cwd.clone(), a.on.clone());
+                thread::spawn(move || {
+                    let _ = git::status(&cwd, on.as_deref(), MARKS);
+                })
+            };
+            list(&cwd, "", on);
+            let tree = ms();
+            git_done.join().unwrap();
+            list(&a.root, "", on);
+            (tree, ms())
+        }
+        _ => {
+            let top = {
+                let (root, cwd, on) = (a.root.clone(), cwd.clone(), a.on.clone());
+                thread::spawn(move || {
+                    let _ = git::status(&cwd, on.as_deref(), MARKS);
+                    list(&root, "", on.as_deref());
+                    start.elapsed().as_secs_f64() * 1000.0
+                })
+            };
+            list(&cwd, "", on);
+            let tree = ms();
+            (tree, top.join().unwrap())
+        }
+    }
+}
+
 fn main() {
     let a = parse();
+    if a.sub.is_some() {
+        let orders = ["serial", "previous", "now"];
+        for o in orders {
+            first_view(&a, o);
+        }
+        let mut samples: Vec<(Vec<f64>, Vec<f64>)> =
+            orders.iter().map(|_| (Vec::new(), Vec::new())).collect();
+        for _ in 0..a.runs {
+            for (i, o) in orders.iter().enumerate() {
+                let (t, f) = first_view(&a, o);
+                samples[i].0.push(t);
+                samples[i].1.push(f);
+            }
+        }
+        let fmt = |v: &[f64]| {
+            v.iter()
+                .map(|x| format!("{x:.1}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let parts: Vec<String> = orders
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                format!(
+                    "\"{o}\":{{\"t_tree\":[{}],\"t_full\":[{}]}}",
+                    fmt(&samples[i].0),
+                    fmt(&samples[i].1)
+                )
+            })
+            .collect();
+        println!(
+            "{{\"on\":{},{}}}",
+            a.on.as_ref().map_or("null".into(), |m| format!("\"{m}\"")),
+            parts.join(",")
+        );
+        return;
+    }
     let sides: Vec<bool> = a.only.map_or(vec![false, true], |p| vec![p]);
     let run = |parallel_side: bool| {
         if parallel_side {

@@ -422,7 +422,8 @@ return JSON.stringify({ failed, healed: panel(a).fresh });
 }
 
 #[test]
-fn a_repo_above_the_folder_is_listed_from_its_top_as_soon_as_git_says_so_and_replaces_the_tree_when_that_is_listed() {
+fn a_repo_above_the_folder_is_listed_from_its_top_as_soon_as_git_says_so_and_replaces_the_tree_when_that_is_listed()
+ {
     let got = run(r#"
 const h = host(), store = createStore(h.io);
 const a = store.enter(loc("/repo/sub"));
@@ -456,7 +457,13 @@ return JSON.stringify({ provisional, between, after: { root: a.root, treeRoot: a
         got["after"],
         serde_json::json!({ "root": "/repo", "treeRoot": "/repo", "rows": ["lib", "sub"], "open": [], "selected": null })
     );
-    assert!(!got["drawn"].as_array().unwrap().iter().any(|k| k == "empty"));
+    assert!(
+        !got["drawn"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|k| k == "empty")
+    );
     assert_eq!(
         got["was"],
         serde_json::json!({ "root": "/repo/sub", "rel": "README.md", "name": "README.md", "dir": false })
@@ -675,21 +682,36 @@ return JSON.stringify(out);
                 "private" => "/private/tmp/x/app",
                 _ => "/srv/app",
             };
-            let root = if git_first == "true" { root.replace("app", "app2") } else { root.to_string() };
+            let root = if git_first == "true" {
+                root.replace("app", "app2")
+            } else {
+                root.to_string()
+            };
             assert_eq!(one["root"], root.as_str(), "{key}");
             assert_eq!(one["treeRoot"], root.as_str(), "{key}");
             assert_eq!(one["open"], serde_json::json!(["lib"]), "{key}");
             assert_eq!(one["sameFolders"], true, "{key}");
             assert_eq!(one["rows"], serde_json::json!(["lib", "x.txt"]), "{key}");
             assert_eq!(one["next"], serde_json::Value::Null, "{key}");
-            assert!(!one["kinds"].as_array().unwrap().iter().any(|k| k == "empty") || git_first == "true", "{key}");
+            assert!(
+                !one["kinds"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|k| k == "empty")
+                    || git_first == "true",
+                "{key}"
+            );
             assert_eq!(one["asked"], 0, "{key}");
             if git_first == "false" {
                 assert_eq!(one["was"], "x.txt", "{key}");
             }
         }
     }
-    assert_eq!(got["other"], serde_json::json!({ "root": "/repo", "rows": ["sub"] }));
+    assert_eq!(
+        got["other"],
+        serde_json::json!({ "root": "/repo", "rows": ["sub"] })
+    );
 }
 
 #[test]
@@ -960,8 +982,8 @@ return JSON.stringify({ alone, manual, merged, onlyTimers });
 }
 
 #[test]
-fn a_failed_listing_of_the_root_git_is_about_to_leave_is_not_the_new_trees_error_whichever_comes_first(
-) {
+fn a_failed_listing_of_the_root_git_is_about_to_leave_is_not_the_new_trees_error_whichever_comes_first()
+ {
     let got = run(r#"
 const h = host(), store = createStore(h.io);
 const a = store.enter(loc("/repo/sub"));
