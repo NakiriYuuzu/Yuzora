@@ -45,9 +45,10 @@ const SPLIT = "yuzora.git.diff.split", SPLIT_MIN = 0.15, SPLIT_MAX = 0.85;
 // The grab area over the divider, the bar below the lines when they scroll sideways, and the room left
 // after the widest line.
 const GRAB = 5, BAR = 8, REST = 12;
-// Dragging across rows: the pointer is looked at every TICK ms, and within EDGE of the list's top or bottom (or past it) the
-// list scrolls by a row, and by one more for each ROW further out, up to MOST rows.
-const TICK = 50, EDGE = ROW, MOST = 8;
+// Dragging across rows: a press is a drag once the pointer has gone SLOP px from where it landed. Then the pointer is looked at every
+// TICK ms, and within EDGE of the list's top or bottom (or past it) the list scrolls by a row, and by one more for each ROW further
+// out, up to MOST rows.
+const TICK = 50, EDGE = ROW, MOST = 8, SLOP = 4;
 // The menu a right-click opens: three rows of MENU_ROW in MENU_PAD, so MENU_HEIGHT.
 const MENU_W = 210, MENU_ROW = 28, MENU_PAD = 4, MENU_HEIGHT = 3 * MENU_ROW + 2 * MENU_PAD;
 // How wide a diff's lines are is found out a little at a time, so that nothing a frame or an event does grows with the
@@ -410,19 +411,31 @@ export default class GitDiff extends View {
   }
 
   // Where a press landed in the rows, across, and whether Shift was down, for [`clickRow`] to tell a line's number
-  // from its text and a selection begun from one extended. A press in a row's text may be the start of a drag across rows
-  // ([`extend`]): not one on a fold (its click opens the file) or on the numbers a line is picked by.
+  // from its text and a selection begun from one extended.
+  //
+  // A press in a row's text is a click that may turn into a drag across rows, and `this.sweep` says which it is now:
+  //   down  The button is down, and the pointer has not gone SLOP px from where it landed nor left its row. This is a click not
+  //         yet let go of: no clock runs, the list does not scroll, nothing is selected. The release is the click the list reports.
+  //   drag  The pointer has gone SLOP px or is over another row. The clock looks at it every TICK ms; at the list's edge the list scrolls;
+  //         the selection runs from the row pressed to the row under the pointer ([`extend`]).
+  //   over  (`this.sweep` is null) The button is up, the pointer left the pane, a key reached the pane, or the diff is read again
+  //         ([`endSweep`]). The selection stays.
+  // No press on a fold (its click opens the file), on the numbers a line is picked by, or on the bar under the lines is any of these.
   pressed(e, cx) {
     const x = e.local_position?.x, y = e.local_position?.y, v = this.view;
     this.downX = x == null ? null : unzoom(x);
     this.downShift = Boolean(e.modifiers?.shift);
     this.endSweep();
-    if (x == null || y == null || !v) return;
+    if (x == null || y == null || !v || unzoom(y) >= this.listHeight()) return;
     const from = this.rowAt(y), r = v.rows[from];
     if (!r || r.k === "fold" || this.pickAt(r, this.downX)) return;
     // The list's top in the window, where the pointer will be told as a position in the window, not in the rows.
-    this.sweep = { from, side: this.sideAt(this.downX), shift: this.downShift, top: e.position.y - y, y: e.position.y, began: false };
-    this.clock = cx.timer.after(TICK, (cx) => this.beat(cx));
+    this.sweep = { from, side: this.sideAt(this.downX), shift: this.downShift, top: e.position.y - y, x0: e.position.x, y0: e.position.y, y: e.position.y, drag: false, began: false };
+  }
+
+  // How tall the rows' list is: its box less the bar under the lines when they scroll sideways, which the box leaves room for.
+  listHeight() {
+    return unzoom(this.boxH) - (this.layout === "side" && (this.lay?.reach ?? 0) > 0 ? BAR : 0);
   }
 
   // The row at `y` window pixels down the list, whatever the zoom and wherever it is scrolled to. The rows of a virtual list hold no
@@ -434,16 +447,21 @@ export default class GitDiff extends View {
     return Math.min(last, Math.max(0, Math.floor((unzoom(y) + unzoom(this.scroll.offset())) / ROW)));
   }
 
-  // The pointer is at `y` in the window.
-  sweepTo(y, cx) {
+  // The pointer is at `at` in the window: a press that has not moved is still a click, and one that has begins the drag.
+  sweepTo(at, cx) {
     const s = this.sweep;
     if (!s) return;
-    s.y = y;
+    s.y = at.y;
+    if (!s.drag) {
+      if (Math.hypot(at.x - s.x0, at.y - s.y0) < SLOP && this.rowAt(at.y - s.top) === s.from) return;
+      s.drag = true;
+      this.clock = cx.timer.after(TICK, (cx) => this.beat(cx));
+    }
     this.extend(cx);
   }
 
-  // The pointer is looked at again, with no move: a list scrolled under it by the wheel or the bar takes the selection with it, and a
-  // pointer held at the list's edge scrolls the list.
+  // A drag looks at the pointer again, with no move: a list scrolled under it by the wheel or the bar takes the selection with it,
+  // and a pointer held at the list's edge scrolls the list.
   beat(cx) {
     if (!this.sweep) return;
     this.extend(cx);
@@ -458,7 +476,7 @@ export default class GitDiff extends View {
   extend(cx) {
     const s = this.sweep, rows = this.view?.rows;
     if (!s || !rows) return;
-    const p = unzoom(s.y - s.top), h = unzoom(this.boxH), off = unzoom(this.scroll.offset());
+    const p = unzoom(s.y - s.top), h = this.listHeight(), off = unzoom(this.scroll.offset());
     const up = p < EDGE, depth = up ? EDGE - p : Math.max(0, p - (h - EDGE));
     let moved = false;
     if (depth > 0 && (up ? off > 0 : off < rows.length * ROW - h - 0.5)) {
@@ -516,7 +534,7 @@ export default class GitDiff extends View {
   // begins a sweep, and the release that ends it, ask for no frame.
   dragging(el) {
     return el
-      .on_mouse_move((e, cx) => { if (this.drag) this.dragTo(e.position.x, cx); else if (this.sweep) this.sweepTo(e.position.y, cx); })
+      .on_mouse_move((e, cx) => { if (this.drag) this.dragTo(e.position.x, cx); else if (this.sweep) this.sweepTo(e.position, cx); })
       .on_mouse_up("left", (_e, cx) => { if (this.drag) this.drop(cx); this.endSweep(); })
       .on_mouse_down("left", (_e, cx) => { if (this.drag) this.drop(cx); })
       .on_hover((hovered, cx) => { if (!hovered) { if (this.drag) this.drop(cx); this.endSweep(); } });

@@ -3008,19 +3008,31 @@ fn yuzora_diff_a_button_held_on_the_bars_track_selects_nothing_and_scrolls_nothi
     near(scrolled_in_frame(&pane), 0., "the list stays");
     assert_eq!(mark_of(&pane), Value::Null, "and no row is selected");
     assert_eq!(selected(&mut pane), None);
+    pane.hover(track, bar);
+    pane.press(track, bar, 1);
+    pane.drag(track, bar - 200.);
+    pane.release(track, bar - 200.);
+    assert_eq!(
+        selected(&mut pane),
+        None,
+        "dragged from the track up the rows: nothing is selected"
+    );
     pane.close();
 }
 
 #[gpui::test]
-fn yuzora_diff_unified_a_button_held_on_the_bar_under_the_lines_selects_nothing_and_scrolls_nothing(
+fn yuzora_diff_unified_a_button_held_still_at_the_bottom_where_the_bar_is_scrolls_nothing(
     cx: &mut TestAppContext,
 ) {
     let mut pane = copy_pane(cx, long_first_line_diff(200), json!({"layout": "unified"}));
     let bar = pane.high as f64 - 4.;
     hold_still(&mut pane, 600., bar, false, 6);
     near(scrolled_in_frame(&pane), 0., "the list stays");
-    assert_eq!(mark_of(&pane), Value::Null, "and no row is selected");
-    assert_eq!(selected(&mut pane), None);
+    assert_eq!(
+        mark_of(&pane),
+        json!(["unified", 28, 28]),
+        "and the row behind the bar is the one clicked"
+    );
     pane.close();
 }
 
@@ -3058,6 +3070,54 @@ fn yuzora_diff_a_drag_begins_a_few_pixels_from_where_the_button_went_down(cx: &m
         "12 px away and held at the edge: the list scrolls"
     );
     pane.release(TEXT_LEFT + 12., bottom);
+    pane.close();
+}
+
+// yuzora(v010-git-diff-fu-r1): a pointer that goes over the next row is a drag however near it went: the list would report no
+// click for a release on another row than the one pressed.
+#[gpui::test]
+fn yuzora_diff_a_drag_begins_when_the_pointer_is_over_another_row_however_near(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
+    let (edge_of_row, next_row) = (row_y(1) + 9., row_y(1) + 11.);
+    pane.hover(TEXT_LEFT, edge_of_row);
+    pane.press(TEXT_LEFT, edge_of_row, 1);
+    pane.drag(TEXT_LEFT, next_row);
+    pane.release(TEXT_LEFT, next_row);
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 1, 3]])),
+        "2 px away, over the next row: the two rows"
+    );
+    pane.close();
+}
+
+// yuzora(v010-git-diff-fu-r1): with long lines the bar takes the bottom of the list's box: a pointer held at the bottom edge scrolls
+// the list to the end of its rows, the last of which is then whole above the bar.
+#[gpui::test]
+fn yuzora_diff_a_pointer_held_at_the_bottom_edge_of_a_list_with_a_bar_under_it_scrolls_to_the_last_row(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, long_first_line_diff(200), json!({}));
+    let list = pane.high as f64 - COPY_HEADER - 8.;
+    pane.press(TEXT_LEFT, row_y(5), 1);
+    pane.drag(TEXT_LEFT, row_y(8));
+    pane.drag(TEXT_LEFT, COPY_HEADER + list - 18.);
+    pane.wait(10, 50);
+    assert!(
+        scrolled_in_frame(&pane) >= 100.,
+        "18 px above the list's end is in its last 20, the bar not counted"
+    );
+    pane.drag(TEXT_LEFT, COPY_HEADER + list - 6.);
+    pane.wait(300, 50);
+    near(
+        scrolled_in_frame(&pane),
+        200. * ROW_H - list,
+        "to the end of the rows",
+    );
+    assert_eq!(mark_of(&pane), json!(["left", 5, 199]));
+    pane.release(TEXT_LEFT, COPY_HEADER + list - 6.);
     pane.close();
 }
 // yuzora(v010-git-diff-fu): a drag while the rows are being ranked is not cut short by it, and does not stop it: the selection made
