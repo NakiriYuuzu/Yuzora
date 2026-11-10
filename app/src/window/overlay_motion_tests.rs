@@ -520,8 +520,16 @@ fn overlay_arrival_once(cx: &mut gpui::TestAppContext) {
     });
     arrival_draw(cx);
     assert!(
+        shown(cx).is_some(),
+        "taken out and put back before a frame was drawn: the same dialog changing, not a new one"
+    );
+    cx.update(|window, cx| view.update(cx, |this, cx| this.remove_overlay("once", window, cx)));
+    arrival_frame(cx, 16);
+    cx.update(|window, cx| view.update(cx, |this, cx| this.open_overlay("once".into(), spec.clone(), window, cx)));
+    arrival_draw(cx);
+    assert!(
         shown(cx).is_none(),
-        "taken out and put back before a frame was drawn: still a new overlay"
+        "put back a frame after it was taken out: a new overlay"
     );
     arrival_frame(cx, 400);
     assert!(shown(cx).is_some());
@@ -731,6 +739,176 @@ fn overlay_arrival_exempt(cx: &mut gpui::TestAppContext) {
             "{id}: changes after its first frame"
         );
         arrival_close(&view, cx, id);
+    }
+}
+
+/// One update that closes `from` and opens `to` under the id `to_id`: a settings page handing over to another dialog.
+fn arrival_swap(
+    view: &gpui::Entity<super::AppWindow>,
+    cx: &mut gpui::VisualTestContext,
+    from: &str,
+    to_id: &str,
+    to: serde_json::Value,
+) {
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.close_overlay(from, window, cx);
+            this.open_overlay(to_id.into(), to, window, cx);
+        })
+    });
+    arrival_draw(cx);
+}
+
+/// Every quad of `a` is where it is in `b`, in the same color.
+fn arrival_same(a: &[ArrivalQuad], b: &[ArrivalQuad], what: &str) {
+    assert_eq!(a.len(), b.len(), "{what}: not the same primitives");
+    for (got, want) in a.iter().zip(b) {
+        assert_eq!(got, want, "{what}: a quad is not as it rests");
+    }
+}
+
+/// A dialog that takes the place of one just closed is the same dialog changing, not a new one: the window never goes
+/// from dimmed back to clear, and nothing fades in again. A new dialog (a frame later, or of another kind) still does.
+#[test]
+fn an_overlay_that_takes_the_place_of_one_just_closed_does_not_arrive_again() {
+    in_own_process("overlay_arrival_swap");
+}
+
+#[gpui::test]
+fn overlay_arrival_swap(cx: &mut gpui::TestAppContext) {
+    use serde_json::json;
+    if !running_alone("overlay_arrival_swap") {
+        return;
+    }
+    let (view, cx) = arrival_window(cx);
+    let viewport = arrival_viewport(cx);
+    let red: gpui::Background = gpui::rgb(0xff0000).into();
+    let page = json!({ "kind": "dialog", "width": 300, "height": 120, "layout": { "id": "blk", "type": "block", "content": { "mod": "probe" } } });
+    let dialog = json!({ "kind": "dialog", "mod": "probe", "width": 300, "height": 120 });
+    let menu = json!({ "kind": "popup", "mod": "probe", "width": 260, "at": { "x": 200, "y": 150 } });
+
+    let stays_put = |cx: &mut gpui::VisualTestContext, what: &str| {
+        let first = arrival_quads(cx);
+        assert!(
+            arrival_layer(&first, viewport, arrival_dim()).is_some(),
+            "{what}: the dim layer is not all there at the first frame"
+        );
+        assert!(
+            arrival_button(&first).is_some_and(|q| q.4 == red),
+            "{what}: its mod is not in full color at the first frame"
+        );
+        assert_eq!(arrival_frame(cx, 16), 0, "{what}: it asks for frames");
+        let later = arrival_quads(cx);
+        arrival_same(&first, &later, what);
+    };
+
+    arrival_open(&view, cx, "page", page.clone());
+    arrival_frame(cx, 400);
+    arrival_swap(&view, cx, "page", "settings", dialog.clone());
+    stays_put(cx, "a page of blocks, then a mod's dialog");
+
+    arrival_swap(&view, cx, "settings", "settings", dialog.clone());
+    stays_put(cx, "a dialog, then another under the same id");
+
+    arrival_swap(&view, cx, "settings", "page", page.clone());
+    let first = arrival_quads(cx);
+    assert!(
+        arrival_layer(&first, viewport, arrival_dim()).is_some(),
+        "a mod's dialog, then a page of blocks: the dim layer is gone at the first frame"
+    );
+    assert!(
+        arrival_wide(&first, 300.0).is_some_and(|q| !q.4.is_transparent()),
+        "a mod's dialog, then a page of blocks: the body is not there at the first frame"
+    );
+    assert_eq!(arrival_frame(cx, 16), 0);
+    arrival_close(&view, cx, "page");
+
+    arrival_open(&view, cx, "a", dialog.clone());
+    arrival_frame(cx, ARRIVAL_PANEL_MS / 2);
+    let half = arrival_quads(cx);
+    let f = gpui_base::animation::ease_out_cubic(0.5);
+    arrival_swap(&view, cx, "a", "b", dialog.clone());
+    let handed = arrival_quads(cx);
+    assert!(
+        arrival_layer(&handed, viewport, arrival_dim().opacity(f)).is_some(),
+        "handed over half way: the dim layer goes on from where it was"
+    );
+    assert_eq!(
+        arrival_button(&handed).map(|q| q.4),
+        Some(red.opacity(f)),
+        "handed over half way: the new one goes on from where the old one was"
+    );
+    arrival_same(&half, &handed, "handed over half way");
+    assert!(arrival_frame(cx, 16) > 0, "and is still on its way");
+    arrival_frame(cx, 400);
+    assert!(
+        arrival_layer(&arrival_quads(cx), viewport, arrival_dim()).is_some(),
+        "and arrives"
+    );
+    assert_eq!(arrival_frame(cx, 16), 0);
+
+    arrival_close(&view, cx, "b");
+    arrival_frame(cx, 5000);
+    arrival_open(&view, cx, "c", dialog.clone());
+    let first = arrival_quads(cx);
+    assert!(
+        arrival_layer(&first, viewport, arrival_dim()).is_none() && arrival_button(&first).is_none(),
+        "closed a frame before: a new dialog, it arrives"
+    );
+    arrival_frame(cx, 400);
+
+    arrival_swap(&view, cx, "c", "d", menu.clone());
+    let first = arrival_quads(cx);
+    assert!(
+        arrival_button(&first).is_none(),
+        "a popup after a dialog is a new overlay, it arrives"
+    );
+    arrival_frame(cx, 400);
+    arrival_swap(&view, cx, "d", "e", menu.clone());
+    assert!(
+        arrival_button(&arrival_quads(cx)).is_some_and(|q| q.4 == red),
+        "a popup that takes the place of a popup does not arrive again"
+    );
+    arrival_close(&view, cx, "e");
+    arrival_open(&view, cx, "toast", json!({ "kind": "toast", "notification": { "title": "Saved" } }));
+    arrival_frame(cx, 400);
+    arrival_swap(&view, cx, "toast", "toast2", json!({ "kind": "toast", "notification": { "title": "Again" } }));
+    assert!(
+        arrival_button(&arrival_quads(cx)).is_none(),
+        "a toast after a toast is a new one, it arrives"
+    );
+}
+
+/// The first frame an overlay is painted is 6 px off its place: below for a toast, above for the rest (the share of
+/// the 6 px still to go is the eased one of the time that has passed, 1 ms of the speed).
+#[test]
+fn an_overlay_starts_six_px_from_its_place() {
+    in_own_process("overlay_arrival_travel");
+}
+
+#[gpui::test]
+fn overlay_arrival_travel(cx: &mut gpui::TestAppContext) {
+    if !running_alone("overlay_arrival_travel") {
+        return;
+    }
+    let (view, cx) = arrival_window(cx);
+    let viewport = arrival_viewport(cx);
+    for case in arrival_cases() {
+        let want = (case.rests_at)(viewport);
+        arrival_open(&view, cx, case.id, case.spec.clone());
+        arrival_frame(cx, 1);
+        let body = arrival_wide(&arrival_quads(cx), case.body_width)
+            .unwrap_or_else(|| panic!("{}: not painted 1 ms in", case.id));
+        let left = 6.0 * (1.0 - gpui_base::animation::ease_out_cubic(1.0 / case.duration_ms as f32));
+        let sign = if case.id == "toast" { 1.0 } else { -1.0 };
+        arrival_near(
+            body.1,
+            want.1 + sign * left,
+            0.5,
+            &format!("{} starts 6 px {} its place", case.id, if sign > 0.0 { "below" } else { "above" }),
+        );
+        arrival_near(body.0, want.0, 0.5, &format!("{} starts straight above or below its place", case.id));
+        arrival_close(&view, cx, case.id);
     }
 }
 

@@ -169,17 +169,20 @@ mod tests {
             (true, false),
             "a toast takes the base speed"
         );
-        assert!(
-            phase(OverlayKind::Dialog, Some(t0), t0, false).dy < 0.0,
-            "a dialog comes down"
+        assert_eq!(
+            phase(OverlayKind::Dialog, Some(t0), t0, false).dy,
+            -6.0,
+            "a dialog comes down from 6 px above"
         );
-        assert!(
-            phase(OverlayKind::Popup, Some(t0), t0, false).dy < 0.0,
+        assert_eq!(
+            phase(OverlayKind::Popup, Some(t0), t0, false).dy,
+            -6.0,
             "so does a popup"
         );
-        assert!(
-            phase(OverlayKind::Toast, Some(t0), t0, false).dy > 0.0,
-            "a toast comes up"
+        assert_eq!(
+            phase(OverlayKind::Toast, Some(t0), t0, false).dy,
+            6.0,
+            "a toast comes up from 6 px below"
         );
         let base = yuzora_core::tokens::motion()["base"]["duration"]
             .as_u64()
