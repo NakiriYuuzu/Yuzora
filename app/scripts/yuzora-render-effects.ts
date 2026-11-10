@@ -13,12 +13,24 @@
 // (`.map`, `.when`, a local `guard(cx, action)`), and a task up to its first `await`. What does not: a
 // handler (`on_*`), a timer callback, a closure that is only stored or passed on.
 //
+// Followed: `this.x()`, `this.x?.()`, a getter read as `this.x`, `super.x()`, `f()` and `f?.()` for a function,
+// a closure assigned straight from an arrow, or an import from a `./x.js` of the mod, `ns.f()`, and
+// `{ a: () => …, b: () => … }[key]()`. A call written any other way that this cannot follow is listed in
+// `unsupported` with its place, and the test of the mod tree fails on one it has not been told about:
+// `.bind()`, `.call()`, `.apply()`; `this` used as a value (an alias, destructuring, handed on); a call of a
+// computed callee (`a[k]()`, `(c ? f : g)()`, `f()()`); a call through a variable that is not such a closure;
+// `this.x()` where x is no method of the class; an `await` that may be skipped, because what follows it can
+// then run in the frame.
+// Not seen at all, and not reported: a call through an object a mod keeps in a field (`this.helper.run()`),
+// a setter run by `this.x = v`, `eval` and `import()`, a callback kept in a field and called later, and any
+// mod outside `defaults/mods/yuzora-*` and `defaults/frame/*`.
+//
 //   bun scripts/yuzora-render-effects.ts            every finding, with its chain
 //   bun test scripts/yuzora-render-effects.test.ts  the findings against the reviewed list
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-type Tok = { k: "id" | "num" | "str" | "re" | "p"; v: string; at: number };
+type Tok = { k: "id" | "num" | "str" | "re" | "p"; v: string; at: number; tpl?: true };
 
 const REGEX_AFTER = new Set(["return", "typeof", "case", "do", "else", "in", "of", "void", "delete", "throw", "new", "instanceof", "yield", "await"]);
 const KEYWORDS = new Set(["if", "for", "while", "switch", "catch", "function", "return", "typeof", "new", "await", "async", "else", "do", "try", "with", "super", "import", "export", "void", "delete", "in", "of", "yield"]);
@@ -43,9 +55,9 @@ function lexTemplate(src: string, from: number, out: Tok[]): number {
   while (pos < src.length && src[pos] !== "`") {
     if (src[pos] === "\\") pos += 2;
     else if (src[pos] === "$" && src[pos + 1] === "{") {
-      out.push({ k: "p", v: "(", at: pos });
+      out.push({ k: "p", v: "(", at: pos, tpl: true });
       pos = lexInto(src, pos + 2, out, true);
-      out.push({ k: "p", v: ")", at: pos });
+      out.push({ k: "p", v: ")", at: pos, tpl: true });
     } else pos++;
   }
   return pos + 1;
@@ -110,7 +122,7 @@ function lexInto(src: string, from: number, out: Tok[], inTemplate: boolean): nu
   return pos;
 }
 
-export type Fn = { name: string; owner: string | null; file: string; from: number; to: number; params: string[]; async: boolean };
+export type Fn = { name: string; owner: string | null; file: string; from: number; to: number; params: string[]; async: boolean; getter?: true };
 type Cls = { name: string; ext: string | null; methods: Map<string, Fn> };
 type Import = { from: string; name: string };
 export type Unit = {
@@ -216,13 +228,18 @@ export function parse(file: string, src: string): Unit {
       let k = j + 1;
       while (k < match[j]) {
         let async = false;
+        let accessor = "";
         while (["static", "async", "get", "set", "*"].includes(toks[k].v) && !is(k + 1, "(")) {
           if (toks[k].v === "async") async = true;
+          if (toks[k].v === "get" || toks[k].v === "set") accessor = toks[k].v;
           k++;
         }
         if (toks[k].k === "id" && is(k + 1, "(") && is(match[k + 1] + 1, "{")) {
           const body = match[k + 1] + 1;
-          cls.methods.set(toks[k].v, { name: toks[k].v, owner: name, file, from: body + 1, to: match[body], params: paramNames(toks, k + 1, match[k + 1], match), async });
+          // A getter is read as `this.x`; a setter beside it is not run by a read, so it must not hide the getter.
+          if (!(accessor === "set" && cls.methods.get(toks[k].v)?.getter)) {
+            cls.methods.set(toks[k].v, { name: toks[k].v, owner: name, file, from: body + 1, to: match[body], params: paramNames(toks, k + 1, match[k + 1], match), async, ...(accessor === "get" ? { getter: true as const } : {}) });
+          }
           k = match[body] + 1;
         } else throw new Error(`${file}: a class member this reader does not understand at ${toks[k].at}: ${toks[k].v}`);
       }
@@ -296,7 +313,7 @@ const KEEPS = new Set(["hover", "tooltip", "then", "catch", "finally", "after", 
 export type Finding = { mod: string; file: string; where: string; effect: string; detail: string; chain: string[]; line: number };
 
 type Event = { kind: "this" | "super" | "call" | "effect"; name: string; effect?: string; at: number; ids: string[]; ns?: string };
-type Scope = { events: Event[]; closures: Map<string, Fn>; unclassified: Set<string> };
+type Scope = { events: Event[]; closures: Map<string, Fn>; unclassified: Set<string>; unsupported: { form: string; at: number }[] };
 type Ctx = {
   resolveThis(name: string): { fn: Fn; unit: Unit } | undefined;
   resolveBare(unit: Unit, name: string, closures: Map<string, Fn>, ns?: string): { fn: Fn; unit: Unit } | undefined;
@@ -369,33 +386,106 @@ function argsOf(unit: Unit, open: number): { from: number; to: number; arrow: nu
   return args;
 }
 
+/** Whether the `await` at `at` (inside the function whose body starts at `start`) may be skipped, so the code after it can run in the frame. */
+function conditionalAwait(unit: Unit, start: number, at: number): boolean {
+  const { toks, match } = unit;
+  const forever = (open: number) => match[open] - open === 3 && toks[open + 1].v === ";" && toks[open + 2].v === ";";
+  const guarded = (open: number) => {
+    const word = toks[open - 1];
+    return word?.k === "id" && (["if", "while"].includes(word.v) || (word.v === "for" && !forever(open)));
+  };
+  if (toks[at - 1]?.k === "id" && toks[at - 1].v === "else") return true;
+  if (toks[at - 1]?.v === ")" && toks[at - 1].k === "p" && guarded(match[at - 1])) return true;
+  for (let j = at - 1; j >= start; j--) {
+    const u = toks[j];
+    if (u.k !== "p") continue;
+    if (u.v === ")" || u.v === "]") j = match[j];
+    else if (u.v === ";" || u.v === "{" || u.v === "}") break;
+    else if (u.v === "?" || u.v === "&" || u.v === "|") return true;
+  }
+  for (let k = start; k < at; k++) {
+    if (toks[k].k !== "p" || toks[k].v !== "{" || match[k] < at) continue;
+    const before = toks[k - 1];
+    if (before?.k === "id" && before.v === "else") return true;
+    if (before?.v === ")" && before.k === "p") {
+      const word = toks[match[k - 1] - 1];
+      if (word?.k === "id" && (guarded(match[k - 1]) || ["switch", "catch"].includes(word.v))) return true;
+    }
+  }
+  return false;
+}
+
+/** The names a body binds with `const`, `let` or `var` (a pattern binds every name in it). */
+function declaredIn(unit: Unit, fn: Fn): Set<string> {
+  const { toks, match } = unit;
+  const names = new Set<string>();
+  for (let i = fn.from; i < fn.to; i++) {
+    if (toks[i].k !== "id" || !["const", "let", "var"].includes(toks[i].v)) continue;
+    const next = toks[i + 1];
+    if (next?.k === "id") names.add(next.v);
+    else if (opens(next)) for (let k = i + 2; k < match[i + 1]; k++) if (toks[k].k === "id") names.add(toks[k].v);
+  }
+  return names;
+}
+
 /** What runs when `fn` runs in a frame: its calls and effects, in order. */
 function scopeOf(unit: Unit, fn: Fn, ctx: Ctx, invokes: (target: { fn: Fn; unit: Unit }, k: number) => boolean): Scope {
   const { toks, match } = unit;
   const closures = closuresIn(unit, fn);
-  const scope: Scope = { events: [], closures, unclassified: new Set() };
+  const scope: Scope = { events: [], closures, unclassified: new Set(), unsupported: [] };
   const now = new Set<number>();
   const limits: number[] = fn.async ? [fn.to] : [];
+  const starts: number[] = fn.async ? [fn.from] : [];
+  const locals = declaredIn(unit, fn);
+  const flag = (form: string, at: number) => scope.unsupported.push({ form, at });
   const ids = (args: { from: number; to: number }[]) => args.map((a) => (a.to - a.from === 1 && toks[a.from].k === "id" ? toks[a.from].v : ""));
   for (let i = fn.from; i < fn.to; i++) {
-    while (limits.length && i >= limits[limits.length - 1]) limits.pop();
+    while (limits.length && i >= limits[limits.length - 1]) { limits.pop(); starts.pop(); }
     const t = toks[i];
     if (t.k === "p" && t.v === "=>") {
       const lit = literalAt(unit, i);
       if (!now.has(i)) { i = lit.end - 1; continue; }
-      if (lit.async) limits.push(lit.to);
+      if (lit.async) { limits.push(lit.to); starts.push(lit.from); }
+      continue;
+    }
+    if (t.k === "p" && t.v === "{") {
+      // `{ a: () => this.a(), b: () => this.b() }[key]()` calls one of them: all are read as called.
+      const close = match[i];
+      if (toks[close + 1]?.v === "[" && toks[match[close + 1] + 1]?.v === "(") {
+        for (let k = i + 1; k < close; k++) {
+          if (toks[k].k === "p" && toks[k].v === "=>") now.add(k);
+          else if (opens(toks[k])) k = match[k];
+        }
+      }
+      continue;
+    }
+    if (t.k === "p" && (t.v === "]" || t.v === ")") && !t.tpl && toks[i + 1]?.v === "(" && toks[i + 1].k === "p" && !toks[i + 1].tpl) {
+      const opener = match[i];
+      const header = t.v === ")" && toks[opener - 1]?.k === "id" && ["if", "while", "for", "switch", "with"].includes(toks[opener - 1].v);
+      const literal = t.v === "]" && toks[opener - 1]?.v === "}" && toks[opener - 1].k === "p";
+      if (!header && !literal) flag("a call of a computed callee", toks[i + 1].at);
       continue;
     }
     if (t.k !== "id") continue;
+    if (t.v === "this" && !["." , "?.", "["].includes(toks[i + 1]?.v ?? "")) { flag("this as a value", t.at); continue; }
     if (t.v === "function" && toks[i + 1]?.k === "id" && toks[i + 2]?.v === "(") { i = match[match[i + 2] + 1]; continue; }
     if (t.v === "await") {
-      if (limits.length) i = limits.pop()! - 1;
+      if (limits.length) {
+        if (conditionalAwait(unit, starts.pop()!, i)) flag("a conditional await", t.at);
+        i = limits.pop()! - 1;
+      }
       continue;
     }
-    if (!(toks[i + 1]?.v === "(" && toks[i + 1].k === "p")) continue;
     const prev = toks[i - 1];
     const member = prev?.v === "." || prev?.v === "?.";
-    const open = i + 1;
+    const optional = toks[i + 1]?.v === "?." && toks[i + 1].k === "p" && toks[i + 2]?.v === "(" && toks[i + 2].k === "p";
+    if (member && toks[i - 2]?.v === "this" && !(toks[i - 3]?.v === "." || toks[i - 3]?.v === "?.") && !optional && !(toks[i + 1]?.v === "(" && toks[i + 1].k === "p")) {
+      // A getter runs when it is read.
+      if (ctx.resolveThis(t.v)?.fn.getter) scope.events.push({ kind: "this", name: t.v, at: t.at, ids: [] });
+      continue;
+    }
+    if (!optional && !(toks[i + 1]?.v === "(" && toks[i + 1].k === "p")) continue;
+    const open = optional ? i + 2 : i + 1;
     const args = argsOf(unit, open);
     const literal = args.map((a) => a.arrow).filter((a) => a >= 0);
     const call = (kind: Event["kind"], name: string, effect?: string, ns?: string) => scope.events.push({ kind, name, effect, at: t.at, ids: ids(args), ns });
@@ -415,13 +505,17 @@ function scopeOf(unit: Unit, fn: Fn, ctx: Ctx, invokes: (target: { fn: Fn; unit:
         call("this", t.v);
         const target = ctx.resolveThis(t.v);
         if (target) args.forEach((a, k) => { if (a.arrow >= 0 && invokes(target, k)) now.add(a.arrow); });
-        else if (literal.length) scope.unclassified.add(`this.${t.v}`);
+        else {
+          flag(`this.${t.v}() is not a method of the class`, t.at);
+          if (literal.length) scope.unclassified.add(`this.${t.v}`);
+        }
       } else if (obj?.k === "id" && unit.imports.get(obj.v)?.name === "*" && !(toks[i - 3]?.v === "." || toks[i - 3]?.v === "?.")) {
         call("call", t.v, undefined, obj.v);
         const target = ctx.resolveBare(unit, t.v, closures, obj.v);
         if (target) args.forEach((a, k) => { if (a.arrow >= 0 && invokes(target, k)) now.add(a.arrow); });
         else if (literal.length) scope.unclassified.add(`${obj.v}.${t.v}`);
-      } else if (CALLS_NOW.has(t.v)) for (const a of literal) now.add(a);
+      } else if (["bind", "call", "apply"].includes(t.v)) flag(`.${t.v}()`, t.at);
+      else if (CALLS_NOW.has(t.v)) for (const a of literal) now.add(a);
       else if (literal.length && !KEEPS.has(t.v)) scope.unclassified.add(`.${t.v}`);
       continue;
     }
@@ -433,6 +527,7 @@ function scopeOf(unit: Unit, fn: Fn, ctx: Ctx, invokes: (target: { fn: Fn; unit:
     const target = ctx.resolveBare(unit, t.v, closures);
     if (target) args.forEach((a, k) => { if (a.arrow >= 0 && invokes(target, k)) now.add(a.arrow); });
     else if (CALLS_NOW.has(t.v)) for (const a of literal) now.add(a);
+    else if (locals.has(t.v) && !closures.has(t.v) && !imported) flag(`a call through a variable: ${t.v}`, t.at);
     else if (literal.length) scope.unclassified.add(t.v);
   }
   return scope;
@@ -492,12 +587,16 @@ function label(fn: Fn): string {
   return `${file === "main.js" ? "" : `${file}#`}${fn.owner ? `${fn.owner}.` : ""}${fn.name}`;
 }
 
-export type Report = { findings: Finding[]; unclassified: string[]; renders: string[]; host: string[] };
+/** A call written in a way this reader does not follow: what it would have found there is not known. */
+export type Unsupported = { mod: string; file: string; where: string; form: string; line: number };
+
+export type Report = { findings: Finding[]; unclassified: string[]; unsupported: Unsupported[]; renders: string[]; host: string[] };
 
 /** What each `render` of the mod's classes can reach. */
 export function scanMod(mod: Mod): Report {
   const found = new Map<string, Finding>();
   const unclassified = new Set<string>();
+  const unsupported = new Map<string, Unsupported>();
   const host = new Set<string>();
   const renders: string[] = [];
   for (const unit of mod.units.values()) {
@@ -557,6 +656,10 @@ export function scanMod(mod: Mod): Report {
         seen.add(key);
         const scope = scope_(node.unit, node.fn);
         for (const u of scope.unclassified) unclassified.add(`${mod.name}: ${u}`);
+        for (const u of scope.unsupported) {
+          const id = `${mod.name}/${label(node.fn)}:${u.form}`;
+          if (!unsupported.has(id)) unsupported.set(id, { mod: mod.name, file: node.unit.file, where: label(node.fn), form: u.form, line: lineOf(node.unit, u.at) });
+        }
         const inScope = new Map([...node.closures, ...scope.closures]);
         for (const e of scope.events) {
           if (e.kind === "effect") {
@@ -577,7 +680,7 @@ export function scanMod(mod: Mod): Report {
       }
     }
   }
-  return { findings: [...found.values()], unclassified: [...unclassified].sort(), renders, host: [...host] };
+  return { findings: [...found.values()], unclassified: [...unclassified].sort(), unsupported: [...unsupported.values()], renders, host: [...host] };
 }
 
 /** The mods that are Yuzora's: `defaults/mods/yuzora-*`, and the frame mods that carry Yuzora's own code. */
@@ -588,11 +691,12 @@ export function yuzoraMods(root: string): { name: string; dir: string }[] {
 }
 
 export function scanAll(root: string): Report {
-  const all: Report = { findings: [], unclassified: [], renders: [], host: [] };
+  const all: Report = { findings: [], unclassified: [], unsupported: [], renders: [], host: [] };
   for (const m of yuzoraMods(root)) {
     const r = scanMod(loadMod(m.name, m.dir));
     all.findings.push(...r.findings);
     all.unclassified.push(...r.unclassified);
+    all.unsupported.push(...r.unsupported);
     all.renders.push(...r.renders);
     all.host.push(...r.host);
   }
@@ -606,4 +710,5 @@ if (import.meta.main) {
   if (process.argv.includes("--host")) console.log([...new Set(report.host)].sort().join("\n"));
   console.log(`\n${report.renders.length} renders, ${report.findings.length} findings`);
   if (report.unclassified.length) console.log(`closures to a callee this does not know:\n  ${report.unclassified.join("\n  ")}`);
+  if (report.unsupported.length) console.log(`calls written in a way this does not follow:\n  ${report.unsupported.map((u) => `${u.file}:${u.line} ${u.where}: ${u.form}`).join("\n  ")}`);
 }

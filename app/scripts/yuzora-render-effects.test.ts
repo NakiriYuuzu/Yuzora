@@ -4,8 +4,11 @@
 // A frame may only look. The engine throws on cx.notify(), creating state and changing an input's selection
 // there, and a request that arrives through shared state is only ever seen from a frame (a mod gets no event
 // for a change of `shared`): the Database table pane and the Files sidebar both started work in that frame,
-// threw half way, and stayed half done. The list below is every call a Yuzora render can reach that is not a read, each
-// with why it is safe in a frame. A new one fails the test until it has been looked at.
+// threw half way, and stayed half done. The list below is every call the scanner sees a Yuzora render reach that is
+// not a read, each with why it is safe in a frame. A new one fails the test until it has been looked at.
+// A call written in a way the scanner cannot follow is not in that list: it is in `unsupported`, which the
+// last tests keep empty except for what has been read by hand. What the scanner does not see at all is
+// listed at the top of yuzora-render-effects.ts.
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -153,6 +156,17 @@ export default class P extends View {
   expect(keys({ "main.js": src })).toEqual(["P.pick:setShared"]);
 });
 
+test("an object of arrows indexed and called calls them all: the way a pane picks its tab", () => {
+  const src = `${HEAD}
+export default class P extends View {
+  one() { return 1; }
+  two(cx) { cx.notify(); return 2; }
+  render(cx) { return div().child(String({ a: () => this.one(), b: () => this.two(cx) }[this.tab]())); }
+}`;
+  expect(keys({ "main.js": src })).toEqual(["P.two:cx.notify"]);
+  expect(scan({ "main.js": src }).unsupported).toEqual([]);
+});
+
 // What this reader does not follow must not read as "nothing": it is reported, with its place.
 const UNFOLLOWED: [string, string, string, number][] = [
   ["bind", `const go = this.go.bind(this); go(cx);`, ".bind()", 3],
@@ -195,7 +209,7 @@ export default class P extends View {
   }
 });
 
-test("a method that is called apply, call or bind on this, a template with two holes and an imported callback are plain", () => {
+test("a method of the class that is named apply, and a template with two holes, are plain calls", () => {
   const src = `${HEAD}
 export default class P extends View {
   apply(cx, a) { return a; }
@@ -288,6 +302,31 @@ test("what a Yuzora render reaches that is not a read has been looked at", () =>
   expect(unreviewed).toEqual([]);
   const gone = Object.entries(REVIEWED).filter(([k, v]) => !v.pending && !found.includes(k)).map(([k]) => k);
   expect(gone).toEqual([]);
+});
+
+// Written as a call the scanner cannot follow, and read by hand: what each one reaches, and why that is safe in a frame.
+const UNSUPPORTED_REVIEWED: Record<string, string> = {
+  "frame/settings/settings/main.js#Settings.loadPreviews:a conditional await": "the loop awaits for each name, and loadPreviews is only asked for at least one: an empty list joins to the '' that previewsOf starts as, so nothing is asked (main.js:263)",
+  "frame/welcome/welcome/main.js#Welcome.render:.call()": "the page is one of four methods read by index; the next test follows all four",
+  "frame/welcome/welcome/main.js#Welcome.render:this as a value": "the same expression: this is the receiver of the .call()",
+};
+
+test("a call the scanner cannot follow, found in a Yuzora render, has been read by hand", () => {
+  const found = scanAll(root).unsupported.map((u) => `${u.mod}/${u.where}:${u.form}`).sort();
+  expect(found.filter((k) => !(k in UNSUPPORTED_REVIEWED))).toEqual([]);
+  expect(Object.keys(UNSUPPORTED_REVIEWED).filter((k) => !found.includes(k))).toEqual([]);
+});
+
+test("the four pages of the welcome, which its render calls through .call(), reach one write, and a guarded one", () => {
+  const dir = join(root, "defaults/frame/welcome");
+  const files = Object.fromEntries(readdirSync(dir).filter((f) => f.endsWith(".js")).map((f) => [f, readFileSync(join(dir, f), "utf8")]));
+  const dispatch = "[this.pageOne, this.pageTwo, this.pageThree, this.pageFour][this.page - 1].call(this, t)";
+  expect(files["main.js"]).toContain(dispatch);
+  files["main.js"] = files["main.js"].replace(dispatch, "[this.pageOne(t), this.pageTwo(t), this.pageThree(t), this.pageFour(t)][this.page - 1]");
+  const report = scanMod(modFrom("frame/welcome", files));
+  expect(report.unsupported).toEqual([]);
+  expect(report.findings.map((f) => `${f.where}:${f.detail}`)).toEqual(["welcome/main.js#Welcome.pageThree:setShared"]);
+  expect(files["main.js"]).toMatch(/if \(shared\("workspace\.panels"\) === undefined \|\| shared\("workspace\.panels"\) === null\) setShared\("workspace\.panels", \[\]\)/);
 });
 
 test("every closure handed to a callee is known to run in the frame or to wait", () => {
