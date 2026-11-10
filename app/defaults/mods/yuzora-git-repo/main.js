@@ -13,6 +13,21 @@ import {
   settings as gitSettings,
 } from "yuzora:git";
 
+// Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
+// the space of the pane it is given, so a pane is only looked for among the tabs of the shown
+// space. The functions down to the end of this block are the same in every Git mod that has
+// them (a mod cannot import another mod's files): scripts/yuzora-git-pane-reuse.test.ts keeps
+// them equal.
+function shownSpace() {
+  return spaces().find((s) => s.active) ?? null;
+}
+
+function findPane(mod, space) {
+  const tabs = new Set((space?.tabs ?? []).map((x) => x.id));
+  return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
+}
+// ---- end of the shared pane helpers ----
+
 const TABS = ["stashes", "tags", "remotes", "worktrees", "submodules", "patches", "identity"];
 const LOAD = {
   stashes: (r) => stashes(r.id),
@@ -600,10 +615,10 @@ function placeDiff(spec, where) {
 // Where a diff opens (Git settings): into the open diff pane, which follows
 // the shared request; else a modal, or straight into a pane as Keep would.
 function showDiff(spec) {
-  const s = gitSettings();
-  const pane = s.diffFollowPane !== false && panes().find((p) => p.mod === "yuzora-git-diff");
+  const s = gitSettings(), space = shownSpace();
+  const pane = s.diffFollowPane !== false && findPane("yuzora-git-diff", space);
   if (pane) {
-    setShared("yuzora.git.diff", spec);
+    setShared("yuzora.git.diff", { ...spec, space: space.id });
     return run("pane.focus", { pane: pane.pane });
   }
   if (s.diffOpenIn === "pane") return placeDiff(spec, s.diffKeepIn);

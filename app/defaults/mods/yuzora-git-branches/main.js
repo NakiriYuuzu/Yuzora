@@ -3,9 +3,37 @@
 // sidebar as a popup with props {cwd, on}. ↑↓ move, Enter picks, Esc goes back.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
-import { props, closeOverlay, openOverlay, theme, run, panes, setShared, notify } from "herdr";
+import { spaces, panes, props, closeOverlay, openOverlay, theme, run, setShared, notify } from "herdr";
 import { t, tokens } from "yuzora:core";
 import { open, branches, checkout, branchCreate, branchRename, branchDelete, branchTrack, merge, rebase, fetch, pull, stashPush, tagDelete, tagPush, cancel, settings as gitSettings } from "yuzora:git";
+
+// Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
+// the space of the pane it is given, so a pane is only looked for among the tabs of the shown
+// space. The functions down to the end of this block are the same in every Git mod that has
+// them (a mod cannot import another mod's files): scripts/yuzora-git-pane-reuse.test.ts keeps
+// them equal.
+function shownSpace() {
+  return spaces().find((s) => s.active) ?? null;
+}
+
+function findPane(mod, space) {
+  const tabs = new Set((space?.tabs ?? []).map((x) => x.id));
+  return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
+}
+
+// Merge and rebase: the shown space's pane takes `fields` as a request (shared `key`, which it
+// follows when it renders) and is focused, else a tab of its own gets them as props.
+function openRequested(key, mod, name, fields) {
+  const space = shownSpace();
+  if (!space) return;
+  const spec = { ...fields, space: space.id, at: Date.now() };
+  const pane = findPane(mod, space);
+  if (pane) {
+    setShared(key, spec);
+    run("pane.focus", { pane: pane.pane });
+  } else run("tab.new", { name, space: space.id, mod, props: spec });
+}
+// ---- end of the shared pane helpers ----
 
 const LIMIT = 30;
 
@@ -51,10 +79,7 @@ export default class GitBranches extends View {
         if (out && out.ok === false) { this.note = out.output || t("failed"); return; }
         if (out?.notMerged) { this.ask = { kind: "notMerged", name: this.picked?.name }; return; }
         if (out?.conflicts?.length) {
-          const spec = { cwd: this.repo.root, on: this.repo.machine, path: null, at: Date.now() };
-          setShared("yuzora.git.merge", spec);
-          const pane = panes().find((p) => p.mod === "yuzora-git-merge");
-          if (pane) run("pane.focus", { pane: pane.pane }); else run("tab.new", { name: t("conflicts"), mod: "yuzora-git-merge", props: spec });
+          openRequested("yuzora.git.merge", "yuzora-git-merge", t("conflicts"), { cwd: this.repo.root, on: this.repo.machine, path: null });
         } else if (out?.output?.trim()) notify({ title: t(`done.${name}`), body: out.output.trim().split("\n").slice(-2).join("\n"), level: "success", timeout: 3000 });
         if (keepOpen) { this.data = await branches(this.repo.id); this.picked = null; this.ask = null; }
         else this.close();

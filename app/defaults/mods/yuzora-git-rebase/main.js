@@ -9,9 +9,43 @@
 // register handlers.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, InputState, Input } from "gpui-base";
-import { props, shared, setShared, panes, run, theme, settings } from "herdr";
+import { spaces, panes, focused, props, shared, setShared, run, theme, settings } from "herdr";
 import { t, tokens } from "yuzora:core";
 import { open, status, changed, rebaseTodo, rebaseInteractive, rewordInMemory, sequencer } from "yuzora:git";
+
+// Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
+// the space of the pane it is given, so a pane is only looked for among the tabs of the shown
+// space. The functions down to the end of this block are the same in every Git mod that has
+// them (a mod cannot import another mod's files): scripts/yuzora-git-pane-reuse.test.ts keeps
+// them equal.
+function shownSpace() {
+  return spaces().find((s) => s.active) ?? null;
+}
+
+function findPane(mod, space) {
+  const tabs = new Set((space?.tabs ?? []).map((x) => x.id));
+  return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
+}
+
+// A request in shared state names the space it is for. A pane leaves another space's alone;
+// one with no space (an agent's) is for any.
+function forShown(request) {
+  return !request?.space || request.space === focused()?.space;
+}
+
+// Merge and rebase: the shown space's pane takes `fields` as a request (shared `key`, which it
+// follows when it renders) and is focused, else a tab of its own gets them as props.
+function openRequested(key, mod, name, fields) {
+  const space = shownSpace();
+  if (!space) return;
+  const spec = { ...fields, space: space.id, at: Date.now() };
+  const pane = findPane(mod, space);
+  if (pane) {
+    setShared(key, spec);
+    run("pane.focus", { pane: pane.pane });
+  } else run("tab.new", { name, space: space.id, mod, props: spec });
+}
+// ---- end of the shared pane helpers ----
 
 const KEY = "yuzora.git.rebase";
 const ROW = 30;
@@ -143,11 +177,7 @@ export default class GitRebase extends View {
   openMerge(path) {
     const repo = this.repo;
     if (!repo) return;
-    const spec = { cwd: repo.root, on: repo.machine, path: path ?? null, at: Date.now() };
-    setShared("yuzora.git.merge", spec);
-    const pane = panes().find((p) => p.mod === "yuzora-git-merge");
-    if (pane) run("pane.focus", { pane: pane.pane });
-    else run("tab.new", { name: t("merge.tab"), mod: "yuzora-git-merge", props: spec });
+    openRequested("yuzora.git.merge", "yuzora-git-merge", t("merge.tab"), { cwd: repo.root, on: repo.machine, path: path ?? null });
   }
 
   // ---- the todo list ----
@@ -487,7 +517,7 @@ export default class GitRebase extends View {
   render(cx) {
     // The sidebar or the log opened this pane again (maybe on another base or repo).
     const sh = shared(KEY);
-    if (sh?.cwd && (sh.at ?? 0) > this.at) this.begin(sh, cx);
+    if (sh?.cwd && (sh.at ?? 0) > this.at && forShown(sh)) this.begin(sh, cx);
     const th = theme(), radius = (tokens().metrics ?? {}).pane_radius ?? 6;
     const frame = (...kids) => v_flex().id("rebase").size_full().min_h(0).rounded(radius).overflow_hidden().bg(th.background).border_1().border_color(th.border)
       .text_color(th.foreground).text_size(12.5).track_focus(this.handle)

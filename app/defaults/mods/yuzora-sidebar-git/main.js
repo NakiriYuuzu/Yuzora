@@ -7,6 +7,46 @@ import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, 
 import { t, tokens } from "yuzora:core";
 import { open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, pushPreview, sequencer, fetch, trust, repos, settings as gitSettings } from "yuzora:git";
 
+// Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
+// the space of the pane it is given, so a pane is only looked for among the tabs of the shown
+// space. The functions down to the end of this block are the same in every Git mod that has
+// them (a mod cannot import another mod's files): scripts/yuzora-git-pane-reuse.test.ts keeps
+// them equal.
+function shownSpace() {
+  return spaces().find((s) => s.active) ?? null;
+}
+
+function findPane(mod, space) {
+  const tabs = new Set((space?.tabs ?? []).map((x) => x.id));
+  return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
+}
+
+// Merge and rebase: the shown space's pane takes `fields` as a request (shared `key`, which it
+// follows when it renders) and is focused, else a tab of its own gets them as props.
+function openRequested(key, mod, name, fields) {
+  const space = shownSpace();
+  if (!space) return;
+  const spec = { ...fields, space: space.id, at: Date.now() };
+  const pane = findPane(mod, space);
+  if (pane) {
+    setShared(key, spec);
+    run("pane.focus", { pane: pane.pane });
+  } else run("tab.new", { name, space: space.id, mod, props: spec });
+}
+
+// Log panes show one repo each and many can be open, so a graph pane is told by (space, repo
+// root, machine). A mod cannot read another pane's props: each graph pane says where it is in
+// shared state (yuzora-git-log), and the opener looks it up (yuzora-sidebar-git).
+const LOGS = "yuzora.git.logs";
+function logKey(space, root, on) {
+  return JSON.stringify([space, on ?? null, root]);
+}
+function findLog(space, root, on) {
+  const tab = shared(LOGS)?.[logKey(space, root, on)]?.tab;
+  return tab ? panes().find((p) => p.mod === "yuzora-git-log" && p.tab === tab) ?? null : null;
+}
+// ---- end of the shared pane helpers ----
+
 // Where the Git mode looks: the focused pane's folder, else the space's.
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -296,20 +336,15 @@ export default class SidebarGit extends View {
 
   openMerge(path) {
     const repo = this.repo;
-    const spec = { cwd: repo.root, on: repo.machine, path: path ?? null, at: Date.now() };
-    setShared("yuzora.git.merge", spec);
-    const pane = panes().find((p) => p.mod === "yuzora-git-merge");
-    if (pane) run("pane.focus", { pane: pane.pane });
-    else run("tab.new", { name: t("merge.tab"), mod: "yuzora-git-merge", props: spec });
+    openRequested("yuzora.git.merge", "yuzora-git-merge", t("merge.tab"), { cwd: repo.root, on: repo.machine, path: path ?? null });
   }
 
   openLog() {
-    const repo = this.repo;
-    if (!repo) return;
-    const spec = { cwd: repo.root, on: repo.machine };
-    const pane = panes().find((p) => p.mod === "yuzora-git-log" && !p.title?.includes("·"));
+    const repo = this.repo, space = shownSpace();
+    if (!repo || !space) return;
+    const pane = findLog(space.id, repo.root, repo.machine);
     if (pane) run("pane.focus", { pane: pane.pane });
-    else run("tab.new", { name: t("log.tab"), mod: "yuzora-git-log", props: spec });
+    else run("tab.new", { name: t("log.tab"), space: space.id, mod: "yuzora-git-log", props: { cwd: repo.root, on: repo.machine } });
   }
 
   openBranches() {
@@ -651,10 +686,10 @@ function placeDiff(spec, where) {
 // Where a diff opens (Git settings): into the open diff pane, which follows
 // the shared request; else a modal, or straight into a pane as Keep would.
 function showDiff(spec) {
-  const s = gitSettings();
-  const pane = s.diffFollowPane !== false && panes().find((p) => p.mod === "yuzora-git-diff");
+  const s = gitSettings(), space = shownSpace();
+  const pane = s.diffFollowPane !== false && findPane("yuzora-git-diff", space);
   if (pane) {
-    setShared("yuzora.git.diff", spec);
+    setShared("yuzora.git.diff", { ...spec, space: space.id });
     return run("pane.focus", { pane: pane.pane });
   }
   if (s.diffOpenIn === "pane") return placeDiff(spec, s.diffKeepIn);

@@ -40,7 +40,9 @@ yuzora-git-settings ┘
 ### pane 之間的約定
 
 - 每個 mod 用 `open(cwd, on)` 取得 repo（同一個 `<machine>:<root>` 只開一次，watcher 也只有一個），之後的函式都帶 `repo.id`。
-- 單一實例的 pane 用 shared key 交棒：`yuzora.git.diff`（`{cwd, on, path, orig, mode, rev?, to?, at}`）、`yuzora.git.merge`、`yuzora.git.rebase`。開啟方先 `setShared`，已有該 pane 就 `pane.focus`，否則 `tab.new {mod, props}`；pane 依 `at` 取較新的請求；props 沒帶 `at` 的 pane（agent 用 `tab.new --props` 開的）以開啟時間計，不會被更早留下的請求蓋過。log、blame、repo pane 用 props，可以同時開多個。
+- 找 pane 只在**目前顯示的 Space** 的分頁裡找：`panes()` 列出每個 Space 的 pane，而 `pane.focus` 會切到那個 pane 所在的 Space，在 Space B 找到 Space A 的 pane 就會跳回 A。判斷收成幾個函式（`shownSpace`、`findPane`、`forShown`、`openRequested`，以及 log 的 `logKey`、`findLog`、`claimLog`、`releaseLog`），寫在每個用到它們的 Git mod 的 `main.js` 開頭（一個 mod 不能 import 另一個 mod 的檔案，也不新增 mod 資料夾裡的共用檔，因為 `src/mods/lifecycle_tests.rs` 把 `main.js` 單獨放進暫存資料夾載入）。`scripts/yuzora-git-pane-reuse.test.ts` 守住同名函式各處逐字相同、呼叫它們的 mod 都有它們，也守住 Git mod 裡不再有沒檢查分頁的 `panes().find(… .mod …)` 裸查找。
+- diff、merge、rebase 每個 Space 一個 pane，用 shared key 交棒：`yuzora.git.diff`（`{cwd, on, path, orig, mode, rev?, to?, at, space}`）、`yuzora.git.merge`、`yuzora.git.rebase`。開啟方在目前 Space 找到該 pane 才 `setShared`（請求帶 `space`）並 `pane.focus`；找不到就 `tab.new {mod, space, props}`，不寫 shared key。pane 依 `at` 取較新的請求，而且只跟隨 `space` 是目前 Space 的請求（沒有 `space` 的請求，例如 agent 寫的，任何 pane 都跟隨），別的 Space 的 pane 不會被換成另一個專案的檔案。props 沒帶 `at` 的 pane（agent 用 `tab.new --props` 開的）以開啟時間計，不會被更早留下的請求蓋過。
+- log 的分支圖 pane 用 `(Space, repo 根目錄, machine)` 判斷是不是同一個：開啟方（Git 側欄的「分支圖」）讀不到 mod pane 的 props，所以每個分支圖 pane 在第一次畫出來時（不是 init，見〈已知限制〉）把自己的 `{space, tab, root, on}` 登記到 shared `yuzora.git.logs`，關閉時只取消自己的登記；開啟方查到登記、而且那個分頁裡確實還有 log pane 才 `pane.focus`，否則在目前 Space `tab.new`。同一個 Space 換了 repo 會另開一個那個 repo 的圖，不會聚焦舊的；同一個資料夾在另一台 machine 是另一個 repo。檔案歷史、檔案比較、依 commit 篩選的 log pane（props 有 `filter` 或 `compare`）不登記，不會被當成分支圖。blame、repo pane 用 props，可以同時開多個。
 - diff 例外，依 Git 設定開啟（右側模式、log 詳情、blame、repo pane 四個入口各帶一份相同的 `showDiff`／`placeDiff`，`scripts/yuzora-git-diff-open.test.ts` 守住四份一致、每個 mod 都 import 了它們呼叫的函式，以及各種設定）：
   - 已有 diff pane 且 `diffFollowPane`（預設開）：照上面的 shared key 交棒。
   - 否則 `diffOpenIn: "modal"`（預設）：`openOverlay({mod: "yuzora-git-diff", kind: "dialog", width: 0.9, height: 0.86, props})`。modal 只看自己的 props，不跟 shared key；Esc、✕ 或點旁邊關閉；Annotate、歷史開新分頁後也關閉。
@@ -346,7 +348,9 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - **遠端 repo 沒有 watcher**：靠 `changed()` 約 25 秒逾時輪詢一次 status。
 - **持久化 log index**：未做；圖只依賴 `RawCommit`，第二階段來源可以換成 index（見〈Log〉）。
 - **記憶體內編輯**只有 reword。
-- **diff 的跟隨請求不分 pane**（Codex 對 #208 的 P2，延後）：先關掉 `diffFollowPane`、開出好幾個 diff pane、再打開它時，`yuzora.git.diff` 會讓每個 diff pane 都換檔，`showDiff` 卻只 focus 其中一個。mod pane 不知道自己的 pane id（herdr 只把 `props().pane` 給 pane 標頭 mod，`run()` 回傳 `null`），要改上游 API 或另做 opener 與 pane 的 key 對應。
+- **diff 的跟隨請求不分 pane**（Codex 對 #208 的 P2，延後）：先關掉 `diffFollowPane`、在同一個 Space 開出好幾個 diff pane、再打開它時，`yuzora.git.diff` 會讓每個 diff pane 都換檔，`showDiff` 卻只 focus 其中一個。mod pane 不知道自己的 pane id（herdr 只把 `props().pane` 給 pane 標頭 mod，`run()` 回傳 `null`），要改上游 API 或另做 opener 與 pane 的 key 對應。
+- **同一個分頁裡有好幾個 log pane**：登記只記到分頁，`pane.focus` 要 pane id，開啟方用「該分頁的第一個 log pane」。把分支圖與另一個 log 分割在同一個分頁、又要重用其中一個時可能聚焦到旁邊那個（預設每個圖、歷史、比較各自一個分頁，不會遇到）。
+- **mod 的 `init` 先於快照發布**：切換 Space 時 App 在 `sync()` 裡先建立新顯示的 pane（跑 `init`），最後才 `publish()`，所以 `init` 裡的 `spaces()`、`focused()` 是切換前的內容。從「新增 pane」選單開的 log（props 沒有 repo）要到第一次畫出來才讀目前 Space 的資料夾；其他 mod 若在 `init` 讀 Space 相關的快照有同樣的問題（未查）。這一點是讀 `src/window.rs` 的 `sync()`／`publish()` 與 `src/mods.rs` 的快照得到的，沒有在真 app 重現。
 - **擋下 helper 之後才問**：tracked `.gitmodules`、使用者自己的 `insteadOf` 指到 helper 時，掃描事先看不到。第一次 submodule update 或 fetch 會失敗（git 的 `transport '…' not allowed`），之後右側模式才出現信任提示。這筆記錄只留在記憶體，重開 app 後要再失敗一次才會再問。
 - **pull 帶 submodule 時的 `file`**：repo 設了 `submodule.recurse` 時，pull 會接著跑 submodule update。這一步的 `file` 照 fetch 的規則（URL 由使用者給）放行；git 自己的預設對 submodule 不放行。
 - **branch 很多時掃描讀不到**：信任掃描列出所有 `branch.*.remote` 與 `remote.*` 設定，tracked branch 約 20 萬個以上時，回答超過 `ANSWER_CAP`（8 MiB），當成讀不到（fail closed），資料夾要先信任。

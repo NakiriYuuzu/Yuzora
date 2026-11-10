@@ -4,9 +4,24 @@
 // the file as that commit's parent had it (renames followed by git itself).
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, Scrollbar } from "gpui-base";
-import { theme, props, settings, run, panes, setShared, focused, openOverlay } from "herdr";
+import { spaces, panes, theme, props, settings, run, setShared, focused, openOverlay } from "herdr";
 import { t } from "yuzora:core";
 import { open, blame, commitDetails, settings as gitSettings } from "yuzora:git";
+
+// Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
+// the space of the pane it is given, so a pane is only looked for among the tabs of the shown
+// space. The functions down to the end of this block are the same in every Git mod that has
+// them (a mod cannot import another mod's files): scripts/yuzora-git-pane-reuse.test.ts keeps
+// them equal.
+function shownSpace() {
+  return spaces().find((s) => s.active) ?? null;
+}
+
+function findPane(mod, space) {
+  const tabs = new Set((space?.tabs ?? []).map((x) => x.id));
+  return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
+}
+// ---- end of the shared pane helpers ----
 
 const ROW = 18, CHAR = 7, NUM = 44, GUTTER = 250;
 // Rust's names for -M and -C: git blame prints the same for both (see ops.rs).
@@ -208,10 +223,10 @@ function placeDiff(spec, where) {
 // Where a diff opens (Git settings): into the open diff pane, which follows
 // the shared request; else a modal, or straight into a pane as Keep would.
 function showDiff(spec) {
-  const s = gitSettings();
-  const pane = s.diffFollowPane !== false && panes().find((p) => p.mod === "yuzora-git-diff");
+  const s = gitSettings(), space = shownSpace();
+  const pane = s.diffFollowPane !== false && findPane("yuzora-git-diff", space);
   if (pane) {
-    setShared("yuzora.git.diff", spec);
+    setShared("yuzora.git.diff", { ...spec, space: space.id });
     return run("pane.focus", { pane: pane.pane });
   }
   if (s.diffOpenIn === "pane") return placeDiff(spec, s.diffKeepIn);

@@ -7,6 +7,18 @@ import { theme, props, shared, settings, run, panes, focused, closeOverlay } fro
 import { t, tokens } from "yuzora:core";
 import { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from "yuzora:git";
 
+// Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
+// the space of the pane it is given, so a pane is only looked for among the tabs of the shown
+// space. The functions down to the end of this block are the same in every Git mod that has
+// them (a mod cannot import another mod's files): scripts/yuzora-git-pane-reuse.test.ts keeps
+// them equal.
+// A request in shared state names the space it is for. A pane leaves another space's alone;
+// one with no space (an agent's) is for any.
+function forShown(request) {
+  return !request?.space || request.space === focused()?.space;
+}
+// ---- end of the shared pane helpers ----
+
 const ROW = 20, CHAR = 7, GUTTER = 44;
 
 export default class GitDiff extends View {
@@ -30,7 +42,7 @@ export default class GitDiff extends View {
     const p = props() ?? {}, s = shared("yuzora.git.diff");
     // In a modal, only what it was opened with.
     if (p.overlay) return p.path ? p : null;
-    return s?.path && (!p.path || (s.at ?? 0) >= (p.at ?? this.born ?? 0)) ? s : p.path ? p : null;
+    return s?.path && (!p.path || (s.at ?? 0) >= (p.at ?? this.born ?? 0)) && forShown(s) ? s : p.path ? p : null;
   }
 
   follow(cx) {
