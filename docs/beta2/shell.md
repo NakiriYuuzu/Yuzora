@@ -9,7 +9,7 @@ lane L1 負責 Yuzora 的外殼：側欄的工作區模式、模式列、tab 列
 | `app/crates/yuzora-shell/` | `yuzora:shell`：工作區樹模型、Space 徽章色、git 摘要、新 Space 的資料夾 |
 | `app/src/yuzora/shell.rs` | app 端 glue：pane 外框的 `blocked` 邊框；人執行的 `space.new` 改開資料夾對話框 |
 | `app/defaults/mods/yuzora-sidebar-workspace/` | 側欄工作區模式；`status/*.svg` 是 5 種 agent 狀態的形狀，其他 L1 mod 也引用 |
-| `app/defaults/mods/yuzora-modebar/` | 模式列：切換 5 個模式、徽章、設定齒輪 |
+| `app/defaults/mods/yuzora-modebar/` | 模式列，依 `props().dock` 有三種形態：`bar`（右側 dock 的 40px 垂直列）、`drawer`（沒有 panel 的 layout 的抽屜）、`head`（抽屜開出的 window 標頭）；沒有 `dock` 時是舊行為（舊 yuzora clone 的橫向 5 模式列、設定齒輪，標為 legacy） |
 | `app/defaults/mods/yuzora-shell-tabs/` | tab 列與新增 pane 選單（由指令開啟） |
 | `app/defaults/mods/yuzora-shell-pane/` | pane 標頭 |
 | `app/defaults/mods/yuzora-new-space/` | 新增 Space 的資料夾對話框 |
@@ -55,6 +55,10 @@ L1 寫的 key：
 | `yuzora.space.colors` | 每個 Space 的徽章色（`{space id: "#rrggbb"}`）。tab 列、pane 標頭、狀態列在出現新 Space 時寫入；移除的 Space 保留顏色（遠端機器暫時離線，回來時顏色不變） |
 | `yuzora.shell.agents` | 各機器 `knownAgents()` 的上次結果（新增 pane 選單先顯示，再背景更新） |
 | `yuzora.shell.split` | 新增 pane 選單放在 `right` 或 `down` |
+| `yuzora.dock.last` | 右側 dock 上次開的模式（`files`／`git`／`database`／`ssh`），`yuzora-modebar.toggle` 用它 |
+| `yuzora.dock.open` | 抽屜的 window 現在開的是哪個（`{id, mode, session}`），由 window 標頭寫入；關閉鈕與標頭的 `close()`（換 layout、結束 App；只在自己的 id 還是這個值時）清成 null。`session` 是 `yuzora:core` 的 `session()`（每次執行不同）：shared 會存進 shared.json、overlay id 每次執行從 o1 重算，讀的人（`openNow()`）只信這一次執行寫的，上次留下的視為沒開 |
+
+dock 另外寫 Herdr 的 `space.colors`（上游 `spaces` 讀的 Space 色）：`yuzora.space.colors` 有 hex 的 Space（只限目前存在的），模式列／抽屜把同一個 hex 寫進去，讓左側頭像與 Yuzora 的徽章同色；Yuzora 沒有顏色時不寫。`workspace.panels` 不動（它只決定 tab 列的 Files／Changes 兩顆鈕）。
 
 L1 讀的 key：
 
@@ -65,6 +69,8 @@ L1 讀的 key：
 
 - **tab 列只列出目前 Space 的 tab**（使用者回報，2026-11-04）：沿用上游 Herdr tab 列的做法，只列 active Space 的 tab，以 Space 區分；沒有 active Space 時列表是空的。切換 Space 時列表跟著換（側欄的 Space 清單、`tab.select` 跨 Space 切換不受影響）。徽章仍顯示目前 Space 的色塊與縮寫，tooltip 仍帶 Space 名稱。設計稿 p1 把不同 Space 的 tab 並列在同一條 tab 列，與這個決定不一致，以此條為準。已收起（settled）的 tab 不顯示，除非正在看它。拖曳排序只在同一個 Space 內（列表本來就只有一個 Space）。測試：`render_tests.rs` 的 `yuzora_tab_bar_lists_only_the_current_space`。
 - **右側面板（Files／Changes）**：沿用上游 tab 列的切換鈕與「每個 Space 記住自己的面板」：切換 Space 時恢復該 Space 上次的選擇（沒選過就關閉）。`shared("workspace.panels")` 決定顯示哪幾顆。tab 列不再提供分割鈕；分割在 pane 標頭（`yuzora-shell-pane`）。
+- **右側 dock 的模式列與抽屜**（beta.4 PR-2，設計見 `specs/right-dock-spec.md`）：`RIGHT_DOCK` 開啟後，沒有自己放 Yuzora 模式的 layout 都會得到 dock（`src/yuzora/dock.rs` 注入，不寫進 layout 檔）。有 `panel`／`panel-body` 的 layout（`main`）：四個模式加進 `panel-body` stack，`panel` 右邊多一條 40px 的垂直模式列（`yuzora-modebar {dock: "bar"}`，一直看得到）；點沒顯示的模式 = `layout.select` ＋ `layout.show`，點正在顯示的模式 = `layout.hide`。沒有 panel 的 layout（`terminals`、`win98`、自訂）：root 的 floating 加一個 peek 40 的抽屜（`{dock: "drawer"}`），只當啟動列（一個 float 只能放一個 mod，而且每次按壓都會把焦點還給 terminal），點模式開一個 `kind: "window"` 的 overlay（key `yuzora-dock`、`keep`、380px × 85%，標頭 `{dock: "head"}` 有四個模式分頁與關閉鈕），同一個 key 再開會在原位置取代。抽屜在左右邊緣時圖示在靠邊的一側、名稱在內側；拖到上下邊緣就變成只有圖示的橫列。指令 `yuzora-modebar.files|git|database|ssh|toggle`（可綁 `keys.json`，狀態列的 branch 點擊走 `yuzora-modebar.git`）。`yuzora` layout 目前仍放自己的模式，判定為 Own，畫面不變（PR-3 才改版）。
+- **右側 panel：Yuzora 模式全域保持，Files／Changes 仍按 Space 記憶**（使用者決定 Q1＝b，2026-11-04）：`tabs` 與 `yuzora-shell-tabs` 的 `syncPanel` 各在 `const now = …` 後加 2 行：畫面上顯示的是 `yuzora-dock-*` 時，切換 Space 不記錄、不恢復、不關閉。不這樣做的話，切到沒開過 panel 的 Space 會把 dock 關掉，而且之後不會恢復。`scripts/yuzora-dock-panels.test.ts` 在兩個檔案各自實際的 `syncPanel` 原始碼上跑切換情境。
 - **「＋」與新增 pane 選單**：「＋」開上游的 `new-menu`（新 tab：終端機、agent、新 Space、worktree）。tab 列不再提供新增 pane／分割鈕（使用者要求，2026-11-04）；新增 pane 選單保留，從 `yuzora-shell-tabs.new-pane` 開啟。選單在目前的 tab 內混合分割：工具 pane（`yuzora:core` 的 `panes()`）用 `pane.split {direction, pane, mod, props}`、終端機用 `pane.split {direction, pane}`、agent 用 `terminal.open {argv, place}`；位置（右側／下方）在選單頂端切換。沒有 focus 的 pane（還沒有 Space，或 focus 在 layout 的終端機 block）時改開新 tab。
 - **blocked 外框**：上游的 pane frame 只有 `border` 與 `focus`。L1 在 `PaneFrame` 加了 `blocked`（`{width, color}`），agent 需要回覆時優先使用（即使該 pane 有 focus，因為那裡需要人）。標頭底色 `#1d1a14` 由 `yuzora-shell-pane` 自己畫。工具 pane 沒有 agent，不會變色。
 - **狀態形狀**：每種狀態同時用顏色與形狀表示（工作中綠點、需要回覆琥珀三角、完成未查看藍菱形、閒置空心圓、未知虛線圓）。GPUI 沒有 CSS 旋轉與三角形 border，所以 5 種形狀做成 SVG（`yuzora-sidebar-workspace/status/`），以 tokens 的 `status.<x>.mark` 上色。
@@ -106,6 +112,7 @@ L1 讀的 key：
 | `app/src/layout.rs`（dock） | `Node` 新增 root 欄位 `yuzora: Option<Value>`（個別 layout 的 `"yuzora": {"dock": "auto" \| "drawer" \| "off"}`；沒有欄位的話 `text_of` 重寫檔案時會把它丟掉）與 `Node::new` 的一行 |
 | `app/src/window.rs`（dock） | 非測試 diff 為 +8／−4（7 處，皆 `yuzora(dock)` 註記；8 行新增裡 4 行是整行改寫、4 行是純新增）：`load_layout` 在 `keep_ids`／`fill_ids` 之後、`file_chrome = chrome.clone()` 之前 `dock::inject`（H1，1 行）；`check_layout_file` 在 `keep_ids` 之後 `dock::inject`（H2，1 行）；`save` 寫檔前 `dock::strip`（H3，改 1 行）；`layout.set` 的 shipped 分支 `dock::ensure`（H4，新增 1 行；`ensure` 多收 `Some(&self.file_chrome)`，重建 dock 時讓 stack 退回檔案原本的選擇、再選回 dock 的點選，並把 `let n` 改成 `let mut n`，改 1 行）；`layout.set` 的個人分支 `dock::ensure` 後寫檔前 `dock::strip`（H5，新增 1 行、改寫 `let text` 1 行），並把 `file_chrome` 改成 `dock::as_read(…)`（寫出去的樹重新注入，改 1 行；不能存沒 strip 的樹，否則下一次 `layout.set` 或存檔會把 dock 的 `active` 寫進檔案）。`RIGHT_DOCK` 為 false 時 inject、ensure 不做事（不 strip），save 與 `layout.set` 仍 strip（只動保留 id）。測試新增約 414 行（`mod tests`）：W1／W1b（連續 `layout.set` 加結構存檔）、W2（檔案 opt-out 來回、`file_chrome` 有 dock、存檔不改檔案；以檔案內容比對，mtime 為輔助）、SF1（反轉 row、刪掉 dock 節點、改成 drawer 後，檔案的 stack 選擇與 dock 點選保留）、W3／W3b（`load_layout`／`check_layout_file` 的 `keep_ids` 順序）、S2（`layout.set` 前的 dock 點選重啟後還在）、重複 id／無 id 不 panic、shipped `layout.set`、原始碼守衛（也涵蓋 `window/*.rs` 子模組）。已知限制（N3）：layout 有重複 id 時，`strip` 的 fallback 以 id 查找，找到的不一定是被移除 dock 節點所在的那個 stack，檔案原本的選擇可能還原不了（只在 id 重複的 layout 發生，不會 panic）。已知限制（N4）：root 的 `yuzora` opt-out 在 root 被 `dock()` 包進新 row 時變成子節點，重啟後失效（與上游 `titlebar`、`traffic_lights`、`preview` 這些只讀 root 的欄位相同） |
 | `app/src/window.rs` | `frame_pane` 多一行：呼叫 `crate::yuzora::shell::frame_line` 決定邊框；`run_as` 在 `space.new` 前多一段：人執行的 bare `space.new`（以及沒有 Space 時的 bare `tab.new`）改開資料夾對話框 |
+| `app/defaults/mods/tabs/main.js`（dock） | **上游 mod，lanes.md「不改上游 mods」的例外（使用者同意，2026-11-04）**：`syncPanel` 在 `const now = …` 之後加 2 行（1 行 `// yuzora(dock):` 註記、1 行 early return）：目前顯示的是 `yuzora-dock-*` 時只更新 `this.space`、清掉 `pending` 就 return，不記錄也不恢復。`yuzora-shell-tabs` 有同樣的 2 行。同步上游時若 `syncPanel` 被改動，這 2 行會衝突，或 `scripts/yuzora-dock-panels.test.ts` 會失敗 |
 | `app/src/yuzora/mod.rs` | 加一行 `pub mod shell;`（lanes.md 允許的改動）；dock 再加一行 `pub mod dock;` |
 | `app/src/mods/render_tests.rs` | welcome 第一頁的標題改為 Yuzora；新增 `yuzora_new_pane_menu_*` 兩個測試（新增 pane 選單在無固定高度的 overlay 裡的版面、點選後的指令）與 `yuzora_herdr_panels_start_off`（Herdr panel 預設關閉、設定頁開關） |
 | `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 改用 `appHome()` 組出實際路徑（`YUZORA_APP_HOME`／`XDG_CONFIG_HOME` 改過時也正確）；`panels()` 沒有設定時視為沒有 panel |
@@ -122,6 +129,7 @@ cd app
 cargo test --locked -p yuzora-shell        # 樹模型、徽章色、git 解析與不執行 repo 程式、新 Space 的資料夾、HostModule 宣告
 cargo test --locked --bin herdr-app yuzora # blocked 邊框、layout 引用的 mod 都有出貨、哪些 space.new 先問資料夾
 scripts/yuzora/check-mods
+bun test scripts/yuzora-dock-panels.test.ts   # 兩個 syncPanel 的 dock 例外（CI 不跑）
 ```
 
 實機以 lanes.md 的隔離方式執行（暫存 `YUZORA_APP_HOME`、`HC_SESSION`），用 OSC 7501 假 agent 造出各種狀態：
