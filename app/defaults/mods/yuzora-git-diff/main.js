@@ -1,6 +1,6 @@
 // The diff pane: one file, side by side or unified, with word highlights;
-// stage, unstage or discard hunks or lines without touching the rest; select rows and copy their
-// lines, a hunk or a patch. Follows shared "yuzora.git.diff" ({cwd, on, path, orig, mode, rev?, to?, at}).
+// stage, unstage or discard hunks or lines without touching the rest; select rows (by a click, a Shift-click or by
+// dragging across them) and copy their lines, a hunk or a patch. Follows shared "yuzora.git.diff" ({cwd, on, path, orig, mode, rev?, to?, at}).
 // The same class draws the menu a right-click opens (props.menu), as the Git log does.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, Scrollbar, VirtualListScrollHandle } from "gpui-base";
@@ -45,6 +45,9 @@ const SPLIT = "yuzora.git.diff.split", SPLIT_MIN = 0.15, SPLIT_MAX = 0.85;
 // The grab area over the divider, the bar below the lines when they scroll sideways, and the room left
 // after the widest line.
 const GRAB = 5, BAR = 8, REST = 12;
+// Dragging across rows: the pointer is looked at every TICK ms, and within EDGE of the list's top or bottom (or past it) the
+// list scrolls by a row, and by one more for each ROW further out, up to MOST rows.
+const TICK = 50, EDGE = ROW, MOST = 8;
 // The menu a right-click opens: three rows of MENU_ROW in MENU_PAD, so MENU_HEIGHT.
 const MENU_W = 210, MENU_ROW = 28, MENU_PAD = 4, MENU_HEIGHT = 3 * MENU_ROW + 2 * MENU_PAD;
 // How wide a diff's lines are is found out a little at a time, so that nothing a frame or an event does grows with the
@@ -99,7 +102,7 @@ export default class GitDiff extends View {
     // The rows selected to copy: {side: "left" | "right" | "unified", anchor, head} (rows of the view, not
     // lines on screen, so the list's scrolling does not touch it), or null.
     this.mark = null;
-    this.scrollX = 0; this.rowsPx = 0; this.drag = null; this.fit = null; this.gauge = null; this.unit = null;
+    this.scrollX = 0; this.rowsPx = 0; this.boxH = 0; this.drag = null; this.sweep = null; this.clock = null; this.fit = null; this.gauge = null; this.unit = null;
     // How wide each side's lines were in the last frame, and the same while a diff read again is ranked: a floor for the range.
     this.shown = null; this.floor = null;
     this.scroll = VirtualListScrollHandle.new();
@@ -125,6 +128,7 @@ export default class GitDiff extends View {
     const loop = this.loop;
     this.view = null; this.fit = null; this.gauge = null; this.error = null; this.sel = {}; this.hunk = 0; this.note = null; this.scrollX = 0;
     this.shown = null; this.floor = null;
+    this.endSweep();
     // Called from render too: the state above is what this frame draws, so no notify here.
     if (!spec) return;
     cx.spawn(async (cx) => {
@@ -287,6 +291,7 @@ export default class GitDiff extends View {
   // as the range's floor till the new ones are ranked: it is not known sooner, and the offset has to stay where it is meanwhile.
   show(view) {
     this.view = view; this.gauge = null; this.mark = null; this.floor = this.shown;
+    this.endSweep();
     this.fit = this.layout === "unified" ? { longest: Math.min(2000, view.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0)) } : ranking(view.rows);
   }
 
@@ -405,11 +410,82 @@ export default class GitDiff extends View {
   }
 
   // Where a press landed in the rows, across, and whether Shift was down, for [`clickRow`] to tell a line's number
-  // from its text and a selection begun from one extended.
-  pressed(e) {
-    const x = e.local_position?.x;
+  // from its text and a selection begun from one extended. A press in a row's text may be the start of a drag across rows
+  // ([`extend`]): not one on a fold (its click opens the file) or on the numbers a line is picked by.
+  pressed(e, cx) {
+    const x = e.local_position?.x, y = e.local_position?.y, v = this.view;
     this.downX = x == null ? null : unzoom(x);
     this.downShift = Boolean(e.modifiers?.shift);
+    this.endSweep();
+    if (x == null || y == null || !v) return;
+    const from = this.rowAt(y), r = v.rows[from];
+    if (!r || r.k === "fold" || this.pickAt(r, this.downX)) return;
+    // The list's top in the window, where the pointer will be told as a position in the window, not in the rows.
+    this.sweep = { from, side: this.sideAt(this.downX), shift: this.downShift, top: e.position.y - y, y: e.position.y, began: false };
+    this.clock = cx.timer.after(TICK, (cx) => this.beat(cx));
+  }
+
+  // The row at `y` window pixels down the list, whatever the zoom and wherever it is scrolled to. The rows of a virtual list hold no
+  // handler and the list reports a click only when the press and the release are on one row, so the row under a pointer that is
+  // dragged is worked out from how far the list says it is scrolled (the first row drawn is not it: the list draws from
+  // a row before the one at the top).
+  rowAt(y) {
+    const last = (this.view?.rows.length ?? 1) - 1;
+    return Math.min(last, Math.max(0, Math.floor((unzoom(y) + unzoom(this.scroll.offset())) / ROW)));
+  }
+
+  // The pointer is at `y` in the window.
+  sweepTo(y, cx) {
+    const s = this.sweep;
+    if (!s) return;
+    s.y = y;
+    this.extend(cx);
+  }
+
+  // The pointer is looked at again, with no move: a list scrolled under it by the wheel or the bar takes the selection with it, and a
+  // pointer held at the list's edge scrolls the list.
+  beat(cx) {
+    if (!this.sweep) return;
+    this.extend(cx);
+    this.clock = cx.timer.after(TICK, (cx) => this.beat(cx));
+  }
+
+  // The selection runs from the row pressed to the row under the pointer, and a pointer at the list's edge scrolls the list, by
+  // more the further out it is: the rows that come into view are selected at the next look. It begins when the pointer is first
+  // over a row but the pressed one (from the selection there is, if Shift was down); until then the press is a click, and the
+  // release makes of it what it makes of a click. Nothing here touches the ranking of the rows or asks for a frame but the one that
+  // shows what changed.
+  extend(cx) {
+    const s = this.sweep, rows = this.view?.rows;
+    if (!s || !rows) return;
+    const p = unzoom(s.y - s.top), h = unzoom(this.boxH), off = unzoom(this.scroll.offset());
+    const up = p < EDGE, depth = up ? EDGE - p : Math.max(0, p - (h - EDGE));
+    let moved = false;
+    if (depth > 0 && (up ? off > 0 : off < rows.length * ROW - h - 0.5)) {
+      const step = Math.min(1 + Math.floor(depth / ROW), MOST);
+      // The list brings a row into view and no further: the row `step` rows above the first one in view, or the one that ends `step` rows below the last.
+      this.scroll.scroll_to_item(Math.max(0, Math.min(rows.length - 1, up ? Math.ceil(off / ROW) - step : Math.floor((off + h) / ROW) + step - 1)), "top");
+      moved = true;
+    }
+    const head = this.rowAt(s.y - s.top);
+    if (s.began || head !== s.from) {
+      if (!s.began) {
+        s.began = true;
+        this.mark = press(this.mark, s.from, s.side, s.shift);
+        if (rows[s.from].h !== undefined) this.hunk = rows[s.from].h;
+        moved = true;
+      }
+      if (this.mark && this.mark.head !== head) { this.mark = { ...this.mark, head }; moved = true; }
+    }
+    if (moved) cx.notify();
+  }
+
+  // The button is up, or the pointer left, or the rows are others: the selection stays, the clock stops. Nothing is drawn
+  // differently for it, so no frame is asked for.
+  endSweep() {
+    this.clock?.cancel();
+    this.clock = null;
+    this.sweep = null;
   }
 
   // The drag in progress follows the pointer: the divider by the share of the width it moved, the bar by
@@ -435,13 +511,15 @@ export default class GitDiff extends View {
   }
 
   // While a drag is on, the pane's root sees every move and the release, wherever the pointer is
-  // inside the pane. Leaving the pane ends the drag: the release would not be seen out there.
+  // inside the pane. Leaving the pane ends the drag: the release would not be seen out there. The same for a drag across
+  // rows (a sweep of the pointer). They are in every frame and look at what is on when they are called, so that a press that
+  // begins a sweep, and the release that ends it, ask for no frame.
   dragging(el) {
-    return el.when(Boolean(this.drag), (root) => root
-      .on_mouse_move((e, cx) => this.dragTo(e.position.x, cx))
-      .on_mouse_up("left", (_e, cx) => this.drop(cx))
-      .on_mouse_down("left", (_e, cx) => this.drop(cx))
-      .on_hover((hovered, cx) => { if (!hovered) this.drop(cx); }));
+    return el
+      .on_mouse_move((e, cx) => { if (this.drag) this.dragTo(e.position.x, cx); else if (this.sweep) this.sweepTo(e.position.y, cx); })
+      .on_mouse_up("left", (_e, cx) => { if (this.drag) this.drop(cx); this.endSweep(); })
+      .on_mouse_down("left", (_e, cx) => { if (this.drag) this.drop(cx); })
+      .on_hover((hovered, cx) => { if (!hovered) { if (this.drag) this.drop(cx); this.endSweep(); } });
   }
 
   // The row each hunk starts on, for ↑ ↓.
@@ -461,6 +539,9 @@ export default class GitDiff extends View {
   }
 
   key(e, cx) {
+    // A key ends a drag across rows: after one the window does not count the pointer as over anything until it moves, so
+    // the release of a button pressed before the key may never reach the pane.
+    this.endSweep();
     if (e.key === "c" && (e.modifiers?.platform || e.modifiers?.control) && !e.modifiers?.alt && !e.modifiers?.shift) {
       if (this.copyLines(cx)) cx.stop_propagation();
       return;
@@ -679,8 +760,8 @@ export default class GitDiff extends View {
     this.lay = { ratio, width, reach, thumb, sx: this.scrollX, l: ratio * 100, r: (1 - ratio) * 100 };
     return div().flex_1().min_h(0).relative().overflow_hidden().font_family(mono).text_size(11.5)
       .child(div().id("diff-rows-box").size_full().pb(reach > 0 ? BAR : 0)
-        .on_size_change((size, cx) => { if (Math.abs(size.width - this.rowsPx) > 0.5) { this.rowsPx = size.width; cx.notify(); } })
-        .on_mouse_down("left", (e) => this.pressed(e))
+        .on_size_change((size, cx) => { this.boxH = size.height; if (Math.abs(size.width - this.rowsPx) > 0.5) { this.rowsPx = size.width; cx.notify(); } })
+        .on_mouse_down("left", (e, cx) => this.pressed(e, cx))
         .on_scroll_wheel((e, cx) => this.wheel(e, cx))
         .child(this.rowList(v, th, d, 0)))
       .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().top(0).left(0).right(0).bottom(reach > 0 ? BAR : 0))
@@ -795,8 +876,8 @@ export default class GitDiff extends View {
       body = div().flex_1().min_h(0).relative().font_family(mono).text_size(11.5)
         .child(div().id("diff-x").size_full().overflow_x_scrollbar()
           .child(div().id("diff-rows-box").w_full().min_w(GUTTER * 2 + 14 + width).h_full()
-            .on_size_change((size) => { this.rowsPx = size.width; })
-            .on_mouse_down("left", (e) => this.pressed(e))
+            .on_size_change((size) => { this.rowsPx = size.width; this.boxH = size.height; })
+            .on_mouse_down("left", (e, cx) => this.pressed(e, cx))
             .child(this.rowList(v, th, d, width))))
         .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().inset_0());
     } else body = this.sideBody(v, th, d, mono);
