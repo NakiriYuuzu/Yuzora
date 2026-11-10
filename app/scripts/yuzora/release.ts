@@ -157,6 +157,14 @@ export function plan(env: Record<string, string | undefined>) {
   git("cat-file", "-e", `${sha}^{commit}`);
   const cargo = git("show", `${sha}:app/Cargo.toml`).match(/^version = "(.*)"/m)?.[1] ?? "";
   if (stage !== "dry-run" && cargo !== version) throw new Error(`app/Cargo.toml at ${sha} says ${cargo}, not ${version}`);
+  // The run, its tag and its Cargo.toml all agree for any release this repository ever packaged, published ones
+  // included; what is outside them is the ref the person dispatched from. A stage only touches the release that ref is at.
+  if (stage !== "dry-run") {
+    const own = env.GITHUB_SHA ?? "";
+    if (!/^[0-9a-f]{40}$/.test(own)) throw new Error("no commit for the ref this workflow runs from");
+    const ownVersion = git("show", `${own}:app/Cargo.toml`).match(/^version = "(.*)"/m)?.[1] ?? "";
+    if (ownVersion !== version) throw new Error(`${version} is not the release this workflow runs from (app/Cargo.toml at ${own} says ${ownVersion}); dispatch from the ref that carries ${version}, never to change another release`);
+  }
   checkTag(stage, stage === "dry-run" ? null : tagCommit(tag, repo), sha, tag);
 
   const out: Record<string, string> = {
