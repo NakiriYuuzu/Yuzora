@@ -1,6 +1,6 @@
 // The diff pane: one file, side by side or unified, with word highlights;
-// stage, unstage or discard hunks or lines without touching the rest; select rows and copy their
-// lines, a hunk or a patch. Follows shared "yuzora.git.diff" ({cwd, on, path, orig, mode, rev?, to?, at}).
+// stage, unstage or discard hunks or lines without touching the rest; select rows (by a click, a Shift-click or by
+// dragging across them) and copy their lines, a hunk or a patch. Follows shared "yuzora.git.diff" ({cwd, on, path, orig, mode, rev?, to?, at}).
 // The same class draws the menu a right-click opens (props.menu), as the Git log does.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, Scrollbar, VirtualListScrollHandle } from "gpui-base";
@@ -45,6 +45,10 @@ const SPLIT = "yuzora.git.diff.split", SPLIT_MIN = 0.15, SPLIT_MAX = 0.85;
 // The grab area over the divider, the bar below the lines when they scroll sideways, and the room left
 // after the widest line.
 const GRAB = 5, BAR = 8, REST = 12;
+// Dragging across rows: a press is a drag once the pointer has gone SLOP px from where it landed. Then the pointer is looked at every
+// TICK ms, and within EDGE of the list's top or bottom (or past it) the list scrolls by a row, and by one more for each ROW further
+// out, up to MOST rows.
+const TICK = 50, EDGE = ROW, MOST = 8, SLOP = 4;
 // The menu a right-click opens: three rows of MENU_ROW in MENU_PAD, so MENU_HEIGHT.
 const MENU_W = 210, MENU_ROW = 28, MENU_PAD = 4, MENU_HEIGHT = 3 * MENU_ROW + 2 * MENU_PAD;
 // How wide a diff's lines are is found out a little at a time, so that nothing a frame or an event does grows with the
@@ -65,7 +69,10 @@ const MENU_W = 210, MENU_ROW = 28, MENU_PAD = 4, MENU_HEIGHT = 3 * MENU_ROW + 2 
 // The engine cuts off what runs past its time (50 ms in a frame, 500 in an event), and a cut leaves nothing behind but the
 // mark of what was begun: a slice or a batch is marked when it starts and unmarked when it is back, so the one that starts
 // after a mark still there knows the last was cut. A slice is then half what the cut one got done, a batch half its cost,
-// and what is cut by itself, a row or a line, is taken at its upper bound. An event asks for the next frame before it
+// and what is cut by itself, a row or a line, is tried once more and then taken at its upper bound (a machine that stops for a
+// moment cuts whatever it is doing, which says nothing of that). Both grow back, doubling each time one is not cut, but
+// never to the size that was cut: half of that is the most they are asked for from then on. When both sides had a batch
+// in the frame that was cut, the one whose batch cost more is the cause. An event asks for the next frame before it
 // works; a frame cannot ask, so a timer asks, LATE ms after the event that wanted the frame, if nothing came of it.
 const GROW = 4, FRAME = 1 << 15, LAYOUT = 1 << 18, TEXTS = 1 << 12;
 const LATE = 120, RETRIES = 40;
@@ -96,7 +103,9 @@ export default class GitDiff extends View {
     // The rows selected to copy: {side: "left" | "right" | "unified", anchor, head} (rows of the view, not
     // lines on screen, so the list's scrolling does not touch it), or null.
     this.mark = null;
-    this.scrollX = 0; this.rowsPx = 0; this.drag = null; this.fit = null; this.gauge = null; this.unit = null;
+    this.scrollX = 0; this.rowsPx = 0; this.boxH = 0; this.drag = null; this.sweep = null; this.clock = null; this.fit = null; this.gauge = null; this.unit = null;
+    // How wide each side's lines were in the last frame, and the same while a diff read again is ranked: a floor for the range.
+    this.shown = null; this.floor = null;
     this.scroll = VirtualListScrollHandle.new();
     this.handle = cx.focus_handle();
     // Props without `at` (an agent's tab.new) date from now, not from 1970.
@@ -119,6 +128,8 @@ export default class GitDiff extends View {
     this.loop = (this.loop ?? 0) + 1;
     const loop = this.loop;
     this.view = null; this.fit = null; this.gauge = null; this.error = null; this.sel = {}; this.hunk = 0; this.note = null; this.scrollX = 0;
+    this.shown = null; this.floor = null;
+    this.endSweep();
     // Called from render too: the state above is what this frame draws, so no notify here.
     if (!spec) return;
     cx.spawn(async (cx) => {
@@ -277,9 +288,11 @@ export default class GitDiff extends View {
   // A diff's rows come in here: what the pane needs of their lines to draw is worked out from now on, once, not in
   // each frame, a slice at a time ([`ranked`]) from the first frame. None of it is done here: this is a task, and one the
   // engine cuts off would take the loop that follows the file with it. A row that is not what the rows are ends the diff
-  // as an error. The rows are new ones: a selection of rows names rows of the old, so it goes.
+  // as an error. The rows are new ones: a selection of rows names rows of the old, so it goes. How wide the old ones were stays
+  // as the range's floor till the new ones are ranked: it is not known sooner, and the offset has to stay where it is meanwhile.
   show(view) {
-    this.view = view; this.gauge = null; this.mark = null;
+    this.view = view; this.gauge = null; this.mark = null; this.floor = this.shown;
+    this.endSweep();
     this.fit = this.layout === "unified" ? { longest: Math.min(2000, view.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0)) } : ranking(view.rows);
   }
 
@@ -291,7 +304,7 @@ export default class GitDiff extends View {
     if (fit.trying) cutSlice(fit);
     fit.tries++;
     const meter = fit.trying = { left: fit.slice, at: fit.at, slice: fit.slice };
-    try { scan(fit, meter); fit.trying = null; } catch (e) { fit.trying = null; this.error = String(e); }
+    try { scan(fit, meter); fit.trying = null; regrow(fit); } catch (e) { fit.trying = null; this.error = String(e); }
   }
 
   // The next frame is asked for, and asked for again if no event has asked since LATE ms: a frame the engine cuts off is not
@@ -332,7 +345,7 @@ export default class GitDiff extends View {
     if (!this.fit?.l) return null;
     const key = this.gaugeKey();
     if (this.gauge?.key !== key) {
-      const side = () => ({ left: undefined, got: 0, blind: 0, rounds: 0, frame: FRAME, trying: null, cuts: 0 });
+      const side = () => ({ left: undefined, got: 0, blind: 0, rounds: 0, frame: FRAME, top: FRAME, trying: null, cuts: 0, alone: -1 });
       this.gauge = { id: ++gauges, key, l: side(), r: side() };
     }
     const g = this.gauge;
@@ -351,7 +364,7 @@ export default class GitDiff extends View {
 
   // The most, in cells, that the lines of a side that were not laid out can take: the next of them in line,
   // which can take the most of those left, and those passed over because they cannot be laid out. While the rows
-  // are still being ranked, the most any line ranked so far can take.
+  // are still being ranked, the most any line ranked so far can take (which is not an upper bound of the rows to come).
   remain(name) {
     const g = this.gauge[name], rank = this.fit[name];
     if (!this.fit.done) return rank.top;
@@ -361,8 +374,8 @@ export default class GitDiff extends View {
   // How wide the box of the widest line of a side that was not laid out may be, in the unit the pane writes
   // lengths in (a cell is not known till the ruler is laid out; the pieces of a line are in its cells).
   later(name) {
-    const cells = this.remain(name);
-    return cells ? INDENT + cells * (this.unit?.w ?? 0) : 0;
+    const cells = this.remain(name), bound = cells ? INDENT + cells * (this.unit?.w ?? 0) : 0;
+    return this.fit.done ? bound : Math.max(bound, this.floor?.[name] ?? 0);
   }
 
   // Whether no line of a side that was not laid out can be more than a pixel wider than the widest that was.
@@ -399,10 +412,104 @@ export default class GitDiff extends View {
 
   // Where a press landed in the rows, across, and whether Shift was down, for [`clickRow`] to tell a line's number
   // from its text and a selection begun from one extended.
-  pressed(e) {
-    const x = e.local_position?.x;
+  //
+  // A press in a row's text is a click that may turn into a drag across rows, and `this.sweep` says which it is now:
+  //   down  The button is down, and the pointer has not gone SLOP px from where it landed nor left its row. This is a click not
+  //         yet let go of: no clock runs, the list does not scroll, nothing is selected. The release is the click the list reports.
+  //   drag  The pointer has gone SLOP px or is over another row. The clock looks at it every TICK ms; at the list's edge the list scrolls
+  //         then and only then; the selection runs from the row pressed to the row under the pointer ([`extend`]).
+  //   over  (`this.sweep` is null) The button is up (a release, or a move that says so), the pointer left the pane, a key reached
+  //         the pane, the pane lost the keyboard it had when the drag began, or the diff is read again ([`endSweep`]). The selection stays.
+  // No press on a fold (its click opens the file), on the numbers a line is picked by, or on the bar under the lines is any of these.
+  pressed(e, cx) {
+    const x = e.local_position?.x, y = e.local_position?.y, v = this.view;
     this.downX = x == null ? null : unzoom(x);
     this.downShift = Boolean(e.modifiers?.shift);
+    this.endSweep();
+    if (x == null || y == null || !v || unzoom(y) >= this.listHeight()) return;
+    const from = this.rowAt(y), r = v.rows[from];
+    if (!r || r.k === "fold" || this.pickAt(r, this.downX)) return;
+    // The list's top in the window, where the pointer will be told as a position in the window, not in the rows.
+    this.sweep = { from, side: this.sideAt(this.downX), shift: this.downShift, top: e.position.y - y, x0: e.position.x, y0: e.position.y, y: e.position.y, drag: false, began: false };
+  }
+
+  // How tall the rows' list is: its box less the bar under the lines when they scroll sideways, which the box leaves room for.
+  listHeight() {
+    return unzoom(this.boxH) - (this.layout === "side" && (this.lay?.reach ?? 0) > 0 ? BAR : 0);
+  }
+
+  // The row at `y` window pixels down the list, whatever the zoom and wherever it is scrolled to. The rows of a virtual list hold no
+  // handler and the list reports a click only when the press and the release are on one row, so the row under a pointer that is
+  // dragged is worked out from how far the list says it is scrolled (the first row drawn is not it: the list draws from
+  // a row before the one at the top).
+  rowAt(y) {
+    const last = (this.view?.rows.length ?? 1) - 1;
+    return Math.min(last, Math.max(0, Math.floor((unzoom(y) + unzoom(this.scroll.offset())) / ROW)));
+  }
+
+  // The pointer is at `at` in the window: a press that has not moved is still a click, and one that has begins the drag. A move
+  // selects and never scrolls: a platform may send the last move of a held drag again and again (macOS does, every 16 ms), and the
+  // list's speed at its edge is the clock's, the same everywhere.
+  sweepTo(at, cx) {
+    const s = this.sweep;
+    if (!s) return;
+    s.y = at.y;
+    if (!s.drag) {
+      if (Math.hypot(at.x - s.x0, at.y - s.y0) < SLOP && this.rowAt(at.y - s.top) === s.from) return;
+      s.drag = true;
+      s.keys = this.handle.is_focused();
+      this.clock = cx.timer.after(TICK, (cx) => this.beat(cx));
+    }
+    this.extend(cx, false);
+  }
+
+  // A drag looks at the pointer again, with no move: a list scrolled under it by the wheel or the bar takes the selection with it,
+  // and a pointer held at the list's edge scrolls the list. This is the only place the list is scrolled by a drag.
+  beat(cx) {
+    if (!this.sweep) return;
+    // The pane had the keyboard when the drag began and another has it now (a shortcut of the app showed it or opened it): this one
+    // may not be shown, and the button's release will not be seen here.
+    if (this.sweep.keys && !this.handle.is_focused()) { this.endSweep(); return; }
+    this.extend(cx, true);
+    this.clock = cx.timer.after(TICK, (cx) => this.beat(cx));
+  }
+
+  // The selection runs from the row pressed to the row under the pointer, and, when `scroll` is set (the clock's look), a pointer at
+  // the list's edge scrolls the list, by more the further out it is: the rows that come into view are selected at the next look.
+  // It begins when the pointer is first over a row but the pressed one (from the selection there is, if Shift was down); until
+  // then the press is a click, and the release makes of it what it makes of a click. Nothing here touches the ranking of the rows or asks for a frame but the one that
+  // shows what changed.
+  extend(cx, scroll) {
+    const s = this.sweep, rows = this.view?.rows;
+    if (!s || !rows) return;
+    const p = unzoom(s.y - s.top), h = this.listHeight(), off = unzoom(this.scroll.offset());
+    const up = p < EDGE, depth = up ? EDGE - p : Math.max(0, p - (h - EDGE));
+    let moved = false;
+    if (scroll && depth > 0 && (up ? off > 0 : off < rows.length * ROW - h - 0.5)) {
+      const step = Math.min(1 + Math.floor(depth / ROW), MOST);
+      // The list brings a row into view and no further: the row `step` rows above the first one in view, or the one that ends `step` rows below the last.
+      this.scroll.scroll_to_item(Math.max(0, Math.min(rows.length - 1, up ? Math.ceil(off / ROW) - step : Math.floor((off + h) / ROW) + step - 1)), "top");
+      moved = true;
+    }
+    const head = this.rowAt(s.y - s.top);
+    if (s.began || head !== s.from) {
+      if (!s.began) {
+        s.began = true;
+        this.mark = press(this.mark, s.from, s.side, s.shift);
+        if (rows[s.from].h !== undefined) this.hunk = rows[s.from].h;
+        moved = true;
+      }
+      if (this.mark && this.mark.head !== head) { this.mark = { ...this.mark, head }; moved = true; }
+    }
+    if (moved) cx.notify();
+  }
+
+  // The button is up, or the pointer left, or the rows are others: the selection stays, the clock stops. Nothing is drawn
+  // differently for it, so no frame is asked for.
+  endSweep() {
+    this.clock?.cancel();
+    this.clock = null;
+    this.sweep = null;
   }
 
   // The drag in progress follows the pointer: the divider by the share of the width it moved, the bar by
@@ -428,13 +535,21 @@ export default class GitDiff extends View {
   }
 
   // While a drag is on, the pane's root sees every move and the release, wherever the pointer is
-  // inside the pane. Leaving the pane ends the drag: the release would not be seen out there.
+  // inside the pane. Leaving the pane ends the drag: the release would not be seen out there. The same for a drag across
+  // rows (a sweep of the pointer). They are in every frame and look at what is on when they are called, so that a press that
+  // begins a sweep, and the release that ends it, ask for no frame.
   dragging(el) {
-    return el.when(Boolean(this.drag), (root) => root
-      .on_mouse_move((e, cx) => this.dragTo(e.position.x, cx))
-      .on_mouse_up("left", (_e, cx) => this.drop(cx))
-      .on_mouse_down("left", (_e, cx) => this.drop(cx))
-      .on_hover((hovered, cx) => { if (!hovered) this.drop(cx); }));
+    return el
+      .on_mouse_move((e, cx) => {
+        // The release of a button can be missed: a shortcut of the app takes a key from the pane, and after a key the window counts
+        // the pointer as over nothing till it moves. A move with the button up says it is up.
+        if (!e.dragging) { if (this.drag) this.drop(cx); this.endSweep(); }
+        else if (this.drag) this.dragTo(e.position.x, cx);
+        else if (this.sweep) this.sweepTo(e.position, cx);
+      })
+      .on_mouse_up("left", (_e, cx) => { if (this.drag) this.drop(cx); this.endSweep(); })
+      .on_mouse_down("left", (_e, cx) => { if (this.drag) this.drop(cx); })
+      .on_hover((hovered, cx) => { if (!hovered) { if (this.drag) this.drop(cx); this.endSweep(); } });
   }
 
   // The row each hunk starts on, for ↑ ↓.
@@ -454,6 +569,9 @@ export default class GitDiff extends View {
   }
 
   key(e, cx) {
+    // A key ends a drag across rows: after one the window does not count the pointer as over anything until it moves, so
+    // the release of a button pressed before the key may never reach the pane.
+    this.endSweep();
     if (e.key === "c" && (e.modifiers?.platform || e.modifiers?.control) && !e.modifiers?.alt && !e.modifiers?.shift) {
       if (this.copyLines(cx)) cx.stop_propagation();
       return;
@@ -588,12 +706,21 @@ export default class GitDiff extends View {
     return { from: g.left, lines, cost: used };
   }
 
-  // The frame that asked for a batch of a side was cut off: the batch after it is half its cost, and a line that was cut
-  // by itself is passed over, at its upper bound like those that cannot be laid out.
-  cutBatch(name) {
+  // The frame before this one was cut off. Of the sides that had a batch in it the one whose cost more is the cause (both,
+  // if they cost the same), and the other is asked for again as it was.
+  blame(g) {
+    const cut = ["l", "r"].filter((name) => g[name].trying), most = Math.max(0, ...cut.map((name) => g[name].trying.cost));
+    for (const name of cut) this.cutBatch(name, g[name].trying.cost >= most);
+  }
+
+  // The batch of a side was in a frame that was cut off. If it is the cause, the batch after it is half its cost, and a line
+  // that was cut by itself is asked for once more, then passed over, at its upper bound like those that cannot be laid out.
+  cutBatch(name, cause) {
     const s = this.gauge[name], batch = s.trying;
     s.trying = null; s.cuts++;
-    if (batch.lines.length > 1) { s.frame = Math.max(1, batch.cost >> 1); return; }
+    if (!cause) return;
+    if (batch.lines.length > 1) { s.top = Math.min(s.top, Math.max(1, s.frame >> 1)); s.frame = Math.max(1, batch.cost >> 1); return; }
+    if (s.alone !== batch.from) { s.alone = batch.from; return; }
     s.blind = Math.max(s.blind, entry(this.fit[name], batch.from).cells);
     s.left = batch.from - 1;
   }
@@ -606,6 +733,7 @@ export default class GitDiff extends View {
     if (width > s.got) s.got = width;
     s.left = batch.from - batch.lines.length;
     s.rounds++;
+    s.frame = Math.min(s.top, s.frame * 2);
     this.again(cx);
   }
 
@@ -621,16 +749,18 @@ export default class GitDiff extends View {
     const out = [];
     let heavy = false;
     if (!fit.done) out.push(hidden().id(`rank-${fit.at}-${fit.tries}`).on_size_change((_size, cx) => this.ranked(fit, cx)).child(div().w(1)));
-    else for (const name of ["l", "r"]) {
-      if (g[name].trying) this.cutBatch(name);
-      if (this.settled(name)) continue;
-      const batch = this.batch(name);
-      if (!batch.lines.length || batch.cost > FRAME && heavy) continue;
-      if (batch.cost > FRAME) heavy = true;
-      g[name].trying = batch;
-      out.push(hidden().id(`gauge-${g.id}-${name}-${batch.from}-${g[name].cuts}`)
-        .on_size_change((size, cx) => this.measured(g, name, batch, size, cx))
-        .children(batch.lines.map((r) => h_flex().child(this.line(r, name, th, d)))));
+    else {
+      this.blame(g);
+      for (const name of ["l", "r"]) {
+        if (this.settled(name)) continue;
+        const batch = this.batch(name);
+        if (!batch.lines.length || batch.cost > FRAME && heavy) continue;
+        if (batch.cost > FRAME) heavy = true;
+        g[name].trying = batch;
+        out.push(hidden().id(`gauge-${g.id}-${name}-${batch.from}-${g[name].cuts}`)
+          .on_size_change((size, cx) => this.measured(g, name, batch, size, cx))
+          .children(batch.lines.map((r) => h_flex().child(this.line(r, name, th, d)))));
+      }
     }
     if (this.unit?.key !== g.key) {
       out.push(hidden().id(`ruler-${g.key}`)
@@ -651,16 +781,17 @@ export default class GitDiff extends View {
     // What is kept, a wheel's or a thumb's reach past the end included, is brought within the room there is
     // now: a pane made narrower or a divider moved leaves the lines where they are, and does not give them
     // what was asked for beyond the end.
-    // A thumb that is held stays under the pointer when the range changes: the offset follows the thumb. A diff read again
-    // keeps the offset till its first slice is ranked, when there is a range to bring it within.
+    // A thumb that is held stays under the pointer when the range changes: the offset follows the thumb. While the rows of a
+    // diff read again are ranked the range is at least what it was ([`later`]), so neither the offset nor the thumb goes to a
+    // range that is only what was ranked so far; once they are all ranked it is the new diff's, and the offset is brought within it.
     const thumb = Math.max(24, Math.round(width * width / (width + reach))), room = Math.max(1, width - thumb);
-    const known = this.fit.at > 0 || this.fit.done;
-    this.scrollX = this.drag?.kind === "bar" ? reach * Math.min(this.drag.at, room) / room : known ? Math.min(this.scrollX, reach) : this.scrollX;
+    this.scrollX = this.drag?.kind === "bar" ? reach * Math.min(this.drag.at, room) / room : Math.min(this.scrollX, reach);
+    this.shown = { l: this.span("l"), r: this.span("r") };
     this.lay = { ratio, width, reach, thumb, sx: this.scrollX, l: ratio * 100, r: (1 - ratio) * 100 };
     return div().flex_1().min_h(0).relative().overflow_hidden().font_family(mono).text_size(11.5)
       .child(div().id("diff-rows-box").size_full().pb(reach > 0 ? BAR : 0)
-        .on_size_change((size, cx) => { if (Math.abs(size.width - this.rowsPx) > 0.5) { this.rowsPx = size.width; cx.notify(); } })
-        .on_mouse_down("left", (e) => this.pressed(e))
+        .on_size_change((size, cx) => { this.boxH = size.height; if (Math.abs(size.width - this.rowsPx) > 0.5) { this.rowsPx = size.width; cx.notify(); } })
+        .on_mouse_down("left", (e, cx) => this.pressed(e, cx))
         .on_scroll_wheel((e, cx) => this.wheel(e, cx))
         .child(this.rowList(v, th, d, 0)))
       .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().top(0).left(0).right(0).bottom(reach > 0 ? BAR : 0))
@@ -775,8 +906,8 @@ export default class GitDiff extends View {
       body = div().flex_1().min_h(0).relative().font_family(mono).text_size(11.5)
         .child(div().id("diff-x").size_full().overflow_x_scrollbar()
           .child(div().id("diff-rows-box").w_full().min_w(GUTTER * 2 + 14 + width).h_full()
-            .on_size_change((size) => { this.rowsPx = size.width; })
-            .on_mouse_down("left", (e) => this.pressed(e))
+            .on_size_change((size) => { this.rowsPx = size.width; this.boxH = size.height; })
+            .on_mouse_down("left", (e, cx) => this.pressed(e, cx))
             .child(this.rowList(v, th, d, width))))
         .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().inset_0());
     } else body = this.sideBody(v, th, d, mono);
@@ -920,7 +1051,7 @@ function cost(chars, pieces) {
 function ranking(rows) {
   const count = rows.length, base = 2 ** Math.ceil(Math.log2(count + 1));
   const side = () => ({ keys: new Float64Array(count), n: 0, few: [], floor: -1, top: 0, base, rows });
-  return { rows, count, base, at: 0, done: false, slice: SLICE, trying: null, tries: 0, hurt: -1, l: side(), r: side() };
+  return { rows, count, base, at: 0, done: false, slice: SLICE, top: SLICE, trying: null, tries: 0, hurt: -1, retry: -1, l: side(), r: side() };
 }
 
 // Ranks the rows from where `fit` left off until `meter` has nothing left, and puts the lines of a side in order when all
@@ -967,13 +1098,22 @@ function scan(fit, meter) {
   }
 }
 
-// The slice before this one was cut off by the engine. If it got any row done, the next is half of what it did, or else the
-// row it began with cannot be read in the time there is, and is taken at its upper bound.
+// The slice before this one was cut off by the engine. If it got any row done, the next is half of what it did, and none will
+// be as big as half of this one was; or else the row it began with is tried once more, and if that is cut too it cannot be read
+// in the time there is, and is taken at its upper bound.
 function cutSlice(fit) {
   const { left, at, slice } = fit.trying;
   fit.trying = null;
-  if (fit.at === at) fit.hurt = at;
-  else fit.slice = Math.max(1, Math.min(slice - left, slice) >> 1);
+  if (fit.at !== at) {
+    fit.slice = Math.max(1, Math.min(slice - left, slice) >> 1);
+    fit.top = Math.min(fit.top, Math.max(1, slice >> 1));
+  } else if (fit.retry === at) fit.hurt = at;
+  else fit.retry = at;
+}
+
+// A slice that was not cut off: the next is twice as many units, up to the most a slice has been allowed since one was.
+function regrow(fit) {
+  fit.slice = Math.min(fit.top, fit.slice * 2);
 }
 
 // The few widest bounds a side has read, which a line has to beat to be read.
