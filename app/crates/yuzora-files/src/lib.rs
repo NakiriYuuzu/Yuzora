@@ -1112,7 +1112,9 @@ return JSON.stringify([a, b, c, d]); }})()"#
     /// that has the keys notes itself on its document, as `doc-pane.js` does, and no other does.
     /// `restore(...)` puts a pane there that the layout had before this run: in a tab of its own that has not
     /// been shown, or with `beside` in the tab shown. `rename(from, to)` follows a file renamed, as `docs.rs` does.
-    /// A mod pane is listed with `started` (a copy of its mod is running).
+    /// A mod pane is listed with `started` (a copy of its mod is running); a command that names a pane that is no
+    /// longer there does nothing, as the window answers it with an error and goes on. `tab.select` shows a tab
+    /// and its Space.
     /// `strip(space)` is the tab strip with the panes in each tab and `*` on the selected tab, `focus()` the
     /// pane that has the keys.
     const HERDR_WORLD: &str = r##"
@@ -1144,17 +1146,23 @@ return JSON.stringify([a, b, c, d]); }})()"#
             select(tab);
           } else if (name === "pane.split") {
             const target = a.pane ?? tabShown().focus, tab = tabOf(target), pane = `p${++serial}`;
+            if (!tab) return;
             tab.panes.splice(tab.panes.findIndex(p => p.pane === target) + 1, 0, { pane, mod: a.mod ?? null });
             given[pane] = a.props;
             tab.focus = pane;
           } else if (name === "pane.close") {
             const tab = tabOf(a.pane);
+            if (!tab) return;
             tab.panes = tab.panes.filter(p => p.pane !== a.pane);
             if (tab.focus === a.pane) tab.focus = tab.panes[0].pane;
           } else if (name === "pane.focus") {
             const tab = tabOf(a.pane);
+            if (!tab) return;
             tab.focus = a.pane;
             select(tab);
+          } else if (name === "tab.select") {
+            const tab = world.flatMap(s => s.tabs).find(t => t.id === a.id);
+            if (tab) select(tab);
           } else throw new Error(name);
         }
         function publish() {
@@ -1757,28 +1765,41 @@ return JSON.stringify([a, b, c, d]); }})()"#
     }
 
     #[test]
-    fn a_pane_of_another_mod_holding_the_renamed_path_is_left_alone() {
-        let seen = in_the_open(
+    fn a_pane_that_has_started_is_shown_ahead_of_one_that_has_not_when_both_hold_the_file() {
+        let seen = in_the_open(&[
+            TWO_PANES_ON_A_FILE,
             r#"
-            restore("s1", "", "yuzora-git-diff", { path: "/r/a.rs", on: null, cwd: "/r" }, { beside: true });
-            restore("s1", "a.rs", "yuzora-git-diff", { path: "/r/a.rs", on: null, cwd: "/r" });
-            moved("/r/a.rs", "/r/b.rs", null); moved("/r", "/x", null); flush();
-            return [strip("s1")];
+            const { running } = two(true, { path: "/r/a.rs", on: null, opened: 1 });
+            openFile("/r/a.rs", null, { line: 12, column: 4 }); flush();
+            return [focused().pane === running ? "the started pane" : "the other", JSON.stringify(revealed), strip("s1")];
         "#,
+        ]
+        .join("\n"));
+        assert_eq!(
+            seen,
+            [
+                "the started pane",
+                "[[12,4]]",
+                "[shell] [shell] [editor /r/a.rs] [editor /r/x.rs, editor /r/a.rs]*",
+            ]
         );
-        assert_eq!(seen, ["[shell, git-diff /r/a.rs]* [shell] [git-diff /r/a.rs]"]);
     }
 
     #[test]
-    fn a_line_asked_of_a_file_in_a_restored_pane_goes_there_once_the_pane_has_started() {
+    fn a_line_asked_of_a_file_in_a_pane_not_started_is_given_to_the_pane_that_takes_its_place() {
         let seen = in_the_open(
             r#"
             restore("s1", "", "yuzora-editor", { path: "/r/a.rs", on: null, opened: 1 }, { beside: true });
-            restore("s1", "b.rs", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1 });
+            restore("s1", "b.rs", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1, line: 3 });
             openFile("/r/a.rs", null, { line: 40, column: 2 }); flush();
             const asked = JSON.stringify(revealed);
+            const before = paneOf("/r/b.rs");
             openFile("/r/b.rs", null, { line: 7 }); flush();
-            return [asked, JSON.stringify(revealed), focus(), strip("s1")];
+            const now = focused().pane, at = given[now];
+            return [
+              asked, JSON.stringify(revealed), `${at.path} ${at.line}:${at.column}`, String(at.opened > 1),
+              String(now === before), String(panes().some(p => p.pane === before)), focus(), strip("s1"),
+            ];
         "#,
         );
         assert_eq!(
@@ -1786,10 +1807,63 @@ return JSON.stringify([a, b, c, d]); }})()"#
             [
                 "[[40,2]]",
                 "[[40,2]]",
+                "/r/b.rs 7:1",
+                "true",
+                "false",
+                "false",
                 "editor /r/b.rs",
                 "[shell, editor /r/a.rs] [shell] [editor /r/b.rs]*",
             ]
         );
+    }
+
+    #[test]
+    fn a_line_asked_of_a_markdown_file_in_a_pane_not_started_of_a_remote_space_is_given_to_the_pane_that_takes_its_place() {
+        let seen = in_the_open(
+            r#"
+            restore("s2", "R.md", "yuzora-markdown", { path: "/srv/R.md", on: "lab", opened: 1 }, { pane: "lab/pm1" });
+            show("s2");
+            openFile("/srv/R.md", "lab", { line: 5, column: 3 }); flush();
+            const at = given[focused().pane];
+            return [shown().id, `${at.on}:${at.path} ${at.line}:${at.column}`, strip("s1"), strip("s2")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "s2",
+                "lab:/srv/R.md 5:3",
+                "[shell]* [shell]",
+                "[shell] [markdown /srv/R.md]*",
+            ]
+        );
+    }
+
+    #[test]
+    fn of_two_lines_asked_of_one_file_in_a_pane_not_started_the_last_is_the_one_gone_to() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "b.rs", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1 });
+            openFile("/r/b.rs", null, { line: 7 }); flush();
+            const first = given[focused().pane].line;
+            openFile("/r/b.rs", null, { line: 9, column: 2 }); flush();
+            return [String(first), JSON.stringify(revealed), strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["7", "[[9,2]]", "[shell] [shell] [editor /r/b.rs]*"]);
+    }
+
+    #[test]
+    fn a_file_asked_of_with_no_line_in_a_pane_not_started_is_shown_where_it_is() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "b.rs", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1 });
+            const before = paneOf("/r/b.rs");
+            openFile("/r/b.rs", null); flush();
+            return [String(focused().pane === before), strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["true", "[shell] [shell] [editor /r/b.rs]*"]);
     }
 
     #[test]

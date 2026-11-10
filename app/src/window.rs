@@ -5741,6 +5741,72 @@ export default class Probe extends View {
         assert_eq!(listed("lab/pa175").unwrap()["started"], json!(true), "its copy keeps running when its tab is put away");
     }
 
+    #[test]
+    fn a_pane_not_started_is_replaced_in_place_and_its_tab_shown_without_the_old_one_starting() {
+        in_own_process("pane_replaced_in_place");
+    }
+
+    // yuzora(v0.1.0 files-open): what Files asks for a file whose pane waits in a tab not shown yet: a pane beside it with
+    // other props, the old one closed, the tab selected. The old copy never starts, the new one does, with the tab's focus.
+    #[gpui::test]
+    fn pane_replaced_in_place(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("pane_replaced_in_place") {
+            return;
+        }
+        let probe = r#"import { View, div } from "gpui-kit";
+import { props, shared, setShared } from "herdr";
+
+export default class Probe extends View {
+  init() {
+    if (props()?.path) setShared("probe.started", [...(shared("probe.started") ?? []), JSON.stringify(props())]);
+  }
+  render() { return div(); }
+}
+"#;
+        let layout = json!({ "id": "root", "type": "row", "children": [
+            { "id": "tabs", "type": "block", "content": { "tab": "active" } },
+            { "id": "probe", "type": "block", "content": { "mod": "pane-probe" } }
+        ] });
+        let (view, cx) = open_window(cx, "pane-probe", probe, layout);
+        let settle = |cx: &mut gpui::VisualTestContext| {
+            cx.executor().advance_clock(std::time::Duration::from_secs(1));
+            cx.run_until_parked();
+        };
+        let old = json!({ "path": "/srv/a.rs", "on": null, "opened": 1 });
+        let new = json!({ "path": "/srv/a.rs", "on": null, "opened": 2, "line": 7, "column": 2 });
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.add_space("sp1", "", "/tmp", crate::model::Tab::new("tb1", "", "p1", "t1"));
+            let pane = crate::layout::Node::block("pf1", crate::layout::Content::Mod { name: "pane-probe".into(), props: old.clone() });
+            this.model.add_tab("sp1", crate::model::Tab::with_pane("tb2", "a.rs", pane));
+            this.model.select_tab("tb1");
+            this.sync(window, cx);
+        }));
+        settle(cx);
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            // The layout document of this machine is read: pane commands wait for it.
+            this.documents.get_mut("").expect("this machine's slot").available = true;
+            this.run("pane.split", json!({ "direction": "right", "pane": "pf1", "mod": "pane-probe", "props": new.clone() }), window, cx);
+            this.run("pane.close", json!({ "pane": "pf1" }), window, cx);
+            this.run("tab.select", json!({ "id": "tb2" }), window, cx);
+        }));
+        settle(cx);
+        let (shown, panes, focused) = view.read_with(cx, |this, _| {
+            let tab = this.model.tab("tb2").expect("the tab is still there");
+            let ids: Vec<String> = tab.root.panes().iter().map(|n| n.id.clone()).collect();
+            (this.model.active_tab().map(|t| t.id.clone()), ids, this.model.focused_pane())
+        });
+        assert_eq!(shown.as_deref(), Some("tb2"), "the tab with the new pane is shown");
+        assert_eq!(panes.len(), 1, "the old pane is gone: {panes:?}");
+        assert_ne!(panes[0], "pf1");
+        assert_eq!(focused.as_deref(), Some(panes[0].as_str()), "the new pane has the tab's focus");
+        assert_eq!(
+            crate::mods::shared("probe.started"),
+            Some(json!([new.to_string()])),
+            "only the new pane started, with the props it was given"
+        );
+    }
+
     include!("window/pane_size_tests.rs");
 
     #[test]

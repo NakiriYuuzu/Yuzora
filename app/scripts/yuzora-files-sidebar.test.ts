@@ -1151,9 +1151,31 @@ for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null
   test(`${where}: a click on a file a pane restored with the layout shows goes to that pane, not to a tab of its own`, async () => {
     const s = await realSidebarAt(machine);
     const pane = machine ? "lab/pa175" : "pa175";
-    s.world.paneList.push({ pane, tab: "t9", mod: "yuzora-editor", props: { path: "/srv/a.txt", on: machine, opened: 1 } });
+    s.world.paneList.push({ pane, tab: "t9", mod: "yuzora-editor", started: false, props: { path: "/srv/a.txt", on: machine, opened: 1 } });
     s.press(s.frame(), A_ROW);
     expect(opens(s)).toEqual([]);
+    expect(s.world.runs).toEqual([["pane.focus", { pane }]]);
+  });
+
+  test(`${where}: a search hit in a pane that has not started takes the place of that pane, with the line, and shows its tab`, async () => {
+    const s = await realSidebarAt(machine);
+    const pane = machine ? "lab/pa175" : "pa175";
+    s.world.paneList.push({ pane, tab: "t9", mod: "yuzora-editor", started: false, props: { path: "/srv/a.txt", on: machine, opened: 1 } });
+    s.view.results = [{ key: "k", root: "/srv", on: machine, path: "a.txt", line: 7, column: 2, text: "needle" }];
+    s.view.openResult("k");
+    expect(s.world.runs).toEqual([
+      ["pane.split", { direction: "right", pane, mod: "yuzora-editor", props: props("/srv/a.txt", machine, { line: 7, column: 2 }) }],
+      ["pane.close", { pane }],
+      ["tab.select", { id: "t9" }],
+    ]);
+  });
+
+  test(`${where}: a search hit in a pane that has started is shown, not replaced`, async () => {
+    const s = await realSidebarAt(machine);
+    const pane = machine ? "lab/pa175" : "pa175";
+    s.world.paneList.push({ pane, tab: "t9", mod: "yuzora-editor", started: true, props: { path: "/srv/a.txt", on: machine, opened: 1 } });
+    s.view.results = [{ key: "k", root: "/srv", on: machine, path: "a.txt", line: 7, column: 2, text: "needle" }];
+    s.view.openResult("k");
     expect(s.world.runs).toEqual([["pane.focus", { pane }]]);
   });
 }
