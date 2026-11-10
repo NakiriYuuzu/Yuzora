@@ -364,7 +364,7 @@ fn full(repo: &Repo) -> GitResult<()> {
     let cap = cap();
     // The reads don't depend on each other (and take no lock): side by side,
     // a full refresh costs its slowest command rather than their sum.
-    let (st, untracked, ignored_dirs, gitlinks, operation) = std::thread::scope(|s| {
+    let (st, untracked, ignored_dirs, gitlinks, operation, counts) = std::thread::scope(|s| {
         // yuzora(perf): what is in progress (a machine: one more round trip) is read with the rest.
         let operation = s.spawn(|| crate::repo::operation(repo));
         let untracked = s.spawn(|| -> GitResult<(BTreeSet<String>, Vec<String>)> {
@@ -381,19 +381,23 @@ fn full(repo: &Repo) -> GitResult<()> {
         });
         let links = s.spawn(|| gitlinks(repo, cap));
         let st = repo.run(status_cmd(repo, cap)).and_then(|o| whole(o, cap)).map(|o| parse_porcelain_v2(&o));
-        (st, joined(untracked), joined(ignored), links.join().unwrap_or_default(), operation.join())
+        // yuzora(perf): the change counts need only how many files changed, which `status` answers well before the two
+        // listings of the whole work tree (the slowest reads here): they start then, beside those, not after them all.
+        let counts = match &st {
+            Ok(st) if st.entries.len() <= NUMSTAT_LIMIT => {
+                let staged = s.spawn(|| numstat(repo, true, &[]));
+                let unstaged = s.spawn(|| numstat(repo, false, &[]));
+                Some((staged, unstaged))
+            }
+            _ => None,
+        };
+        (st, joined(untracked), joined(ignored), links.join().unwrap_or_default(), operation.join(), counts.map(|(staged, unstaged)| (joined(staged), joined(unstaged))))
     });
     let operation = operation.map_err(|_| GitError::Other("a status read panicked".into()))?;
     let (st, (untracked, untracked_lossy), ignored_dirs) = (st?, untracked?, ignored_dirs?);
-    let changed = st.entries.len();
-    let (staged, unstaged, skipped) = if changed > NUMSTAT_LIMIT {
-        (HashMap::new(), HashMap::new(), true)
-    } else {
-        let (staged, unstaged) = std::thread::scope(|s| {
-            let staged = s.spawn(|| numstat(repo, true, &[]));
-            (joined(staged), numstat(repo, false, &[]))
-        });
-        (staged?, unstaged?, false)
+    let (staged, unstaged, skipped) = match counts {
+        Some((staged, unstaged)) => (staged?, unstaged?, false),
+        None => (HashMap::new(), HashMap::new(), true),
     };
     let lines = count_untracked(repo, untracked.iter());
     let mut c = repo.status.lock().unwrap_or_else(|e| e.into_inner());

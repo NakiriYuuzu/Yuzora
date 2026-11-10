@@ -225,14 +225,16 @@ fn template_file(repo: &Repo, p: &str) -> String {
 pub fn messages(repo: &Repo) -> GitResult<Value> {
     let all: BTreeMap<String, Vec<String>> = std::fs::read_to_string(messages_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     let history = all.get(&repo.id).cloned().unwrap_or_default();
-    let template = repo.run(Git::read(["config", "--path", "commit.template"]))?;
+    // The sidebar reads these on its own as it attaches: no lazy fetch before trust. Neither read needs the
+    // other, and each is a process (a round trip on a machine), so they go side by side.
+    let (template, last) = std::thread::scope(|s| {
+        let template = s.spawn(|| repo.run(Git::read(["config", "--path", "commit.template"])));
+        let last = repo.run(crate::trust::own_read(repo, Git::read(["log", "-1", "--format=%B"])));
+        (template.join().unwrap_or_else(|_| Err(GitError::Other("a message read panicked".into()))), last)
+    });
+    let (template, last) = (template?, last?);
     let template = template.ok().then(|| template.stdout_text().trim().to_owned()).filter(|p| !p.is_empty()).and_then(|p| repo.read_file(&template_file(repo, &p)).map(|b| String::from_utf8_lossy(&b).into_owned()));
-    // The sidebar reads these on its own: no lazy fetch before trust.
-    let last = repo.run(crate::trust::own_read(repo, Git::read(["log", "-1", "--format=%B"])))?;
-    let authors = repo.run(crate::trust::own_read(repo, Git::read(["log", "-n", "300", "--format=%an <%ae>"])))?;
-    let mut seen = HashSet::new();
-    let authors: Vec<String> = authors.stdout_text().lines().filter(|a| seen.insert(a.to_string())).take(16).map(str::to_owned).collect();
-    Ok(json!({ "history": history, "template": template, "last": last.ok().then(|| last.stdout_text().trim_end().to_owned()), "authors": authors }))
+    Ok(json!({ "history": history, "template": template, "last": last.ok().then(|| last.stdout_text().trim_end().to_owned()) }))
 }
 
 // ---- branches ----

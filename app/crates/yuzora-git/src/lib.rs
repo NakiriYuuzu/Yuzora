@@ -88,8 +88,8 @@ export function discard(repo: string, paths: string[], rollback?: boolean): Prom
 /** Warnings before a commit: identity, conflicts, detached, nothing, large, crlf. */
 export function commitChecks(repo: string, amend?: boolean): Promise<{ kind: string; files?: string[]; count?: number }[]>;
 export function commit(repo: string, options: { message: string; amend?: boolean; signOff?: boolean; noVerify?: boolean; author?: string; date?: string; all?: boolean }): Promise<Outcome & { hash?: string }>;
-/** Message history (this repo), commit.template, the last message, recent authors. */
-export function messages(repo: string): Promise<{ history: string[]; template: string | null; last: string | null; authors: string[] }>;
+/** Message history (this repo), commit.template, the last message. */
+export function messages(repo: string): Promise<{ history: string[]; template: string | null; last: string | null }>;
 /** Loads a file diff: mode unstaged | staged | commit (rev) | compare (rev, to: null = work tree). */
 export function diffOpen(repo: string, spec: { path: string; orig?: string | null; mode: string; rev?: string; to?: string | null }): Promise<{ id: number }>;
 /** The rows of a loaded diff: layout side | unified, context lines (-1 all), whitespace none | trim | all. */
