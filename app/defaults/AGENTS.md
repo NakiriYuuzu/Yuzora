@@ -1152,6 +1152,13 @@ with these differences.
 <!-- yuzora:lane:L2:start -->
 ### Git (`yuzora:git`)
 
+- The Git mode follows the shown space and the focused pane's folder in the
+  frame they change. It keeps what it showed of each repository it has seen
+  (up to 8), so a repository seen before is shown at once and read again
+  behind it; until that reading is back, a click that would stage, discard,
+  commit or push there does nothing. The commit message, author and Amend are kept per
+  repository, and a repository with a message being written, an action going
+  on or an action's error is not dropped from the 8.
 - The right dock's Git mode is `yuzora-sidebar-git`. Tool panes: `yuzora-git-log`
   (props `{cwd, on, filter?, compare?}`; `filter: {paths: [p], follow: true}`
   is a file's history), `yuzora-git-diff` (`{cwd, on, path, mode: "unstaged" |
