@@ -1098,6 +1098,31 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_is_gone_is_a_conflict_even_where_nothing_can_be_made() {
+        if is_root() {
+            return;
+        }
+        fake_hc();
+        for on in WHERE {
+            let dir = tempfile::tempdir().unwrap();
+            let path = put(dir.path(), "f", b"old");
+            let read = seen(&path);
+            fs::remove_file(&path).unwrap();
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+            let held = write_sh(&path, b"new", Some(&read), on);
+            let forced = write_sh(&path, b"new", None, on);
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(held, Err(WriteError::Conflict(None)), "{on:?}");
+            assert_eq!(
+                forced,
+                Err(WriteError::Refused(Refusal::FolderNotWritable)),
+                "{on:?}"
+            );
+            assert_eq!(names(dir.path()), Vec::<String>::new());
+        }
+    }
+
+    #[test]
     fn a_file_that_would_change_owner_is_refused() {
         if is_root() {
             return;
