@@ -1009,10 +1009,9 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
     // case it was saved meanwhile.
     let unchanged = || config::get(&target.connection).is_ok_and(|c| c.connects_like(&target.config));
     let changed = || DbError::NotEditable(crate::i18n::t("edit.connection_changed", &[]));
-    // What a stop needs to reach the server, once there is a connection; and
-    // whether the statements had started by then.
+    // What a stop needs to reach the server, once there is a connection; it
+    // also knows whether the write-back had sent COMMIT.
     let engine_stop: Mutex<Option<Canceller>> = Mutex::new(None);
-    let began = AtomicBool::new(false);
     let work = Box::pin(async {
         if !unchanged() {
             return Err(changed());
@@ -1021,8 +1020,9 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
         if !unchanged() {
             return Err(changed());
         }
-        *engine_stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(l.conn().canceller());
-        began.store(true, Ordering::SeqCst);
+        let canceller = l.conn().canceller();
+        canceller.write_back_starts();
+        *engine_stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(canceller);
         l.conn().apply_edits(&target.table, &edits).await
     });
     let stopped = Box::pin(stop.stopped());
@@ -1033,7 +1033,7 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
             // the statement has to be told (PostgreSQL, SQLite), or the socket
             // dropped with it (SQL Server).
             stop_work(work, async {
-                let canceller = engine_stop.lock().unwrap_or_else(|e| e.into_inner()).take();
+                let canceller = engine_stop.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Some(canceller) = canceller {
                     canceller.abandon().await;
                 }
@@ -1047,7 +1047,10 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
         match &outcome {
             Ok(_) => r.commit_edits(&written),
             Err(DbError::Cancelled) => {
-                let words = if began.load(Ordering::SeqCst) { "edit.stopped_maybe" } else { "edit.stopped" };
+                // Only a COMMIT that was sent leaves it to the server whether
+                // the changes stand; a stop before that wrote nothing.
+                let sent = engine_stop.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(Canceller::commit_sent);
+                let words = if sent { "edit.stopped_maybe" } else { "edit.stopped" };
                 r.write = WriteState::failed(crate::i18n::t(words, &[]));
             }
             Err(e) => r.write = WriteState::failed(e.to_string()),

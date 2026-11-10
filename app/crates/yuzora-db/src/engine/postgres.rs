@@ -22,7 +22,7 @@ use tokio_postgres::types::{Format, IsNull, Kind, ToSql, Type, to_sql_checked};
 use tokio_postgres::{CancelToken, Client, SimpleColumn, SimpleQueryMessage, Statement};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
-use super::{BATCH, ConnectSpec, RowSink, tls};
+use super::{BATCH, CommitSent, ConnectSpec, RowSink, tls};
 use crate::config::Engine;
 use crate::error::{DbError, DbResult};
 use crate::model::{
@@ -53,6 +53,7 @@ pub struct PgCanceller {
     landed: Arc<AtomicBool>,
     /// The connection is not to be used again (see [`PgCanceller::abandon`]).
     retired: Arc<AtomicBool>,
+    pub(super) commit: CommitSent,
 }
 
 impl PgCanceller {
@@ -128,6 +129,7 @@ impl PgConn {
             cancelled: Arc::new(AtomicBool::new(false)),
             landed: Arc::new(AtomicBool::new(false)),
             retired: Arc::new(AtomicBool::new(false)),
+            commit: CommitSent::default(),
         };
         Ok(Self { client, version, canceller, backslash: false })
     }
@@ -516,6 +518,7 @@ impl PgConn {
             }
             written += 1;
         }
+        self.canceller.commit.mark();
         tx.commit().await.map_err(query_error)?;
         Ok(written)
     }

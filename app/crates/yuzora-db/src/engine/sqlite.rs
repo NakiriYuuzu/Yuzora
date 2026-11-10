@@ -14,7 +14,7 @@ use rusqlite::types::{Value, ValueRef};
 use rusqlite::{Connection, ErrorCode, InterruptHandle, OpenFlags, OptionalExtension};
 use tokio::sync::mpsc;
 
-use super::{BATCH, ConnectSpec, RowSink};
+use super::{BATCH, CommitSent, ConnectSpec, RowSink};
 use crate::config::Engine;
 use crate::error::{DbError, DbResult};
 use crate::model::{
@@ -43,6 +43,7 @@ pub struct LiteCanceller {
     /// ([`LiteCanceller::since_now`]) instead of sharing a flag the next piece
     /// of work would reset.
     stops: Arc<AtomicU64>,
+    pub(super) commit: CommitSent,
 }
 
 impl LiteCanceller {
@@ -96,6 +97,7 @@ impl LiteConn {
                 handle: Arc::new(conn.get_interrupt_handle()),
                 cancelled: Arc::new(AtomicBool::new(false)),
                 stops: Arc::new(AtomicU64::new(0)),
+                commit: CommitSent::default(),
             };
             Ok(LiteConn {
                 db: Arc::new(Mutex::new(conn)),
@@ -196,7 +198,8 @@ impl LiteConn {
         let (table, edits) = (table.clone(), edits.to_vec());
         self.canceller.cancelled.store(false, Ordering::SeqCst);
         let stopped = self.canceller.since_now();
-        self.work(move |conn| apply_edits(conn, &table, &edits, &stopped)).await
+        let commit = self.canceller.commit.clone();
+        self.work(move |conn| apply_edits(conn, &table, &edits, &stopped, &commit)).await
     }
 
     /// Runs `f` on the blocking pool with the connection.
@@ -414,7 +417,13 @@ fn primary_key_of(conn: &Connection, table: &str) -> DbResult<Vec<String>> {
 
 // ---------------------------------------------------------------- edits
 
-fn apply_edits(conn: &mut Connection, table: &ObjectRef, edits: &[RowEdit], stopped: &Stopped) -> DbResult<u64> {
+fn apply_edits(
+    conn: &mut Connection,
+    table: &ObjectRef,
+    edits: &[RowEdit],
+    stopped: &Stopped,
+    commit: &CommitSent,
+) -> DbResult<u64> {
     if !conn.is_autocommit() {
         return Err(sql::open_transaction());
     }
@@ -439,7 +448,11 @@ fn apply_edits(conn: &mut Connection, table: &ObjectRef, edits: &[RowEdit], stop
         }
         written += 1;
     }
+    // Marked before the last look for a stop, so a stop that finds the mark
+    // unset is one this thread has not yet looked for, and gives way to.
+    commit.mark();
     if stopped.is_set() {
+        commit.reset();
         return Err(DbError::Cancelled);
     }
     tx.commit().map_err(lite_err)?;

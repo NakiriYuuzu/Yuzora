@@ -19,7 +19,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-use super::{BATCH, ConnectSpec, RowSink};
+use super::{BATCH, CommitSent, ConnectSpec, RowSink};
 use crate::config::{Engine, SslMode};
 use crate::error::{DbError, DbResult};
 use crate::model::{
@@ -44,6 +44,7 @@ pub struct MsConn {
 #[derive(Clone)]
 pub struct MsCanceller {
     stop: Arc<watch::Sender<u64>>,
+    pub(super) commit: CommitSent,
 }
 
 impl MsCanceller {
@@ -64,7 +65,7 @@ impl MsConn {
             client: Some(client),
             version: format!("SQL Server {version}"),
             database,
-            canceller: MsCanceller { stop: Arc::new(watch::channel(0).0) },
+            canceller: MsCanceller { stop: Arc::new(watch::channel(0).0), commit: CommitSent::default() },
         })
     }
 
@@ -341,7 +342,7 @@ impl MsConn {
                 return Err(query_error(e));
             }
         }
-        match write_rows(&mut client, &self.database, table, &edits).await {
+        match write_rows(&mut client, &self.database, table, &edits, &self.canceller.commit).await {
             Ok(written) => {
                 self.client = Some(client);
                 Ok(written)
@@ -807,6 +808,7 @@ async fn write_rows(
     database: &str,
     table: &ObjectRef,
     edits: &[&RowEdit],
+    commit: &CommitSent,
 ) -> Result<u64, (DbError, bool)> {
     let fail = |e: TdsError| (query_error(e.clone()), !fatal(&e));
     // The transaction commands are batches: run as an RPC (`execute`) the server
@@ -829,6 +831,7 @@ async fn write_rows(
         }
         written += 1;
     }
+    commit.mark();
     batch(client, "COMMIT TRANSACTION").await.map_err(fail)?;
     Ok(written)
 }

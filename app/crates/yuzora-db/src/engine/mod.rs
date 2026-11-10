@@ -10,6 +10,8 @@ pub mod postgres;
 pub mod sqlite;
 mod tls;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::config::{ConnectionConfig, Engine};
@@ -73,6 +75,29 @@ pub enum Conn {
     Sqlite(sqlite::LiteConn),
 }
 
+/// Whether a write-back has sent COMMIT. Before that its transaction was never
+/// ended, so a stop leaves nothing in the database (the server rolls it back);
+/// after it, the server alone decides, and a stop cannot say which way.
+#[derive(Clone, Debug, Default)]
+pub struct CommitSent(Arc<AtomicBool>);
+
+impl CommitSent {
+    /// COMMIT has not been sent (a write-back starts, or it took its mark back).
+    fn reset(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+
+    /// Called right before the COMMIT is sent, never after: a stop that
+    /// reads this as unset is one that COMMIT cannot follow.
+    fn mark(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_sent(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 /// Stops the query a [`Conn`] is running, from another task.
 #[derive(Clone)]
 pub enum Canceller {
@@ -100,6 +125,26 @@ impl Canceller {
             Canceller::Postgres(c) => c.abandon().await,
             Canceller::Mssql(c) => c.cancel().await,
             Canceller::Sqlite(c) => c.cancel(),
+        }
+    }
+
+    /// A write-back is about to run on the connection: COMMIT has not been
+    /// sent yet. Asked before anything of it can be stopped, so a stop never
+    /// reads what the write-back before it left.
+    pub fn write_back_starts(&self) {
+        match self {
+            Canceller::Postgres(c) => c.commit.reset(),
+            Canceller::Mssql(c) => c.commit.reset(),
+            Canceller::Sqlite(c) => c.commit.reset(),
+        }
+    }
+
+    /// The write-back on this connection has sent COMMIT.
+    pub fn commit_sent(&self) -> bool {
+        match self {
+            Canceller::Postgres(c) => c.commit.is_sent(),
+            Canceller::Mssql(c) => c.commit.is_sent(),
+            Canceller::Sqlite(c) => c.commit.is_sent(),
         }
     }
 }
