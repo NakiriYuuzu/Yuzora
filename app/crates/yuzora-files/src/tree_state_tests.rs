@@ -577,6 +577,84 @@ return JSON.stringify({ merged, second, rows: names(a), asked: { git: h.calls.gi
 }
 
 #[test]
+fn a_timers_request_while_a_read_runs_is_not_another_read_after_it() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/a"));
+await load(store, h, a, { git: repo("/a"), "": listing("x.txt") });
+const base = { git: h.calls.git.length, list: h.calls.list.length };
+const seen = [];
+const first = store.reload(a, () => {}, { timed: true, settled: r => seen.push(r) });
+await flush();
+await Promise.all([store.reload(a, () => {}, { timed: true }), store.reload(a, () => {}, { timed: true })]);
+h.answer(h.pending("git")[0], repo("/a"));
+h.answer(h.pending("list")[0], listing("x.txt"));
+await first;
+await flush();
+return JSON.stringify({ seen: seen.map(r => [r.ok, r.timed]), asked: { git: h.calls.git.length - base.git, list: h.calls.list.length - base.list }, reloading: a.reloading });
+"#);
+    assert_eq!(got["seen"], serde_json::json!([[true, true]]));
+    assert_eq!(got["asked"], serde_json::json!({ "git": 1, "list": 1 }));
+    assert_eq!(got["reloading"], false);
+}
+
+#[test]
+fn a_read_that_ends_is_told_before_the_read_asked_for_meanwhile_begins_to_end() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/a"));
+await load(store, h, a, { git: repo("/a"), "": listing("x.txt") });
+const seen = [];
+const first = store.reload(a, () => {}, { settled: r => seen.push(r) });
+await flush();
+store.reload(a, () => {});
+h.answer(h.pending("git")[0], repo("/a"));
+h.answer(h.pending("list")[0], listing("x.txt"));
+await flush();
+const between = { told: seen.length, git: h.pending("git").length, reloading: a.reloading };
+for (const c of h.pending("git")) h.answer(c, repo("/a"));
+for (const c of h.pending("list")) h.answer(c, listing("x.txt", "y.txt"));
+await first;
+return JSON.stringify({ between, seen: seen.map(r => [r.ok, r.timed]), rows: names(a) });
+"#);
+    assert_eq!(
+        got["between"],
+        serde_json::json!({ "told": 1, "git": 1, "reloading": true })
+    );
+    assert_eq!(
+        got["seen"],
+        serde_json::json!([[true, false], [true, false]])
+    );
+    assert_eq!(got["rows"], serde_json::json!(["x.txt", "y.txt"]));
+}
+
+#[test]
+fn a_read_says_whether_it_moved_the_root() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/repo/sub"));
+const seen = [];
+const read = async () => {
+  const run = store.reload(a, () => {}, { settled: r => seen.push(r) });
+  let done = false;
+  run.then(() => { done = true; });
+  for (let turn = 0; !done; turn++) {
+    if (turn > 50) throw new Error("never finished");
+    await flush();
+    for (const c of h.pending("git")) h.answer(c, repo("/repo"));
+    for (const c of h.pending("list")) h.answer(c, c.root === "/repo" ? listing("sub/", "top.txt") : listing("inner.txt"));
+  }
+  await run;
+};
+await read();
+await read();
+return JSON.stringify({ moved: seen.map(r => r.moved), root: a.root });
+"#);
+    assert_eq!(got["moved"], serde_json::json!([true, false]));
+    assert_eq!(got["root"], "/repo");
+}
+
+#[test]
 fn a_git_that_could_not_answer_leaves_the_root_where_it_is_and_the_next_answer_moves_it() {
     let got = run(r#"
 const h = host(), store = createStore(h.io);

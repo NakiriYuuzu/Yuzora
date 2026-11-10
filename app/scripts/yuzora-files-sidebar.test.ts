@@ -35,12 +35,13 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     toasts: [] as any[], opened: [] as { path: string; on: string | null; space: string }[], log: [] as string[], lists: [] as { id: string; count: number }[],
     query: "", keys: [] as string[], onClick: null as any, onSecondary: null as any, menus: [] as any[], shared: new Map<string, any>(),
     timers: [] as { ms: number; fn: () => void; fired: boolean }[],
-    calls: { list: [] as Call[], git: [] as Call[], stat: [] as Call[], watch: [] as Call[], make: [] as Call[] },
+    calls: { list: [] as Call[], git: [] as Call[], stat: [] as Call[], watch: [] as Call[], make: [] as Call[], find: [] as Call[], grep: [] as Call[] },
+    every: [] as { ms: number; fn: () => void }[],
     name: "", props: null as any, clicks: new Map<string, any>(), moved: [] as any[][],
     runs: [] as [string, any][], paneList: [] as any[], focus: null as any, revealError: null as Error | null,
   };
   const active = () => world.spaces.find(s => s.active)?.id;
-  const ask = (kind: "list" | "git" | "stat" | "watch" | "make", args: any[]) => {
+  const ask = (kind: "list" | "git" | "stat" | "watch" | "make" | "find" | "grep", args: any[]) => {
     const [call, promise] = waiting();
     call.args = args;
     world.calls[kind].push(call);
@@ -96,7 +97,10 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     createFile: (path: string, options: object) => ask("make", ["createFile", path, options]),
     createFolder: (path: string, options: object) => ask("make", ["createFolder", path, options]),
     rename: (from: string, to: string, options: object) => ask("make", ["rename", from, to, options]),
-    trash: (path: string) => ask("make", ["trash", path]), reveal: () => { if (world.revealError) throw world.revealError; }, copyText() {}, findFiles() {}, grep() {}, unsavedCount: () => 0,
+    trash: (path: string) => ask("make", ["trash", path]), reveal: () => { if (world.revealError) throw world.revealError; }, copyText() {},
+    findFiles: (root: string, query: string, options: object) => ask("find", [root, query, options]),
+    grep: (root: string, query: string, options: object) => ask("grep", [root, query, options]),
+    unsavedCount: () => 0,
     openFile: (path: string, on: string | null) => world.opened.push({ path, on: on ?? null, space: active() }), moved: (...args: any[]) => world.moved.push(args),
     kindOf: (path: string) => (/\.(png|svg)$/i.test(path) ? "image" : /\.md$/i.test(path) ? "markdown" : "text"),
     documentFor: () => null, paneDocument: () => null, notePane() {}, focusDocument() {}, revealLine() {},
@@ -111,11 +115,11 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
   const { FilesSidebar: View, menuItems } = new Function(...Object.keys(stubs), `${real ? sourceWithOpen : source}\nreturn { FilesSidebar, menuItems };`)(...Object.values(stubs));
   const cx: any = {
     spawn: (fn: (cx: any) => Promise<any>) => { fn(cx); }, notify() { inFrame("cx.notify()"); },
-    timer: { every() {}, after: (ms: number, fn: (cx: any) => void) => { world.timers.push({ ms, fn: () => fn(cx), fired: false }); } },
+    timer: { every: (ms: number, fn: (cx: any) => void) => { world.every.push({ ms, fn: () => fn(cx) }); }, after: (ms: number, fn: (cx: any) => void) => { world.timers.push({ ms, fn: () => fn(cx), fired: false }); } },
   };
   const view = new View();
   view.init(null, cx);
-  const pending = (kind: "list" | "git" | "stat" | "watch" | "make") => world.calls[kind].filter(c => !c.answered);
+  const pending = (kind: "list" | "git" | "stat" | "watch" | "make" | "find" | "grep") => world.calls[kind].filter(c => !c.answered);
   const answer = async (call: Call, value: any) => { call.answered = true; call.resolve(value); await flush(); };
   const fail = async (call: Call, error: Error) => { call.answered = true; call.reject(error); await flush(); };
   // The frame: what it says, which lists it draws, and the key each of the tree's rows was drawn with.
@@ -648,6 +652,129 @@ test("a refresh asked for while the timer's read runs makes an open search follo
   expect(searches() - before).toBe(1);
   s.view.reload(s.cx, true);
   await s.settle(A, repo("/a"));
+  expect(searches() - before).toBe(1);
+});
+
+// A read that takes longer than the 10 s timer.
+
+const tick = (s: ReturnType<typeof sidebar>) => s.world.every[0].fn();
+const answerAll = async (s: ReturnType<typeof sidebar>, tree: Record<string, any>, git: any) => {
+  for (const c of [...s.pending("git"), ...s.pending("list")]) await s.answer(c, s.world.calls.git.includes(c) ? git : tree[c.args[0]] ?? listing());
+};
+
+test("the timer's tick during a read that is still running does not make another read follow it", async () => {
+  const s = sidebar(two("/a", "/b", "m1"));
+  await s.settle(A, repo("/a"));
+  tick(s);
+  await flush();
+  tick(s);
+  tick(s);
+  expect(s.view.here.reloading).toBe(true);
+  await answerAll(s, A, repo("/a"));
+  await flush();
+  expect(s.pending("git")).toHaveLength(0);
+  expect(s.pending("list")).toHaveLength(0);
+  expect(s.view.here.reloading).toBe(false);
+});
+
+test("a file added while a tick was dropped is read by the next tick", async () => {
+  const s = sidebar(two("/a", "/b", "m1"));
+  await s.settle(A, repo("/a"));
+  tick(s);
+  await flush();
+  tick(s);
+  await answerAll(s, A, repo("/a"));
+  await flush();
+  expect(s.frame().texts).not.toContain("y.txt");
+  tick(s);
+  await s.settle({ ...A, "/a": listing("src/", "x.txt", "gone.txt", "y.txt") }, repo("/a"));
+  expect(s.frame().texts).toContain("y.txt");
+});
+
+test("a change asked for while a read runs is still read after it, when it is not the timer's", async () => {
+  const s = sidebar(two("/a", "/b", "m1"));
+  await s.settle(A, repo("/a"));
+  tick(s);
+  await flush();
+  s.view.reload(s.cx);
+  await answerAll(s, A, repo("/a"));
+  await flush();
+  expect(s.pending("git")).toHaveLength(1);
+  expect(s.view.here.reloading).toBe(true);
+});
+
+test("the watcher is set up when a read ends, though another read is already asked for", async () => {
+  const s = sidebar();
+  await flush();
+  s.view.reload(s.cx);
+  await s.answer(s.pending("git")[0], repo("/a"));
+  await s.answer(s.pending("list")[0], A["/a"]);
+  expect(s.pending("git")).toHaveLength(1);
+  expect(s.pending("watch").map(c => c.args[0])).toEqual(["/a"]);
+});
+
+test("an open search follows the files when a read ends, though another read is already asked for", async () => {
+  const s = sidebar();
+  await s.settle(A, repo("/a"));
+  s.world.query = "x";
+  s.view.searching = true;
+  const searches = () => s.world.timers.filter(t => t.ms === 60).length;
+  const before = searches();
+  s.view.reload(s.cx);
+  await flush();
+  s.view.reload(s.cx);
+  await answerAll(s, A, repo("/a"));
+  await flush();
+  expect(s.pending("git")).toHaveLength(1);
+  expect(searches() - before).toBe(1);
+});
+
+// A search is for the root it was started under.
+
+const fireSearch = (s: ReturnType<typeof sidebar>) => {
+  for (const t of s.world.timers) if (!t.fired && (t.ms === 60 || t.ms === 250)) { t.fired = true; t.fn(); }
+};
+const foundNames = (...paths: string[]) => ({ matches: paths.map(path => ({ path })), more: false, truncated: false, tooLong: false, unfiltered: false, skipped: false });
+const foundIn = (path: string) => ({ available: true, hits: [{ path, line: 3, column: 1, text: "needle" }], truncated: false, skipped: false });
+
+for (const mode of ["name", "content"] as const) {
+  for (const drawn of [false, true]) {
+    test(`a ${mode} search started under the folder opens its hit under that folder, though git has named the repo's top by the time it answers${drawn ? " and the tree has been replaced" : ""}`, async () => {
+      const s = sidebar(two(SUB, "/b"));
+      await flush();
+      if (drawn) await s.answer(s.pending("list")[0], listing("README.md"));
+      s.world.query = "x";
+      s.view.searching = true;
+      s.view.searchMode = mode;
+      s.view.search(s.cx);
+      fireSearch(s);
+      await flush();
+      const asked = s.pending(mode === "name" ? "find" : "grep");
+      expect(asked.map(c => c.args[0])).toEqual([SUB]);
+      await s.answer(s.pending("git")[0], repo("/repo"));
+      if (drawn) await s.answer(s.pending("list").find(c => c.args[0] === "/repo")!, listing("README.md", "sub/"));
+      expect(s.view.here.root).toBe("/repo");
+      await s.answer(asked[0], mode === "name" ? foundNames("x.txt") : foundIn("x.txt"));
+      s.view.openResult(s.view.results[0].key);
+      expect(s.world.opened.map(o => o.path)).toEqual([`${SUB}/x.txt`]);
+    });
+  }
+}
+
+test("an open search runs again under the repo's top when a read of the timer's moves the root, though the folder is watched", async () => {
+  const s = sidebar(two(SUB, "/b"));
+  await flush();
+  await s.fail(s.pending("git")[0], new Error("git timed out"));
+  await s.answer(s.pending("list")[0], listing("inner.txt"));
+  expect(s.view.here.root).toBe(SUB);
+  expect(s.pending("watch").map(c => c.args[0])).toEqual([SUB]);
+  s.world.query = "x";
+  s.view.searching = true;
+  const searches = () => s.world.timers.filter(t => t.ms === 60).length;
+  const before = searches();
+  tick(s);
+  await s.settle({ [SUB]: listing("inner.txt"), "/repo": listing("sub/", "top.txt") }, repo("/repo"));
+  expect(s.view.here.root).toBe("/repo");
   expect(searches() - before).toBe(1);
 });
 
