@@ -313,7 +313,7 @@ impl Grid {
         let Some(set) = self.set.clone() else { return };
         let outcome = {
             let r = results::lock(&set);
-            if !r.editable() || r.writing || pos.0 >= r.len() || pos.1 >= r.columns.len() {
+            if !r.editable() || r.is_writing() || pos.0 >= r.len() || pos.1 >= r.columns.len() {
                 return;
             }
             let row = r.row_index(pos.0);
@@ -395,7 +395,7 @@ impl Grid {
         let (Some(set), Some((rows, cols))) = (self.set.clone(), self.selection()) else { return };
         let id = {
             let mut r = results::lock(&set);
-            if !r.editable() || r.writing {
+            if !r.editable() || r.is_writing() {
                 return;
             }
             for view_row in rows {
@@ -429,7 +429,7 @@ impl Grid {
         self.commit_editing(cx);
         let Some(id) = self.result else { return };
         crate::runtime::spawn(async move {
-            // Errors land on the result (`write_error`), which the footer shows.
+            // Errors land on the result (`write`), which the footer shows.
             let _ = crate::session::write_back(id).await;
         });
     }
@@ -537,7 +537,7 @@ impl Grid {
         let Some(set) = self.set.clone() else { return Vec::new() };
         let r = results::lock(&set);
         let c = self.colors.clone();
-        let editable = r.editable() && !r.writing;
+        let editable = r.editable() && !r.is_writing();
         range
             .filter(|i| *i < r.len())
             .map(|view_row| {
@@ -673,17 +673,17 @@ impl Grid {
             .border_color(c.divider)
             .child(div().flex_none().child(parts.join(" · ")))
             .when(edits > 0, |d| d.child(div().flex_none().text_color(c.warning).child(t("grid.modified", &[("count", edits.to_string())]))))
-            .when_some(r.write_error.clone(), |d, e| d.child(div().min_w_0().truncate().text_color(c.error).child(e)))
-            .when(edits == 0 && r.write_error.is_none(), |d| {
-                d.when_some(r.not_editable.clone(), |d, why| d.child(div().min_w_0().truncate().text_color(c.dim).child(why)))
+            .when_some(r.write_failure().map(str::to_owned), |d, e| d.child(div().min_w_0().truncate().text_color(c.error).child(e)))
+            .when(edits == 0 && r.write_failure().is_none(), |d| {
+                d.when_some(r.read_only_reason(), |d, why| d.child(div().min_w_0().truncate().text_color(c.dim).child(why)))
             })
             .when_some(self.notice.clone(), |d, why| d.child(div().min_w_0().truncate().text_color(c.dim).child(why)))
             .when_some(r.error.clone().filter(|_| r.columns.is_empty()), |d, e| {
                 d.child(div().min_w_0().truncate().text_color(c.error).child(e))
             })
             .child(div().flex_1())
-            .when(r.writing, |d| d.child(div().text_color(c.dim).child(t("grid.writing", &[]))))
-            .when(edits > 0 && !r.writing, |d| {
+            .when(r.is_writing(), |d| d.child(div().text_color(c.dim).child(t("grid.writing", &[]))))
+            .when(edits > 0 && !r.is_writing(), |d| {
                 d.child(
                     button("discard", t("grid.discard", &[]), false)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.discard(cx))),

@@ -19,7 +19,7 @@ use crate::config::{self, ConnectionConfig};
 use crate::engine::{self, Canceller, Conn, ConnectSpec, RowSink};
 use crate::error::{DbError, DbResult};
 use crate::model::{Cell, Column, DbObject, ObjectRef, RowEdit, TableInfo};
-use crate::results::{self, EditTarget, ResultId, ResultSet};
+use crate::results::{self, EditTarget, Editing, ReadOnly, ResultId, ResultSet, WriteState};
 use crate::runtime;
 
 /// The sidebar's connections (schema, databases).
@@ -393,16 +393,32 @@ struct JobSink {
     owner: String,
     statement: String,
     max_rows: usize,
+    /// The rows of one table: its results start out `Loading` until the key is known.
+    table: bool,
     current: Option<Arc<Mutex<ResultSet>>>,
 }
 
 impl JobSink {
     fn new(job: JobId, owner: &str, statement: &str) -> Self {
-        Self { job, owner: owner.to_owned(), statement: statement.to_owned(), max_rows: max_rows(), current: None }
+        Self {
+            job,
+            owner: owner.to_owned(),
+            statement: statement.to_owned(),
+            max_rows: max_rows(),
+            table: false,
+            current: None,
+        }
+    }
+
+    fn for_table(job: JobId, owner: &str, statement: &str) -> Self {
+        Self { table: true, ..Self::new(job, owner, statement) }
     }
 
     fn start(&mut self) -> Arc<Mutex<ResultSet>> {
         let set = results::create(&self.owner, &self.statement);
+        if self.table {
+            results::lock(&set).editing = Editing::Loading;
+        }
         let id = results::lock(&set).id;
         if !jobs().1.contains_key(&self.job) {
             // Superseded or released: nobody will look at this one.
@@ -548,7 +564,7 @@ pub fn open_table(
         let limit = max_rows() as u64 + 1;
         let order = order.as_ref().map(|(c, d)| (c.as_str(), *d));
         let sql = engine::select_sql(engine, home.as_deref(), &table, order, limit);
-        let mut sink = JobSink::new(id, &owner, &sql);
+        let mut sink = JobSink::for_table(id, &owner, &sql);
         let outcome = l.conn().execute(&sql, &mut sink).await;
         // The key as column positions; no key (or a key column not in the
         // result) means read-only, with the reason shown.
@@ -557,27 +573,25 @@ pub fn open_table(
             let names: Vec<String> = info.as_ref().map(TableInfo::key_columns).unwrap_or_default();
             let positions: Option<Vec<usize>> =
                 names.iter().map(|n| r.columns.iter().position(|c| &c.name == n)).collect();
-            match (info.as_ref(), positions) {
-                _ if read_only => r.not_editable = Some(crate::i18n::t("edit.read_only", &[])),
-                (Err(e), _) => r.not_editable = Some(crate::i18n::t("edit.no_info", &[("error", e.to_string())])),
-                (Ok(_), Some(key)) if !key.is_empty() => {
-                    r.edit = Some(EditTarget {
-                        connection: connection.clone(),
-                        config: opened_with.clone(),
-                        database: database.clone(),
-                        owner: owner.clone(),
-                        table: table.clone(),
-                        key,
-                        read_only: info
-                            .iter()
-                            .flat_map(|i| &i.columns)
-                            .filter(|c| c.generated)
-                            .filter_map(|c| r.columns.iter().position(|rc| rc.name == c.name))
-                            .collect(),
-                    })
-                }
-                _ => r.not_editable = Some(crate::i18n::t("edit.no_key", &[])),
-            }
+            r.editing = match (info.as_ref(), positions) {
+                _ if read_only => Editing::ReadOnly(ReadOnly::Connection),
+                (Err(e), _) => Editing::ReadOnly(ReadOnly::NoInfo(e.to_string())),
+                (Ok(_), Some(key)) if !key.is_empty() => Editing::Editable(EditTarget {
+                    connection: connection.clone(),
+                    config: opened_with.clone(),
+                    database: database.clone(),
+                    owner: owner.clone(),
+                    table: table.clone(),
+                    key,
+                    read_only: info
+                        .iter()
+                        .flat_map(|i| &i.columns)
+                        .filter(|c| c.generated)
+                        .filter_map(|c| r.columns.iter().position(|rc| rc.name == c.name))
+                        .collect(),
+                }),
+                _ => Editing::ReadOnly(ReadOnly::NoKey),
+            };
             r.version += 1;
         }
         // The row count, after the rows (a slow count never delays them) and
@@ -622,9 +636,10 @@ impl RowSink for FirstCell {
 
 /// The row edits of a result, keyed by its primary key.
 pub fn row_edits(set: &ResultSet) -> DbResult<(EditTarget, Vec<RowEdit>)> {
-    let target = set.edit.clone().ok_or_else(|| {
-        DbError::NotEditable(set.not_editable.clone().unwrap_or_else(|| crate::i18n::t("edit.no_key", &[])))
-    })?;
+    let target = set
+        .target()
+        .cloned()
+        .ok_or_else(|| DbError::NotEditable(set.editing.blocked().unwrap_or_else(|| crate::i18n::t("edit.no_key", &[]))))?;
     let mut by_row: std::collections::BTreeMap<u32, Vec<(String, Cell)>> = Default::default();
     for ((row, column), value) in &set.edits {
         let name = set.columns.get(*column as usize).map(|c| c.name.clone()).unwrap_or_default();
@@ -654,17 +669,14 @@ pub async fn write_back(result: ResultId) -> DbResult<u64> {
         let mut r = results::lock(&set);
         // Pressed again before the pane shows the first one: the same edits
         // would be written twice.
-        if r.writing {
+        if r.is_writing() {
             return Err(DbError::NotEditable(crate::i18n::t("edit.writing", &[])));
         }
         let out = row_edits(&r).map(|(target, edits)| (target, edits, r.edits.clone()));
-        match &out {
-            Ok(_) => {
-                r.writing = true;
-                r.write_error = None;
-            }
-            Err(e) => r.write_error = Some(e.to_string()),
-        }
+        r.write = match &out {
+            Ok(_) => WriteState::Writing,
+            Err(e) => WriteState::Failed(e.to_string()),
+        };
         r.version += 1;
         out
     };
@@ -688,10 +700,9 @@ pub async fn write_back(result: ResultId) -> DbResult<u64> {
     .await;
     {
         let mut r = results::lock(&set);
-        r.writing = false;
         match &outcome {
             Ok(_) => r.commit_edits(&written),
-            Err(e) => r.write_error = Some(e.to_string()),
+            Err(e) => r.write = WriteState::Failed(e.to_string()),
         }
         r.version += 1;
     }

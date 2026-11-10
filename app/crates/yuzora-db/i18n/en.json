@@ -8,6 +8,9 @@
   },
   "edit": {
     "no_key": "Read-only: the table has no primary key",
+    "query": "Read-only: only a table's rows can be edited, not a query's result",
+    "read_failed": "Read-only: the rows did not all arrive",
+    "loading": "The rows are still loading",
     "read_only": "Read-only: the connection is set to read-only",
     "writing": "A write-back is already running",
     "connection_changed": "The connection's settings changed after this table was read: refresh the table, then edit again",
