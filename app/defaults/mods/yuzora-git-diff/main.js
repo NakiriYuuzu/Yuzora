@@ -419,7 +419,7 @@ export default class GitDiff extends View {
   //   drag  The pointer has gone SLOP px or is over another row. The clock looks at it every TICK ms; at the list's edge the list scrolls;
   //         the selection runs from the row pressed to the row under the pointer ([`extend`]).
   //   over  (`this.sweep` is null) The button is up (a release, or a move that says so), the pointer left the pane, a key reached
-  //         the pane, the pane lost the keyboard, or the diff is read again ([`endSweep`]). The selection stays.
+  //         the pane, the pane lost the keyboard it had when the drag began, or the diff is read again ([`endSweep`]). The selection stays.
   // No press on a fold (its click opens the file), on the numbers a line is picked by, or on the bar under the lines is any of these.
   pressed(e, cx) {
     const x = e.local_position?.x, y = e.local_position?.y, v = this.view;
@@ -455,6 +455,7 @@ export default class GitDiff extends View {
     if (!s.drag) {
       if (Math.hypot(at.x - s.x0, at.y - s.y0) < SLOP && this.rowAt(at.y - s.top) === s.from) return;
       s.drag = true;
+      s.keys = this.handle.is_focused();
       this.clock = cx.timer.after(TICK, (cx) => this.beat(cx));
     }
     this.extend(cx);
@@ -464,9 +465,9 @@ export default class GitDiff extends View {
   // and a pointer held at the list's edge scrolls the list.
   beat(cx) {
     if (!this.sweep) return;
-    // Another pane has the keyboard (a shortcut of the app showed it or opened it): this one may not be shown, and the button's
-    // release will not be seen here.
-    if (!this.handle.is_focused()) { this.endSweep(); return; }
+    // The pane had the keyboard when the drag began and another has it now (a shortcut of the app showed it or opened it): this one
+    // may not be shown, and the button's release will not be seen here.
+    if (this.sweep.keys && !this.handle.is_focused()) { this.endSweep(); return; }
     this.extend(cx);
     this.clock = cx.timer.after(TICK, (cx) => this.beat(cx));
   }

@@ -619,11 +619,11 @@ struct DiffPane {
 
 /// How many clicks a window may send again. The press makes the window draw, and the engine gives the list's rows 50 ms of the
 /// machine's own time: on a busy machine (a debug build, 66 rows in a window 1300 px tall) the rows are cut off in that draw, the
-/// list paints none, its rows forget the press, and the release is no click. Measured with `clickRow` not being called: of 1,800
-/// clicks each by the mod before the drag, the mod at the head of the review and this one, taken in turn with 16 busy loops added
-/// to a load of 25, 5, 2 and 2 were lost; each click lost had a draw in the press (or just before it) that built no row,
-/// and none of the draws that built none later lost one. A click sent again is the same click. Counting them, and failing past the
-/// limit, keeps a click that is lost for real from passing as a busy machine.
+/// list paints none, its rows forget the press, and the release is no click. Measured with `clickRow` not being called, with 16 busy
+/// loops added to a load of 25: of 1,800 clicks, 5 were lost, each with a draw in the press that built no row (and 5 such draws
+/// after the press lost none); and the mod before the drag, the one at the head of the review and this one, taken in turn, lost
+/// 5, 2 and 2 of 1,800 each, which is no difference to speak of (the first alone lost 0 and 9 of 300 in two runs). A click sent again
+/// is the same click. Counting them, and failing past the limit, keeps a click that is lost for real from passing as a busy machine.
 #[derive(Default)]
 struct Resends(usize);
 
@@ -3399,6 +3399,27 @@ fn yuzora_diff_a_drag_ends_when_the_pane_no_longer_has_the_keyboard(cx: &mut Tes
         "the list scrolls no more",
     );
     assert_eq!(pane.script_renders(), built, "and no clock builds a frame");
+    drop(elsewhere);
+    pane.close();
+}
+// yuzora(v010-git-diff-fu-r1): the keyboard is only a reason to end a drag when it was the pane's and is another's now. A pane that
+// never had it for the drag (here it was taken before the pointer moved) does not lose the drag to that: nothing shows in a test
+// window that the pane has it in the app, and a drag that ended at its first tick for want of it would be no drag at all.
+#[gpui::test]
+fn yuzora_diff_a_drag_that_began_without_the_keyboard_is_not_ended_for_the_want_of_it(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
+    let bottom = pane.high as f64 - 8.;
+    pane.press(TEXT_LEFT, row_y(5), 1);
+    let elsewhere = pane.focus_elsewhere();
+    pane.drag(TEXT_LEFT, row_y(8));
+    pane.drag(TEXT_LEFT, bottom);
+    pane.wait(10, 50);
+    assert!(
+        scrolled_in_frame(&pane) >= 100.,
+        "the list scrolls with the pointer held at its edge"
+    );
     drop(elsewhere);
     pane.close();
 }
