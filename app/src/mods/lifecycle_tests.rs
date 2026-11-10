@@ -432,6 +432,7 @@ import { note } from "fixture";
 const scanned = { n: 0 }, built = { n: 0 };
 if (typeof bound === "function") { const f = bound; bound = (s, ...rest) => { scanned.n += s.length; return f(s, ...rest); }; }
 if (typeof ranks === "function") { const f = ranks; ranks = (rows, ...rest) => { scanned.n += rows.length; return f(rows, ...rest); }; }
+if (typeof scan === "function") { const f = scan; scan = (fit, ...rest) => { const from = fit.at; try { return f(fit, ...rest); } finally { scanned.n += fit.at - from; } }; }
 export default class Probed extends GitDiff {
   cell(r, side, ...rest) {
     const el = super.cell(r, side, ...rest);
@@ -450,13 +451,25 @@ export default class Probed extends GitDiff {
     return div().size_full().on_size_change((s) => note("list", s.height)).child(super.rowList(...rest));
   }
   show(view) {
-    const touched = this.touched = { n: 0 };
+    if (props().timed) { const at = Date.now(); super.show(view); note("took", Date.now() - at); return; }
+    const touched = this.touched = { n: 0 }, wrapped = new Map();
     const counting = { get(t, k, rc) { touched.n++; return Reflect.get(t, k, rc); } };
-    const rows = new Proxy(view.rows.map((r) => new Proxy(r, counting)), counting);
+    const rows = new Proxy(view.rows, { get(t, k, rc) {
+      touched.n++;
+      const v = Reflect.get(t, k, rc);
+      if (typeof k !== "string" || v === null || typeof v !== "object" || !(Number(k) >= 0)) return v;
+      if (!wrapped.has(k)) wrapped.set(k, new Proxy(v, counting));
+      return wrapped.get(k);
+    } });
     const before = scanned.n;
     super.show({ ...view, rows });
-    note("shown", touched.n, scanned.n - before);
+    note("shown", touched.n, scanned.n - before, this.fit?.at ?? view.rows.length);
     this.scanned = scanned.n;
+  }
+  ranked(fit, cx) {
+    const reads = this.touched?.n ?? 0, before = scanned.n, from = fit.at, at = Date.now();
+    super.ranked(fit, cx);
+    note("ranked", (this.touched?.n ?? 0) - reads, scanned.n - before, fit.at - from, Date.now() - at);
   }
   batch(name) {
     const batch = super.batch(name);
@@ -485,7 +498,7 @@ export default class Probed extends GitDiff {
       root = root.child(div().absolute().top(300).left(0).w_full().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).child(row));
     }
     note("rendered", v ? v.id : null, this.error);
-    note("pending", this.asked || (this.gauge && this.unit?.key !== this.gauge.key) ? 1 : 0);
+    note("pending", this.asked || this.fit?.done === false || (this.gauge && this.unit?.key !== this.gauge.key) ? 1 : 0);
     return pane ? div().w(pane).h_full().child(root) : root;
   }
 }
@@ -512,6 +525,10 @@ struct DiffPane {
     /// Whether the diff is meant to have lines to lay out that its frames keep asking for (a `drop` prop loses the
     /// first sizes it is told, so a batch stays in flight).
     expects_pending: bool,
+    /// Whether [`Self::settle`] takes how far the lines scroll after each frame it draws (a `sample` prop), into
+    /// `reaches`.
+    sampling: bool,
+    reaches: Vec<Option<f64>>,
     _fixture: Fixture,
 }
 
@@ -549,6 +566,7 @@ impl DiffPane {
         let view = json!({"id": "d1", "rows": rows, "hunks": vec![json!({}); hunks], "stageable": true, "add": 3, "del": 0, "leftExists": true, "rightExists": true});
         let mut herdr = HostModule::new("herdr");
         let opened_drops = props.get("drop").is_some();
+        let sampling = props.get("sample").is_some();
         let mut opened = json!({"cwd": "/r", "on": null, "path": "wide-new.ts", "mode": "unstaged", "at": 1});
         if wide > pane {
             opened["pane"] = json!(pane);
@@ -587,7 +605,7 @@ impl DiffPane {
             .function("tokens", |_| Ok(to_host(&json!({"diff": {"added": "#86d17a", "removed": "#f08a8a", "added_bg": "#103010", "removed_bg": "#301010"}}))));
         let calls = notes.clone();
         let fixture_module = HostModule::new("fixture").function("note", move |a| {
-            calls.borrow_mut().push(Value::Array((0..4).filter_map(|i| a.get(i).map(from_host)).collect()));
+            calls.borrow_mut().push(Value::Array((0..5).filter_map(|i| a.get(i).map(from_host)).collect()));
             Ok(HostValue::Null)
         });
         let mut policy = Policy::new();
@@ -604,7 +622,7 @@ impl DiffPane {
         });
         let visual = VisualTestContext::from_window(*window.deref(), cx);
         visual.simulate_resize(size(px(wide), px(high)));
-        let mut view = Self { visual, notes, views, wide, high, zoom, person, runtime, root: mounted.unwrap(), extra: 0, laid: Vec::new(), expects_pending: opened_drops, _fixture: fixture };
+        let mut view = Self { visual, notes, views, wide, high, zoom, person, runtime, root: mounted.unwrap(), extra: 0, laid: Vec::new(), expects_pending: opened_drops, sampling, reaches: Vec::new(), _fixture: fixture };
         view.settle();
         view
     }
@@ -639,6 +657,11 @@ impl DiffPane {
         self.notes.borrow().iter().filter(|n| n[0] == what).map(|n| n[1].as_f64().unwrap()).collect()
     }
 
+    /// How many rows were ranked by each `shown` (taking the diff in) or `ranked` (a slice after it) note.
+    fn rows_ranked(&self, what: &str) -> Vec<f64> {
+        self.notes.borrow().iter().filter(|n| n[0] == what).map(|n| n[3].as_f64().unwrap()).collect()
+    }
+
     /// How much the module's scans were given (characters of a line, lines of a side), taking the diff in, and in each frame.
     fn scans(&self, what: &str) -> Vec<f64> {
         self.notes.borrow().iter().filter(|n| n[0] == what).map(|n| n[2].as_f64().unwrap()).collect()
@@ -656,6 +679,10 @@ impl DiffPane {
             pane.visual.update(|window, cx| window.draw(cx).clear(cx));
             pane.visual.run_until_parked();
             pane.laid.push(LAID.with(Cell::take));
+            if pane.sampling {
+                let reach = pane.reach();
+                pane.reaches.push(reach);
+            }
         };
         for _ in 0..3 {
             draw(self);
@@ -667,6 +694,12 @@ impl DiffPane {
             self.extra += 1;
         }
         assert!(self.expects_pending || !self.pending(), "the diff still had lines to lay out after {} frames", 3 + self.extra);
+    }
+
+    /// How far the lines scroll, from the thumb as the last frame painted it (width² / (width + reach)); none: no bar.
+    fn reach(&mut self) -> Option<f64> {
+        let w = self.wide as f64 / self.zoom as f64;
+        self.thumb().map(|(_, long)| w * w / (long / self.zoom as f64) - w)
     }
 
     /// How many frames asked for lines to be laid out out of sight, since the diff was opened.
@@ -786,10 +819,21 @@ impl DiffPane {
         Some(x - from)
     }
 
+    /// As [`Self::end_gap`] for the first row's right text, which starts with `first`: from its end to its cell's.
+    fn end_gap_right(&mut self, first: &str) -> Option<f64> {
+        self.wheel(100., 100., -1e7, 0.);
+        let x = self.width("l") + 1. + 100.;
+        let before = self.over().len();
+        self.hover(x, 310.);
+        let (found, from) = self.over().split_off(before).pop()?;
+        assert_eq!(found, first);
+        Some(self.width("l") + 1. + self.width("r") - ((x - from) + self.text_width(first)))
+    }
+
     /// The lines scrolled as far as they go, and how much room is left after the first row's left text, which
     /// starts with `first`: from its end to its cell's, in window pixels.
     fn end_gap(&mut self, first: &str) -> Option<f64> {
-        self.wheel(100., 100., -100000., 0.);
+        self.wheel(100., 100., -1e7, 0.);
         Some(self.width("l") - (self.start_of(first)? + self.text_width(first)))
     }
 }
@@ -1700,8 +1744,8 @@ fn yuzora_diff_a_frame_costs_the_same_whatever_the_number_of_the_diffs_rows() {
         for rows in [2_000, 60_000] {
             let mut pane = DiffPane::mount(cx, wide_lines_then(rows), 1200., &Shared::default());
             pane.redraw();
-            let (shown, scans) = (pane.reads("shown"), pane.scans("shown"));
-            assert!(shown.len() == 1 && shown[0] >= rows as f64 && scans[0] >= rows as f64, "{rows} rows: taking the diff in went through them: {shown:?} reads, {scans:?} scanned");
+            let (shown, scans) = (pane.reads("shown"), pane.scans("shown").iter().chain(pane.scans("ranked").iter()).sum::<f64>());
+            assert!(shown.len() == 1 && shown[0] > 0. && scans >= rows as f64, "{rows} rows: taking the diff in, and the slices after it, went through them: {shown:?} reads, {scans:?} scanned");
             let frames = frame_costs(&pane);
             assert!(frames.len() >= 4, "{rows} rows: frames were drawn with the diff in it: {frames:?}");
             assert!(pane.notes.borrow().iter().any(|n| n[0] == "pending" && n[1].as_f64() == Some(1.)), "{rows} rows: some lines were laid out out of sight");
@@ -1909,6 +1953,253 @@ fn yuzora_diff_sideways_wheels_that_come_before_the_next_frame_all_count(cx: &mu
     pane.wheels(100., 100., &[(50., 0.)]);
     near(home - pane.start_of("a").unwrap(), far - 50., "two wheels past the end keep nothing beyond it");
     pane.close();
+}
+
+/// A diff of `rows` added lines of 11 to 70 characters.
+fn added_lines(rows: usize) -> Value {
+    Value::Array((0..rows).map(|i| json!({"k": "~", "h": 0, "r": i + 1, "ri": i, "rt": format!("line {i} of text {}", "x".repeat(i % 60))})).collect())
+}
+
+// yuzora(v010): taking a diff in goes through a slice of its rows, not through all of them: an event has 500 ms, a diff
+// has up to a million rows, and the rest are gone through by the frames that follow, out of sight. Counted (the rows
+// the slice ranked, the reads of their properties), not timed. 60,000 rows and 200,000 take the same slice in; all the
+// rows are ranked by the end, and the frames in between are drawn with the diff in them and read none of them.
+#[gpui::test]
+fn yuzora_diff_taking_a_diff_in_goes_through_a_slice_of_its_rows_and_the_frames_after_it_through_the_rest(cx: &mut TestAppContext) {
+    let mut slices = Vec::new();
+    let mut failures = Vec::new();
+    for rows in [60_000usize, 200_000] {
+        let pane = DiffPane::mount(cx, added_lines(rows), 1200., &Shared::default());
+        let (shown, ranked) = (pane.rows_ranked("shown"), pane.rows_ranked("ranked"));
+        let took = pane.notes.borrow().iter().filter(|n| n[0] == "ranked").map(|n| n[4].as_f64().unwrap()).fold(0., f64::max);
+        eprintln!("{rows} rows: taking the diff in ranked {shown:?} rows, then {} slices of at most {:?}, the longest {took} ms", ranked.len(), ranked.iter().copied().fold(0., f64::max));
+        if shown.len() != 1 || shown[0] >= rows as f64 / 4. {
+            failures.push(format!("{rows} rows: taking the diff in ranked {shown:?} of them"));
+            pane.close();
+            continue;
+        }
+        let total = shown[0] + ranked.iter().sum::<f64>();
+        if total < rows as f64 {
+            failures.push(format!("{rows} rows: {total} of them were ranked in the end"));
+        }
+        let frames = frame_costs(&pane);
+        if frames.len() < 4 || frames.iter().any(|f| f[0] >= 3000.) {
+            failures.push(format!("{rows} rows: frames with the diff in them read its rows: {frames:?}"));
+        }
+        if pane.rendered().iter().filter(|(view, error)| view == "d1" && error.is_null()).count() < 4 {
+            failures.push(format!("{rows} rows: the diff was drawn fewer than four times: {:?}", pane.rendered().last()));
+        }
+        slices.push(shown[0]);
+        pane.close();
+    }
+    if let [few, many] = slices[..] {
+        if (many - few).abs() > few * 0.05 {
+            failures.push(format!("a slice of a diff of 200,000 rows ranked {many} of them, of 60,000 {few}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010): while the rows are ranked the range is what the lines ranked so far can take at most, so the bar grows
+// as the rows go by and never past what it is when they are all ranked (the widest line is the last row here). Before
+// the bar was cut to nothing (no lines) or to the whole of it in the frame the diff came in, which it can only be for a
+// diff that is ranked in one.
+#[gpui::test]
+fn yuzora_diff_while_the_rows_are_ranked_the_range_grows_to_what_the_whole_diff_needs(cx: &mut TestAppContext) {
+    let mut rows = match added_lines(60_000) { Value::Array(rows) => rows, _ => unreachable!() };
+    rows.push(json!({"k": "~", "h": 0, "r": 60_001, "ri": 60_000, "rt": "w".repeat(400)}));
+    let mut pane = DiffPane::mount_with(cx, Value::Array(rows), 1200., 1200., &Shared::default(), json!({"sample": true}));
+    let slices = pane.reads("ranked").len();
+    let seen: Vec<f64> = pane.reaches.iter().flatten().copied().collect();
+    let last = *seen.last().expect("a bar at the end");
+    let wanted = 400. * 6.9 + 6. + 12. - 555.5;
+    pane.close();
+    assert!(slices >= 3, "the rows were ranked in {slices} slices after the first");
+    assert!((last - wanted).abs() <= 3., "at the end the lines scroll {last}px, and the widest needs {wanted}");
+    let ranking = seen.iter().position(|reach| (reach - last).abs() <= 3.).unwrap_or(seen.len());
+    assert!(ranking >= 3, "the range had its end size {ranking} frames in: {seen:?}");
+    assert!(seen[..ranking].windows(2).all(|pair| pair[0] <= pair[1] + 0.5), "the range shrank while the rows were ranked: {seen:?}");
+    assert!(seen.iter().all(|reach| *reach <= last + 3.), "the range went past what the whole diff needs: {seen:?}");
+}
+
+// yuzora(v010): lines in a script the table of widths does not list scroll to where the widest ends however many
+// there are. They are taken at three cells a character till they are laid out, and the laying out stopped after a
+// fixed amount, so 1,500 lines of 150 Hebrew letters scrolled 2,570px when 498 reach the end, and the left side was
+// empty at the end; 3,000 lines of Arabic subtitles (20 to 45 letters, which fit) gave a bar that scrolled nowhere
+// worth going.
+#[gpui::test]
+fn yuzora_diff_many_lines_in_a_script_the_table_does_not_list_scroll_to_where_the_widest_ends(cx: &mut TestAppContext) {
+    let widest = |letter: &str, n: usize, shortest: usize, spread: usize| {
+        Value::Array((0..n).map(|i| text_row(Some(&letter.repeat(shortest + (spread - 1 - i % spread))), Some("b"))).collect())
+    };
+    let mut failures = Vec::new();
+    for n in [1000usize, 1500, 3000] {
+        let mut pane = DiffPane::mount(cx, widest("\u{5d0}", n, 100, 51), 1200., &Shared::default());
+        let (frames, reach) = (pane.asked_frames(), pane.reach());
+        let gap = pane.end_gap("\u{5d0}");
+        pane.close();
+        let wanted = 150. * 6.9 + 6. + 12. - 555.5;
+        if !gap.is_some_and(|g| (g - 12.).abs() <= 1.5) || !reach.is_some_and(|r| (r - wanted).abs() <= 3.) {
+            failures.push(format!("{n} lines of up to 150 Hebrew letters: scrolls {reach:?} (wanted {wanted}), {gap:?} left after the widest line's end (wanted 12)"));
+        }
+        if frames > 60 {
+            failures.push(format!("{n} lines of Hebrew took {frames} frames to lay out"));
+        }
+    }
+    let mut pane = DiffPane::mount(cx, widest("\u{645}", 3000, 20, 26), 1200., &Shared::default());
+    let bar = pane.thumb();
+    pane.close();
+    if bar.is_some() {
+        failures.push(format!("3,000 subtitles of at most 45 Arabic letters fit the side, and there is a bar: {bar:?}"));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010): a data file (every line of a deleted file, 90 to 110 characters) past what could be read of a diff in a
+// slice scrolls to its widest line, not to three cells a character: 20,000 lines of at most 110 need 221.5px of a side
+// of 555.5, and scrolled 1,618, the left side empty at the end.
+#[gpui::test]
+fn yuzora_diff_a_data_file_of_thousands_of_lines_scrolls_to_its_widest_line(cx: &mut TestAppContext) {
+    let mut rows = vec![text_row(Some(&"a".repeat(110)), None)];
+    rows.extend((1..20_000).map(|i| text_row(Some(&"a".repeat(90 + (i * 7) % 21)), None)));
+    let mut pane = DiffPane::mount(cx, Value::Array(rows), 1200., &Shared::default());
+    let reach = pane.reach();
+    let gap = pane.end_gap("a");
+    pane.close();
+    assert!(reach.is_some_and(|r| (r - 221.5).abs() <= 3.) && gap.is_some_and(|g| (g - 12.).abs() <= 1.5), "lines of at most 110 characters need 221.5px: scrolls {reach:?}, {gap:?} left after the widest line's end");
+}
+
+// yuzora(v010): a single line that costs more than a frame to lay out (40,000 Hebrew letters) is laid out, alone, and
+// the range is where it ends; it is not taken at its three cells a letter for good.
+#[gpui::test]
+fn yuzora_diff_a_line_longer_than_a_frame_is_laid_out_alone_and_scrolled_to_its_end(cx: &mut TestAppContext) {
+    let rows = Value::Array(vec![text_row(Some(&"\u{5d0}".repeat(40_000)), Some("b")), text_row(Some("a short one"), Some("b"))]);
+    let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
+    let gap = pane.end_gap("\u{5d0}");
+    pane.close();
+    assert!(gap.is_some_and(|g| (g - 12.).abs() <= 1.5), "{gap:?} left after the end of a line of 40,000 letters, when it is 12");
+}
+
+// yuzora(v010): a frame lays out at most a frame's worth of lines, and a line that costs more than that is laid out
+// alone, its own side's and not the other's with it: two lines of 200,000 characters out of sight (the 201st row) were
+// laid out in the first frame, 465,683 characters with the ruler. (The two differ: the window lays out a text once.)
+#[test]
+fn yuzora_diff_a_frame_lays_out_a_frames_worth_and_a_line_longer_than_that_alone() {
+    with_measured_font("yuzora_diff_a_frame_lays_out_a_frames_worth_and_a_line_longer_than_that_alone", |cx| {
+        let mut rows: Vec<Value> = (0..200).map(|_| text_row(Some("a short line"), Some("b"))).collect();
+        rows.push(text_row(Some(&"\u{e9}".repeat(200_000)), Some(&"\u{17e}".repeat(200_000))));
+        let pane = DiffPane::mount(cx, Value::Array(rows), 1200., &Shared::default());
+        let (laid, pending) = (pane.laid.clone(), pane.pending());
+        pane.close();
+        let most = laid.iter().copied().max().unwrap_or(0);
+        assert!(!pending, "the lines were all laid out in the end");
+        assert!(most <= 200_000 + 65_536 + 4096, "a frame laid out {most} characters: {laid:?}");
+    });
+}
+
+// yuzora(v010): the thumb that is held stays under the pointer when the range changes under it (a pane made narrower
+// here; lines being laid out do the same while the range settles): the offset follows the thumb, so the pointer
+// does not lose it and the lines do not jump back. It used to keep its pixels of offset to a pixel of the pointer's
+// travel as they were when it was pressed, and the thumb drew 20px from the pointer after the pane narrowed.
+#[gpui::test]
+fn yuzora_diff_a_held_thumb_stays_under_the_pointer_when_the_range_changes(cx: &mut TestAppContext) {
+    let mut pane = DiffPane::mount(cx, json!([diff_row(Some((300, "a")), Some((5, "b")))]), 1200., &Shared::default());
+    let bar = pane.high as f64 - 4.;
+    let (start, long) = pane.thumb().expect("a bar");
+    let grab = start + long / 2.;
+    pane.press(grab, bar, 1);
+    pane.drag(grab + 100., bar);
+    near(pane.thumb().unwrap().0, start + 100., "the thumb follows the pointer");
+    pane.resize(900.);
+    let (after, narrower) = pane.thumb().expect("a bar in the narrower pane");
+    assert!((narrower - long).abs() > 100., "the thumb is a different length in the narrower pane: {long} and {narrower}");
+    near(after, start + 100., "the thumb stays where the pointer holds it when the pane narrows");
+    pane.drag(grab + 150., bar);
+    near(pane.thumb().unwrap().0, start + 150., "and goes on following the pointer");
+    pane.release(grab + 150., bar);
+    pane.close();
+}
+
+// yuzora(v010): the end of the right side's line is scrolled to when its line is the widest and cut into pieces (the left
+// side's lines are plainer and shorter): the pieces each side's lines are cut into are their own, and the half cell
+// each piece but the first may be rounded up by is counted for the right side's as for the left's.
+#[gpui::test]
+fn yuzora_diff_the_right_sides_line_cut_into_pieces_is_scrolled_to_its_end(cx: &mut TestAppContext) {
+    let pieces: Vec<Value> = pieces_of(&[3], 360).iter().enumerate().map(|(i, n)| json!({"t": "b".repeat(*n), "h": i % 2 == 1})).collect();
+    let text: String = pieces.iter().map(|p| p["t"].as_str().unwrap()).collect();
+    let rows = json!([
+        {"k": "~", "h": 0, "l": 1, "li": 0, "lt": "a".repeat(5), "r": 1, "ri": 0, "rt": text, "rs": pieces},
+        text_row(Some("a"), Some(&"b".repeat(362))),
+    ]);
+    let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
+    let gap = pane.end_gap_right("b");
+    pane.close();
+    assert!(gap.is_some_and(|g| (g - 12.).abs() <= 1.5), "right side: {gap:?} left after the widest line's end");
+}
+
+// yuzora(v010): the widest line is found when it comes in the middle of the batch laid out in a frame: after lines
+// that can take more and before lines that can take less (the batch reports the width of its widest, not its first or
+// last).
+#[gpui::test]
+fn yuzora_diff_the_widest_line_in_the_middle_of_a_batch_is_found(cx: &mut TestAppContext) {
+    let mut rows = vec![text_row(Some(&"a".repeat(330)), Some("b"))];
+    rows.extend((0..5).map(|_| text_row(Some(&"\u{e9}".repeat(300)), Some("b"))));
+    rows.extend((0..10).map(|_| row_in_pieces('a', &pieces_of(&[4, 5], 300))));
+    rows.extend((0..5).map(|_| text_row(Some(&"a".repeat(320)), Some("b"))));
+    let mut pane = DiffPane::mount(cx, Value::Array(rows), 1200., &Shared::default());
+    let gap = pane.end_gap("a");
+    pane.close();
+    assert!(gap.is_some_and(|g| (g - 12.).abs() <= 1.5), "{gap:?} left after the widest line's end");
+}
+
+// yuzora(v010): a diff read again after it settled keeps the offset it was scrolled to when it is the same, and is
+// measured again when it is not: a narrower one leaves no room after its end of the last one's.
+#[gpui::test]
+fn yuzora_diff_a_diff_read_again_after_it_settled_keeps_its_offset_and_measures_the_next(cx: &mut TestAppContext) {
+    let mut pane = DiffPane::mount(cx, json!([text_row(Some(&"a".repeat(300)), Some("b"))]), 1200., &Shared::default());
+    pane.wheel(100., 100., -100000., 0.);
+    let far = text_start(&mut pane, "a");
+    pane.press(400., 10., 1);
+    let again = text_start(&mut pane, "a");
+    pane.answer_next(vec![json!({"id": "d1", "rows": [text_row(Some(&"a".repeat(150)), Some("b"))], "hunks": [{}], "stageable": true, "add": 1, "del": 0, "leftExists": true, "rightExists": true})]);
+    pane.press(400., 10., 1);
+    let gap = pane.end_gap("a");
+    pane.close();
+    near(again, far, "the same diff read again stays where it was scrolled to");
+    assert!(gap.is_some_and(|g| (g - 12.).abs() <= 1.5), "a narrower diff read again: {gap:?} left after its end");
+}
+
+// yuzora(v010): a font set while the diff is open measures its lines again, as a zoom does: the lines are laid out in
+// the font the rows are drawn in, and the other family's cell is a sixth wider.
+#[test]
+fn yuzora_diff_a_font_set_while_it_is_open_measures_the_lines_again() {
+    with_measured_font("yuzora_diff_a_font_set_while_it_is_open_measures_the_lines_again", |cx| {
+        let mut pane = DiffPane::mount(cx, json!([text_row(Some(&"a".repeat(200)), Some("b"))]), 1200., &Shared::default());
+        let before = pane.end_gap("a");
+        pane.person.borrow_mut()["font_family"] = json!("Other Mono");
+        pane.visual.update(|_, cx| pane.runtime.refresh(&pane.root, cx).unwrap());
+        pane.settle();
+        let after = pane.end_gap("a");
+        pane.close();
+        assert!(before.is_some_and(|g| (g - 12.).abs() <= 1.5), "before: {before:?}");
+        assert!(after.is_some_and(|g| (g - 12.).abs() <= 1.5), "after the font changed: {after:?} left after the end, when it is 12");
+    });
+}
+
+// yuzora(v010): a zoom set and set back measures again: the ruler of the first zoom is laid out and reported a second time.
+#[gpui::test]
+fn yuzora_diff_a_zoom_set_and_set_back_measures_the_lines_again(cx: &mut TestAppContext) {
+    if !alone("yuzora_diff_a_zoom_set_and_set_back_measures_the_lines_again") {
+        return;
+    }
+    let mut pane = DiffPane::zoomed(cx, Value::Array(vec![row_in_pieces('a', &pieces_of(&[9], 360))]), 1., json!({}));
+    for zoom in [1.5, 1.] {
+        pane.set_zoom(zoom);
+        pane.settle();
+    }
+    let gap = pane.end_gap("a");
+    pane.close();
+    assert!(gap.is_some_and(|g| (g - 12.).abs() <= 1.5), "{gap:?} left after the end");
 }
 
 // yuzora(L2): the Git sidebar's main.js with its herdr, yuzora:core and yuzora:git imports
