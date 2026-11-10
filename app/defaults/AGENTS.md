@@ -1184,6 +1184,16 @@ with these differences.
   file instead. A diff pane's props can also set its view: `layout: "side" |
   "unified"`, `whitespace: "none" | "trim" | "all"`, `context` (lines; `-1` is
   the whole file).
+- Side by side, a diff's two sides share its width by one ratio, the left
+  side's share, half and half by default. Drag the divider between them to
+  change it (it stops at 15% and 85%); double-click the divider to put half
+  back. The ratio is kept across restarts, for every diff, in shared state
+  `yuzora.git.diff.split`: a number, held between `0.15` and `0.85`; no value,
+  `null` or anything that is not a number is `0.5`.
+  `setShared("yuzora.git.diff.split", 0.7)` sets it and
+  `setShared("yuzora.git.diff.split", null)` resets it. A line wider than its
+  side is cut there; a sideways swipe, or the bar under the lines when they
+  need one, scrolls both sides together.
 - A diff, merge or rebase pane follows what its own space asks for, never another
   space's, and an opener (the sidebar, the log, Annotate, the repository pane) looks
   for the pane among the tabs of the space shown, so a space's pane is never
