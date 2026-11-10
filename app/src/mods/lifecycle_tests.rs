@@ -1829,8 +1829,8 @@ fn copied(pane: &mut DiffPane) -> Option<String> {
 // yuzora(v010-git-copy): a selection takes no room. The lines are measured in the box `line()` draws them in, and the
 // range they scroll is the widest of those, so whatever a row has around that box must not change how far the lines go:
 // with rows selected on either side, by click, by Shift, by a right-click, before or after the lines were scrolled, the
-// range the mod works out and the room left after the longest line's end (when it is on a selected row) are what they are
-// with nothing selected, and the end of the line is in view.
+// range the mod works out, the room left after the longest line's end (when it is on a selected row) and the width of the
+// two sides are what they are with nothing selected, and the end of the line is in view.
 #[gpui::test]
 fn yuzora_diff_a_selection_takes_no_room_from_the_lines_and_the_range_they_scroll(cx: &mut TestAppContext) {
     type Do = fn(&mut DiffPane);
@@ -1843,21 +1843,23 @@ fn yuzora_diff_a_selection_takes_no_room_from_the_lines_and_the_range_they_scrol
         ("the lines scrolled to the end, then the long row", |p| { p.wheel(100., 100., -1e7, 0.); p.click(TEXT_LEFT, row_y(0), false); }, true),
     ];
     for side in ["l", "r"] {
-        let mut found: Vec<(&str, f64, f64)> = Vec::new();
+        let mut found: Vec<(&str, f64, f64, (f64, f64))> = Vec::new();
         for (what, act, selects) in &scenarios {
             let mut pane = copy_pane(cx, long_line_diff(side), json!({}));
             act(&mut pane);
             assert_eq!(!pane.noted("shade").is_empty(), *selects, "{side} / {what}: the row is marked, or not");
             let range = pane.ranges().last().copied().expect("a frame reported its range");
+            let cells = (pane.width("l"), pane.width("r"));
             let gap = if side == "l" { pane.end_gap("a") } else { pane.end_gap_right("b") };
             pane.close();
-            found.push((*what, range, gap.unwrap_or_else(|| panic!("{side} / {what}: the line's end is not under the pointer"))));
+            found.push((*what, range, gap.unwrap_or_else(|| panic!("{side} / {what}: the line's end is not under the pointer")), cells));
         }
-        let (_, range, gap) = found[0];
+        let (_, range, gap, cells) = found[0];
         assert!((gap - left_after_the_end()).abs() <= 1.5, "{side}: with nothing selected {gap} is left after the line's end");
-        for (what, got_range, got_gap) in &found[1..] {
+        for (what, got_range, got_gap, got_cells) in &found[1..] {
             assert!((got_range - range).abs() < 0.01, "{side} / {what}: the lines scroll {got_range}, with nothing selected {range}");
-            assert!((got_gap - gap).abs() <= 1.5, "{side} / {what}: {got_gap} is left after the line's end, with nothing selected {gap}");
+            assert!((got_gap - gap).abs() <= 0.5, "{side} / {what}: {got_gap} is left after the line's end, with nothing selected {gap}");
+            assert!((got_cells.0 - cells.0).abs() < 0.01 && (got_cells.1 - cells.1).abs() < 0.01, "{side} / {what}: the sides are {got_cells:?} wide, with nothing selected {cells:?}");
         }
     }
 }
