@@ -71,20 +71,47 @@
 - `main()` 在 bare launch 時、啟動任何子行程之前（也在 `apply_on_startup()` 的交換之前），如果 cwd 是執行檔所在的資料夾或其底下，就把 cwd 移到家目錄（`mods::home()`）。之後的子行程（`hc connect`、herdr-core、PowerShell 重開）都繼承新的 cwd。比對時兩邊都先 `canonicalize`（`current_dir()` 是 `C:\…`，`current_exe().canonicalize()` 是 `\\?\C:\…`）。命令列（`yuzora do …`、`shot` 等）不動 cwd：它們可能收相對路徑。
 - 這個改動在 Windows 才執行（POSIX 本來就可以改名有行程在裡面的資料夾）。
 - 新增的終端機本來就不從安裝資料夾開始：本機的 terminal 一律帶明確的 cwd（space 的資料夾，沒有就是家目錄；`window.rs` 的 `folder_for`、`new_space`），所以這個改動不改變終端機的起始目錄。程式碼裡沒有依賴 cwd 的相對路徑。
-- 常駐的檢查：`app-package.yml` 的 Windows job 在安裝程式檢查之後跑 `app/scripts/yuzora/check-win-update.py`：靜默安裝出貨檔，以安裝資料夾為 cwd 啟動（和捷徑一樣），預先放好暫存的更新（`Yuzora.new` 與收據），斷言資料夾換成新版、`Yuzora.old` 是舊版、PowerShell 重開的行程活著且安裝資料夾在它執行時還能改名，再做一次第二次更新。結束碼 1＝更新沒成功，2＝檢查本身跑不起來（視窗開不起來，不是更新結果）。修正前這個檢查必定紅（探針 run1 的 `R1-install.swap_1`、`D1-install.swap_1`）。
+- 常駐的檢查：`app-package.yml` 的 Windows job 在安裝程式檢查之後跑 `app/scripts/yuzora/check-win-update.py`：靜默安裝出貨檔，以安裝資料夾為 cwd 啟動（和捷徑一樣），預先放好暫存的更新（`Yuzora.new` 與收據），斷言資料夾換成新版、`Yuzora.old` 是舊版、PowerShell 重開的行程活著且安裝資料夾在它執行時還能改名，再做一次第二次更新。結束碼 1＝更新沒成功，2＝檢查本身跑不起來（視窗開不起來、安裝程式逾時、版本字串取代失敗，以及任何沒預期到的錯誤，不是更新的結果）。修正前這個檢查必定紅（探針 run1 的 `R1-install.swap_1`、`D1-install.swap_1`；修正前的 commit `64cb3d7e` 在第三輪探針上跑過，見該輪報告）。
+  - **它守住的**：出貨的安裝程式與封包、從捷徑式的 cwd 啟動、啟動時的交換與 PowerShell 重開、連續兩次、app 自己的子行程不握著資料夾。
+  - **它沒守住的**：(1) **沒有 herdr-core**：runner 沒裝，最長壽的持有者（`herdr-core serve` 與每個終端機的 `hold`）完全沒被測到；只有一次性的探針量過。(2) **只走啟動時的交換**（`apply_on_startup`）；按「Restart」（`app.update`）與關閉視窗走同一個 `swap`，但只有探針量過。(3) 下載、驗簽、解壓是手動放好的，不經過 `stage`。(4) **觸發路徑**：`app-package.yml` 的 `paths` 沒有 `app/src/window.rs`、`hc.rs`、`spawn.rs`、`mods.rs`、`control.rs`；改這些不會啟動它（例如之後有人在 `Core::connect` 加上 `.current_dir(<exe 資料夾>)`）。刻意不加：打包是四個平台的冷建置，window.rs 幾乎每個 PR 都會動。發版前手動 `workflow_dispatch` 跑一次。(5) **版本字串取代**：把 exe 裡的版本文字換成同長度的新版本。只換「整個版本」（前後不是更長版本的一部分），所以 `0.1.1` 不會把內嵌的最低 core 版本 `distribution/core-version`（`0.1.11`）換成 `9.9.11`（macOS 的除錯版 binary 實測：直接取代會換掉 20 處，限定整個版本後 0 處）；它會印出換了幾份、因為是更長版本的一部分而留下幾份。換不出可用的 patched exe（`--version` 不對）就以 2 結束，不是更新失敗。
 - 交換失敗時，「重新啟動」現在會說原因（見〈交換失敗〉）。
 
-**仍然會失敗的情況**：使用者自己的行程把安裝資料夾當 cwd（例如在終端機裡 `cd` 進去）、防毒軟體握著檔案，以及**beta 啟動、現在還活著的 herdr-core**。NSIS 安裝程式覆蓋安裝時不會停掉 core（`yuzora.nsi` 只處理安裝資料夾裡的 `yuzora.exe`），beta.2–4 的 app 是從開始功能表捷徑啟動的，它啟動的 core（長壽，終端機活著就一直在）cwd 還在安裝資料夾裡，重新開機才會消失（停掉 herdr-core 也行，但會不會結束它的終端機沒有查證）。所以從 beta 手動裝上 0.1.0 的人，**第一次**自動更新（0.1.0 → 0.1.1）可能因此失敗；失敗時他們會看到下面的說明，重新開機一次就好。0.1.0 全新安裝、或 core 是 0.1.0 啟動的人不受影響。
+**仍然會失敗的情況**：使用者自己的行程把安裝資料夾當 cwd（例如在終端機裡 `cd` 進去）、防毒軟體握著檔案，以及**beta 啟動、現在還活著的 herdr-core**。
+
+- **為什麼**：beta.2–4 的 app 從開始功能表捷徑啟動，cwd 是安裝資料夾；它啟動的 `herdr-core serve` 繼承這個 cwd（實測，探針 C2）。core 開終端機時，`serve` 再啟動 `herdr-core hold`（每個終端機一個持有者：擁有 PTY、是裡面程式的父行程）。啟動 core 與 holder 的程式碼都沒有指定 cwd，所以 holder 也繼承（讀 herdr-core 0.1.19 原始碼：`client.rs` 的 `spawn_detached` 沒有 `current_dir`；holder 的 cwd 沒有實測過，第三輪探針量）。NSIS 覆蓋安裝不會停掉 core（`yuzora.nsi` 只處理安裝資料夾裡的 `yuzora.exe`，core 也不在安裝資料夾裡）。
+- **0.1.0 的 app 會沿用還活著的舊 core**（讀碼）：污染不會自己消退。新終端機要嘛進舊 `serve` 現有的 holder，要嘛由舊 `serve` 再生一個，cwd 都在安裝資料夾。
+- **怎麼清掉它**：
+  - **重新開機一次（或登出再登入）**。這是唯一簡單、同時涵蓋 `serve`、holder 與使用者自己的 shell 的做法，release notes 與失敗說明都這樣寫。
+  - **進階：在 Yuzora 以外的終端機執行 `hc server stop`**（`hc` 是 herdr-core 的命令列）。這會結束 server，**所有終端機與裡面的 agent 都會結束**（讀碼：`api.rs` 的 `server_stop` → `runtime.rs` 的 `shutdown` kill 所有 live terminal，holder 收到 Shutdown 後結束）；損失與重新開機一樣，只是不必重開機。實測見第三輪探針。
+  - **不要**在工作管理員只結束 `herdr-core.exe serve`：holder 在 core 沒回來時會自己用 `spawn_core` 重啟一個，新的 `serve` 繼承 holder 的 cwd，仍在安裝資料夾（讀碼，`holder.rs` 的 `supervise`）。`hc server restart` 與 `hc update` 也不行：它們走 handover，holder 留著（讀碼，第三輪探針量）。
+  - **不讓安裝程式或 app 自動結束舊 core**：那會無聲結束使用者所有終端機與 agent，違背「關掉、更新 Yuzora，agent 繼續跑」的承諾。要做在程式裡的話，應是交換失敗且原因是「被佔用」時，提供一個需要明確同意的動作「停止 herdr-core 並重試（會結束所有終端機）」，不在 0.1.0。
+- **誰會碰到**：從 beta 手動裝上 0.1.0、而且**beta 時期開的終端機還有一個活著**（它的 holder 就一直在）的人，**第一次**自動更新（0.1.0 → 0.1.1）會失敗；失敗時他們會看到下面的說明。0.1.0 全新安裝的人、或 core 與所有終端機都是 0.1.0 啟動的人（沒有 beta 時期的 core 或終端機還活著）不受影響。
+- **所以 release notes 要寫**：Windows 的 beta 使用者請手動下載安裝程式，裝完重新開機一次（文字見〈Release notes 建議文字〉）。
 
 **交換失敗**（`update::swap` 回傳 false）：
 
 - 資料夾沒有被動過（`rename(root → .old)` 沒成功就什麼都沒搬；第二步失敗會 rollback）。暫存的 `Yuzora.new` 與收據留著。
-- 按右下角更新提示的「Restart」（`app.update`）：顯示錯誤通知 `app.update failed`，內文：`Yuzora could not install the update because another program is using its install folder. Close any terminal opened in that folder. If you came from a beta, restart your PC once. Then choose Restart again, or download the installer from https://github.com/NakiriYuuzu/Yuzora/releases.`（其他錯誤：`Yuzora could not install the update: <系統訊息>. Choose Restart to try again, or download the installer from …`）。
-- 關閉視窗時（`on_app_quit`）與啟動時（`apply_on_startup`）失敗只記 log（`update: cannot move … aside: …`）；視窗不在，沒有地方顯示。下次啟動 10 秒後的檢查會再看到暫存的版本，右下角照樣顯示「Yuzora x.y.z is ready」，按「Restart」就看到上面的說明。
+- **原因的全文放在「設定 › Updates」**（`update::status()["app"]["failure"]`，設定畫面在 status 變動時重畫）：app 那一列下面一段可換行的文字，標題「The update could not be installed」，內文是下面的說明。只要暫存的更新還在，它就在；交換成功（程式隨即重開）或暫存的更新被丟掉就消失。啟動時（`apply_on_startup`）交換失敗、10 秒後的檢查又看到暫存的版本時，不必按任何東西，設定頁就看得到。
+- 按右下角更新提示的「Restart」（或設定頁的「Restart to update」，`app.update`）：開一個 toast：標題 `Yuzora could not install the update`，內文 `Install folder in use. Click for steps.`（非「被佔用」的失敗：`Click for the reason and what to do.`），30 秒才消失、一次只一個，點下去開「設定 › Updates」。toast 的標題與內文各只有一行（`mods/toast` 截成一行、340 px），所以全文放不進去；之前把整段 283 字放在內文，視窗裡只看得到開頭一行（審查 P1）。`yuzora do app.update`（CLI）仍回傳全文。
+- 說明全文（被佔用）：`Yuzora could not install the update because another program is using its install folder. Close any terminal opened in that folder. If you came from a beta, restart your PC once. Then choose Restart again, or download the installer from https://github.com/NakiriYuuzu/Yuzora/releases.`（其他錯誤：`Yuzora could not install the update: <系統訊息>. Choose Restart to try again, or download the installer from …`）。網址是文字，不能點（mod 沒有開網址的函式）；列為之後的改善。
+- 關閉視窗時（`on_app_quit`）失敗只記 log（`update: cannot move … aside: …`）；視窗不在，沒有地方顯示，下次啟動時照上面再來一次。
 - 不會重複下載：`stage` 看到收據的版本相同就直接回傳（`staged_version`），所以每小時的檢查只有 release 列表與 manifest 這幾個小請求。
-- 更新被停用時（安裝資料夾裡有 `yuzora.package` 沒列的檔案，`is_install` 的刻意設計：交換會把整個資料夾換掉，使用者放的東西會跟著被搬進 `.old`）會記一行 `update: <資料夾> has files that are not in yuzora.package (…), so this install does not update itself`。
+- 更新被停用時（安裝資料夾裡有 `yuzora.package` 沒列的檔案，`is_install` 的刻意設計：交換會把整個資料夾換掉，使用者放的東西會跟著被搬進 `.old`）會記一行 `update: <資料夾> has files that are not in yuzora.package (…), so this install does not update itself`；這一行只在 stdout，Windows 的 GUI 沒有 console 也沒有 log 檔，所以使用者看到的仍是無聲停用（既有狀況，沒有處理）。
+- 這個 PR 重構了 `is_install`（`release.rs`：改成 `strays()` 回傳多餘的檔案，並加上上面那一行 warn）；判斷邏輯等價：清單是空的、讀不到資料夾、讀不到某個項目、檔名不是 UTF-8 仍然都回 false。
 
-**beta.2–4 的 Windows 使用者升到 0.1.0**：這些版本的更新程式在交換時一定失敗，要手動下載安裝程式（`Yuzora-windows-x64-setup.exe`，覆蓋安裝）。如果 0.1.0 的 release 附了 `yuzora-update.json`（Windows 的 target 也在裡面），他們的 app 會（beta build 一律走 Stable 通道）下載並暫存，右下角顯示「Yuzora 0.1.0 is ready」，按「Restart」只會看到 `app.update failed: no update is ready yet`（beta 的 `apply()` 沒有說原因）；每次關閉與啟動都再試一次並失敗，不會重複下載（見上），資料夾不變。讀碼推導，沒有實機驗證。release notes 要明講「Windows 的 beta 使用者請手動下載安裝程式」。若不想讓他們看到永遠卡住的提示，0.1.0 的 manifest 可以不列 `windows-x86_64`（0.1.0 自己不讀自己的 manifest；0.1.1 的 manifest 照常列）。
+**beta.2–4 的 Windows 使用者升到 0.1.0**：這些版本的更新程式在交換時一定失敗（它們啟動時的 cwd 就是安裝資料夾，自己握著它），要手動下載安裝程式（`Yuzora-windows-x64-setup.exe`，覆蓋安裝）。如果 0.1.0 的 release 附了 `yuzora-update.json`（Windows 的 target 也在裡面），他們的 app 會（beta build 一律走 Stable 通道）下載並暫存，右下角顯示的是**舊版的字串「Herdr 0.1.0 is ready」**（beta.2–4 的 `window.rs` 是 `Herdr {a} is ready`；「Yuzora … is ready」是這個修正之後的版本，已發出的 beta 不會變；探針 C2 的截圖也是「Herdr 99999999.9.1 is ready」），按「Restart」只會看到 `app.update failed: no update is ready yet`（beta 的 `apply()` 沒有說原因）；每次關閉與啟動都再試一次並失敗，不會重複下載（見上），資料夾不變。讀碼推導，沒有在 beta 實機驗證。若不想讓他們看到永遠卡住的提示，0.1.0 的 manifest 可以不列 `windows-x86_64`（0.1.0 自己不讀自己的 manifest；0.1.1 的 manifest 照常列）。
+
+### Release notes 建議文字（Windows、從 beta 升上來）
+
+英文：
+
+> **Windows, if you are on a beta (0.1.0-beta.2 to beta.4):** the beta cannot update itself on Windows, so download `Yuzora-windows-x64-setup.exe` from this release and run it over your install. Then restart your PC once. The beta started a background program (herdr-core) that still holds Yuzora's install folder, and that stops the first automatic update (0.1.0 to the next) until it is gone. Restarting ends it, and your terminals with it. If you would rather not restart, run `hc server stop` in a terminal outside Yuzora instead: it ends every terminal and the agents running in them, the same as a restart would. From 0.1.0 on, Yuzora updates itself.
+
+繁體中文：
+
+> **Windows 上還在用 beta（0.1.0-beta.2 到 beta.4）的人：** beta 版在 Windows 上無法自動更新，請從這個 release 下載 `Yuzora-windows-x64-setup.exe`，直接執行覆蓋安裝，裝完請重新開機一次。beta 版啟動了一個背景程式（herdr-core），它還握著 Yuzora 的安裝資料夾，會讓 0.1.0 之後的第一次自動更新失敗，直到它結束為止；重新開機會結束它，裡面的終端機也會一起結束。不想重新開機的話，可以在 Yuzora 以外的終端機執行 `hc server stop`：它會結束所有終端機與裡面執行的 agent，和重新開機的損失一樣。從 0.1.0 起，Yuzora 會自己更新。
+
+（兩段的重點：一定要手動下載裝一次；重新開機是為了讓 0.1.0 → 下一版的第一次自動更新直接成功，不必先失敗一次；不要建議只在工作管理員結束 herdr-core，見上。「重新開機」與 `hc server stop` 何者確實夠用，第三輪探針的 C6 量了；探針結果回來之後再核對這段文字。）
 
 ### Linux
 

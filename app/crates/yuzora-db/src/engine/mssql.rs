@@ -19,7 +19,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-use super::{BATCH, ConnectSpec, RowSink};
+use super::{BATCH, CommitSent, ConnectSpec, RowSink};
 use crate::config::{Engine, SslMode};
 use crate::error::{DbError, DbResult};
 use crate::model::{
@@ -44,10 +44,17 @@ pub struct MsConn {
 #[derive(Clone)]
 pub struct MsCanceller {
     stop: Arc<watch::Sender<u64>>,
+    pub(super) commit: CommitSent,
 }
 
 impl MsCanceller {
     pub async fn cancel(&self) {
+        self.cancel_now();
+    }
+
+    /// The stop is a count that the running `execute` watches: bumped here, it
+    /// is seen by the statement running now and by none that starts later.
+    pub(super) fn cancel_now(&self) {
         self.stop.send_modify(|n| *n += 1);
     }
 }
@@ -64,7 +71,7 @@ impl MsConn {
             client: Some(client),
             version: format!("SQL Server {version}"),
             database,
-            canceller: MsCanceller { stop: Arc::new(watch::channel(0).0) },
+            canceller: MsCanceller { stop: Arc::new(watch::channel(0).0), commit: CommitSent::default() },
         })
     }
 
@@ -316,10 +323,19 @@ impl MsConn {
                 return Err(DbError::NotEditable(crate::i18n::t("edit.null_key", &[])));
             }
         }
+        let reused = self.client.is_some();
         let mut client = self.take_client().await?;
         // Nested in a transaction the SQL tab left open, COMMIT only counts
         // down: the tab's ROLLBACK would undo the write-back after it read as done.
-        match scalar(&mut client, "SELECT CAST(@@TRANCOUNT AS nvarchar(11))").await {
+        // Also the first thing sent: a socket the server closed while the
+        // connection sat idle fails here, with nothing written, and is replaced.
+        const OPEN_TRANSACTIONS: &str = "SELECT CAST(@@TRANCOUNT AS nvarchar(11))";
+        let mut open_transactions = scalar(&mut client, OPEN_TRANSACTIONS).await;
+        if reused && open_transactions.as_ref().is_err_and(dropped) {
+            client = open(&self.spec).await?;
+            open_transactions = scalar(&mut client, OPEN_TRANSACTIONS).await;
+        }
+        match open_transactions {
             Ok(n) if n == "0" => {}
             Ok(_) => {
                 self.client = Some(client);
@@ -332,7 +348,7 @@ impl MsConn {
                 return Err(query_error(e));
             }
         }
-        match write_rows(&mut client, &self.database, table, &edits).await {
+        match write_rows(&mut client, &self.database, table, &edits, &self.canceller.commit).await {
             Ok(written) => {
                 self.client = Some(client);
                 Ok(written)
@@ -358,18 +374,25 @@ impl MsConn {
     }
 
     /// `sql` with parameters; the rows of its first result.
+    ///
+    /// It only reads, so a socket the server closed while the connection sat
+    /// idle is replaced and the query runs again, once.
     async fn rows(&mut self, sql: &str, params: &[&dyn ToSql]) -> DbResult<Vec<Row>> {
-        let mut client = self.take_client().await?;
-        match first_result(&mut client, sql, params).await {
-            Ok(rows) => {
-                self.client = Some(client);
-                Ok(rows)
-            }
-            Err(e) => {
-                if !fatal(&e) {
+        let mut reused = self.client.is_some();
+        loop {
+            let mut client = self.take_client().await?;
+            match first_result(&mut client, sql, params).await {
+                Ok(rows) => {
                     self.client = Some(client);
+                    return Ok(rows);
                 }
-                Err(query_error(e))
+                Err(e) if reused && dropped(&e) => reused = false,
+                Err(e) => {
+                    if !fatal(&e) {
+                        self.client = Some(client);
+                    }
+                    return Err(query_error(e));
+                }
             }
         }
     }
@@ -687,6 +710,11 @@ fn type_name(t: ColumnType) -> &'static str {
 
 // ---------------------------------------------------------------- errors
 
+/// The server (or the network) ended the connection.
+fn dropped(e: &TdsError) -> bool {
+    matches!(e, TdsError::Io { .. })
+}
+
 /// The connection can't be used after this one.
 fn fatal(e: &TdsError) -> bool {
     !matches!(e, TdsError::Server(_) | TdsError::Conversion(_) | TdsError::ParseInt(_) | TdsError::BulkInput(_))
@@ -786,6 +814,7 @@ async fn write_rows(
     database: &str,
     table: &ObjectRef,
     edits: &[&RowEdit],
+    commit: &CommitSent,
 ) -> Result<u64, (DbError, bool)> {
     let fail = |e: TdsError| (query_error(e.clone()), !fatal(&e));
     // The transaction commands are batches: run as an RPC (`execute`) the server
@@ -796,13 +825,19 @@ async fn write_rows(
         let params: Vec<Param<'_>> = edit.changes.iter().chain(&edit.key).map(|(_, c)| Param::of(c)).collect();
         let refs: Vec<&dyn ToSql> = params.iter().map(Param::sql).collect();
         let sql = update_sql(database, table, edit);
-        let rows = client.query(sql, &refs).await.map_err(fail)?.into_first_result().await.map_err(fail)?;
-        let changed = rows.first().and_then(|r| r.try_get::<i64, _>(0).ok().flatten()).unwrap_or(-1);
+        let sets = client.query(sql, &refs).await.map_err(fail)?.into_results().await.map_err(fail)?;
+        // A trigger may return rows of its own, ahead of ours: the count is the last result.
+        let changed = sets
+            .last()
+            .and_then(|rows| rows.first())
+            .and_then(|r| r.try_get::<i64, _>(0).ok().flatten())
+            .unwrap_or(-1);
         if changed != 1 {
             return Err((DbError::Query(sql::key_mismatch(&edit.key, u64::try_from(changed).unwrap_or(0))), true));
         }
         written += 1;
     }
+    commit.mark();
     batch(client, "COMMIT TRANSACTION").await.map_err(fail)?;
     Ok(written)
 }
@@ -903,6 +938,15 @@ mod tests {
 
     fn t(schema: &str, name: &str) -> ObjectRef {
         ObjectRef { schema: schema.into(), name: name.into() }
+    }
+
+    #[test]
+    fn a_stop_from_where_nothing_can_wait_is_counted_before_it_returns() {
+        let canceller = MsCanceller { stop: Arc::new(watch::channel(0).0), commit: CommitSent::default() };
+        let running = canceller.stop.subscribe();
+        crate::engine::Canceller::Mssql(canceller.clone()).cancel_in_background();
+        assert!(running.has_changed().unwrap(), "the statement running now was not told");
+        drop(canceller);
     }
 
     #[test]

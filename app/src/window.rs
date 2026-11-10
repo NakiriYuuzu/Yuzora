@@ -2767,6 +2767,12 @@ impl AppWindow {
     }
 
     fn command_error(&mut self, name: &str, error: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // yuzora(win-update): a swap that failed has a paragraph of reasons, which Settings › Updates holds; the toast is one line and points there.
+        if let Some(toast) = crate::yuzora::release::update::swap_failure_toast(name, error) {
+            let id = crate::yuzora::release::update::FAILED_TOAST;
+            self.remove_overlay(id, window, cx);
+            return self.open_overlay(id.into(), toast, window, cx);
+        }
         let spec = json!({"kind":"toast", "notification":{"title":format!("{name} failed"),"body":error,"level":"error"}});
         self.open_overlay(mods::new_overlay_id(), spec, window, cx);
     }
@@ -4426,8 +4432,9 @@ impl AppWindow {
         let core = crate::update::core();
         let core = core.ready.filter(|_| !core.updating);
         match (crate::update::ready(), core) {
-            (Some(a), Some(c)) => Some(format!("Herdr {a} and herdr-core {c} are ready")),
-            (Some(a), None) => Some(format!("Herdr {a} is ready")),
+            // yuzora(win-update): the app a person installed is called Yuzora; the pill said Herdr.
+            (Some(a), Some(c)) => Some(format!("Yuzora {a} and herdr-core {c} are ready")),
+            (Some(a), None) => Some(format!("Yuzora {a} is ready")),
             (None, Some(c)) => Some(format!("herdr-core {c} is ready")),
             (None, None) => None,
         }

@@ -53,7 +53,9 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 
 - 一個工作（job）跑一段 SQL，可以有多個 statement，每個 statement 一個結果集（有列的、或只有 affected 的）。
 - 一個 pane（owner）只顯示最新的工作：開新工作時，同一個 owner 還在跑的工作會被取消，舊工作和它的結果集一起釋放。`release(owner)` 也會先取消，再關連線。
-- 開表時 `COUNT(*)` 在列讀完後、工作結束前執行，所以按「停止」也能停掉 count。
+- 開表時 `COUNT(*)` 在列讀完後、工作結束前執行，所以按「停止」也能停掉 count。count 用自己的連線（`session::count_owner`，count 完就關），不佔 pane 的連線：列讀完、決定好可不可編輯（`Editing`）之後 grid 就能編輯，寫回也不用排在 count 後面。
+- count 是輔助資訊：它的連線開不了（登入或資料庫有連線數上限、網路抖動）時，不改變連線的狀態（側欄不會變成「連線失敗」），改借 pane 自己的連線、等它空閒時算，總列數照樣出現。借來的 count 永遠讓路：寫回、SQL 分頁的查詢、開表、重新整理一向 pane 的連線要連線（`session::lease`，`Live::want`），count 就被叫停（`StandDown`，由 count 自己那個 task 取消自己的 statement 再放開連線），工作拿到連線；工作結束後 count 從頭再算一次（`count_between`）。使用者不會為了 count 等待。PostgreSQL 的取消若沒有被 count 的那句 statement 接住（伺服器沒回 `canceled`：count 剛好先結束，或伺服器在動作之前就先回覆了取消連線，像連線池那樣），count 的連線會被丟掉，下一個使用者開新連線（`Lease::retire`、`Conn::cancel_landed`）；接住了就留著，不用重連。
+- 每個「停止」只停它旁邊標示的那件事。工作的停止（工具列）只取消工作當下正在跑的那句：讀列時是 pane 的連線，count 時是 count 的連線（`Job.serving`；借 pane 連線的 count 是請它自己放手，`Stop::Count`），讀完之後不再碰 pane 的連線，因為那上面可能正在寫回。寫回的停止（footer）只結束那次寫回。
 - 連線還在建立時按「停止」也有效：引擎先把自己的取消機制準備好，然後在每個 statement 執行前檢查工作是否已經停止（`RowSink::cancelled`）。所以 UPDATE、DELETE 這類不回傳列的語句，不會在回報取消之後才執行。
 - 讀取是串流的：引擎每 512 列（`engine::BATCH`）交給 `RowSink` 一次，grid 立即重畫，不等整個查詢結束。
 - 上限 `db.maxRows`（預設 100,000，可設 100～5,000,000）。真的有列放不下時才停止讀取並標成 truncated（剛好等於上限不算）；開表會多讀一列（`LIMIT maxRows + 1`）來判斷。
@@ -62,11 +64,24 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 
 ## 編輯與寫回
 
+- 結果集的可編輯狀態是 `results::Editing`：`Loading`（開表的列還在讀）、`Editable`、`ReadOnly(原因)`；寫回狀態是 `WriteState`：`Idle`、`Writing`（可用 `stop_write` 停止）、`Failed(訊息)`。每個唯讀都有一句原因（包括 SQL 查詢的結果集，`edit.query`），每個失敗都有訊息，雙擊被擋時 footer 會說明原因。
+- 寫回排在 pane 的連線後面，也會被伺服器上別的連線持有的列鎖擋住（PostgreSQL、SQL Server 預設不逾時）。等待期間 footer 顯示「Writing…」加「Stop」，沒有「Discard」（修改正在寫，丟掉它可能不算數；要捨棄先 Stop，之後 footer 會出現 Discard；`ResultSet::discard_edits` 在寫回中也不動作）：Stop 結束等待，PostgreSQL／SQLite 另外叫伺服器取消那句 UPDATE，SQL Server 則是丟掉 socket（伺服器回滾）。停止後編輯仍保留，結果集說「沒有寫入任何東西」（`edit.stopped`）；只有 COMMIT 已經送出時才說「資料庫可能已經存了」（`edit.stopped_maybe`）。判斷靠各引擎在送出 COMMIT 之前一刻設起的 `CommitSent`（PostgreSQL：`tx.commit()` 之前；SQL Server：`COMMIT TRANSACTION` 批次之前；SQLite：最後一次看有沒有停止之前設起，看到停止就收回再回滾）。設在送出之前而不是之後，所以誤差只會偏向「可能已存」，不會在 COMMIT 已經進行時說沒寫。SQLite 的 COMMIT 是同步呼叫、`CommitSent` 與停止的先後可能讓訊息偏向「可能已存」一個極短的窗口，反方向不會發生。
+  - 保證：不論 Stop 和語句結束的先後，停止之後（a）沒有資料被寫入，修改留在畫面上；（b）pane 的連線可用，下一句正常執行；（c）取消不會落在這次寫回以外的語句上。唯一的例外是 Stop 在 COMMIT 已經送出之後才到：那筆交易由伺服器決定，資料可能已寫入，所以訊息才說「可能」，重新整理就知道。這些保證的前提在下面「PostgreSQL：晚到的取消」：取消請求送到連線實際連上的那個位址，而且那端處理完才關閉連線。
+  - 取消是「連線層級、打到當下正在跑的語句」的請求，送出時不知道語句還在不在；PostgreSQL 的取消還走另一條連線，伺服器收到才動作。所以「停止做完了」是伺服器處理完那個請求的時候，不是送出的時候，見下面「PostgreSQL：晚到的取消」。寫回被停止時，先通知引擎、等它做完，寫回才放開 pane 的連線（`session::stop_work`），所以丟掉交易時送出的 ROLLBACK 是伺服器停止之後聽到的第一件事，取消不會落在它上面。PostgreSQL 的連線在這之後仍不再使用（`Canceller::abandon`：寫回的 future 是在中途被丟掉的，不假設連線是乾淨的）。下一次使用才開新連線，所以這個 pane 的 SQL 分頁在同一條連線上做的 `SET`、暫存表會隨之消失（和 SQL Server 停止時一樣）。登入有連線數上限時，緊接著的下一句可能撞上舊連線還沒結束的那一小段時間而被拒絕一次。
+  - PostgreSQL：晚到的取消。取消請求走另一條短連線，伺服器收到時對連線當下在跑的東西動作：語句剛好跑完的話，那就是下一句（下一次 Run、換表、count、寫回的 UPDATE 或 COMMIT）。驅動寫出請求就返回，所以 Stop 落在查詢結束前後 2 毫秒內時，下一次 Run 在 87／150 輪被取消（沒有任何延遲，直接走 session 量到）。協定文件（55.2.8）說伺服器「處理這個請求，然後關閉連線」；後端閒置時收到訊號，`ProcessInterrupts` 因為正在等客戶端的指令（`DoingCommandRead`）而直接忽略它（`postgres.c`）。所以只要在送下一句之前等到伺服器關閉那條取消連線，取消不是已經打到該停的語句，就是落在閒置的後端而消失。做法：請求送到這條連線實際連上的位址：連線是一個位址一個位址連的（主機名稱解析出多個位址時依序試，任何失敗換下一個，最後一個錯誤是結果，和驅動原本一樣），連上的那個位址記在這條連線的 `Target`（`ConnectSpec::addresses` 可以直接指定要試的位址，取代解析，測試用它在沒有 DNS 的情況下造出多位址的主機），取消用同一個位址和同一個 TLS 名稱，不再重新解析主機名稱（DNS 輪詢、failover 後換了位址、`localhost` 的 `::1` 與 `127.0.0.1` 是不同的伺服器時，重新解析會把取消送到別台，伺服器關閉連線不理它，Stop 就沒有作用）。`PgCanceller` 用自己的連線送請求（`cancel_query_raw`），`UntilClosed` 讓 shutdown 要等到對方關閉才算完成，`Canceller::cancel` 因此在對端關閉那條取消連線時返回（含 TLS）；連線層分不出對端是處理完才關閉，還是不理它就關閉；工具列的 Stop 沒人能等，`Canceller::cancel_in_background` 在按下的當下就把請求記為「在路上」（`PgCanceller::on_their_way`，不是等送出的 task 開始跑），`session::open_lease` 在把連線交給下一件工作前先 `Conn::settled`。等不到伺服器處理（5 秒、連不上）的請求不知道會不會到，連線就丟掉（`OnItsWay` 沒被確認就 drop → `retired`）。取捨：停止之後的下一句多等一次取消連線的來回（本機量到 2–13 毫秒），不確定時多花一次重連；不把連線丟掉就不會有 SQL 分頁狀態遺失。位址對了，但對端不是處理請求的那個後端時，「對端關閉」仍會被當成處理完：中間若有負載平衡，請求轉到別的後端，後端不認得這組 pid 和密鑰就直接關閉，Stop 沒有生效，語句自己跑完；中間若有連線池在轉送之前就先關閉連線，取消可能晚到並打中下一句，也就是這個保證出現之前的行為：下一句失敗（57014），寫回則整筆回滾、畫面說失敗，不會寫一半。只有 count 讓路的那條路（`cancel_landed`）會把沒被接住的連線丟掉，其他工作沒有這道保險。Unix socket 的主機只送出、不等（驅動原本的行為）。多主機設定（`host=a,b`）一直不支援：整串被當成一個主機名稱，解析失敗，訊息和以前一樣。SSH tunnel 的本機端（`ConnectSpec::endpoint`）就是連上的位址，主機設定只用來驗證 TLS 名稱，兩者都不重新解析。
+  - SQLite：取消是 `interrupt`，只對當下正在執行的 statement 有效，沒有 statement 在跑時什麼也不做，所以不會落到別處。SQLite 等檔案寫鎖時 `interrupt` 到不了，所以等鎖是寫回自己做的（`busy_timeout` 設 0，每 10 毫秒重試、看有沒有停止，最多 5 秒），並在 `BEGIN`、每句 UPDATE、COMMIT 前看有沒有在寫回要求之後停止過（`LiteCanceller.stops`，計數而不是會被下一件工作重設的旗標）。停止後鎖才放開也不會寫入，連線也不會被卡在那段等待上。
+  - SQL Server：取消就是丟掉 socket（`apply_edits` 的 future 一被丟掉 socket 就跟著關），伺服器在連線結束時回滾；沒有可以晚到的取消，下一次使用開新連線。`execute` 一開始就訂閱停止的計數，之前的計數不算，所以停止落在兩句之間時對下一句沒有作用。工具列的 Stop 以前是丟進 runtime 的一個 task 才去記這個計數，task 還沒跑時下一句已經訂閱了，那一下就會落在它身上；現在在按下的當下就記（`Canceller::cancel_in_background`）。SQLite 的 `interrupt` 同樣在按下的當下呼叫。
+- Cmd+S（Ctrl+S）等於「Write back」，編輯框還開著時也一樣：先保留那一格（等於按 Enter；NULL 格沒打過字就按 ⌘S 不算修改，這點和 Enter 不同），再寫回；內容被資料庫拒絕（例如型別不合）時，原因自動展開在 footer 上方。輸入法正在組字（注音、拼音的 marked text 還沒選字）時，沒選的字不算打進儲存格的內容，不會被寫進資料庫。判斷是 `InputState::marked_text_range()` 有值，規則有兩層：⌘S 與 Enter 是輸入法的按鍵，組字中不動作、編輯框留著（組字中的 Enter 是輸入法在選字，不保留儲存格；macOS 的輸入法通常自己吃掉這顆 Enter，這是給沒吃掉它的平台的保險）；其他會把編輯框的字變成儲存格的動作（點「Write back」、點別的儲存格、點欄標題排序、編輯框失去焦點）不擋，但都經過 `commit_editing`，它是編輯框的字變成儲存格的唯一入口，只留組字範圍之外的字：已經選好的字照留，沒選的字丟掉。一個 NULL 格只組字、沒選任何字就離開，維持 NULL。只在 gpui 的 test platform 驗證；macOS 真輸入法在滑鼠點擊時會先提交組字、丟棄，還是保留，沒有實機驗證（先提交的話，那些字已經是打進去的字，會照畫面寫）。
+- footer 的訊息（寫回失敗、唯讀原因）只顯示第一行，點一下展開全文；新的寫回失敗會自動展開（伺服器的 DETAIL、HINT 行在第二行以後）。展開的訊息會依 pane 寬度換行。
+- Database dock 開著時，表格 pane 只有約 110–230 px 寬：footer 的狀態文字各佔一行、太長就截斷，Discard／Write back（寫回中只有 Stop）按鈕放不下時換到下一行，只要 pane 比 footer 本身高，就完整在 pane 內，不會被切掉（110 px 寬時 footer 約 115 px 高）。展開的失敗訊息有 140 px 的高度上限、可捲，pane 放不下時它先縮，不推擠 footer，所以按鈕和「▾ 訊息」開關永遠在；代價是 pane 很矮時表格區被壓到 0，收起訊息就回來。工具列也一樣：資料表名稱和分頁放不下時換行，Run／Stop 按鈕在最後一行靠右。
+- SQL Server 的連線被伺服器關掉（閒置逾時、防火牆、重啟、`KILL`）時，下一次使用才會發現：寫回的第一句（檢查未結束交易）和 metadata 查詢遇到這種斷線會自動換一條新連線重試一次（這時還沒寫入任何東西）；SQL 頁籤的語句不重試，因為答案遺失不代表語句沒執行。
+- SQL Server 驅動（tiberius）讀不了 `geography`／`geometry`／`hierarchyid` 等 CLR 型別和 `sql_variant`：開這種表會以 `unsupported column type` 結束，不會再卡在載入。要看這些欄位請在 SQL 頁籤自己轉型（`col.ToString()`、`CAST(col AS nvarchar(max))`）。
+
 - 只有「開表」產生的結果集可以編輯，而且資料表必須有 primary key；沒有就停用並顯示原因（`edit.no_key`）。連線設成唯讀（SQLite 的 `readOnly`）時也會停用（`edit.read_only`）。
 - 由資料庫計算的欄位不能編輯（`grid.generated`），包括產生欄、計算欄，以及 PostgreSQL 的 `GENERATED ALWAYS` identity 和 SQL Server 的 identity。否則寫回時整筆交易都會被伺服器拒絕。`describe` 的 `ColumnInfo.generated` 標示這類欄位。
 - 雙擊或 Enter 編輯，⌘⌫ 設 NULL，Esc 取消。打開編輯框卻沒改內容就離開，不算修改；改回原值也等於沒改。NULL 儲存格的編輯框是空的：在裡面打過字或按了 Enter，留空就寫成空字串；只打開就離開，仍然是 NULL。
 - 編輯框只有一行：含換行的文字和二進位值不能在表格內編輯（底部會說明），請在 SQL 分頁用 `UPDATE`。
-- 有未寫回的修改時，換表、重新整理或執行 SQL 會先在 pane 頂端詢問「捨棄並繼續」或「繼續編輯」。
+- 有未寫回的修改時，換表、重新整理或執行 SQL 會先在 pane 頂端詢問「繼續編輯」或「捨棄並繼續」。問句和按鈕會依 pane 寬度換行，兩個選項都在 pane 內。修改正在寫回時（`ResultSummary.writing`）不提供「捨棄」：寫回已經送出，修改可能照樣寫進資料庫，說「捨棄」會讓人以為沒有寫；改問「繼續等待」或「停止儲存」（`stopWrite`，修改保留，之後可以再按「捨棄並繼續」）。問的當下的修改已經寫完或被捨棄時，這一列自己消失，不會自己繼續換表。
 - 寫回期間又改的儲存格保留為待寫回，不會被當成已寫入。寫回還沒結束時再按一次寫回會被拒絕（`edit.writing`），所以同一批修改不會寫兩次。
 - 寫回只送到讀取這些列時的連線設定。表打開之後，如果已存的連線改成連到別處（另一台伺服器、另一個資料庫或另一個檔案），寫回會被拒絕（`edit.connection_changed`），修改仍保留為待寫回；重新整理資料表後再編輯。判斷方式和存檔時是否重連相同（`ConnectionConfig::connects_like`），在連線前後各檢查一次。
 - SQL 分頁在同一條連線上留著尚未結束的交易時，不會寫回（`edit.open_transaction`），修改仍保留為待寫回。原因是 PostgreSQL 會忽略寫回的 BEGIN，寫回的 COMMIT 會連分頁自己的修改一起提交；SQL Server 的巢狀 COMMIT 只會把計數減一，之後分頁一 ROLLBACK，寫回就跟著消失。判斷方式：PostgreSQL 看 `now() = statement_timestamp()`，SQL Server 看 `@@TRANCOUNT`，SQLite 看 autocommit。
@@ -83,7 +98,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - tokio-postgres 0.7＋tokio-postgres-rustls，rustls 用 ring provider，不呼叫 `install_default`。
 - 沒指定資料庫時依序試 `postgres`、與使用者同名的資料庫，只有遇到 SQLSTATE `3D000`、`42501`、`55000` 才換下一個。
 - 欄位型別用 `prepare` 取得；值用 `simple_query_raw` 讀文字格式，所以 numeric、interval、inet、enum、array、JSON 大整數都照伺服器的原文顯示。
-- 取消用 cancel token，連線用的 TLS connector 也用在 cancel 上。連線在取消後可以繼續使用。
+- 取消用 cancel token 的資料（`cancel_query_raw`，在我們自己開的連線上送，連線用的 TLS connector 也用在 cancel 上），並等伺服器關閉那條連線才算完成。工作（查詢、讀列、count）自己看得到結果的取消，連線在取消後可以繼續使用；寫回被停止、或請求沒有被確認處理的，連線就不再使用，見「編輯與寫回」。
 - 切句會照 session 的 `standard_conforming_strings`。設定為 off 時，一般字串裡的 `\'` 也是跳脫，所以字串裡的 `;` 不會被當成分隔，不會把字串的一部分當成另一句執行。腳本含 `\` 時才用 `SHOW` 查詢這個設定；執行到提到這個設定的語句，或 `RESET`、`DISCARD`、結束交易的語句（`COMMIT`、`ROLLBACK`…）之後會再查一次，模式變了就重新切剩下的腳本。交易已失敗時查不到，就沿用上次的結果。編輯器的「游標所在的句子」查不到 session，所以腳本含 `\` 時兩種模式都切一次：切出的句子不同，就不從游標執行，查詢 pane 會提示先選取要執行的句子（`sql::runnable_statement_at`）。
 - schema 樹會列出 trigger（`pg_trigger`，不含外鍵等約束內部用的 trigger），說明欄是所屬的表。
 - TLS 照 libpq 的語意：
@@ -130,6 +145,10 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 ### DDL
 
 結構分頁的 DDL 是用系統目錄重建的近似結果：PostgreSQL 與 SQL Server 不含 storage options、partitioning、owner。view、procedure、function 取自資料庫本身保存的定義（`pg_get_viewdef`、`OBJECT_DEFINITION`），SQLite 取自 `sqlite_schema.sql`。
+
+## CI 驗什麼
+
+PostgreSQL 與 SQL Server 的測試在引擎沒被選到（`YUZORA_DATABASE_TEST_ENGINES` 沒列）時會跳過並算通過，所以 `app-ci.yml` 的 `database-integration` job（納入 `App (build · test)`）在 Linux x86-64 起 `tests/database/docker-compose.yml`（含 `mssql` profile），以 `YUZORA_DATABASE_TEST_ENGINES=sqlite,postgres,mssql` 跑 `cargo test --locked -p yuzora-db`：寫回、停止、catalog 與 grid 讀取都對真的 PostgreSQL 16 與 SQL Server 2022 執行。該 job 另設 `YUZORA_DATABASE_REQUIRE_ENGINES=postgres,mssql`：被要求的引擎不在 `TEST_ENGINES` 裡時，測試直接失敗而不是跳過（`tests/common/mod.rs`）；fixture 連不上則測試本身的連線失敗。`#[ignore]` 的效能量測不在 CI 跑。本機不設這兩個變數時行為不變。
 
 ## 效能
 
