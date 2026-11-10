@@ -431,10 +431,7 @@ const DIFF_PROBE: &str = r#"
 import { note } from "fixture";
 const scanned = { n: 0 }, built = { n: 0 };
 if (typeof bound === "function") { const f = bound; bound = (s, ...rest) => { scanned.n += s.length; return f(s, ...rest); }; }
-for (const name of ["rank", "widest"]) {
-  const f = { rank: typeof rank === "function" && rank, widest: typeof widest === "function" && widest }[name];
-  if (f) { const wrap = (rows, ...rest) => { scanned.n += rows.length; return f(rows, ...rest); }; if (name === "rank") rank = wrap; else widest = wrap; }
-}
+if (typeof ranks === "function") { const f = ranks; ranks = (rows, ...rest) => { scanned.n += rows.length; return f(rows, ...rest); }; }
 export default class Probed extends GitDiff {
   cell(r, side, ...rest) {
     const el = super.cell(r, side, ...rest);

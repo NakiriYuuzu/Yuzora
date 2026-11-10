@@ -119,6 +119,15 @@ test("a line that is the same on both sides, in an unchanged row, is read once",
   expect(order(same, "r").map((e) => e.cells)).toEqual(order(same, "l").map((e) => e.cells));
 });
 
+test("a line that three cells a character cannot make as wide as the widest read is not read", () => {
+  // Six lines of 900 characters, then five thousand of 200: 600 cells at most each, under the 900 of the four widest.
+  const rows = [...Array.from({ length: 6 }, () => row("a".repeat(900))), ...Array.from({ length: 5000 }, () => row("b".repeat(200)))];
+  const { out, read } = reading(() => ranks(rows, plenty()));
+  expect(read).toBeLessThan(20000);
+  expect(out.l.keys.length).toBe(5006);
+  expect(entry(out.l, 0).cells).toBe(WORST * 200);
+});
+
 test("an unchanged row counts on both sides, a side that has no line counts on none", () => {
   const rows = [{ k: "=", t: "same line" }, row("only on the left"), row(undefined, "only right is a longer line")];
   expect(texts(rows, "l")).toEqual(["only on the left", "same line"]);
