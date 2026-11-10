@@ -60,6 +60,8 @@ export default class FilesSidebar extends View {
     this.lastRequest = shared(REQUEST)?.seq ?? 0;
     this.lastRefresh = shared(REFRESH) ?? 0;
     this.loc = null; this.here = null; this.watching = null; this.watchedRoot = null; this.watchSeq = 0;
+    // The last file click whose check is not over: files open in the order they were clicked.
+    this.opening = null;
     this.relocate(cx);
     this.countUnsaved();
     cx.timer.every(10000, cx => {
@@ -180,24 +182,44 @@ export default class FilesSidebar extends View {
     return row.dir && !row.open && git?.dirMarks.has(row.abs) ? "•" : null;
   }
 
+  // What a click or a right click on `key` is on: a row of the tree on screen, or else a file of the tree that
+  // was replaced just before (the frame the click was made on was drawn from it).
+  target(key) {
+    const here = this.here, row = this.visible().find(x => x.abs === key);
+    if (row) return { abs: row.abs, rel: row.rel, name: row.name, dir: row.dir, root: here.tree.root, row };
+    const was = this.store.listed(here, key);
+    return was ? { abs: key, ...was, row: null } : null;
+  }
+
   // A row is told by its path: whatever the tree is by the time the click is heard, it is that file or none.
   click(key, cx) {
-    const row = this.visible().find(x => x.abs === key);
-    if (!row) return;
-    const here = this.here, loc = this.loc, root = here.tree.root;
-    here.selected = row.rel; this.version++;
-    if (row.dir) this.toggle(row, cx);
-    else if (panel(here).fresh === "fresh") { openFile(row.abs, here.on); cx.notify(); }
-    // A tree still being read again may show what is gone. The file is that of the row, in the Space of the click.
-    else {
-      cx.spawn(async cx => {
-        const there = await within(cx, CHECK_MS, this.store.confirm(here, root, row.rel, () => { this.version++; cx.notify(); }));
+    const at = this.target(key);
+    if (!at) return;
+    const here = this.here;
+    if (at.row) here.selected = at.rel;
+    this.version++;
+    if (at.dir) { if (at.row) this.toggle(at.row, cx); return; }
+    // A tree still being read again, or one that is gone, may show what is not there.
+    this.openChecked(at, Boolean(at.row) && panel(here).fresh === "fresh", cx);
+  }
+
+  // Opens the file in the Space of the click, once it is known to be there when that is in doubt. Files open in
+  // the order they were clicked: a click waits for the checks of those before it.
+  openChecked(file, sure, cx) {
+    const here = this.here, loc = this.loc, ahead = this.opening;
+    if (sure && !ahead) { openFile(file.abs, here.on); cx.notify(); return; }
+    const mine = new Promise(done => cx.spawn(async cx => {
+      try {
+        const there = sure || await within(cx, CHECK_MS, this.store.confirm(here, file.root, file.rel, () => { this.version++; cx.notify(); }));
+        if (ahead) await ahead;
         if (this.loc !== loc) return;
-        if (there === false) notify({ title: t("error.gone", { name: row.name }), level: "warning" });
-        else openFile(row.abs, here.on);
-      });
-      cx.notify();
-    }
+        if (there === false) notify({ title: t("error.gone", { name: file.name }), level: "warning" });
+        else openFile(file.abs, here.on);
+      } finally { done(); }
+    }));
+    this.opening = mine;
+    mine.then(() => { if (this.opening === mine) this.opening = null; });
+    cx.notify();
   }
 
   // Requests from the popup copy (rename, new file …) and refreshes after its actions.
@@ -205,7 +227,7 @@ export default class FilesSidebar extends View {
     const req = shared(REQUEST);
     if (req?.seq && req.seq > this.lastRequest) {
       this.lastRequest = req.seq;
-      if (this.here?.root && req.root === this.here.root) this.startEdit(req.action, req.path, req.dir, cx);
+      if (this.here?.root && this.store.owns(this.here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
     }
     const refresh = shared(REFRESH) ?? 0;
     if (refresh > this.lastRefresh) { this.lastRefresh = refresh; this.reload(cx); }
@@ -438,10 +460,11 @@ export default class FilesSidebar extends View {
   // The right-click popup.
 
   openMenu(key, e, cx) {
-    const row = this.visible().find(x => x.abs === key);
-    if (!row) return;
-    const here = this.here, menu = { abs: row.abs, rel: row.rel, dir: row.dir, root: here.tree.root, on: here.on };
-    here.selected = row.rel; this.version++; cx.notify();
+    const at = this.target(key);
+    if (!at) return;
+    const here = this.here, menu = { abs: at.abs, rel: at.rel, dir: at.dir, root: at.root, on: here.on };
+    if (at.row) here.selected = at.rel;
+    this.version++; cx.notify();
     const items = menuItems(menu);
     openOverlay({ mod: ME, kind: "popup", width: 236, height: 12 + items.filter(i => i).length * 28 + items.filter(i => !i).length * 9, props: { menu } });
   }
