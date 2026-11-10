@@ -245,7 +245,7 @@ fn until(what: &str, mut ready: impl FnMut() -> bool) {
 /// Another connection holds `UPDATE`'s row; the write-back on the pane's
 /// connection waits for it. The pane must show that it is waiting, stop on
 /// request, and be usable afterwards.
-fn write_back_waiting_on_a_lock(connection: &str, t: ObjectRef, begin_and_lock: &str, rollback: &str) {
+fn write_back_waiting_on_a_lock(connection: &str, t: ObjectRef, begin_and_lock: &str, rollback: &str, sessions_waiting: &str) {
     let pane = open(connection, "lock-pane", &t);
     let row = pane.row_where("id", "1");
     pane.edit(row, "name", Some("mine"));
@@ -274,7 +274,17 @@ fn write_back_waiting_on_a_lock(connection: &str, t: ObjectRef, begin_and_lock: 
             panic!("stopping the write-back did not end the wait for the lock");
         }
     };
+    // The server has dropped the statement while the lock is still held: the
+    // stop is not just the pane forgetting it.
+    let still_waiting = (0..50).any(|_| {
+        let waiting = first_row(connection, sessions_waiting) != ["0"];
+        if waiting {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        !waiting
+    });
     release();
+    assert!(still_waiting, "the server is still waiting for the lock after the stop");
     assert_eq!(stopped, Err(DbError::Cancelled));
     {
         let r = results::lock(&pane.set);
@@ -349,6 +359,7 @@ fn postgres_a_write_back_waiting_on_a_row_lock_can_be_stopped() {
         table("yz_wb_lock", "t"),
         "BEGIN; UPDATE yz_wb_lock.t SET name = 'locked' WHERE id = 1",
         "ROLLBACK",
+        "SELECT count(*)::text FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = 'yuzora_p8'",
     );
     run(&id, "setup", "DROP SCHEMA yz_wb_lock CASCADE");
 }
@@ -364,6 +375,7 @@ fn mssql_a_write_back_waiting_on_a_row_lock_can_be_stopped() {
         table("dbo", "t"),
         "BEGIN TRANSACTION; UPDATE dbo.t SET name = N'locked' WHERE id = 1",
         "ROLLBACK TRANSACTION",
+        "SELECT CAST(count(*) AS varchar(5)) FROM sys.dm_exec_requests WHERE blocking_session_id <> 0 AND database_id = DB_ID(N'yz_wb_lock')",
     );
 }
 

@@ -838,11 +838,13 @@ mod tests {
         });
         // The sender drops when the panicking task unwinds.
         assert!(rx.recv().is_err());
+        let started = Instant::now();
         let state = loop {
             let state = job_state(id).expect("the job");
             if !state.running {
                 break state;
             }
+            assert!(started.elapsed() < Duration::from_secs(5), "the job is still running after its work panicked");
             std::thread::sleep(Duration::from_millis(5));
         };
         assert!(state.error.is_some_and(|e| !e.is_empty()));
