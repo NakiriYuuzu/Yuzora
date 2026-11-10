@@ -745,13 +745,26 @@ impl DiffPane {
         gpui_shell::policy::set_default(policy);
         let runtime = ShellRuntime::new_isolated().unwrap();
         let mut mounted = None;
-        let window = cx.add_window(|window, cx| {
-            let root = runtime.try_load(&fixture.0, window, cx).unwrap();
-            mounted = Some(root.clone());
-            Mounted(root)
-        });
+        // Opened at its size, not resized after: made by `add_window` and resized, the window lays out the frame a diff comes in
+        // during at the display's size (1920 by 1080) when a hover callback runs in the first frame, as one on the pane's root
+        // does with the pointer at the window's corner, and that frame measures the rows at it.
+        let bounds = gpui::Bounds::new(gpui::point(px(0.), px(0.)), size(px(wide), px(high)));
+        let window = cx
+            .update(|cx| {
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        let root = runtime.try_load(&fixture.0, window, cx).unwrap();
+                        mounted = Some(root.clone());
+                        gpui::AppContext::new(cx, |_| Mounted(root))
+                    },
+                )
+            })
+            .unwrap();
         let visual = VisualTestContext::from_window(*window.deref(), cx);
-        visual.simulate_resize(size(px(wide), px(high)));
         let mut view = Self { visual, notes, views, wide, high, zoom, person, runtime, root: mounted.unwrap(), extra: 0, laid, expects_pending: opened_drops, _fixture: fixture };
         view.settle();
         view
