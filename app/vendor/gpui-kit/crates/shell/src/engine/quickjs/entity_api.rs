@@ -1205,6 +1205,16 @@ pub fn install(ctx: &Ctx<'_>, module: &Object<'_>, runtime: Weak<ShellRuntime>) 
         }),
     )?;
 
+    // yuzora(git-copy): how far the list is scrolled, for a script to tell which row a pointer is over.
+    let virtual_scroll_offset = runtime.clone();
+    globals.set(
+        "__virtual_scroll_offset",
+        Func::from(move |ctx: Ctx<'_>, handle: EntityHandle| -> JsResult<f64> {
+            let handle = live_virtual_scroll(&ctx, &virtual_scroll_offset, handle)?;
+            Ok(-f64::from(handle.base_handle().offset().y.as_f32()))
+        }),
+    )?;
+
     let discard_virtual_scroll = runtime.clone();
     globals.set(
         "__virtual_scroll_release",
