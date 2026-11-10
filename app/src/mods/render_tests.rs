@@ -10,6 +10,22 @@ use std::{
     time::Instant,
 };
 
+// yuzora(motion): the tests of Yuzora's mod animations, a child so they use these fixtures.
+mod motion_tests;
+
+// yuzora(git-perf): how every test here starts. The shipped yuzora mods call yuzora:* host functions
+// (the status bar asks git about its folder in its first frame) that finish on threads of their own and wake
+// a task of gpui's test scheduler from there. The scheduler calls a wake from another thread nondeterminism,
+// and fails the test at its end, unless the test says it mixes real I/O in. Whether the thread is quicker
+// than the first poll is a race, so no test here may start without this. forbid_parking right after keeps
+// the rest as it was (gpui 0.3.8 remembers the first call for that check only): timers still jump the clock
+// and a wait with nothing left to run still panics, instead of parking in real time.
+fn shell_init(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.executor().forbid_parking();
+    cx.update(gpui_shell::init);
+}
+
 struct Staged(PathBuf);
 impl Staged {
     fn new() -> Self {
@@ -82,7 +98,8 @@ struct Calls {
 
 fn updates(app: &str, core: &str) -> Value {
     json!({
-        "app": {"version":"0.1.0", "updates":app != "source", "ready": (app == "ready").then_some("0.1.1")},
+        // yuzora(win-update): "stuck" is an update whose swap failed, and "failure" the reason Settings > Updates shows for it.
+        "app": {"version":"0.1.0", "updates":app != "source", "ready": matches!(app, "ready" | "stuck").then_some("0.1.1"), "failure": (app == "stuck").then(|| crate::yuzora::release::update::swap_failure_text(true, "(os error 32)"))},
         "core": {"version":"0.1.5", "ready":(core == "ready").then_some("0.1.6"), "managed":(core == "managed").then_some("homebrew"), "error":(core == "error").then_some("offline"), "updating":core == "updating"},
         "checked":1700000000, "checks":app != "source", "checking":false
     })
@@ -244,7 +261,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
 
 #[gpui::test]
 fn mod_copies_share_code_without_sharing_props_state_or_lifetime(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let root = staged.0.join("cache");
     std::fs::create_dir_all(&root).unwrap();
@@ -303,7 +320,7 @@ export default class Panel extends View {
 
 #[gpui::test]
 fn mod_code_revisions_share_successes_and_failures_without_poisoning_old_copies(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let root = staged.0.join("cache");
     std::fs::create_dir_all(&root).unwrap();
@@ -351,7 +368,7 @@ export default class Panel extends View { render() { return div().child('version
 
 #[gpui::test]
 fn mod_host_imports_keep_sync_async_and_missing_export_surfaces_distinct(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let root = staged.0.join("cache");
     std::fs::create_dir_all(&root).unwrap();
@@ -437,7 +454,7 @@ fn props() -> Value {
 
 #[gpui::test]
 fn shipped_initial_descriptions(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let start = Instant::now();
     let staged = Staged::new();
     let entries = staged.entries();
@@ -460,7 +477,7 @@ fn shipped_initial_descriptions(cx: &mut TestAppContext) {
 /// staged folder's drop recreates it, and the folder outlives the test.
 #[gpui::test]
 fn a_described_mod_leaves_no_folder_behind(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let path = staged.0.clone();
     describe(cx, &staged, "mods/agents", true, props(), updates("current", "current"), None).unwrap();
@@ -471,7 +488,7 @@ fn a_described_mod_leaves_no_folder_behind(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn brand_leaves_room_for_macos_traffic_lights_only_outside_full_screen(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (fullscreen, inset) in [(false, true), (true, false)] {
         let mut values = fixture(true, props(), updates("current", "current"));
@@ -484,7 +501,7 @@ fn brand_leaves_room_for_macos_traffic_lights_only_outside_full_screen(cx: &mut 
 
 #[gpui::test]
 fn tabs_leave_room_for_macos_traffic_lights(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (platform, titlebar, fullscreen, width, lights, zoom, expected) in [
         ("macos", "none", false, 44, true, 1.0, 32),
@@ -516,7 +533,7 @@ fn tabs_leave_room_for_macos_traffic_lights(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn windows_tab_buttons_use_matching_vector_icons(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for platform in ["windows", "linux"] {
         for maximized in [false, true] {
@@ -537,7 +554,7 @@ fn windows_tab_buttons_use_matching_vector_icons(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for which in ["font", "ui_font"] {
         let mut p = props();
@@ -555,7 +572,7 @@ fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn long_theme_names_stay_inside_their_card(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let long = "catppuccin-macchiato";
     let mut p = props();
@@ -580,7 +597,7 @@ fn long_theme_names_stay_inside_their_card(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn confirm_dialog_background_follows_the_frame_corners(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut p = props();
     p["title"] = json!("Close space?");
@@ -592,7 +609,7 @@ fn confirm_dialog_background_follows_the_frame_corners(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn layout_previews_stay_inside_their_cards(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("look");
@@ -610,7 +627,7 @@ fn layout_previews_stay_inside_their_cards(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn check_materializes_retained_elements_in_a_rendered_view(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for body in [
         "v_flex().h(400).child(v_virtual_list('rows', 0, 28, (i) => 'a', () => { throw new Error('deferred rows ran'); }))",
@@ -633,7 +650,7 @@ fn check_materializes_retained_elements_in_a_rendered_view(cx: &mut TestAppConte
 
 #[gpui::test]
 fn rebuilt_machine_offers_connect_only_for_identity_mismatch(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (state, why, offered) in [
         ("unreachable", "a different core answers there (\"new-id\")", true),
@@ -655,7 +672,7 @@ fn rebuilt_machine_offers_connect_only_for_identity_mismatch(cx: &mut TestAppCon
 
 #[gpui::test]
 fn machine_picker_keeps_long_lists_scrollable(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let tree = describe(
         cx, &staged, "mods/machine-add", false, props(), updates("current", "current"),
@@ -670,7 +687,7 @@ fn machine_picker_keeps_long_lists_scrollable(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn machine_add_needing_input_keeps_the_picker_and_shows_instructions(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let calls = Rc::new(RefCell::new(Calls::default()));
     let policy = Policy::new().with_host_module(module(fixture(false, props(), updates("current", "current")), calls.clone())).unwrap();
@@ -694,7 +711,7 @@ fn machine_add_needing_input_keeps_the_picker_and_shows_instructions(cx: &mut Te
 
 #[gpui::test]
 fn option_key_settings_are_only_shown_on_macos(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for platform in ["linux", "windows", "macos"] {
         let mut p = props();
@@ -711,7 +728,7 @@ fn option_key_settings_are_only_shown_on_macos(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn settings_sections_and_updates(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let start = Instant::now();
     let staged = Staged::new();
     for section in ["look", "alerts", "privacy", "updates"] {
@@ -756,13 +773,130 @@ fn settings_sections_and_updates(cx: &mut TestAppContext) {
     eprintln!("27 settings cases, each twice: {:?}", start.elapsed());
 }
 
+// yuzora(win-update): the whole reason a swap failed is a paragraph in Settings › Updates; the toast that points there holds a line.
+/// The lines of `tree` above `at` that enclose it, nearest first.
+fn enclosing(tree: &str, at: usize) -> Vec<&str> {
+    let lines: Vec<&str> = tree.lines().collect();
+    let depth = |l: &str| l.len() - l.trim_start().len();
+    let mut out = Vec::new();
+    let mut want = depth(lines[at]);
+    for line in lines[..at].iter().rev() {
+        if depth(line) < want {
+            out.push(*line);
+            want = depth(line);
+        }
+    }
+    out
+}
+
+const CLIPS: [&str; 4] = [
+    "truncate",
+    "whitespace_nowrap",
+    "text_ellipsis",
+    "overflow_hidden",
+];
+
+#[gpui::test]
+fn a_failed_swap_is_explained_in_full_under_settings_updates(cx: &mut TestAppContext) {
+    shell_init(cx);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("updates");
+    let reason = crate::yuzora::release::update::swap_failure_text(true, "(os error 32)");
+    assert!(
+        reason.len() > 250,
+        "the reason is a paragraph, far past one toast line: {reason}"
+    );
+    let tree = describe(
+        cx,
+        &staged,
+        "frame/settings",
+        true,
+        p.clone(),
+        updates("stuck", "current"),
+        None,
+    )
+    .unwrap();
+    assert!(
+        tree.contains("st-app-update-failure") && tree.contains("st-app-update"),
+        "Restart stays, and the reason sits with it: {tree}"
+    );
+    let at = tree
+        .lines()
+        .position(|l| l.trim() == format!("text {reason:?}"))
+        .unwrap_or_else(|| panic!("the whole reason as one piece of text: {tree}"));
+    let lines: Vec<&str> = tree.lines().collect();
+    for line in std::iter::once(lines[at - 1]).chain(enclosing(&tree, at)) {
+        assert!(
+            CLIPS.iter().all(|clip| !line.contains(clip)),
+            "the reason is cut off by {line}"
+        );
+    }
+    // The harness has no catalog for the frame (it prints the key), so look the heading up where the app does.
+    assert!(tree.contains("text \"updates.failed\""), "{tree}");
+    let catalog: Value =
+        serde_json::from_str(include_str!("../../defaults/frame/settings/i18n/en.json")).unwrap();
+    assert!(
+        catalog["updates"]["failed"]
+            .as_str()
+            .is_some_and(|heading| heading.contains("could not be installed"))
+    );
+    let none = describe(
+        cx,
+        &staged,
+        "frame/settings",
+        true,
+        p,
+        updates("ready", "current"),
+        None,
+    )
+    .unwrap();
+    assert!(
+        !none.contains("st-app-update-failure") && !none.contains("another program"),
+        "nothing failed: nothing to explain: {none}"
+    );
+}
+
+#[gpui::test]
+fn the_toast_for_a_failed_swap_shows_its_title_and_body_whole(cx: &mut TestAppContext) {
+    shell_init(cx);
+    let staged = Staged::new();
+    for busy in [true, false] {
+        let toast = crate::yuzora::release::update::toast_of(busy);
+        let mut note = toast["notification"].clone();
+        note["overlay"] = json!("o1");
+        let (title, body) = (
+            note["title"].as_str().unwrap().to_owned(),
+            note["body"].as_str().unwrap().to_owned(),
+        );
+        let tree = describe(
+            cx,
+            &staged,
+            "mods/toast",
+            true,
+            note,
+            updates("stuck", "current"),
+            None,
+        )
+        .unwrap();
+        for text in [&title, &body] {
+            assert!(tree.contains(&format!("text {text:?}")), "{text}: {tree}");
+        }
+        assert_eq!(
+            tree.matches(".truncate").count(),
+            2,
+            "the toast truncates one line each, so each line has to fit it (update.rs checks their width): {tree}"
+        );
+    }
+}
+
 #[gpui::test]
 fn animated_images_advance_with_explicit_and_implicit_ids(cx: &mut TestAppContext) {
     use gpui::{IntoElement as _, http_client::{AsyncBody, FakeHttpClient, Response}};
     use image::{Delay, Frame, Rgba, RgbaImage, codecs::gif::GifEncoder};
     use std::{sync::Arc, time::Duration};
 
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let mut bytes = Vec::new();
     {
         let mut encoder = GifEncoder::new(&mut bytes);
@@ -808,7 +942,7 @@ fn animated_images_advance_with_explicit_and_implicit_ids(cx: &mut TestAppContex
 
 #[gpui::test]
 fn settings_keep_notes_in_the_whats_new_window(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let notes = json!([
         {"version":"1.8.0","date":"2026-10-26","items":[{"headline":"Newest headline","detail":"Newest details","fixed":false,"media":[]},{"headline":"","detail":"Newest fix","fixed":true,"media":[]}],"spotlight":true},
@@ -831,7 +965,7 @@ fn settings_keep_notes_in_the_whats_new_window(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let start = Instant::now();
     let staged = Staged::new();
     for page in 1..=4 {
@@ -925,7 +1059,7 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn duplicate_element_negative_control(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let dir = staged.0.join("negative");
     std::fs::create_dir(&dir).unwrap();
@@ -1008,7 +1142,7 @@ fn shipped_layouts_and_keys() {
 
 #[gpui::test]
 fn picker_scrolls_the_selection_into_view(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut values = fixture(true, props(), updates("current", "current"));
     let tabs: Vec<Value> = (1..=12)
@@ -1028,7 +1162,7 @@ fn picker_scrolls_the_selection_into_view(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut bound = fixture(true, props(), updates("current", "current"));
     bound.insert("keys".into(), json!([{"section":"global","keys":"ctrl-p","action":"app.palette"}]));
@@ -1048,7 +1182,7 @@ fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
 // that fills its parent) it drew nothing under the place pills.
 #[gpui::test]
 fn yuzora_new_pane_menu_shows_its_list_in_an_overlay(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let menu = json!({"menu":"pane","overlay":"o1"});
     let line = |tree: &str, id: &str| tree.lines().find(|l| l.contains(&format!("\"{id}\""))).unwrap_or_else(|| panic!("{id} missing: {tree}")).to_owned();
@@ -1083,7 +1217,7 @@ fn yuzora_new_pane_menu_shows_its_list_in_an_overlay(cx: &mut TestAppContext) {
 // sidebar is where Spaces are told apart); switching Space swaps the tabs, none active shows none.
 #[gpui::test]
 fn yuzora_tab_bar_lists_only_the_current_space(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let tab = |id: &str, active: bool, settled: bool| json!({"id":id,"index":1,"name":id,"active":active,"status":"idle","panes":1,"zoomed":false,"settled":settled,"settled_at":null,"changed_at":null,"working_since":null});
     let spaces = |active: Option<&str>| json!([
@@ -1109,7 +1243,7 @@ fn yuzora_tab_bar_lists_only_the_current_space(cx: &mut TestAppContext) {
 // layout it lands in Herdr's own `main`, where none of Yuzora's features exist (2026-11-04).
 #[gpui::test]
 fn yuzora_tools_menu_has_no_next_layout_row(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let tree = describe(cx, &staged, "mods/yuzora-sidebar-workspace", true, json!({"menu":"tools","overlay":"o1"}), updates("current", "current"), None).unwrap();
     assert!(tree.contains("\"m-palette\"") && tree.contains("\"m-help\""), "the other rows stay: {tree}");
@@ -1120,7 +1254,7 @@ fn yuzora_tools_menu_has_no_next_layout_row(cx: &mut TestAppContext) {
 // 2026-11-04), with or without a focused pane; "+" and the window's tabs stay.
 #[gpui::test]
 fn yuzora_tab_bar_has_no_new_pane_or_split_buttons(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for populated in [true, false] {
         let tree = describe(cx, &staged, "mods/yuzora-shell-tabs", populated, json!({}), updates("current", "current"), None).unwrap();
@@ -1135,7 +1269,7 @@ fn yuzora_tab_bar_has_no_new_pane_or_split_buttons(cx: &mut TestAppContext) {
 // the menu as a centered dialog of this mod.
 #[gpui::test]
 fn yuzora_new_pane_command_opens_the_menu(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let open = |cx: &mut TestAppContext, command: &str| {
         let calls = Rc::new(RefCell::new(Calls::default()));
@@ -1172,7 +1306,7 @@ fn yuzora_new_pane_command_opens_the_menu(cx: &mut TestAppContext) {
 // pane, or a new tab when nothing is focused.
 #[gpui::test]
 fn yuzora_new_pane_menu_puts_a_pick_where_the_pills_say(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut picks = |populated: bool, setup: &str| {
         let calls = Rc::new(RefCell::new(Calls::default()));
@@ -1300,7 +1434,7 @@ fn select_and_show(mode: &str) -> Vec<Value> {
 // panel shown; the one showing closes the panel (a second show would leave it open).
 #[gpui::test]
 fn yuzora_dock_bar_switches_modes(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let bar = json!({"dock": "bar"});
     let closed = dock_layout(include_str!("../../defaults/layouts/main.json"));
@@ -1340,7 +1474,7 @@ fn yuzora_dock_bar_switches_modes(cx: &mut TestAppContext) {
 // it can't hold them), on the side away from its edge; vertical, the names sit inside the icons.
 #[gpui::test]
 fn yuzora_dock_drawer_opens_a_window(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layout = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
     let place = |edge: &str, vertical: bool| json!({"edge": edge, "align": "center", "vertical": vertical, "hovered": false, "dragging": false});
@@ -1404,7 +1538,7 @@ fn yuzora_dock_drawer_opens_a_window(cx: &mut TestAppContext) {
 // open one says so, and it takes no commands (the drawer does; a header copy would answer them too).
 #[gpui::test]
 fn yuzora_dock_head_acts_on_its_window(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layout = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
     let head = |cx: &mut TestAppContext, overlay: &str, shared: &[(&str, Value)], commands: &[&str], setup: Option<&str>| {
@@ -1439,7 +1573,7 @@ fn yuzora_dock_head_acts_on_its_window(cx: &mut TestAppContext) {
 // The scenario swaps the page's data and its two settings accessors, so nothing of the person's is read or written.
 #[gpui::test]
 fn yuzora_settings_mods_sets_the_dock_per_layout(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layouts = r#"[
         { name: 'win98', path: '/x/win98.json', valid: true, shipped: true, cloned_from: null, preview: null, dock: null, source: 'shipped' },
@@ -1497,7 +1631,7 @@ fn yuzora_settings_mods_sets_the_dock_per_layout(cx: &mut TestAppContext) {
 // Changes buttons: the modes aren't registered there (an option the spec turned down).
 #[gpui::test]
 fn yuzora_dock_leaves_workspace_panels_alone(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let main = dock_layout(include_str!("../../defaults/layouts/main.json"));
     let terminals = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
@@ -1518,7 +1652,7 @@ fn yuzora_dock_leaves_workspace_panels_alone(cx: &mut TestAppContext) {
 // (the command, handled above), or an old clone's sidebar stack (the legacy bar takes it too).
 #[gpui::test]
 fn yuzora_status_branch_opens_git_in_the_dock(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layout = dock_layout(include_str!("../../defaults/layouts/main.json"));
     let click = dock_copy(cx, &staged, "mods/yuzora-statusbar", json!({}), &layout, Value::Null, &[], &[], Some("this.openGit();"));
@@ -1578,7 +1712,7 @@ fn yuzora_status_branch_opens_git_in_the_dock(cx: &mut TestAppContext) {
 // nothing to say, and Herdr's mods and this one agree after one pass (no ping-pong).
 #[gpui::test]
 fn yuzora_dock_keeps_space_colors_in_step(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let main = dock_layout(include_str!("../../defaults/layouts/main.json"));
     let terminals = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
@@ -1614,7 +1748,7 @@ fn yuzora_dock_keeps_space_colors_in_step(cx: &mut TestAppContext) {
 // Space color write: Herdr's `spaces` mod must not stay on color names while the tabs are in Yuzora's hex.
 #[gpui::test]
 fn yuzora_tab_bar_keeps_space_colors_in_step(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layout = dock_layout(include_str!("../../defaults/layouts/main.json"));
     let theirs = |copy: &DockCopy| copy.shared.get("space.colors").cloned();
@@ -1634,7 +1768,7 @@ fn yuzora_tab_bar_keeps_space_colors_in_step(cx: &mut TestAppContext) {
 // Git): no saved choice means none, a saved one stays, and Settings > General turns them on and off.
 #[gpui::test]
 fn yuzora_herdr_panels_start_off(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let shown: Value = serde_json::from_str(include_str!("../../defaults/layouts/yuzora.json")).unwrap();
     let mut session = |entry: &str, layout: &Value, saved: Option<Value>, setup: Option<&str>| {
@@ -1721,36 +1855,96 @@ impl gpui::Render for Mounted {
 struct Scenario {
     visual: gpui::VisualTestContext,
     notes: Rc<RefCell<Vec<Vec<Value>>>>,
-    _calls: Rc<RefCell<Calls>>,
+    calls: Rc<RefCell<Calls>>,
+    runtime: Rc<ShellRuntime>,
+    root: gpui::Entity<gpui_shell::ShellRoot>,
 }
 
 impl Scenario {
     /// `source` replaces the staged main.js; it may `import { note } from "probe"`.
     fn mount(cx: &mut TestAppContext, staged: &Staged, source: &str, width: f32, height: f32) -> Self {
+        Self::mount_with_props(cx, staged, source, props(), width, height)
+    }
+
+    /// `mount` with the `props()` the mod reads being `props`.
+    fn mount_with_props(
+        cx: &mut TestAppContext,
+        staged: &Staged,
+        source: &str,
+        props: Value,
+        width: f32,
+        height: f32,
+    ) -> Self {
         use std::ops::Deref;
         let calls = Rc::new(RefCell::new(Calls::default()));
         let notes: Rc<RefCell<Vec<Vec<Value>>>> = Rc::default();
         let sink = notes.clone();
         let policy = Policy::new()
             .with_storage_path(staged.0.join("store-scenario.json"))
-            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
-            .with_host_module(module(fixture(false, props(), updates("current", "current")), calls.clone()))
+            .with_capabilities(
+                Capabilities::new()
+                    .storage(true)
+                    .read_roots([staged.0.clone()]),
+            )
+            .with_host_module(module(
+                fixture(false, props, updates("current", "current")),
+                calls.clone(),
+            ))
             .unwrap();
         let policy = crate::yuzora::with_modules(policy, "")
             .with_host_module(HostModule::new("probe").function("note", move |a| {
-                sink.borrow_mut().push((0..8).map_while(|i| a.get(i)).map(from_host).collect());
+                sink.borrow_mut()
+                    .push((0..8).map_while(|i| a.get(i)).map(from_host).collect());
                 Ok(HostValue::Null)
             }))
             .unwrap();
         gpui_shell::policy::set_default(policy);
         std::fs::write(staged.0.join("main.js"), source).unwrap();
         let runtime = ShellRuntime::new_isolated().unwrap();
-        let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&staged.0, window, cx).unwrap()));
+        let window =
+            cx.add_window(|window, cx| Mounted(runtime.try_load(&staged.0, window, cx).unwrap()));
+        let root = window
+            .read_with(cx, |mounted, _| mounted.0.clone())
+            .unwrap();
         let visual = gpui::VisualTestContext::from_window(*window.deref(), cx);
         visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
-        let mut scenario = Self { visual, notes, _calls: calls };
+        let mut scenario = Self {
+            visual,
+            notes,
+            calls,
+            runtime,
+            root,
+        };
         scenario.settle();
         scenario
+    }
+
+    /// What another mod copy does with `setShared`, then the window drawing every mod again, as it does for a change of shared state.
+    fn share(&mut self, key: &str, value: Value) {
+        self.put(key, value);
+        self.frame();
+        self.settle();
+    }
+
+    fn put(&self, key: &str, value: Value) {
+        self.calls.borrow_mut().shared.insert(key.into(), value);
+    }
+
+    /// One frame of every mod, and nothing run that the frame left behind (a timer, a task).
+    fn frame(&mut self) {
+        let (runtime, root) = (self.runtime.clone(), self.root.clone());
+        self.visual.update(|window, cx| {
+            runtime.refresh(&root, cx).unwrap();
+            window.draw(cx).clear(cx);
+        });
+    }
+
+    /// The clock moving on: what a mod left for a timer (`cx.timer.after`) runs, then the frames it asked for are drawn.
+    fn tick(&mut self, millis: u64) {
+        self.visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(millis));
+        self.settle();
     }
 
     fn settle(&mut self) {
@@ -1845,7 +2039,7 @@ fn state(s: &Scenario) -> (Option<f64>, f64, f64) {
 // yuzora(L2): the commit message scrolls. `overflow_y_scrollbar` with a `max_h` did not move.
 #[gpui::test]
 fn git_log_commit_message_scrolls_and_the_files_stay(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (side, width, height) in [(true, 340.0, 600.0), (false, 700.0, 260.0)] {
         let mut s = Scenario::mount(cx, &staged, &detail_scenario(300, side, width, height, 40), width, height);
@@ -1864,7 +2058,7 @@ fn git_log_commit_message_scrolls_and_the_files_stay(cx: &mut TestAppContext) {
 // yuzora(L2): drag the bar between the info and the files; the heights follow and stop at the minimums.
 #[gpui::test]
 fn git_log_detail_divider_drags_and_keeps_minimums(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (side, width, height) in [(true, 340.0, 600.0), (false, 700.0, 300.0)] {
         let mut s = Scenario::mount(cx, &staged, &detail_scenario(300, side, width, height, 40), width, height);
@@ -1895,7 +2089,7 @@ fn git_log_detail_divider_drags_and_keeps_minimums(cx: &mut TestAppContext) {
 // yuzora(L2): a pane too short for the default height still shows the divider and 72px of files.
 #[gpui::test]
 fn git_log_detail_default_height_leaves_room_for_the_files(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (side, width, height) in [(true, 340.0, 300.0), (true, 340.0, 200.0), (false, 700.0, 200.0)] {
         let s = Scenario::mount(cx, &staged, &detail_scenario(300, side, width, height, 40), width, height);
@@ -1909,7 +2103,7 @@ fn git_log_detail_default_height_leaves_room_for_the_files(cx: &mut TestAppConte
 // yuzora(L2): leaving the pane with the button down ends the drag (its release would not be seen).
 #[gpui::test]
 fn git_log_detail_divider_drag_ends_when_the_pointer_leaves_the_pane(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut s = Scenario::mount(cx, &staged, &detail_scenario(300, true, 340.0, 600.0, 40), 700.0, 600.0);
     let (_, visible, _) = state(&s);
@@ -1927,7 +2121,7 @@ fn git_log_detail_divider_drag_ends_when_the_pointer_leaves_the_pane(cx: &mut Te
 // one text per paragraph (a text per line cost 12ms of the 50ms JS render budget at 2000 lines).
 #[gpui::test]
 fn git_log_commit_message_is_shown_whole_up_to_a_cap(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (lines, cut) in [(100, false), (2500, true)] {
         let setup = format!(
@@ -1951,7 +2145,7 @@ fn git_log_commit_message_is_shown_whole_up_to_a_cap(cx: &mut TestAppContext) {
 // area is as tall as its limit either way, so it is measured by how far the message scrolls.
 #[gpui::test]
 fn git_log_commit_message_paragraphs_in_the_panel_take_the_height_of_their_lines(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let scrolled = |cx: &mut TestAppContext, line: &str, lines: usize| {
         let mut s = Scenario::mount(cx, &staged, &detail_scenario_of(line, lines, true, 340.0, 600.0, 0), 340.0, 600.0);
@@ -2003,7 +2197,7 @@ export default class Scenario extends Real {{
 // empty list leave room for their text, and a click anywhere in the frame leaves the keys working.
 #[gpui::test]
 fn yuzora_git_repo_picker_fills_its_overlay_frame(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let size = |s: &Scenario, k: &str| s.last(k).map(|v| v[2].as_f64().unwrap()).unwrap_or_else(|| panic!("{k} not measured"));
     let picked = |s: &mut Scenario, y: f64| {
         let before = s.notes.borrow().len();
@@ -2052,21 +2246,22 @@ const file = {{ path: "{path}", kind: "M", add: {add}, del: {del} }};
 export default class Scenario extends Real {{
   init(p, cx) {{
     super.init(p, cx);
-    this.st = {{ conflicts: [], staged: [], unstaged: [], untracked: [], counts: {{ total: 1 }} }};
-    this.st["{section}" === "unstaged" ? "unstaged" : "{section}"].push(file);
+    this.v.st = {{ conflicts: [], staged: [], unstaged: [], untracked: [], counts: {{ total: 1 }} }};
+    this.v.st["{section}" === "unstaged" ? "unstaged" : "{section}"].push(file);
+    this.v.confirmed = true; // yuzora(v0.1.0 E1 r1): a view made by hand counts as read, as a click on its buttons needs
   }}
   act() {{ this.acted = true; }}
   openDiff() {{ this.diffed = true; }}
   render(cx) {{
     const probe = (slot, kind) => (kind ? (e) => note("at:" + slot, e.bounds.x, e.bounds.width) : (size) => note(slot, size.width));
-    const key = "{section}:{path}";
+    const key = `${{this.v.key}}|{section}:{path}`;
     return div().id("list").w({width}).px(6)
       .on_size_change((size) => {{ this.listWidth = size.width; }})
       .on_mouse_down("left", (e) => {{ this.downX = e.local_position.x; }})
       .on_click((_e, cx) => {{
-        this.acted = false; this.diffed = false; this.confirmDiscard = null;
+        this.acted = false; this.diffed = false; this.v.confirmDiscard = null;
         this.clickRow(key, cx);
-        note("result", this.confirmDiscard ? "discard" : this.acted ? "act" : this.diffed ? "diff" : "none");
+        note("result", this.v.confirmDiscard ? "discard" : this.acted ? "act" : this.diffed ? "diff" : "none");
       }})
       .child(this.fileRow({{ section: "{section}", f: file }}, theme(), probe));
   }}
@@ -2083,7 +2278,7 @@ fn number(n: &Value) -> f64 {
 // the buttons: they stay at the right edge, wherever clickRow counts from.
 #[gpui::test]
 fn sidebar_git_row_keeps_counts_and_buttons_clear_of_the_name(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let long = format!("deep/er/{}/{}.rs", "folder".repeat(10), "a-very-long-file-name".repeat(4));
     for (section, buttons) in [("unstaged", 2usize), ("staged", 1), ("conflicts", 1)] {
@@ -2116,7 +2311,7 @@ fn sidebar_git_row_keeps_counts_and_buttons_clear_of_the_name(cx: &mut TestAppCo
 // and measured like the real one, clicks go through the real `clickRow` (the virtual list is not laid out in a test window).
 #[gpui::test]
 fn sidebar_git_row_buttons_are_where_clickrow_counts_them(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let long = format!("deep/{}.rs", "a-long-file-name".repeat(3));
     for (section, expect) in [("unstaged", vec![("action:↺", "discard"), ("action:+", "act")]), ("staged", vec![("action:−", "act")])] {
@@ -2189,7 +2384,7 @@ export default class Scenario extends Real {{
 // paragraph and after the last too, a whitespace-only line is blank).
 #[gpui::test]
 fn git_log_commit_message_paragraphs_lay_out_like_a_div_per_line(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let long = "word ".repeat(60);
     for (name, body, blocks) in [
@@ -2220,7 +2415,7 @@ fn this_run() -> Value {
 // S1 (live half): the dock choice leaving the drawer closes the drawer's window at once (the one of this run only).
 #[gpui::test]
 fn yuzora_settings_mods_closes_the_drawers_window(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let scenario = |pick: &str| format!(
         "this.refresh = () => {{}}; this.list = () => {{}}; /*before-init*/ const rows = [ {{ name: 'win98', path: '/x/win98.json', valid: true, shipped: true, cloned_from: null, preview: null, dock: null, source: 'shipped' }}, \
@@ -2261,7 +2456,7 @@ fn yuzora_settings_mods_and_the_dock_name_the_same_section() {
 // Bug (acceptance): the mode bar lights a mode only while the panel is open on it: on Changes, or with the panel closed, no mode is lit.
 #[gpui::test]
 fn yuzora_dock_bar_lights_only_the_mode_the_panel_shows(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let closed = dock_layout(include_str!("../../defaults/layouts/main.json"));
     let draw = |cx: &mut TestAppContext, layout: &Value| dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": "bar"}), layout, Value::Null, &[], &[], None).tree;
@@ -2288,7 +2483,7 @@ fn yuzora_dock_bar_lights_only_the_mode_the_panel_shows(cx: &mut TestAppContext)
 // reads on the selected color of every theme (the token's strong white did not on win98's light gray).
 #[gpui::test]
 fn yuzora_dock_selected_mode_uses_the_theme_foreground(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layout = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
     let place = json!({"edge": "right", "align": "center", "vertical": true, "hovered": false, "dragging": false});
@@ -2303,4 +2498,999 @@ fn yuzora_dock_selected_mode_uses_the_theme_foreground(cx: &mut TestAppContext) 
 
 fn tokens_text_strong() -> String {
     yuzora_core::tokens::for_theme(false)["text"]["strong"].as_str().unwrap().to_owned()
+}
+
+// yuzora(v0.1.0 D1): from here to the end of the file, the Database table pane in a window: its toolbar in a
+// narrow pane, and the bar that asks about edits not written. None of it is upstream's.
+/// The Database table pane's toolbar with a job running (its Stop shows), whose clicks `note`.
+const DB_TOOLBAR: &str = r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import { note } from "probe";
+export default class Scenario extends Real {
+  init(p, cx) {
+    super.init(p, cx);
+    this.target = { connection: "c", database: null, schema: "public", name: "customers_with_a_long_name", kind: "table" };
+    this.state = { id: 1, running: true, version: 1, elapsedMs: 0, error: null, cancelled: false, results: [] };
+    this.stop = () => note("stop");
+  }
+}
+"#;
+
+/// Where a click lands on what `note`s `name` when clicked: the corners of the box of such points.
+fn clickable(s: &mut Scenario, name: &str, width: f32, height: f32) -> Option<(f32, f32, f32, f32)> {
+    let mut found: Option<(f32, f32, f32, f32)> = None;
+    for y in (0..height as i32).step_by(3) {
+        for x in (0..width as i32).step_by(3) {
+            s.notes.borrow_mut().clear();
+            let position = gpui::point(gpui::px(x as f32), gpui::px(y as f32));
+            let modifiers = gpui::Modifiers::default();
+            s.visual.simulate_event(gpui::MouseDownEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+            s.visual.simulate_event(gpui::MouseUpEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1 });
+            if s.last(name).is_some() {
+                let (x, y) = (x as f32, y as f32);
+                found = Some(found.map_or((x, y, x, y), |(x0, y0, x1, y1)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y))));
+            }
+        }
+    }
+    found
+}
+
+// The dock leaves a table pane 110 to 230 px: the toolbar's Stop was pushed out of it by the name and the tabs.
+#[gpui::test]
+fn the_database_toolbars_stop_stays_inside_a_narrow_pane(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for width in [110.0_f32, 150.0, 240.0] {
+        let mut s = Scenario::mount(cx, &staged, DB_TOOLBAR, width, 400.0);
+        let (x0, _, x1, _) = clickable(&mut s, "stop", width, 100.0).unwrap_or_else(|| panic!("{width}px: Stop can't be clicked anywhere in the pane"));
+        assert!(x1 < width - 6.0, "{width}px: Stop reaches the pane's edge ({x0}..{x1}), so it is cut off");
+        assert!(x1 - x0 >= 30.0, "{width}px: only {x0}..{x1} of Stop can be pressed");
+    }
+}
+
+/// A result of the Database table pane with one edited cell, and the confirm
+/// bar asking about it, whose buttons `note`. The bar stays up however it is
+/// answered, so the whole of it can be felt for.
+fn db_confirm(writing: bool) -> (u64, String) {
+    use yuzora_db::{model::{Cell, Column}, results::{self, WriteState, WriteStop}};
+    let set = results::create("render-confirm", "select * from customers");
+    let id = {
+        let mut r = results::lock(&set);
+        r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
+        r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+        r.complete = true;
+        r.edits.insert((0, 1), Cell::text("x"));
+        if writing {
+            r.write = WriteState::Writing(WriteStop::new());
+        }
+        r.id
+    };
+    let source = format!(
+        r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import {{ note }} from "probe";
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    super.init(p, cx);
+    this.target = {{ connection: "c", database: null, schema: "public", name: "customers", kind: "table" }};
+    this.state = {{ id: 1, running: false, version: 1, elapsedMs: 0, error: null, cancelled: false,
+      results: [{{ id: {id}, statement: "select * from customers", columns: 2, rows: 1, edits: 1 }}] }};
+    let confirm = {{ count: 1, action: () => note("drop") }};
+    Object.defineProperty(this, "confirm", {{
+      get() {{ return confirm; }},
+      set(v) {{ if (v === null) note("closed"); else confirm = v; }},
+      configurable: true,
+    }});
+    this.stopSaving = () => note("stop");
+    this.run = () => {{}};
+  }}
+}}
+"#
+    );
+    (id, source)
+}
+
+/// Where clicks land on what `note`s each of `names`, in one pass over the pane's top `height` px: the corners of each box of such points.
+fn clickables(s: &mut Scenario, names: &[&str], width: f32, height: f32) -> Vec<Option<(f32, f32, f32, f32)>> {
+    let mut found: Vec<Option<(f32, f32, f32, f32)>> = vec![None; names.len()];
+    for y in (0..height as i32).step_by(4) {
+        for x in (0..width as i32).step_by(4) {
+            s.notes.borrow_mut().clear();
+            let position = gpui::point(gpui::px(x as f32), gpui::px(y as f32));
+            let modifiers = gpui::Modifiers::default();
+            s.visual.simulate_event(gpui::MouseDownEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+            s.visual.simulate_event(gpui::MouseUpEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1 });
+            for (i, name) in names.iter().enumerate() {
+                if s.last(name).is_some() {
+                    let (x, y) = (x as f32, y as f32);
+                    found[i] = Some(found[i].map_or((x, y, x, y), |(x0, y0, x1, y1)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y))));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The answers of the bar, each pressable in the pane (`None`: the answer is not there).
+fn answers_inside(width: f32, boxes: &[Option<(f32, f32, f32, f32)>], names: &[&str]) {
+    for (name, found) in names.iter().zip(boxes) {
+        let (x0, _, x1, _) = found.unwrap_or_else(|| panic!("{width}px: {name} can't be clicked anywhere in the pane: {boxes:?}"));
+        assert!(x1 < width - 2.0 && x1 - x0 >= 24.0, "{width}px: {name} is only {x0}..{x1} inside the pane: {boxes:?}");
+    }
+}
+
+// The dock leaves a table pane 110 to 230 px: both answers stay in it, wherever the bar wraps them.
+#[gpui::test]
+fn the_database_table_pane_asks_about_unwritten_edits_in_a_narrow_pane(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let (_, source) = db_confirm(false);
+    for width in [110.0_f32, 150.0, 228.0, 320.0] {
+        let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+        let names = ["drop", "closed"];
+        answers_inside(width, &clickables(&mut s, &names, width, 260.0), &names);
+    }
+}
+
+// A save in flight can't be told to forget the edits it carries: the bar offers to wait for it or to stop it, not to discard.
+#[gpui::test]
+fn the_database_table_pane_does_not_offer_to_discard_edits_that_are_being_written(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let (_, source) = db_confirm(true);
+    for width in [110.0_f32, 228.0, 420.0] {
+        let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+        let boxes = clickables(&mut s, &["drop", "stop", "closed"], width, 260.0);
+        assert!(boxes[0].is_none(), "{width}px: the bar offers to discard edits that are being written: {boxes:?}");
+        answers_inside(width, &boxes[1..], &["stop", "closed"]);
+    }
+}
+
+/// The Database table pane as a person drives it: Run with an edited cell in
+/// the result, then an answer in the bar. `probe` mounts the same pane for
+/// finding where the answers are: it keeps the bar up however it is answered
+/// and only notes what Discard and Stop saving would do.
+fn db_run_then_answer(owner: &str, writing: bool, probe: bool) -> (u64, Option<yuzora_db::results::WriteStop>, String) {
+    use yuzora_db::{model::{Cell, Column}, results::{self, WriteState, WriteStop}};
+    let set = results::create(owner, "select * from customers");
+    let stop = writing.then(WriteStop::new);
+    let id = {
+        let mut r = results::lock(&set);
+        r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
+        r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+        r.complete = true;
+        r.edits.insert((0, 1), Cell::text("x"));
+        if let Some(stop) = &stop {
+            r.write = WriteState::Writing(stop.clone());
+        }
+        r.id
+    };
+    let source = format!(
+        r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import {{ note }} from "probe";
+const PROBE = {probe};
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    super.init(p, cx);
+    this.target = {{ connection: "none", database: null, schema: "public", name: "customers", kind: "table" }};
+    this.state = {{ id: 1, running: false, version: 1, elapsedMs: 0, error: null, cancelled: false,
+      results: [{{ id: {id}, statement: "select * from customers", columns: 2, rows: 1, edits: 1 }}] }};
+    let confirm = null;
+    Object.defineProperty(this, "confirm", {{
+      get() {{ return confirm; }},
+      set(v) {{ if (v === null) {{ note("closed"); if (!PROBE) confirm = null; }} else confirm = v; }},
+      configurable: true,
+    }});
+    if (PROBE) this.run(cx);
+  }}
+  run(cx) {{ note("run"); super.run(cx); }}
+  load(cx, order) {{ note("load"); if (!PROBE) super.load(cx, order); }}
+  stopSaving(id) {{ note("stop"); if (!PROBE) super.stopSaving(id); }}
+  render(cx) {{
+    note("shown", this.state === null ? "loading" : "settled", this.state?.error ?? null, this.confirm !== null);
+    return super.render(cx);
+  }}
+}}
+"#
+    );
+    (id, stop, source)
+}
+
+/// Where a click lands on what `note`s `name` and not `except` (every answer of the bar also closes it).
+fn clickable_only(s: &mut Scenario, name: &str, except: &str, width: f32, height: f32) -> Option<(f32, f32, f32, f32)> {
+    let mut found: Option<(f32, f32, f32, f32)> = None;
+    for y in (0..height as i32).step_by(4) {
+        for x in (0..width as i32).step_by(4) {
+            s.notes.borrow_mut().clear();
+            let position = gpui::point(gpui::px(x as f32), gpui::px(y as f32));
+            let modifiers = gpui::Modifiers::default();
+            s.visual.simulate_event(gpui::MouseDownEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+            s.visual.simulate_event(gpui::MouseUpEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1 });
+            if s.last(name).is_some() && s.last(except).is_none() {
+                let (x, y) = (x as f32, y as f32);
+                found = Some(found.map_or((x, y, x, y), |(x0, y0, x1, y1)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y))));
+            }
+        }
+    }
+    found
+}
+
+/// What the pane has shown last: `[state, error, bar up]`.
+fn shown(s: &Scenario) -> (String, Option<String>, bool) {
+    let n = s.last("shown").expect("the pane rendered");
+    (n[1].as_str().unwrap().to_owned(), n[2].as_str().map(str::to_owned), n[3].as_bool().unwrap())
+}
+
+fn press(s: &mut Scenario, (x0, y0, x1, y1): (f32, f32, f32, f32)) {
+    s.click(f64::from(x0 + x1) / 2.0, f64::from(y0 + y1) / 2.0);
+}
+
+/// Runs the pane's table until it has been read again (here it is a connection that isn't there: the read ends with an error).
+fn reloaded(s: &mut Scenario) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(5) {
+        s.settle();
+        if shown(s).1.is_some() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    false
+}
+
+// Bug (acceptance): "Discard and go on" left the table on "Loading…" for good. The bar's answer ran the refresh
+// with the `cx` of the click that raised the bar, and a `cx` only works during the call it was handed to.
+#[gpui::test]
+fn the_database_table_pane_reloads_when_the_bar_is_answered_with_discard_and_go_on(cx: &mut TestAppContext) {
+    // The read runs on the database runtime's threads and wakes the pane from there.
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 228.0_f32;
+    let (_, _, probe) = db_run_then_answer("run-answer-probe", false, true);
+    let mut p = Scenario::mount(cx, &staged, &probe, width, 400.0);
+    let at = clickables(&mut p, &["run", "load"], width, 240.0);
+    let keep = clickable_only(&mut p, "closed", "load", width, 240.0);
+    let (Some(run), Some(discard), Some(keep)) = (at[0], at[1], keep) else { panic!("{width}px: Run and the bar's answers can't all be pressed: {at:?} {keep:?}") };
+    drop(p);
+
+    let (_, _, source) = db_run_then_answer("run-answer-discard", false, false);
+    let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+    assert_eq!(shown(&s), ("settled".into(), None, false));
+    press(&mut s, run);
+    assert_eq!(shown(&s), ("settled".into(), None, true), "Run asks before it drops the edit");
+    press(&mut s, discard);
+    assert!(s.last("load").is_some(), "Discard and go on did not reload the table");
+    assert!(reloaded(&mut s), "the table never came back from Loading: {:?}", shown(&s));
+    assert!(!shown(&s).2, "the bar is still up");
+
+    let (id, _, source) = db_run_then_answer("run-answer-keep", false, false);
+    let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+    press(&mut s, run);
+    press(&mut s, keep);
+    s.settle();
+    assert_eq!(shown(&s), ("settled".into(), None, false), "Keep editing leaves the table as it was");
+    assert!(s.last("load").is_none(), "Keep editing reloaded the table");
+    assert_eq!(yuzora_db::results::get(id).map(|set| yuzora_db::results::lock(&set).edits.len()), Some(1));
+}
+
+// Run while a save is on its way: the bar offers to wait or to stop, and both go through the same click path.
+#[gpui::test]
+fn the_database_table_pane_answers_a_save_in_flight_with_keep_waiting_or_stop_saving(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 228.0_f32;
+    let (_, _, probe) = db_run_then_answer("run-writing-probe", true, true);
+    let mut p = Scenario::mount(cx, &staged, &probe, width, 400.0);
+    let at = clickables(&mut p, &["run", "stop"], width, 240.0);
+    let wait = clickable_only(&mut p, "closed", "stop", width, 240.0);
+    let (Some(run), Some(stop), Some(wait)) = (at[0], at[1], wait) else { panic!("{width}px: Run and the bar's answers can't all be pressed: {at:?} {wait:?}") };
+    drop(p);
+
+    let (_, saving, source) = db_run_then_answer("run-writing-wait", true, false);
+    let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+    press(&mut s, run);
+    assert!(shown(&s).2, "Run asks before it leaves a save");
+    press(&mut s, wait);
+    s.settle();
+    assert!(!shown(&s).2, "Keep waiting leaves the bar up");
+    assert!(s.last("stop").is_none() && s.last("load").is_none());
+    assert!(!saving.unwrap().is_stopped(), "Keep waiting stopped the save");
+
+    let (_, saving, source) = db_run_then_answer("run-writing-stop", true, false);
+    let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+    press(&mut s, run);
+    press(&mut s, stop);
+    s.settle();
+    assert!(s.last("stop").is_some(), "Stop saving did not stop the save");
+    assert!(saving.unwrap().is_stopped(), "Stop saving did not reach the save");
+    assert!(!shown(&s).2 && s.last("load").is_none(), "Stop saving reloads nothing and closes the bar");
+}
+
+// The sidebar reuses a table pane that is open in the tab: it leaves the pick in shared state ({key, target, seq}), which
+// a pane can only see from a frame. The pane must not start the load in that frame: the engine refuses `cx.notify()`
+// there, and a load that began before it threw never got its task, so the pane stayed on "Loading…".
+const DB_OPEN: &str = "yuzora.db.open";
+
+/// The Database table pane, `note`ing what is felt from outside: the error a frame ended in, what it showed (the
+/// connection it is for, whether it is loading, its error, whether the bar asks about edits) and each load it made
+/// (`probe` leaves the loads and the bar's answers out, to find where the answers are).
+fn db_reuse_source(edited: Option<u64>, probe: bool) -> String {
+    let start = edited.map_or_else(String::new, |id| {
+        format!(
+            r#"
+    this.target = {{ connection: "gone-a", database: null, schema: "public", name: "first", kind: "table" }};
+    this.state = {{ id: 1, running: false, version: 1, elapsedMs: 0, error: null, cancelled: false,
+      results: [{{ id: {id}, statement: "select * from first", columns: 2, rows: 1, edits: 1 }}] }};"#
+        )
+    });
+    format!(
+        r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import {{ note }} from "probe";
+const PROBE = {probe};
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    super.init(p, cx);{start}
+    if (PROBE) {{
+      let confirm = null;
+      Object.defineProperty(this, "confirm", {{
+        get() {{ return confirm; }},
+        set(v) {{ if (v === null) note("closed"); else confirm = v; }},
+        configurable: true,
+      }});
+    }}
+  }}
+  load(cx, order) {{ note("load", this.target.connection); if (!PROBE) super.load(cx, order); }}
+  render(cx) {{
+    try {{
+      const tree = super.render(cx);
+      note("shown", this.target?.connection ?? null, this.state === null ? "loading" : "settled", this.state?.error ?? null, this.confirm !== null);
+      return tree;
+    }} catch (e) {{
+      note("render-error", String(e?.message ?? e));
+      throw e;
+    }}
+  }}
+}}
+"#
+    )
+}
+
+fn db_table(connection: &str) -> Value {
+    json!({"connection": connection, "database": null, "schema": "public", "name": "next", "kind": "table"})
+}
+
+fn db_pick(key: &str, connection: &str, seq: u64) -> Value {
+    json!({"key": key, "target": db_table(connection), "seq": seq})
+}
+
+/// A pane's own key: the grid and the editors of a pane are kept by it, so no two panes of a test share one.
+fn db_key() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "dbt-reuse-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn db_pane_props(key: &str) -> Value {
+    json!({"key": key, "connection": "gone-a", "database": null, "schema": "public", "name": "first", "kind": "table"})
+}
+
+/// A result of the pane with one edited cell, the way `db_confirm` makes it.
+fn db_edited_result(owner: &str) -> u64 {
+    use yuzora_db::{
+        model::{Cell, Column},
+        results,
+    };
+    let set = results::create(owner, "select * from first");
+    let mut r = results::lock(&set);
+    r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
+    r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+    r.complete = true;
+    r.edits.insert((0, 1), Cell::text("x"));
+    r.id
+}
+
+/// What the pane showed last: `(connection, "loading" | "settled", error, bar up)`.
+fn db_now(s: &Scenario) -> (String, String, Option<String>, bool) {
+    let n = s.last("shown").expect("the pane drew a frame");
+    (
+        n[1].as_str().unwrap().to_owned(),
+        n[2].as_str().unwrap().to_owned(),
+        n[3].as_str().map(str::to_owned),
+        n[4].as_bool().unwrap(),
+    )
+}
+
+fn db_frame_errors(s: &Scenario) -> Vec<String> {
+    s.notes
+        .borrow()
+        .iter()
+        .filter(|n| n.first() == Some(&json!("render-error")))
+        .map(|n| n[1].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// The connection of each load the pane made, in order.
+fn db_loads(s: &Scenario) -> Vec<String> {
+    s.notes
+        .borrow()
+        .iter()
+        .filter(|n| n.first() == Some(&json!("load")))
+        .map(|n| n[1].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Waits for the pane to show what reading `connection` ended in: that connection does not exist, so the table is
+/// an error naming it (the read runs on the database runtime's threads and wakes the pane from there).
+fn db_settles_on(s: &mut Scenario, connection: &str) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(5) {
+        s.settle();
+        let (shown, state, error, _) = db_now(s);
+        if shown == connection
+            && state == "settled"
+            && error.is_some_and(|e| e.contains(connection))
+        {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    false
+}
+
+// Bug (acceptance, SQL Server): a table in the sidebar, picked while the tab's table pane shows another, ended in
+// "cx.notify() is not allowed during the `render` phase" and left the pane on its old table; picked twice in a row it
+// left the pane on "Loading…" for good.
+#[gpui::test]
+fn the_database_table_pane_follows_the_sidebar_to_another_table(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let key = db_key();
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(None, false),
+        db_pane_props(&key),
+        320.0,
+        400.0,
+    );
+    assert!(
+        db_settles_on(&mut s, "gone-a"),
+        "the pane never showed its own table: {:?}",
+        db_now(&s)
+    );
+    for (seq, connection) in [(2, "gone-b"), (3, "gone-c")] {
+        s.share(DB_OPEN, db_pick(&key, connection, seq));
+        s.tick(50);
+        assert_eq!(
+            db_frame_errors(&s),
+            Vec::<String>::new(),
+            "a frame failed when the sidebar picked {connection}"
+        );
+        assert!(
+            db_settles_on(&mut s, connection),
+            "the pane never showed {connection}: {:?}",
+            db_now(&s)
+        );
+    }
+    s.tick(50);
+    assert_eq!(
+        db_loads(&s),
+        ["gone-a", "gone-b", "gone-c"],
+        "each pick loads once, and drawing again loads nothing"
+    );
+}
+
+// The second click of a double click: the pane the first one opened is still reading its own table when the pick comes.
+// The pane ends on the pick, and what the table it left was still reading does not reach it.
+#[gpui::test]
+fn the_database_table_pane_follows_a_pick_that_comes_while_it_is_still_loading(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let key = db_key();
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(None, false),
+        db_pane_props(&key),
+        320.0,
+        400.0,
+    );
+    s.share(DB_OPEN, db_pick(&key, "gone-b", 2));
+    s.tick(50);
+    assert_eq!(
+        db_frame_errors(&s),
+        Vec::<String>::new(),
+        "a frame failed when the pick came while the pane was loading"
+    );
+    assert!(
+        db_settles_on(&mut s, "gone-b"),
+        "the pane never showed the pick: {:?}",
+        db_now(&s)
+    );
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    s.tick(50);
+    let (shown, _, error, _) = db_now(&s);
+    assert!(
+        shown == "gone-b" && error.is_some_and(|e| e.contains("gone-b")),
+        "the first table's read reached the pane after the pick"
+    );
+    assert_eq!(db_loads(&s), ["gone-a", "gone-b"]);
+}
+
+// Two picks, each seen by a frame, before the pane gets to the first: the pane goes to the second, and the first is
+// never read.
+#[gpui::test]
+fn the_database_table_pane_follows_the_last_of_two_quick_picks(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let key = db_key();
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(None, false),
+        db_pane_props(&key),
+        320.0,
+        400.0,
+    );
+    assert!(db_settles_on(&mut s, "gone-a"), "{:?}", db_now(&s));
+    s.put(DB_OPEN, db_pick(&key, "gone-b", 2));
+    s.frame();
+    s.put(DB_OPEN, db_pick(&key, "gone-c", 3));
+    s.frame();
+    s.tick(50);
+    assert_eq!(db_frame_errors(&s), Vec::<String>::new());
+    assert!(
+        db_settles_on(&mut s, "gone-c"),
+        "the pane did not end on the last pick: {:?}",
+        db_now(&s)
+    );
+    assert_eq!(
+        db_loads(&s),
+        ["gone-a", "gone-c"],
+        "the first pick was read though the second had come"
+    );
+}
+
+// A pick over a result with an unwritten edit asks first, in the frame after the pick, and changes nothing until it is
+// answered: Keep editing leaves the table as it was, Discard and go on reads the picked one.
+#[gpui::test]
+fn the_database_table_pane_asks_before_the_sidebar_replaces_unwritten_edits(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 228.0_f32;
+    let (probe, discard_key, keep_key) = (db_key(), db_key(), db_key());
+    let mut p = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(Some(db_edited_result(&probe)), true),
+        json!({"key": probe}),
+        width,
+        400.0,
+    );
+    p.share(DB_OPEN, db_pick(&probe, "gone-b", 2));
+    p.tick(50);
+    let at = clickables(&mut p, &["load"], width, 240.0);
+    let keep = clickable_only(&mut p, "closed", "load", width, 240.0);
+    let (Some(discard), Some(keep)) = (at[0], keep) else {
+        panic!("{width}px: the bar's answers can't both be pressed: {at:?} {keep:?}")
+    };
+    drop(p);
+
+    let id = db_edited_result(&discard_key);
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(Some(id), false),
+        json!({"key": discard_key}),
+        width,
+        400.0,
+    );
+    assert_eq!(db_now(&s), ("gone-a".into(), "settled".into(), None, false));
+    s.share(DB_OPEN, db_pick(&discard_key, "gone-b", 2));
+    s.tick(50);
+    assert_eq!(
+        db_frame_errors(&s),
+        Vec::<String>::new(),
+        "a frame failed when the sidebar picked over an edit"
+    );
+    assert_eq!(
+        db_now(&s),
+        ("gone-a".into(), "settled".into(), None, true),
+        "the bar asks and the table stays"
+    );
+    assert!(
+        db_loads(&s).is_empty(),
+        "the pick was read before it was answered"
+    );
+    press(&mut s, discard);
+    assert!(
+        db_settles_on(&mut s, "gone-b"),
+        "Discard and go on did not read the picked table: {:?}",
+        db_now(&s)
+    );
+    assert_eq!(db_loads(&s), ["gone-b"]);
+
+    let id = db_edited_result(&keep_key);
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(Some(id), false),
+        json!({"key": keep_key}),
+        width,
+        400.0,
+    );
+    s.share(DB_OPEN, db_pick(&keep_key, "gone-b", 2));
+    s.tick(50);
+    press(&mut s, keep);
+    s.tick(50);
+    assert_eq!(
+        db_now(&s),
+        ("gone-a".into(), "settled".into(), None, false),
+        "Keep editing leaves the table as it was"
+    );
+    assert!(
+        db_loads(&s).is_empty(),
+        "Keep editing read the picked table"
+    );
+    assert_eq!(
+        yuzora_db::results::get(id).map(|set| yuzora_db::results::lock(&set).edits.len()),
+        Some(1)
+    );
+}
+
+// Run in the SQL tab while the pane's job is still going. A read of the table can be stuck behind a transaction the
+// SQL tab left open (BEGIN; UPDATE …): the Run that would end it did nothing, and nothing said why.
+
+/// The Database table pane on its SQL tab with a job going that never reports (`running`: `"table"` is its read of
+/// the table, `"sql"` a statement of the person's), `COMMIT` in the editor, noting what it shows (the tab, whether a
+/// job goes, its error, whether the bar asks about edits), the SQL tab's hint, and every job it watches and Stop.
+/// `finder`: Run only notes that it was pressed, so looking for it (a click on every spot) starts nothing.
+fn db_busy_source(running: &str, edited: Option<u64>, finder: bool) -> String {
+    let run_body = if finder { "" } else { "super.run(cx);" };
+    let results = edited.map_or_else(
+        || "[]".to_owned(),
+        |id| {
+            format!(
+                r#"[{{ id: {id}, statement: "select * from first", columns: 2, rows: 1, edits: 1 }}]"#
+            )
+        },
+    );
+    format!(
+        r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import {{ note }} from "probe";
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    super.init(p, cx);
+    this.target = {{ connection: "gone-a", database: null, schema: "public", name: "first", kind: "table" }};
+    this.tab = "sql";
+    this.sql = "COMMIT";
+    this.jobId = 41;
+    this.jobKind = "{running}";
+    this.state = {{ id: 41, running: true, version: 1, elapsedMs: 0, error: null, cancelled: false, results: {results} }};
+  }}
+  watch(cx, id, kind) {{ note("watch", kind ?? null); super.watch(cx, id, kind); }}
+  run(cx) {{ note("run"); {run_body} }}
+  stop() {{ note("stop"); }}
+  sqlHint() {{ const hint = super.sqlHint?.() ?? null; note("hint", hint); return hint; }}
+  render(cx) {{
+    try {{
+      const tree = super.render(cx);
+      const s = this.state;
+      note("shown", this.tab, s === null ? "loading" : s.running ? "running" : "settled", s?.error ?? null, this.confirm !== null);
+      return tree;
+    }} catch (e) {{
+      note("render-error", String(e?.message ?? e));
+      throw e;
+    }}
+  }}
+}}
+"#
+    )
+}
+
+/// What the pane showed last: `(tab, "loading" | "running" | "settled", error, bar up)`.
+fn db_busy_now(s: &Scenario) -> (String, String, Option<String>, bool) {
+    let n = s.last("shown").expect("the pane drew a frame");
+    (
+        n[1].as_str().unwrap().to_owned(),
+        n[2].as_str().unwrap().to_owned(),
+        n[3].as_str().map(str::to_owned),
+        n[4].as_bool().unwrap(),
+    )
+}
+
+/// The jobs the pane watched, by kind, in order.
+fn db_watched(s: &Scenario) -> Vec<Value> {
+    s.notes
+        .borrow()
+        .iter()
+        .filter(|n| n.first() == Some(&json!("watch")))
+        .map(|n| n[1].clone())
+        .collect()
+}
+
+/// Where Run is, found on a pane of its own: finding a button means clicking everywhere, and Run starts the SQL.
+fn db_find_run(
+    cx: &mut TestAppContext,
+    staged: &Staged,
+    running: &str,
+    edited: Option<u64>,
+    width: f32,
+) -> Option<(f32, f32, f32, f32)> {
+    let mut finder = Scenario::mount_with_props(
+        cx,
+        staged,
+        &db_busy_source(running, edited, true),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    clickable(&mut finder, "run", width, 100.0)
+}
+
+fn db_hint(s: &Scenario) -> String {
+    s.last("hint")
+        .and_then(|n| n[1].as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+// The way out of a stuck table: Run on the SQL tab ends the read that waits and runs the COMMIT.
+#[gpui::test]
+fn the_database_table_pane_runs_the_sql_tab_over_a_table_read_that_is_still_going(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_busy_source("table", None, false),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    assert_eq!(db_busy_now(&s).1, "running");
+    let hint = db_hint(&s);
+    let run = db_find_run(cx, &staged, "table", None, width)
+        .expect("Run can't be pressed on the SQL tab while the table is being read");
+    press(&mut s, run);
+    let started = Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(5) {
+        s.settle();
+        if db_busy_now(&s).1 == "settled" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let (tab, phase, error, _) = db_busy_now(&s);
+    assert_eq!(
+        (tab.as_str(), phase.as_str()),
+        ("data", "settled"),
+        "the SQL did not run"
+    );
+    assert!(
+        error.is_some_and(|e| e.contains("gone-a")),
+        "what showed is not the SQL's answer"
+    );
+    assert_eq!(db_watched(&s), [json!("sql")]);
+    assert!(
+        s.last("stop").is_none(),
+        "Run asked the person to Stop first"
+    );
+    assert_eq!(
+        hint, "sql_over_read",
+        "the SQL tab does not say what Run does to the read"
+    );
+}
+
+// A statement of the person's own is not stopped by another Run: the toolbar offers Stop, and the SQL tab says so.
+#[gpui::test]
+fn the_database_table_pane_says_why_run_waits_for_a_statement_that_is_still_going(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_busy_source("sql", None, false),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    assert!(
+        db_hint(&s) == "sql_busy",
+        "the SQL tab does not say why Run waits: {:?}",
+        db_hint(&s)
+    );
+    assert!(
+        clickable(&mut s, "run", width, 100.0).is_none(),
+        "Run is offered while a statement goes"
+    );
+    let stop = clickable(&mut s, "stop", width, 100.0).expect("Stop can't be pressed");
+    press(&mut s, stop);
+    assert!(s.last("stop").is_some());
+    assert!(db_watched(&s).is_empty());
+}
+
+// Edits being written when Run is pressed: the bar offers to wait or to stop saving, and Run neither stops the read
+// nor the save, nor starts the SQL.
+#[gpui::test]
+fn the_database_table_pane_does_not_run_the_sql_tab_over_a_save_in_flight(cx: &mut TestAppContext) {
+    use yuzora_db::{
+        model::{Cell, Column},
+        results::{self, WriteState, WriteStop},
+    };
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let key = db_key();
+    let set = results::create(&key, "select * from first");
+    let saving = WriteStop::new();
+    let id = {
+        let mut r = results::lock(&set);
+        r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
+        r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+        r.complete = true;
+        r.edits.insert((0, 1), Cell::text("x"));
+        r.write = WriteState::Writing(saving.clone());
+        r.id
+    };
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_busy_source("table", Some(id), false),
+        json!({"key": key}),
+        width,
+        400.0,
+    );
+    let run = db_find_run(cx, &staged, "table", Some(id), width)
+        .expect("Run can't be pressed on the SQL tab while the table is being read");
+    press(&mut s, run);
+    s.tick(50);
+    assert_eq!(
+        db_busy_now(&s),
+        ("sql".into(), "running".into(), None, true),
+        "Run asks about the save and leaves the read"
+    );
+    assert!(db_watched(&s).is_empty(), "the SQL was started");
+    assert!(s.last("stop").is_none());
+    assert!(!saving.is_stopped(), "Run stopped the save");
+    assert_eq!(
+        results::get(id).map(|set| results::lock(&set).edits.len()),
+        Some(1)
+    );
+}
+
+/// `db_busy_source` with nothing typed in the SQL editor.
+fn db_empty_sql_source(running: &str, finder: bool) -> String {
+    let source = db_busy_source(running, None, finder);
+    let typed = r#"this.sql = "COMMIT";"#;
+    assert!(source.contains(typed));
+    source.replace(typed, r#"this.sql = "";"#)
+}
+
+// The editor is empty while the table is read: Run has nothing to run and does nothing, so Stop is what lets the
+// person out of the read. The toolbar can't tell what is typed (typing does not redraw it), so Stop stays beside Run.
+#[gpui::test]
+fn the_database_table_pane_offers_stop_on_the_sql_tab_while_the_table_is_read(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let mut finder = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_empty_sql_source("table", true),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    let stop = clickable(&mut finder, "stop", width, 100.0)
+        .expect("Stop can't be pressed on the SQL tab while the table is read");
+    let run = clickable(&mut finder, "run", width, 100.0).expect("Run can't be pressed");
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_empty_sql_source("table", false),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    press(&mut s, run);
+    s.tick(50);
+    assert!(s.last("run").is_some(), "Run was not pressed");
+    assert!(db_watched(&s).is_empty(), "Run started something");
+    assert!(s.last("stop").is_none());
+    assert_eq!(db_busy_now(&s).1, "running", "Run ended the read");
+    press(&mut s, stop);
+    assert!(s.last("stop").is_some(), "Stop did not stop the read");
+}
+
+// Why the SQL tab keeps Stop beside Run instead of showing one for an empty editor and the other for a typed one:
+// what is typed does not draw the pane's JS again, so a toolbar that waited for it would show what was true before.
+// Run (⌘↵) is how the text typed is read back here: outside a script call nothing can ask the editor.
+#[gpui::test]
+fn the_database_table_pane_is_not_drawn_again_by_typing_in_its_sql_editor(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let source = db_empty_sql_source("table", true)
+        .replace(
+            r#"import { note } from "probe";"#,
+            r#"import { note } from "probe"; import { editorText } from "yuzora:db";"#,
+        )
+        .replace(
+            r#"stop() { note("stop"); }"#,
+            r#"stop() { note("stop"); } runSql(cx) { note("typed", editorText(this.key + ":sql")?.text ?? null); }"#,
+        );
+    assert!(source.contains("typed"));
+    let mut s = Scenario::mount_with_props(cx, &staged, &source, json!({"key": db_key()}), 320.0, 400.0);
+    let drawn = |s: &Scenario| {
+        s.notes
+            .borrow()
+            .iter()
+            .filter(|n| n.first() == Some(&json!("shown")))
+            .count()
+    };
+    let idle = drawn(&s);
+    s.settle();
+    assert_eq!(drawn(&s), idle, "a window frame draws the pane's JS again");
+    s.click(100.0, 200.0);
+    let before = drawn(&s);
+    s.visual.simulate_input("select 1");
+    s.settle();
+    assert_eq!(drawn(&s), before, "typing draws the pane's JS again");
+    // The shortcut a person presses on this system: the hint says "⌘↵ / Ctrl+Enter".
+    s.visual.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-enter" } else { "ctrl-enter" });
+    s.settle();
+    assert_eq!(
+        s.last("typed").map(|n| n[1].clone()),
+        Some(json!("select 1")),
+        "nothing typed reached the editor"
+    );
+}
+
+// The dock leaves a table pane 110 to 230 px: Stop and Run both stay in it on the SQL tab while the table is read.
+#[gpui::test]
+fn the_database_table_panes_stop_and_run_stay_inside_a_narrow_pane_while_the_table_is_read(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for width in [110.0_f32, 150.0, 240.0] {
+        let mut s = Scenario::mount_with_props(
+            cx,
+            &staged,
+            &db_empty_sql_source("table", true),
+            json!({"key": db_key()}),
+            width,
+            400.0,
+        );
+        let boxes = clickables(&mut s, &["stop", "run"], width, 160.0);
+        answers_inside(width, &boxes, &["stop", "run"]);
+    }
 }

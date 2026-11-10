@@ -1143,11 +1143,22 @@ with these differences.
   (tone: muted, working, blocked, done or accent).
 - The agent states' shapes are `mods/yuzora-sidebar-workspace/status/<working|blocked|done|idle|unknown>.svg`;
   tint them with `tokens().status.<state>.mark`.
+- Yuzora's own animations are short (at most 180 ms) and name a speed instead of writing milliseconds:
+  `el.transition("left", motion("fast"))` with `motion` from `yuzora:core` (`"fast"` 120 ms, `"base"` 160 ms, both
+  ease-out; `tokens().motion` lists them). They go through `transition`, which follows the system's reduce-motion
+  setting; `loop` does not, and a mod cannot read that setting, so a Yuzora mod does not use `loop`.
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
 ### Git (`yuzora:git`)
 
+- The Git mode follows the shown space and the focused pane's folder in the
+  frame they change. It keeps what it showed of each repository it has seen
+  (up to 8), so a repository seen before is shown at once and read again
+  behind it; until that reading is back, a click that would stage, discard,
+  commit or push there does nothing. The commit message, author and Amend are kept per
+  repository, and a repository with a message being written, an action going
+  on or an action's error is not dropped from the 8.
 - The right dock's Git mode is `yuzora-sidebar-git`. Tool panes: `yuzora-git-log`
   (props `{cwd, on, filter?, compare?}`; `filter: {paths: [p], follow: true}`
   is a file's history), `yuzora-git-diff` (`{cwd, on, path, mode: "unstaged" |
@@ -1173,6 +1184,46 @@ with these differences.
   file instead. A diff pane's props can also set its view: `layout: "side" |
   "unified"`, `whitespace: "none" | "trim" | "all"`, `context` (lines; `-1` is
   the whole file).
+- Side by side, a diff's two sides share its width by one ratio, the left
+  side's share, half and half by default. Drag the divider between them to
+  change it (it stops at 15% and 85%); double-click the divider to put half
+  back. The ratio is kept across restarts, for every diff, in shared state
+  `yuzora.git.diff.split`: a number, held between `0.15` and `0.85`; no value,
+  `null` or anything that is not a number is `0.5`.
+  `setShared("yuzora.git.diff.split", 0.7)` sets it and
+  `setShared("yuzora.git.diff.split", null)` resets it. A line wider than its
+  side is cut there; a sideways swipe, or the bar under the lines when they
+  need one, scrolls both sides together.
+- In a diff, click a row's text to select the row and Shift-click another to
+  extend the selection to it. The click that begins a selection decides the
+  side: side by side, only that side's lines are copied; unified copies the lines
+  as shown (a deleted line from the left, an added one from the right). A line
+  number picks the line for staging where the diff can stage, and selects the
+  row where it cannot. Cmd+C (Ctrl+C on Windows and Linux) copies the selected
+  rows' lines as the file has them (tabs, trailing spaces and wide characters
+  kept; no line numbers, no `+` or `-`) and says so in a toast; with nothing
+  selected the key is left alone. Right-click a row (it joins the selection, or
+  replaces it when it is not in it) for three items: Copy (the selected lines),
+  Copy hunk (the hunk under the pointer as it is after the change; none for a
+  hunk that only deletes) and Copy as patch (a unified patch `git apply` takes,
+  of every hunk the selection touches). The selection is by row, not by
+  character, and is not made by dragging; it goes when the diff is read again or
+  its layout, whitespace or context changes. Scrolling, dragging the divider
+  and the bar under the lines leave it as it is.
+- A diff, merge or rebase pane follows what its own space asks for, never another
+  space's, and an opener (the sidebar, the log, Annotate, the repository pane) looks
+  for the pane among the tabs of the space shown, so a space's pane is never
+  focused or changed from another space. A request is the pane's props plus `at`
+  (a time in ms), kept per space in shared `yuzora.git.diff.<space id>` (also
+  `yuzora.git.merge.<space id>`, `yuzora.git.rebase.<space id>`). A request written
+  to the plain key, `setShared("yuzora.git.diff", {cwd, path, mode, at})`, names no
+  space: the pane of every space follows it, the newer of it and its space's own.
+  A plain request is an order for this run, not state kept across runs: shared is
+  kept in a file, and the first time a pane reads in a run (any of the three kinds)
+  it drops the plain requests an earlier run left, so none is shown in a space that
+  never asked. What you write after that is followed, with or without `at`; what you
+  wrote before any of these panes drew in this run is dropped too. A request
+  to keep across restarts goes in the `<space id>` key.
 - A space can hold several repositories. The picker at the top of the Git
   sidebar follows the focused pane's repository (the default) or keeps one
   pinned for the space: `setShared("yuzora.git.repo.<space id>", {root, on})`
@@ -1209,7 +1260,64 @@ with these differences.
   the cursor), `.run_all`, `.stop`; `yuzora-db-table.data`, `.structure`,
   `.sql`, `.run`, `.stop`; `yuzora-sidebar-database.next`, `.prev`,
   `.refresh`, `.add`, `.query`. Edited cells are written back only when the
-  person presses Write back.
+  person presses Write back or Cmd+S (Ctrl+S) in the table; nothing is saved
+  by itself. A write-back that waits (on a lock, on the connection) shows
+  Stop: stopping it writes nothing, unless the message says the server had
+  already been asked to commit, and the edits stay in the cells. Running the
+  table again with edits not yet written asks first.
+- A table is read and written back on a connection of its own, apart from the
+  one its SQL tab runs on. What a SQL tab did (`SET`, `USE`, a temporary
+  table) stays on the SQL tab's connection and does not change what the table
+  reads or saves. A transaction the SQL tab left open is not seen by the
+  table, and it can hold the table up (next bullet). The table's Stop and the
+  SQL tab's Stop each end only their own statement, and a write-back that
+  waits on another connection's lock does not hold the SQL tab up. A pane
+  still has one job at a time, so running a statement in the SQL tab replaces
+  what the pane showed of the table, as it always did. A pane that uses both
+  holds one connection more than a pane that only opens a table (closing the
+  pane closes all of them).
+- A transaction left open in the SQL tab (`BEGIN` without `COMMIT` or
+  `ROLLBACK`) is the one thing that reaches across the two connections, and
+  only as a lock: while it holds locks the table needs, the table's read or
+  write-back in the same pane waits for it. SQL Server waits without end
+  (the table stays on Loading or Writing until it is stopped); the locks of an
+  `UPDATE` block the table's read of those rows. SQLite fails the table's
+  write-back with `database is locked` after about 5 seconds, and a read-only
+  `BEGIN; SELECT …` left open is enough to cause it. PostgreSQL does not
+  block a read except behind a strong lock (an uncommitted `ALTER TABLE`), but
+  a write-back to a row the transaction changed waits. To recover from a read
+  that waits, go to the SQL tab, type `COMMIT` or `ROLLBACK`, and press Run:
+  while the table is still being read, Run stops that read first and then runs
+  the statement (it asks first when the table has unsaved edits). A write-back
+  that waits is not stopped by Run (it raises a bar with Keep waiting and
+  Stop saving): press Stop saving. A statement of
+  the person's own that is still running has to be stopped with Stop. Then run
+  the table again. What the SQL tab has not committed is not in the table either. Tell
+  the person this when a table will not load or save after they used the SQL
+  tab.
+- Connections count against a login's limit (`too many connections …`; the
+  server's message is shown). With a very small limit either side can fail,
+  not only the SQL tab: the SQL tab fails when a table is open, and the
+  table fails to open when the SQL tab holds the room, for example after the
+  table's connection was lost (a Stop of a write-back, an idle timeout, the
+  network) and the SQL tab connected in the meantime. Running the table again
+  in that pane keeps failing; close the pane (that releases all of its
+  connections) and open the table in a new one. In the other direction (the
+  SQL tab fails because a table is open) the table's connection is still
+  there: run the table again and it opens and saves.
+- Clearing a cell (Backspace, then Enter) makes it NULL where the column's
+  type has no empty value (numbers, dates, times, `uuid`, `bool`, `json`),
+  and the cell shows NULL before anything is written; a text column keeps the
+  empty string, and a NOT NULL column is refused by the server. SQLite keeps
+  the empty string in every column.
+- A date typed into a SQL Server `datetime` or `smalldatetime` cell is saved
+  as the date it says or refused before anything is sent. A year-first date
+  (`2024-01-06`, `2024/1/6`, `2024.01.06`, `20240106`, with a time before or
+  after it, `T` or `Z` included) is read the same under every language and
+  `DATEFORMAT`; a year-first date with anything else the app cannot read for
+  sure (`20240106 9:5`) is refused. A zone offset such as `+08:00` goes to the
+  server, which refuses it for these two types. Any other style (`1/6/2024`)
+  is read by the login's own language, as the server does.
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->

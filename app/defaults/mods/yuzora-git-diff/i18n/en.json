@@ -38,5 +38,14 @@
   "annotate": "Annotate",
   "history": "History",
   "tab.diff": "Diff",
-  "keep": "Keep"
+  "keep": "Keep",
+  "copied.lines_one": "Copied 1 line",
+  "copied.lines_other": "Copied {count} lines",
+  "copied.hunk": "Copied the hunk",
+  "copied.patch": "Copied the patch",
+  "menu.copy": "Copy",
+  "menu.copy_one": "Copy 1 line",
+  "menu.copy_other": "Copy {count} lines",
+  "menu.hunk": "Copy hunk",
+  "menu.patch": "Copy as patch"
 }

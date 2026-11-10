@@ -16,6 +16,8 @@ use yuzora_db::model::{Cell, ObjectRef};
 use yuzora_db::session::{self, JobId, JobState};
 use yuzora_db::{results, runtime};
 
+mod common;
+
 fn wait(job: JobId) -> JobState {
     let mut seen = 0;
     for _ in 0..400 {
@@ -89,7 +91,7 @@ fn a_pane_reads_edits_writes_back_caps_and_cancels() {
     assert_eq!(runtime::block_on(session::write_back(summary.id)).unwrap(), 2);
     {
         let r = results::lock(&set);
-        assert!(r.edits.is_empty() && r.write_error.is_none());
+        assert!(r.edits.is_empty() && r.write_failure().is_none());
         assert_eq!(r.cell(0, name), Some(&Cell::Text("grace".into())), "written values become the result's");
     }
     assert_eq!(rows(id, "select name, note from people order by id"), [["grace", "NULL"], ["linus", "NULL"]]);
@@ -104,7 +106,7 @@ fn a_pane_reads_edits_writes_back_caps_and_cancels() {
     }
     run(id, "elsewhere", "delete from people where id = 2");
     assert!(runtime::block_on(session::write_back(state.results[0].id)).is_err());
-    assert!(results::lock(&set).write_error.is_some());
+    assert!(results::lock(&set).write_failure().is_some());
     assert_eq!(rows(id, "select name from people"), [["grace"]], "rolled back");
 
     // No key, no editing, and the reason is given.
@@ -229,7 +231,7 @@ fn a_pane_reads_edits_writes_back_caps_and_cancels() {
 /// pane's SQL tab `USE`s another database on the pane's connection, and the
 /// table it shows, counts and writes back stays the one it opened.
 fn sql_server_tables_stay_in_the_panes_database() {
-    if !std::env::var("YUZORA_DATABASE_TEST_ENGINES").is_ok_and(|v| v.split(',').any(|e| e.trim() == "mssql")) {
+    if !common::enabled("mssql") {
         eprintln!("skipped: mssql is not in YUZORA_DATABASE_TEST_ENGINES");
         return;
     }

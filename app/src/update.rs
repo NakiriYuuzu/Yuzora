@@ -132,7 +132,7 @@ fn checks_core() -> bool {
 /// For the settings screen: both programs, what's waiting, when we last looked.
 pub fn status() -> serde_json::Value {
     serde_json::json!({
-        "app": { "version": env!("CARGO_PKG_VERSION"), "ready": ready(), "updates": checks_app().is_some() },
+        "app": { "version": env!("CARGO_PKG_VERSION"), "ready": ready(), "updates": checks_app().is_some(), "failure": crate::yuzora::release::update::swap_failure() }, // yuzora(win-update): why "Restart" did not switch, kept for Settings › Updates
         "notes": crate::update_notes::notes(ready().as_deref()),
         "core": core(),
         "checked": *CHECKED.lock().unwrap(),
@@ -506,10 +506,12 @@ fn swap(root: &Path) -> bool {
     let _ = std::fs::remove_dir_all(&old);
     if let Err(e) = std::fs::rename(root, &old) {
         tracing::warn!("update: cannot move {} aside: {e}", root.display());
+        crate::yuzora::release::update::note_swap_failure(&e); // yuzora(win-update): what "Restart" tells the person
         return false;
     }
     if let Err(e) = std::fs::rename(&staged, root) {
         tracing::warn!("update: cannot put the new version in place: {e}");
+        crate::yuzora::release::update::note_swap_failure(&e); // yuzora(win-update): as above
         if let Err(rollback) = std::fs::rename(&old, root) {
             tracing::error!("update: cannot restore the previous version: {rollback}");
         }

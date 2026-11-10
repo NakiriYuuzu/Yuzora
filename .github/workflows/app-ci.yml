@@ -3,19 +3,28 @@
 # app/.github/workflows/ci.yml on the two platforms beta.2 starts with; the
 # Tauri app keeps ci.yml. See docs/beta2/architecture.md.
 #
-# Caches: only pushes to beta2/integration save them, so PR caches can't evict
-# the ones every lane PR restores. setup-zig caches separately.
+# Caches: only pushes to main or beta2/integration save them, so PR caches
+# can't evict the ones every PR restores. GitHub lets a run restore the caches
+# of its own branch and of the default branch (and a PR's base branch), so a
+# push to main needs main's own: integration's are no use there. The first
+# main push builds cold and saves; after that main and the PRs aimed at it
+# hit. Both branches save only while both are in use, and only on an exact-key
+# miss (the key is the dependencies, not the sources). setup-zig caches
+# separately.
 name: App CI
 
 on:
   push:
-    branches: [beta2/integration]
+    branches: [main, beta2/integration]
     paths: &app-paths
       - 'app/**'
       - '.gitmodules'
+      - 'tests/database/**'
       - '.github/workflows/app-ci.yml'
+      # Its contract test (app/scripts/yuzora/app-release.test.ts) runs below.
+      - '.github/workflows/app-release.yml'
   pull_request:
-    branches: [beta2/integration]
+    branches: [main, beta2/integration]
     paths: *app-paths
 
 permissions:
@@ -32,7 +41,7 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "1"
   CARGO_PROFILE_TEST_DEBUG: "1"
   CARGO_INCREMENTAL: "0"
-  SAVE_CACHES: ${{ github.event_name == 'push' && github.ref == 'refs/heads/beta2/integration' }}
+  SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta2/integration') }}
 
 jobs:
   platform-tests:
@@ -134,6 +143,11 @@ jobs:
       - name: Check release packaging
         if: matrix.platform == 'linux-x86_64'
         run: python3 -m unittest discover -s scripts -p test_distribution.py
+      # src/yuzora/release/manifest.rs compiled alone: what app-release.yml checks
+      # a signed manifest with. Its own lock and target, outside the workspace.
+      - name: Check the manifest checker
+        if: matrix.platform == 'linux-x86_64'
+        run: cargo test --locked --manifest-path scripts/yuzora/verify-manifest/Cargo.toml --target-dir "$RUNNER_TEMP/verify-manifest"
       - uses: oven-sh/setup-bun@v2
         if: matrix.platform == 'linux-x86_64'
         with:
@@ -210,12 +224,83 @@ jobs:
         if: ${{ !cancelled() }}
         run: 'cargo test --locked --config ''profile.dev.package."*".opt-level=0'' -p yuzora-core -p yuzora-git -p yuzora-files fsops::tests::run_starts -- --test-threads=1'
 
+  # The PostgreSQL and SQL Server tests of yuzora-db skip without a fixture, which
+  # the jobs above don't have. This one starts the fixtures ci.yml's database job
+  # uses (tests/database/docker-compose.yml) and requires both engines: a test
+  # whose engine isn't selected fails instead of skipping (tests/common). The
+  # #[ignore]d performance runs stay out.
+  database-integration:
+    name: App database (Linux x86-64, PostgreSQL and SQL Server)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    # On the job, not on the test step: a step split off it keeps both, so
+    # the engines cannot go unselected and unrequired together.
+    env:
+      YUZORA_DATABASE_TEST_ENGINES: sqlite,postgres,mssql
+      YUZORA_DATABASE_REQUIRE_ENGINES: postgres,mssql
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: Verify x86-64 runner
+        run: test "$(uname -m)" = "x86_64"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      # The linux-x86_64 cache platform-tests saves, restored and never saved
+      # from here: this job builds one crate of it.
+      - name: Restore build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            app/target
+          key: app-ci-v1-linux-x86_64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', 'app/crates/ghostty-sys/**', '.github/workflows/app-ci.yml') }}
+          restore-keys: app-ci-v1-linux-x86_64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-
+      - name: Linux build dependencies
+        timeout-minutes: 10
+        run: |
+          apt="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $apt update
+          sudo apt-get $apt install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev mesa-vulkan-drivers libfontconfig-dev libfreetype-dev
+      - name: Keep unchanged sources fresh
+        run: scripts/ci-sources restore
+      - name: Build tests
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' -p yuzora-db --no-run
+      - name: Start PostgreSQL and MSSQL fixtures
+        working-directory: .
+        run: docker compose -f tests/database/docker-compose.yml --profile mssql up -d --wait
+      - name: Test yuzora-db against the real engines
+        env:
+          # Fixture-only credential shared with tests/database/docker-compose.yml.
+          # It is not a production secret.
+          YUZORA_P8_DATABASE_PASSWORD: "Yuzora-P8-Only-2026!"
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' -p yuzora-db --no-fail-fast
+      - name: Dump database fixture logs on failure
+        if: failure()
+        working-directory: .
+        run: docker compose -f tests/database/docker-compose.yml --profile mssql logs --no-color
+      - name: Stop database fixtures and remove volumes
+        if: always()
+        working-directory: .
+        run: docker compose -f tests/database/docker-compose.yml --profile mssql down -v
+
   # One stable name for every platform.
   app:
     name: App (build · test)
-    needs: [platform-tests, windows-console]
+    needs: [platform-tests, windows-console, database-integration]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: '[ "${{ needs.platform-tests.result }}" = success ] && [ "${{ needs.windows-console.result }}" = success ]'
+      - run: '[ "${{ needs.platform-tests.result }}" = success ] && [ "${{ needs.windows-console.result }}" = success ] && [ "${{ needs.database-integration.result }}" = success ]'

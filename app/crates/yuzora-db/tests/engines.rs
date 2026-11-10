@@ -16,24 +16,24 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use futures_util::FutureExt;
 use yuzora_db::config::{ConnectionConfig, Engine, SslMode};
 use yuzora_db::engine::{Conn, ConnectSpec, RowSink};
 use yuzora_db::error::DbError;
 use yuzora_db::model::{Cell, Column, ObjectKind, ObjectRef, RowEdit};
 use yuzora_db::runtime;
 
+mod common;
+use common::enabled;
+
 // ---------------------------------------------------------------- helpers
 
 fn run<T>(work: impl Future<Output = T>) -> T {
     runtime::block_on(work)
-}
-
-fn enabled(engine: &str) -> bool {
-    std::env::var("YUZORA_DATABASE_TEST_ENGINES")
-        .is_ok_and(|v| v.split(',').any(|e| e.trim().eq_ignore_ascii_case(engine)))
 }
 
 /// Ends the test early, passing, when `engine` is not selected.
@@ -1043,6 +1043,239 @@ fn postgres_a_stop_pressed_before_the_statement_keeps_it_from_running() {
     });
 }
 
+/// The fixture through a relay that can hold the server back from hearing of
+/// a cancel (the relay lives as long as the test).
+async fn pg_through(relay: &common::LaggingPostgres, ssl: SslMode) -> Conn {
+    let mut spec = pg_spec("yuzora_full", ssl);
+    spec.config.port = Some(relay.port());
+    Conn::connect(&spec).await.expect("connect to the PostgreSQL fixture through the relay")
+}
+
+/// A stop is a request to the server about whatever the connection runs when
+/// the request gets there. Once the engine says the stop is done, nothing that
+/// the connection runs afterwards may be its target.
+#[test]
+fn postgres_a_stop_that_the_server_hears_late_is_not_felt_by_what_runs_after_it() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    for ssl in [SslMode::Prefer, SslMode::Disable] {
+        run(async {
+            let mut conn = pg_through(&relay, ssl).await;
+            query(&mut conn, "CREATE TEMP TABLE yz_late (v int); INSERT INTO yz_late VALUES (1)").await.unwrap();
+            relay.hold_connections(Duration::from_millis(250));
+            conn.canceller().cancel().await;
+            relay.release();
+            assert_eq!(conn.execute("UPDATE yz_late SET v = 2", &mut Stopped).await, Err(DbError::Cancelled));
+            let after = query(&mut conn, "SELECT v, pg_sleep(1.5) FROM yz_late").await.map(|_| ());
+            assert_eq!(after, Ok(()), "{ssl:?}: the stop, still on its way, cancelled the statement that ran after it");
+            assert_eq!(scalar(&mut conn, "SELECT v FROM yz_late").await, "1");
+        });
+    }
+}
+
+/// Keeps the runtime's worker threads busy until dropped: a task spawned
+/// meanwhile cannot start.
+struct BusyWorkers(Arc<AtomicBool>);
+
+impl BusyWorkers {
+    fn new() -> Self {
+        let (go, busy) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+        for _ in 0..2 {
+            let (go, busy) = (go.clone(), busy.clone());
+            runtime::spawn(async move {
+                busy.fetch_add(1, Ordering::SeqCst);
+                let since = Instant::now();
+                while !go.load(Ordering::SeqCst) && since.elapsed() < Duration::from_secs(10) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            });
+        }
+        while busy.load(Ordering::SeqCst) < 2 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        BusyWorkers(go)
+    }
+}
+
+impl Drop for BusyWorkers {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The connection is not handed to new work while a stop is on its way, and
+/// the stop counts as on its way from the moment it is pressed, not from when
+/// the task that sends it first gets to run.
+#[test]
+fn postgres_a_stop_from_the_background_is_on_its_way_before_it_returns() {
+    only_with!("postgres");
+    run(async {
+        let mut conn = pg().await;
+        let busy = BusyWorkers::new();
+        conn.canceller().cancel_in_background();
+        let counted = conn.settled().now_or_never().is_none();
+        drop(busy);
+        assert!(counted, "the stop was not counted on its way when it returned");
+        conn.settled().await;
+        assert!(!conn.is_closed());
+        assert_eq!(scalar(&mut conn, "SELECT 'after', pg_sleep(0.3)").await, "after");
+    });
+}
+
+/// A stop that was not heard to be dealt with may still arrive: the connection
+/// it was for is not trusted with another statement.
+#[test]
+fn postgres_a_stop_the_server_does_not_answer_retires_the_connection() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    run(async {
+        let conn = pg_through(&relay, SslMode::Disable).await;
+        relay.hold_cancels(Duration::from_secs(8));
+        let started = Instant::now();
+        conn.canceller().cancel().await;
+        assert!(started.elapsed() < Duration::from_secs(7), "{:?}", started.elapsed());
+        assert!(conn.is_closed(), "the connection is kept for statements a stop can still arrive in");
+        relay.release();
+        assert_eq!(scalar(&mut pg_through(&relay, SslMode::Disable).await, "SELECT 'new'").await, "new");
+    });
+}
+
+#[test]
+fn postgres_a_stop_the_server_hears_late_still_ends_the_statement_it_was_for() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    run(async {
+        let mut conn = pg_through(&relay, SslMode::Prefer).await;
+        relay.hold_connections(Duration::from_millis(250));
+        let canceller = conn.canceller();
+        runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            canceller.cancel().await;
+        });
+        let started = Instant::now();
+        assert_eq!(conn.execute("SELECT pg_sleep(30)", &mut Collect::default()).await, Err(DbError::Cancelled));
+        let took = started.elapsed();
+        assert!((Duration::from_millis(450)..Duration::from_secs(5)).contains(&took), "{took:?}");
+        relay.release();
+        assert!(!conn.is_closed());
+        assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
+    });
+}
+
+/// A statement of three seconds with the connection's stop pressed 300 ms into it.
+async fn stopped_while_it_sleeps(conn: &mut Conn) -> Result<(), DbError> {
+    let canceller = conn.canceller();
+    runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        canceller.cancel().await;
+    });
+    conn.execute("SELECT pg_sleep(3)", &mut Collect::default()).await
+}
+
+/// A host can name several addresses, some of which are other servers or none
+/// at all. The connection is made to one of them, and a stop is for the server
+/// that connection is with: not for the first address the host gives when the
+/// stop is pressed, nor for what the configuration points at.
+#[test]
+fn postgres_a_stop_goes_to_the_address_the_connection_was_made_to() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    let door = common::ClosedDoor::start();
+    for ssl in [SslMode::Disable, SslMode::Prefer] {
+        run(async {
+            let mut spec = pg_spec("yuzora_full", ssl);
+            spec.config.port = Some(door.addr().port());
+            spec.addresses = Some(vec![door.addr(), relay.addr()]);
+            let mut conn = Conn::connect(&spec).await.expect("connect past the address that closes at once");
+            let taken = door.taken();
+            let outcome = stopped_while_it_sleeps(&mut conn).await;
+            assert_eq!(outcome, Err(DbError::Cancelled), "{ssl:?}: the statement ran to its end, the stop went astray");
+            assert_eq!(door.taken(), taken, "{ssl:?}: the stop was sent to an address the connection is not with");
+            assert!(!conn.is_closed());
+            assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
+        });
+    }
+}
+
+/// Through a tunnel the bytes go to its local end and the configured host is
+/// only the name the certificate is for: it is not looked up, by the
+/// connection or by a stop.
+#[test]
+fn postgres_a_stop_goes_to_the_tunnels_end_and_not_to_the_configured_host() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    for ssl in [SslMode::Disable, SslMode::Prefer] {
+        run(async {
+            let mut spec = pg_spec("yuzora_full", ssl);
+            spec.config.host = "no-such-host.invalid".into();
+            spec.endpoint = Some(("127.0.0.1".into(), relay.port()));
+            let mut conn = Conn::connect(&spec).await.expect("connect through the tunnel's end");
+            assert_eq!(stopped_while_it_sleeps(&mut conn).await, Err(DbError::Cancelled), "{ssl:?}");
+            assert!(!conn.is_closed());
+        });
+    }
+}
+
+/// A host name as the machine resolves it (`localhost` is `::1` and
+/// `127.0.0.1` where there is IPv6): the connection and its stop are with the
+/// same server.
+#[test]
+fn postgres_a_host_name_is_looked_up_and_its_stop_ends_the_statement() {
+    only_with!("postgres");
+    run(async {
+        let mut spec = pg_spec("yuzora_full", SslMode::Prefer);
+        spec.config.host = "localhost".into();
+        let mut conn = Conn::connect(&spec).await.expect("connect to localhost");
+        assert_eq!(stopped_while_it_sleeps(&mut conn).await, Err(DbError::Cancelled));
+        assert!(!conn.is_closed());
+        assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
+    });
+}
+
+/// The write-back is a run of statements of its own, each of them a target of
+/// a stop that is late: the UPDATE, and the COMMIT, which a deferred trigger
+/// keeps busy for a while.
+fn a_write_back_after_a_stop_the_server_hears_late(ddl: &str) {
+    let relay = common::LaggingPostgres::start();
+    run(async {
+        let mut conn = pg_through(&relay, SslMode::Prefer).await;
+        query(&mut conn, "CREATE TEMP TABLE yz_wb (id int PRIMARY KEY, v text); INSERT INTO yz_wb VALUES (1, 'a')")
+            .await
+            .unwrap();
+        query(&mut conn, ddl).await.unwrap();
+        let t = pg_object(&pg_temp_schema(&mut conn).await, "yz_wb");
+        relay.hold_connections(Duration::from_millis(250));
+        conn.canceller().cancel().await;
+        relay.release();
+        assert_eq!(
+            conn.apply_edits(&t, &[one_edit("z")]).await,
+            Ok(1),
+            "the stop, still on its way, cut the write-back short"
+        );
+        assert_eq!(scalar(&mut conn, "SELECT v FROM yz_wb").await, "z");
+        assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
+    });
+}
+
+#[test]
+fn postgres_a_write_back_is_not_cut_short_in_its_update_by_a_stop_the_server_hears_late() {
+    only_with!("postgres");
+    a_write_back_after_a_stop_the_server_hears_late(
+        "CREATE FUNCTION pg_temp.slow_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1.5); RETURN NEW; END $$;
+         CREATE TRIGGER slow_update BEFORE UPDATE ON yz_wb FOR EACH ROW EXECUTE FUNCTION pg_temp.slow_update();",
+    );
+}
+
+#[test]
+fn postgres_a_write_back_is_not_cut_short_in_its_commit_by_a_stop_the_server_hears_late() {
+    only_with!("postgres");
+    a_write_back_after_a_stop_the_server_hears_late(
+        "CREATE FUNCTION pg_temp.slow_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1.5); RETURN NULL; END $$;
+         CREATE CONSTRAINT TRIGGER slow_commit AFTER UPDATE ON yz_wb DEFERRABLE INITIALLY DEFERRED
+           FOR EACH ROW EXECUTE FUNCTION pg_temp.slow_commit();",
+    );
+}
+
 #[test]
 fn postgres_write_back_waits_for_a_transaction_left_open() {
     only_with!("postgres");
@@ -1609,6 +1842,141 @@ fn mssql_write_back_waits_for_a_transaction_left_open() {
     });
 }
 
+/// The refusal to write back inside a transaction that SQL Server opens by itself.
+fn open_implicit_transaction() -> DbError {
+    DbError::NotEditable(yuzora_db::i18n::t("edit.open_implicit_transaction", &[]))
+}
+
+/// Removes a table of the SQL Server fixture's database when a test ends, however it ends.
+struct DropFixtureTable(String);
+
+impl Drop for DropFixtureTable {
+    fn drop(&mut self) {
+        let sql = format!(
+            "IF OBJECT_ID(N'dbo.{0}_v') IS NOT NULL DROP VIEW dbo.{0}_v; IF OBJECT_ID(N'dbo.{0}') IS NOT NULL DROP TABLE dbo.{0}",
+            self.0
+        );
+        run(async {
+            if let Ok(mut conn) = Conn::connect(&ms_spec("sa", SslMode::Prefer, "yuzora_p8")).await {
+                let _ = query(&mut conn, &sql).await;
+            }
+        });
+    }
+}
+
+#[test]
+fn mssql_a_date_written_through_a_view_is_saved_as_it_says_under_a_day_first_session() {
+    only_with!("mssql");
+    let name = format!("yz_r1_view_{}", std::process::id());
+    let _cleanup = DropFixtureTable(name.clone());
+    run(async {
+        let mut conn = ms_sa("yuzora_p8").await;
+        query(
+            &mut conn,
+            &format!(
+                "IF OBJECT_ID(N'dbo.{name}_v') IS NOT NULL DROP VIEW dbo.{name}_v; \
+                 IF OBJECT_ID(N'dbo.{name}') IS NOT NULL DROP TABLE dbo.{name}; \
+                 CREATE TABLE dbo.{name} (id int PRIMARY KEY, d datetime NOT NULL); \
+                 INSERT INTO dbo.{name} VALUES (1, '20240105')"
+            ),
+        )
+        .await
+        .unwrap();
+        query(&mut conn, &format!("CREATE VIEW dbo.{name}_v AS SELECT id, d FROM dbo.{name}")).await.unwrap();
+        query(&mut conn, "SET DATEFORMAT dmy").await.unwrap();
+        assert_eq!(scalar(&mut conn, "SELECT CONVERT(varchar(10), CAST(N'2024-01-06' AS datetime), 120)").await, "2024-06-01");
+        let edit = RowEdit { key: vec![("id".into(), Cell::Int(1))], changes: vec![("d".into(), text("2024-01-06 2:30 PM"))] };
+        assert_eq!(conn.apply_edits(&ms_object("dbo", &format!("{name}_v")), &[edit]).await, Ok(1));
+        assert_eq!(scalar(&mut conn, &format!("SELECT CONVERT(varchar(30), d, 121) FROM dbo.{name}")).await, "2024-01-06 14:30:00.000");
+    });
+}
+
+#[test]
+fn mssql_a_trigger_that_leaves_a_transaction_open_fails_the_write_back_instead_of_losing_it() {
+    only_with!("mssql");
+    let name = format!("yz_r1_trg_{}", std::process::id());
+    let _cleanup = DropFixtureTable(name.clone());
+    let t = ms_object("dbo", &name);
+    run(async {
+        let mut setup = ms_sa("yuzora_p8").await;
+        query(
+            &mut setup,
+            &format!(
+                "IF OBJECT_ID(N'dbo.{name}') IS NOT NULL DROP TABLE dbo.{name}; \
+                 CREATE TABLE dbo.{name} (id int PRIMARY KEY, v nvarchar(10)); \
+                 INSERT INTO dbo.{name} VALUES (1, N'a')"
+            ),
+        )
+        .await
+        .unwrap();
+        // The trigger's BEGIN is never ended: the write-back's COMMIT only counts down, and the server says so.
+        query(&mut setup, &format!("CREATE TRIGGER dbo.{name}_t ON dbo.{name} AFTER UPDATE AS BEGIN SET NOCOUNT ON; BEGIN TRANSACTION; END"))
+            .await
+            .unwrap();
+        let mut conn = ms_sa("yuzora_p8").await;
+        let failed = query_error(conn.apply_edits(&t, &[one_edit("z")]).await.expect_err("a write-back the server will drop is not one that succeeded"));
+        assert!(failed.contains("Msg 266"), "{failed}");
+        assert_eq!(scalar(&mut conn, "SELECT @@TRANCOUNT").await, "0", "rolled back, not left open");
+        assert_eq!(scalar(&mut setup, &format!("SELECT v FROM dbo.{name} WHERE id = 1")).await, "a", "nothing was written");
+    });
+}
+
+#[test]
+fn mssql_a_write_back_on_a_connection_that_opens_transactions_by_itself_is_committed_or_refused() {
+    only_with!("mssql");
+    let name = format!("yz_r1_impl_{}", std::process::id());
+    let _cleanup = DropFixtureTable(name.clone());
+    let t = ms_object("dbo", &name);
+    run(async {
+        let mut setup = ms_sa("yuzora_p8").await;
+        query(
+            &mut setup,
+            &format!(
+                "IF OBJECT_ID(N'dbo.{name}') IS NOT NULL DROP TABLE dbo.{name}; \
+                 CREATE TABLE dbo.{name} (id int PRIMARY KEY, v nvarchar(10), d datetime); \
+                 INSERT INTO dbo.{name} VALUES (1, N'a', '20240105')"
+            ),
+        )
+        .await
+        .unwrap();
+        let open = "SELECT @@TRANCOUNT";
+        let implicit = "SELECT @@OPTIONS & 2";
+        let read_v = format!("SELECT v FROM dbo.{name} WHERE id = 1");
+        for setting in ["SET IMPLICIT_TRANSACTIONS ON", "SET ANSI_DEFAULTS ON"] {
+            let mut conn = ms_sa("yuzora_p8").await;
+            query(&mut conn, setting).await.unwrap();
+            assert_eq!(scalar(&mut conn, open).await, "0", "{setting}");
+
+            assert_eq!(conn.apply_edits(&t, &[one_edit("z")]).await, Ok(1), "{setting}");
+            assert_eq!(scalar(&mut conn, open).await, "0", "{setting}: it said it wrote and left its transaction open");
+            let mut other = ms_sa("yuzora_p8").await;
+            assert_eq!(scalar(&mut other, &read_v).await, "z", "{setting}: another connection reads what was written");
+            assert_eq!(scalar(&mut conn, implicit).await, "2", "{setting}: the connection keeps the setting it was given");
+
+            let unreadable =
+                RowEdit { key: vec![("id".into(), Cell::Int(1))], changes: vec![("d".into(), text("2024-01-06 9:5"))] };
+            assert!(conn.apply_edits(&t, &[unreadable]).await.is_err(), "{setting}");
+            assert_eq!(scalar(&mut conn, open).await, "0", "{setting}: a refusal leaves no transaction open");
+            assert_eq!(scalar(&mut conn, implicit).await, "2", "{setting}: nor a changed setting");
+
+            let missing = RowEdit { key: vec![("id".into(), Cell::Int(99))], changes: vec![("v".into(), text("x"))] };
+            assert!(mismatch(&query_error(conn.apply_edits(&t, &[missing]).await.err().unwrap()), 0), "{setting}");
+            assert_eq!(scalar(&mut conn, open).await, "0", "{setting}: a mismatch leaves no transaction open");
+            assert_eq!(scalar(&mut conn, implicit).await, "2", "{setting}: nor a changed setting");
+
+            // Reading a table opens one here, and it is not the write-back's to end.
+            query(&mut conn, &format!("SELECT * FROM dbo.{name}")).await.unwrap();
+            assert_eq!(scalar(&mut conn, open).await, "1", "{setting}");
+            assert_eq!(conn.apply_edits(&t, &[one_edit("y")]).await, Err(open_implicit_transaction()), "{setting}");
+            assert_eq!(scalar(&mut other, &read_v).await, "z", "{setting}: nothing was written");
+            query(&mut conn, "COMMIT").await.unwrap();
+            assert_eq!(conn.apply_edits(&t, &[one_edit("y")]).await, Ok(1), "{setting}: once it is ended, it writes");
+            assert_eq!(scalar(&mut conn, open).await, "0", "{setting}");
+            assert_eq!(scalar(&mut other, &read_v).await, "y", "{setting}");
+        }
+    });
+}
+
 #[test]
 fn mssql_table_sql_stays_in_the_connections_database_after_a_use() {
     only_with!("mssql");
@@ -2073,4 +2441,279 @@ fn perf_mssql_reads_100k_rows_then_stops() {
             .await;
         }
     });
+}
+
+// ---------------------------------------------------------------- text typed into datetime cells
+
+/// What a person means by a text typed into a `datetime` and a `smalldatetime` cell, and so what the
+/// table may hold afterwards. There is no outcome besides these: a cell holds what the person meant,
+/// or the write is refused and the row is as it was.
+#[derive(Clone, Debug)]
+enum Meant {
+    /// Saved as this (`YYYY-MM-DD HH:MM:SS.mmm`): a way of writing it the cell takes by design.
+    Saved(String),
+    /// This, or refused: a way of writing it that one reading only is certain of, whoever's language.
+    Safe(String),
+    /// Refused: no reading of it is certain.
+    Refused,
+    /// Written the way the session's language writes a date (the day or the month first, a two-digit
+    /// year): what the session itself reads from it, or refused.
+    Session,
+}
+
+#[derive(Clone, Debug)]
+struct Typed {
+    text: String,
+    meant: Meant,
+}
+
+/// (how a clock is typed, what it is: `HH:MM:SS.mmm`, or `None` where no reading is certain)
+const CLOCKS: &[(&str, Option<&str>)] = &[
+    ("10:00", Some("10:00:00.000")),
+    ("10:00:00", Some("10:00:00.000")),
+    ("10:00:00.5", Some("10:00:00.500")),
+    ("10:00:00.997", Some("10:00:00.997")),
+    ("09:05", Some("09:05:00.000")),
+    ("9:05", Some("09:05:00.000")),
+    ("23:59:59", Some("23:59:59.000")),
+    ("2:30 PM", Some("14:30:00.000")),
+    ("2:30PM", Some("14:30:00.000")),
+    ("02:30 pm", Some("14:30:00.000")),
+    ("12:00 AM", Some("00:00:00.000")),
+    ("12:30 AM", Some("00:30:00.000")),
+    ("12:00 PM", Some("12:00:00.000")),
+    ("12:30 PM", Some("12:30:00.000")),
+    ("10AM", Some("10:00:00.000")),
+    ("10 PM", Some("22:00:00.000")),
+    ("12:30:15.5 PM", Some("12:30:15.500")),
+    ("10:00:00Z", Some("10:00:00.000")),
+    ("10:00:00.250Z", Some("10:00:00.250")),
+    ("10:00Z", Some("10:00:00.000")),
+    ("9:5", None),
+    ("10:00:5", None),
+    ("1:2:3", None),
+    ("10:00:00:5", None),
+    ("10:00:00:000", None),
+    ("24:00", None),
+    ("10:60", None),
+    ("10:00:60", None),
+    ("13:00 PM", None),
+    ("0:30 AM", None),
+    ("10", None),
+    ("10:00:00+08:00", None),
+    ("10:00:00-05:00", None),
+    ("10:00 :00", None),
+    ("10 : 00", None),
+    ("10:00:00.", None),
+    ("10:00:00 Z", None),
+];
+
+fn year_first_matrix(thin: bool) -> Vec<Typed> {
+    let days: &[(u32, u32, u32)] =
+        if thin { &[(2024, 1, 6), (2024, 2, 3), (2024, 1, 13)] } else { &[(2024, 1, 6), (2024, 2, 3), (2024, 1, 13), (2024, 12, 11), (2024, 6, 1)] };
+    let mut out = Vec::new();
+    for &(y, m, d) in days {
+        let iso_day = format!("{y}-{m:02}-{d:02}");
+        let mut writings: Vec<String> = vec![format!("{y}-{m:02}-{d:02}"), format!("{y}/{m}/{d}"), format!("{y}{m:02}{d:02}")];
+        if !thin {
+            writings.extend([
+                format!("{y}-{m}-{d}"),
+                format!("{y}/{m:02}/{d:02}"),
+                format!("{y}.{m:02}.{d:02}"),
+                format!("{y}.{m}.{d}"),
+            ]);
+        }
+        writings.sort();
+        writings.dedup();
+        for writing in &writings {
+            out.push(Typed { text: writing.clone(), meant: Meant::Saved(format!("{iso_day} 00:00:00.000")) });
+            for &(clock, at) in CLOCKS {
+                let mut shapes = vec![format!("{writing} {clock}"), format!("{clock} {writing}")];
+                if !thin {
+                    shapes.extend([
+                        format!("{writing}T{clock}"),
+                        format!("{writing}  {clock}"),
+                        format!("  {writing} {clock}  "),
+                        format!("{clock}  {writing}"),
+                    ]);
+                }
+                for text in shapes {
+                    // `T` and a clock with AM or PM after it is a way nobody writes it; the cell is not asked to take it.
+                    let meant = match at {
+                        Some(time) if text.contains('T') && !clock.contains(['A', 'P', 'a', 'p']) => Meant::Saved(format!("{iso_day} {time}")),
+                        Some(time) if text.contains('T') => Meant::Safe(format!("{iso_day} {time}")),
+                        Some(time) => Meant::Saved(format!("{iso_day} {time}")),
+                        None => Meant::Refused,
+                    };
+                    out.push(Typed { text, meant });
+                }
+            }
+        }
+    }
+    let refused = [
+        "2024-02-30",
+        "2023-02-29",
+        "2024-13-06",
+        "2024-01-32",
+        "2024-00-06",
+        "2024-01-00",
+        "2024- 01- 06",
+        "2024 -01 -06",
+        "2024 - 01 - 06",
+        "2024/ 1/ 6",
+        "2024. 01. 06",
+        "2024\t-01-06",
+        "2024-01/06",
+        "2024/01.06",
+        "2024-01",
+        "2024/1",
+        "2024-1-6-",
+        "2024-01-06.",
+        "2024-01-06,",
+        "2024--01--06",
+        "(2024-01-06)",
+        "'2024-01-06'",
+        "{ts '2024-01-06 10:00:00'}",
+        "x2024-01-06",
+        "2024-01-06x",
+        "+2024-01-06",
+        "2024-01-0610:00",
+        "2024-01-06 2024-01-07",
+        "10:00 2024-01-06 11:00",
+        "2024-01-06 10:00 2024-01-07",
+        "2024-01-06 10:00 2024",
+        "2024-01-06 10",
+        "2024-01-06 AM",
+        "2024-01-06T",
+        "2024-01-06 T10:00",
+        "2024-01-06T 10:00",
+        "10:00 2024- 01- 06",
+        "2:30 PM 2024- 1- 6",
+        "2024-01-06 10:00:00.1234567890",
+        "2024-01-06 10:00:00Z Z",
+        "2024-01-06Z",
+        "Z2024-01-06",
+    ];
+    out.extend(refused.iter().map(|t| Typed { text: (*t).to_owned(), meant: Meant::Refused }));
+    // One reading only, whatever the language: the date has a month's name, or no separators at all.
+    let safe = [
+        ("2024", "2024-01-01 00:00:00.000"),
+        ("240106", "2024-01-06 00:00:00.000"),
+        ("2024 Jan 6", "2024-01-06 00:00:00.000"),
+        ("2024-Jan-06", "2024-01-06 00:00:00.000"),
+        ("2024 January 6", "2024-01-06 00:00:00.000"),
+        ("Jan 6 2024", "2024-01-06 00:00:00.000"),
+        ("6 Jan 2024", "2024-01-06 00:00:00.000"),
+        ("Jan 6 2024 2:30 PM", "2024-01-06 14:30:00.000"),
+        ("10:00", "1900-01-01 10:00:00.000"),
+        ("10:00:00.5", "1900-01-01 10:00:00.500"),
+        ("2:30 PM", "1900-01-01 14:30:00.000"),
+    ];
+    out.extend(safe.iter().map(|(t, v)| Typed { text: (*t).to_owned(), meant: Meant::Safe((*v).to_owned()) }));
+    let session = [
+        "1/6/2024",
+        "01/06/2024",
+        "13/01/2024",
+        "6.1.2024",
+        "06-01-2024",
+        "1/6/24",
+        "01-06-24 10:00",
+        "1/6/2024 2:30 PM",
+        "10:00 06/01/2024",
+        "12/11/2024 10:00:00.5",
+    ];
+    out.extend(session.iter().map(|t| Typed { text: (*t).to_owned(), meant: Meant::Session }));
+    out
+}
+
+/// Every text of `inputs`, typed into both cells of a row in a session set up by `setup`: the
+/// ones that went wrong.
+async fn typed_dates_under(setup: &str, inputs: &[Typed]) -> Vec<String> {
+    let mut conn = ms_sa("tempdb").await;
+    query(&mut conn, setup).await.unwrap();
+    query(&mut conn, "CREATE TABLE #dt(id int PRIMARY KEY, a datetime, b smalldatetime); INSERT INTO #dt VALUES (1, '19990101', '19990101')")
+        .await
+        .unwrap();
+    let t = ms_object("", "#dt");
+    let sentinel = vec!["1999-01-01 00:00:00.000".to_owned(), "1999-01-01 00:00:00.000".to_owned()];
+    let mut small = std::collections::HashMap::new();
+    let mut wrong = Vec::new();
+    for typed in inputs {
+        let edit = RowEdit {
+            key: vec![("id".into(), Cell::Int(1))],
+            changes: vec![("a".into(), text(&typed.text)), ("b".into(), text(&typed.text))],
+        };
+        let outcome = conn.apply_edits(&t, &[edit]).await;
+        let stored = grid(&mut conn, "SELECT CONVERT(varchar(30), a, 121), CONVERT(varchar(30), b, 121) FROM #dt").await.remove(0);
+        if outcome.is_ok() {
+            query(&mut conn, "UPDATE #dt SET a = '19990101', b = '19990101'").await.unwrap();
+        }
+        let verdict = match &typed.meant {
+            Meant::Saved(v) | Meant::Safe(v) => {
+                if !small.contains_key(v) {
+                    let iso = v.replacen(' ', "T", 1);
+                    let rounded =
+                        scalar(&mut conn, &format!("SELECT CONVERT(varchar(30), CAST(CAST('{iso}' AS datetime) AS smalldatetime), 121)")).await;
+                    small.insert(v.clone(), vec![v.clone(), rounded]);
+                }
+                let wanted = &small[v];
+                match (&typed.meant, &outcome) {
+                    (Meant::Saved(_) | Meant::Safe(_), Ok(_)) if stored == *wanted => None,
+                    (Meant::Safe(_), Err(_)) if stored == sentinel => None,
+                    (_, Ok(_)) => Some(format!("saved as {stored:?}, meant {wanted:?}")),
+                    (_, Err(e)) => Some(format!("refused ({e}), meant {wanted:?}")),
+                }
+            }
+            Meant::Refused => match &outcome {
+                Err(_) if stored == sentinel => None,
+                Err(_) => Some(format!("refused but the row changed to {stored:?}")),
+                Ok(_) => Some(format!("saved as {stored:?}, but no reading of it is certain")),
+            },
+            Meant::Session => {
+                let esc = typed.text.replace('\'', "''");
+                let reading = grid(
+                    &mut conn,
+                    &format!("SELECT CONVERT(varchar(30), TRY_CAST(N'{esc}' AS datetime), 121), CONVERT(varchar(30), TRY_CAST(N'{esc}' AS smalldatetime), 121)"),
+                )
+                .await
+                .remove(0);
+                match &outcome {
+                    Ok(_) if stored == reading => None,
+                    Err(_) if stored == sentinel => None,
+                    Ok(_) => Some(format!("saved as {stored:?}, the session reads {reading:?}")),
+                    Err(e) => Some(format!("refused ({e}) and the row changed to {stored:?}")),
+                }
+            }
+        };
+        if let Some(verdict) = verdict {
+            wrong.push(format!("{:?}: {verdict}", typed.text));
+        }
+    }
+    wrong
+}
+
+#[test]
+fn mssql_a_date_typed_into_a_datetime_cell_is_saved_as_meant_or_refused_under_every_language_and_dateformat() {
+    only_with!("mssql");
+    let full = year_first_matrix(false);
+    let thin = year_first_matrix(true);
+    assert!(full.len() > 4000, "the matrix has {} inputs", full.len());
+    let mut sessions: Vec<(String, Vec<Typed>)> = ["us_english", "British", "German", "Japanese", "French", "Hungarian"]
+        .iter()
+        .map(|language| (format!("SET LANGUAGE {language}"), full.clone()))
+        .collect();
+    sessions.extend(["mdy", "dmy", "ymd", "ydm", "myd", "dym"].iter().map(|f| (format!("SET LANGUAGE us_english; SET DATEFORMAT {f}"), thin.clone())));
+    let total: usize = sessions.iter().map(|(_, inputs)| inputs.len()).sum();
+    eprintln!("DATE MATRIX {} sessions, {total} inputs", sessions.len());
+    let failures = run(async {
+        let runs = sessions.iter().map(|(setup, inputs)| async move { (setup.clone(), typed_dates_under(setup, inputs).await) });
+        futures_util::future::join_all(runs).await
+    });
+    let mut report = Vec::new();
+    for (setup, wrong) in failures {
+        if !wrong.is_empty() {
+            report.push(format!("{setup}: {} went wrong\n  {}", wrong.len(), wrong.iter().take(25).cloned().collect::<Vec<_>>().join("\n  ")));
+        }
+    }
+    assert!(report.is_empty(), "{}", report.join("\n"));
 }

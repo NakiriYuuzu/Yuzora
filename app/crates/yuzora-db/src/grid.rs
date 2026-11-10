@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
+use gpui::EntityInputHandler as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement,
@@ -132,6 +133,10 @@ pub struct Grid {
     colors: Colors,
     /// Why the last cell asked for couldn't be edited here.
     notice: Option<String>,
+    /// The footer's message is open in full (it is one truncated line otherwise).
+    message_open: bool,
+    /// The write failure already shown: a new one opens the message by itself.
+    failure_seen: Option<String>,
     /// Frames drawn before the list had a size (the footer's range waits for one).
     unsized_frames: u8,
     _watch: Option<Task<()>>,
@@ -189,6 +194,8 @@ impl Grid {
             focus: cx.focus_handle(),
             colors: Colors::from_props(None),
             notice: None,
+            message_open: false,
+            failure_seen: None,
             unsized_frames: 0,
             _watch: None,
         }
@@ -207,6 +214,8 @@ impl Grid {
         self.head = None;
         self.editing = None;
         self.notice = None;
+        self.message_open = false;
+        self.failure_seen = None;
         self.unsized_frames = 0;
         self.resizing = None;
         self.list = UniformListScrollHandle::new();
@@ -295,9 +304,9 @@ impl Grid {
         cx.write_to_clipboard(ClipboardItem::new_string(out));
     }
 
-    fn sort(&mut self, column: usize, cx: &mut Context<Self>) {
+    fn sort(&mut self, column: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(set) = self.set.clone() else { return };
-        self.commit_editing(cx);
+        self.commit_editing(window, cx);
         let next = match results::lock(&set).sort {
             Some((c, false)) if c == column => Some((column, true)),
             Some((c, true)) if c == column => None,
@@ -313,7 +322,12 @@ impl Grid {
         let Some(set) = self.set.clone() else { return };
         let outcome = {
             let r = results::lock(&set);
-            if !r.editable() || r.writing || pos.0 >= r.len() || pos.1 >= r.columns.len() {
+            if pos.0 >= r.len() || pos.1 >= r.columns.len() {
+                return;
+            }
+            if let Some(why) = edit_blocked(&r) {
+                self.notice = Some(why);
+                cx.notify();
                 return;
             }
             let row = r.row_index(pos.0);
@@ -340,7 +354,7 @@ impl Grid {
                 return;
             }
         };
-        self.commit_editing(cx);
+        self.commit_editing(window, cx);
         let input = cx.new(|cx| InputState::new(window, cx).default_value(value.clone()));
         input.update(cx, |state, cx| {
             state.select_all(window, cx);
@@ -348,11 +362,15 @@ impl Grid {
         });
         let events = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
             InputEvent::PressEnter { .. } => {
+                // Enter while an input method composes chooses its candidate; it is not the cell being kept.
+                if this.composing(window, cx) {
+                    return;
+                }
                 if let Some(e) = this.editing.as_mut() {
                     // Enter on a blank NULL cell asks for an empty string.
                     e.typed = true;
                 }
-                this.commit_editing(cx);
+                this.commit_editing(window, cx);
                 this.focus.focus(window, cx);
             }
             InputEvent::Change => {
@@ -360,27 +378,38 @@ impl Grid {
                     e.typed = true;
                 }
             }
-            InputEvent::Blur => this.commit_editing(cx),
+            InputEvent::Blur => this.commit_editing(window, cx),
             _ => {}
         });
         self.editing = Some(Editing { row, column: pos.1, initial: value, original, typed: false, input, _events: events });
         cx.notify();
     }
 
-    /// Keeps what the inline editor holds as a pending edit.
-    fn commit_editing(&mut self, cx: &mut Context<Self>) {
+    /// Whether an input method is composing in the editor (marked text it has
+    /// not been told to keep yet: bopomofo or pinyin waiting for a candidate).
+    /// That text is not typed yet, and what Enter and the save key mean while it
+    /// is there is the input method's to say.
+    fn composing(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.editing.as_ref().is_some_and(|e| marked_text(&e.input, window, cx).is_some())
+    }
+
+    /// Keeps what the inline editor holds as a pending edit. This is the one
+    /// place the editor's text becomes a cell, whatever asked for it (Write
+    /// back, another cell, a header, the editor losing focus), and the text an
+    /// input method is still composing is not part of it.
+    fn commit_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(editing), Some(set)) = (self.editing.take(), self.set.clone()) else { return };
-        let value = editing.input.read(cx).value().to_string();
-        let Some(value) = typed_value(&editing.original, &editing.initial, value, editing.typed) else {
-            // Opened and left: a NULL stays NULL, 5 stays the number 5.
-            return cx.notify();
-        };
-        let id = {
+        let marked = marked_text(&editing.input, window, cx);
+        let value = without_marked(&editing.input.read(cx).value(), marked);
+        let (kept, id) = {
             let mut r = results::lock(&set);
-            r.set_edit(editing.row, editing.column, value);
-            r.id
+            let kept = r.type_into(editing.row, editing.column, &editing.original, &editing.initial, value, editing.typed);
+            (kept, r.id)
         };
-        results::changed(id);
+        // Opened and left: a NULL stays NULL, 5 stays the number 5.
+        if kept {
+            results::changed(id);
+        }
         cx.notify();
     }
 
@@ -395,7 +424,9 @@ impl Grid {
         let (Some(set), Some((rows, cols))) = (self.set.clone(), self.selection()) else { return };
         let id = {
             let mut r = results::lock(&set);
-            if !r.editable() || r.writing {
+            if let Some(why) = edit_blocked(&r) {
+                self.notice = Some(why);
+                cx.notify();
                 return;
             }
             for view_row in rows {
@@ -425,24 +456,53 @@ impl Grid {
         cx.notify();
     }
 
-    fn write_back(&mut self, cx: &mut Context<Self>) {
-        self.commit_editing(cx);
-        let Some(id) = self.result else { return };
+    fn write_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_editing(window, cx);
+        let Some(set) = self.set.clone() else { return };
+        if results::lock(&set).edits.is_empty() {
+            return;
+        }
         crate::runtime::spawn(async move {
-            // Errors land on the result (`write_error`), which the footer shows.
-            let _ = crate::session::write_back(id).await;
+            if let Err(error) = crate::session::write_back_set(&set).await {
+                // `write_back_set` records it itself; this only makes sure the footer has it.
+                let id = {
+                    let mut r = results::lock(&set);
+                    r.show_failure(&error);
+                    r.id
+                };
+                results::changed(id);
+            }
         });
     }
 
+    fn stop_write(&mut self, cx: &mut Context<Self>) {
+        let Some(set) = self.set.clone() else { return };
+        results::lock(&set).stop_write();
+        cx.notify();
+    }
+
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let m = &event.keystroke.modifiers;
         if self.editing.is_some() {
-            if event.keystroke.key == "escape" {
-                self.cancel_editing(window, cx);
-                cx.stop_propagation();
+            match event.keystroke.key.as_str() {
+                "escape" => {
+                    self.cancel_editing(window, cx);
+                    cx.stop_propagation();
+                }
+                // Saving with the editor still open keeps the cell first: the
+                // same as Enter, then Write back. Not while an input method is
+                // composing: the unchosen text would be written as the cell.
+                "s" if m.secondary() => {
+                    if !self.composing(window, cx) {
+                        self.write_back(window, cx);
+                        self.focus.focus(window, cx);
+                    }
+                    cx.stop_propagation();
+                }
+                _ => {}
             }
             return;
         }
-        let m = &event.keystroke.modifiers;
         let Some(set) = self.set.clone() else { return };
         let (rows, cols) = {
             let r = results::lock(&set);
@@ -472,6 +532,7 @@ impl Grid {
         }
         match event.keystroke.key.as_str() {
             "c" if m.secondary() => self.copy(cx),
+            "s" if m.secondary() => self.write_back(window, cx),
             "a" if m.secondary() => {
                 self.anchor = Some((0, 0));
                 self.head = Some((rows - 1, cols - 1));
@@ -511,7 +572,7 @@ impl Grid {
                 .cursor_pointer()
                 .hover(|s| s.text_color(c.foreground))
                 .when(col.numeric, |d| d.justify_end())
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.sort(i, cx)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.sort(i, window, cx)))
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).truncate().child(format!("{}{arrow}", col.name)));
             let handle = div()
                 .id(("rz", i))
@@ -537,7 +598,7 @@ impl Grid {
         let Some(set) = self.set.clone() else { return Vec::new() };
         let r = results::lock(&set);
         let c = self.colors.clone();
-        let editable = r.editable() && !r.writing;
+        let editable = r.editable() && !r.is_writing();
         range
             .filter(|i| *i < r.len())
             .map(|view_row| {
@@ -558,6 +619,7 @@ impl Grid {
                     let selected = self.is_selected((view_row, col_ix));
                     let cell = div()
                         .id(("c", view_row * 4096 + col_ix))
+                        .debug_selector(move || format!("grid-cell-{view_row}-{col_ix}"))
                         .w(px(width))
                         .flex_none()
                         .h_full()
@@ -572,7 +634,7 @@ impl Grid {
                                 if this.editing.as_ref().is_some_and(|ed| ed.row == row && ed.column == col_ix) {
                                     return;
                                 }
-                                this.commit_editing(cx);
+                                this.commit_editing(window, cx);
                                 this.focus.focus(window, cx);
                                 this.select((view_row, col_ix), e.modifiers.shift, cx);
                             }),
@@ -648,51 +710,97 @@ impl Grid {
         let button = |id: &'static str, label: String, primary: bool| {
             div()
                 .id(id)
+                .debug_selector(move || format!("grid-{id}"))
                 .h(px(20.0))
                 .px(px(8.0))
                 .flex()
+                .flex_none()
+                .max_w_full()
                 .items_center()
                 .rounded(px(4.0))
                 .cursor_pointer()
                 .when(primary, |d| d.bg(c.button).text_color(c.button_text).font_weight(gpui::FontWeight::SEMIBOLD))
                 .when(!primary, |d| d.border_1().border_color(c.button_border).text_color(c.foreground))
                 .hover(|s| s.opacity(0.88))
-                .child(label)
+                .child(div().truncate().child(label))
         };
-        div()
+        // Each piece of status is a line of its own once the pane is too narrow
+        // for it beside the others, and is cut at the pane's edge when even
+        // that is too wide.
+        let text = |color: Hsla, text: String| div().max_w_full().truncate().text_color(color).child(text);
+        let status = div()
             .flex()
             .flex_row()
-            .flex_none()
-            .h(px(BAR_H))
+            .flex_wrap()
+            .flex_auto()
+            .min_w_0()
             .items_center()
-            .gap(px(12.0))
-            .px(px(12.0))
-            .text_size(px(11.5))
-            .text_color(c.muted)
-            .border_t_1()
-            .border_color(c.divider)
-            .child(div().flex_none().child(parts.join(" · ")))
-            .when(edits > 0, |d| d.child(div().flex_none().text_color(c.warning).child(t("grid.modified", &[("count", edits.to_string())]))))
-            .when_some(r.write_error.clone(), |d, e| d.child(div().min_w_0().truncate().text_color(c.error).child(e)))
-            .when(edits == 0 && r.write_error.is_none(), |d| {
-                d.when_some(r.not_editable.clone(), |d, why| d.child(div().min_w_0().truncate().text_color(c.dim).child(why)))
+            .gap_x(px(12.0))
+            .child(text(c.muted, parts.join(" · ")))
+            .when(edits > 0, |d| d.child(text(c.warning, t("grid.modified", &[("count", edits.to_string())]))))
+            .when_some(long_message(r), |d, (message, error)| {
+                let (open, color) = (self.message_open, if error { c.error } else { c.dim });
+                d.child(
+                    text(color, format!("{} {}", if open { "▾" } else { "▸" }, one_line(&message)))
+                        .id("message")
+                        .debug_selector(|| "grid-message".into())
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.message_open = !this.message_open;
+                            cx.notify();
+                        })),
+                )
             })
-            .when_some(self.notice.clone(), |d, why| d.child(div().min_w_0().truncate().text_color(c.dim).child(why)))
-            .when_some(r.error.clone().filter(|_| r.columns.is_empty()), |d, e| {
-                d.child(div().min_w_0().truncate().text_color(c.error).child(e))
+            .when_some(self.notice.clone(), |d, why| d.child(text(c.dim, why)));
+        // The buttons wrap rather than leave the pane: a footer that can't be
+        // pressed is no way to write back or to stop.
+        let writing = r.is_writing();
+        let actions = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .flex_none()
+            .max_w_full()
+            .ml_auto()
+            .items_center()
+            .justify_end()
+            .gap(px(6.0))
+            .when(writing, |d| {
+                d.child(div().flex_none().text_color(c.dim).child(t("grid.writing", &[])))
+                    .child(
+                        button("stop", t("grid.stop", &[]), false)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop_write(cx))),
+                    )
             })
-            .child(div().flex_1())
-            .when(r.writing, |d| d.child(div().text_color(c.dim).child(t("grid.writing", &[]))))
-            .when(edits > 0 && !r.writing, |d| {
+            .when(edits > 0 && !writing, |d| {
                 d.child(
                     button("discard", t("grid.discard", &[]), false)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.discard(cx))),
                 )
                 .child(
                     button("write", t("grid.write", &[]), true)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.write_back(cx))),
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.write_back(window, cx))),
                 )
-            })
+            });
+        div()
+            .id("footer")
+            .debug_selector(|| "grid-footer".into())
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .flex_none()
+            .min_h(px(BAR_H))
+            .items_center()
+            .gap_x(px(12.0))
+            .gap_y(px(2.0))
+            .px(px(12.0))
+            .py(px(4.0))
+            .text_size(px(11.5))
+            .text_color(c.muted)
+            .border_t_1()
+            .border_color(c.divider)
+            .child(status)
+            .when(writing || edits > 0, |d| d.child(actions))
     }
 
     /// The first and last rows on screen (1-based).
@@ -740,12 +848,28 @@ impl Render for Grid {
         let Some(set) = self.set.clone() else {
             return root;
         };
-        let (count, width, header, footer, empty) = {
+        let (count, width, header, footer, empty, message) = {
             let r = results::lock(&set);
             self.size_columns(&r);
+            match r.write_failure() {
+                // A new failure opens by itself: it is what the person is waiting for.
+                Some(failure) if self.failure_seen.as_deref() != Some(failure) => {
+                    self.failure_seen = Some(failure.to_owned());
+                    self.message_open = true;
+                }
+                Some(_) => {}
+                None => self.failure_seen = None,
+            }
             let width: f32 = self.widths.iter().sum();
             let empty = r.columns.is_empty();
-            (r.len(), width, self.header(&r, cx).into_any_element(), self.footer(&r, cx).into_any_element(), empty)
+            (
+                r.len(),
+                width,
+                self.header(&r, cx).into_any_element(),
+                self.footer(&r, cx).into_any_element(),
+                empty,
+                long_message(&r).filter(|_| self.message_open),
+            )
         };
         let body = if empty {
             div().flex_1().into_any_element()
@@ -780,7 +904,25 @@ impl Render for Grid {
             self.unsized_frames += 1;
             cx.on_next_frame(window, |_, _, cx| cx.notify());
         }
-        root.child(body).child(footer)
+        let open_message = message.map(|(text, error)| {
+            div()
+                .id("message-open")
+                .debug_selector(|| "grid-message-open".into())
+                // Gives way before the footer does: the buttons below it are the way out.
+                .flex_shrink_1()
+                .min_h_0()
+                .max_h(px(140.0))
+                .overflow_y_scroll()
+                .px(px(12.0))
+                .py(px(6.0))
+                .text_size(px(11.5))
+                .text_color(if error { c.error } else { c.dim })
+                .bg(c.header)
+                .border_t_1()
+                .border_color(c.divider)
+                .child(text)
+        });
+        root.child(body).when_some(open_message, |d, panel| d.child(panel)).child(footer)
     }
 }
 
@@ -815,11 +957,41 @@ pub fn thousands(n: u64) -> String {
     out
 }
 
-/// What the inline editor's text makes of a cell, if anything: opened and
-/// left as it was, nothing. A NULL cell opens blank, so blank there means an
-/// empty string only once it was typed into or Enter was pressed (`meant`).
-fn typed_value(original: &Cell, initial: &str, value: String, meant: bool) -> Option<Cell> {
-    (value != initial || (original.is_null() && meant)).then(|| original.edited(value))
+/// The one message the footer carries, in full (the footer shows its first
+/// line, a click opens the rest above it): the write failure, else why the
+/// result is read-only, else what stopped the read. `true`: an error.
+fn long_message(r: &ResultSet) -> Option<(String, bool)> {
+    if let Some(failure) = r.write_failure() {
+        return Some((failure.to_owned(), true));
+    }
+    if let Some(why) = r.read_only_reason().filter(|_| r.edits.is_empty()) {
+        return Some((why, false));
+    }
+    r.error.clone().filter(|_| r.columns.is_empty()).map(|e| (e, true))
+}
+
+/// Why an edit can't start now (`None`: it can).
+fn edit_blocked(r: &ResultSet) -> Option<String> {
+    if r.is_writing() { Some(t("edit.writing", &[])) } else { r.editing.blocked() }
+}
+
+/// The input method's composition in `input`, as the UTF-16 range of the text
+/// it covers.
+fn marked_text(input: &Entity<InputState>, window: &mut Window, cx: &mut App) -> Option<Range<usize>> {
+    input.update(cx, |input, cx| input.marked_text_range(window, cx))
+}
+
+/// `text` without its composing part (`marked`, in UTF-16 units).
+fn without_marked(text: &str, marked: Option<Range<usize>>) -> String {
+    let Some(marked) = marked else { return text.to_owned() };
+    let mut at = 0;
+    text.chars()
+        .filter(|c| {
+            let composing = marked.contains(&at);
+            at += c.len_utf16();
+            !composing
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -827,29 +999,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_null_cell_can_become_an_empty_string() {
-        // Typed into (or Enter pressed on) a NULL cell left blank: an empty string.
-        assert_eq!(typed_value(&Cell::Null, "", String::new(), true), Some(Cell::text("")));
-        // Opened and left without a key: still NULL.
-        assert_eq!(typed_value(&Cell::Null, "", String::new(), false), None);
-        // A value left as it was is no edit, however it was left.
-        assert_eq!(typed_value(&Cell::Int(5), "5", "5".into(), true), None);
-        assert_eq!(typed_value(&Cell::text(""), "", String::new(), true), None, "an empty string stays one");
-        assert_eq!(typed_value(&Cell::text("a"), "a", "b".into(), false), Some(Cell::text("b")));
-        assert_eq!(typed_value(&Cell::Null, "", "x".into(), false), Some(Cell::text("x")));
+    fn a_composition_is_no_part_of_the_text() {
+        assert_eq!(without_marked("abc", None), "abc");
+        // UTF-16 units: the 𠀀 before the composition is two of them, each ㄓ one.
+        assert_eq!(without_marked("𠀀中ㄓㄨㄥ", Some(3..6)), "𠀀中");
+        assert_eq!(without_marked("ㄓㄨㄥ", Some(0..3)), "");
+        assert_eq!(without_marked("a𠀀b", Some(1..3)), "ab");
+        assert_eq!(without_marked("ab", Some(1..1)), "ab");
+    }
+
+    fn result(editing: crate::results::Editing) -> std::sync::Arc<std::sync::Mutex<ResultSet>> {
+        let set = results::create("grid-tests", "select");
+        {
+            let mut r = results::lock(&set);
+            r.columns = vec![crate::model::Column::new("id", "int4")];
+            r.rows = vec![vec![Cell::text("1")]];
+            r.complete = true;
+            r.editing = editing;
+        }
+        set
+    }
+
+    fn target() -> crate::results::EditTarget {
+        crate::results::EditTarget {
+            connection: "c".into(),
+            config: serde_json::from_value(serde_json::json!({"name": "c", "engine": "sqlite", "path": "t.sqlite"})).unwrap(),
+            database: None,
+            owner: "grid-tests".into(),
+            table: crate::model::ObjectRef { schema: String::new(), name: "t".into() },
+            key: vec![0],
+            read_only: Vec::new(),
+        }
     }
 
     #[test]
-    fn an_edited_number_stays_a_number() {
-        // SQLite keeps what is bound in a column without affinity: 7 must go as an integer.
-        assert_eq!(typed_value(&Cell::Int(5), "5", "7".into(), false), Some(Cell::Int(7)));
-        assert_eq!(typed_value(&Cell::Float(1.5), "1.5", "2".into(), false), Some(Cell::Float(2.0)));
-        // Not of the cell's kind: text, for the server to convert or refuse
-        // (SQL Server would cut a float 7.5 to 7 in an int column, silently).
-        assert_eq!(typed_value(&Cell::Int(5), "5", "7.5".into(), false), Some(Cell::text("7.5")));
-        assert_eq!(typed_value(&Cell::Int(5), "5", "five".into(), false), Some(Cell::text("five")));
-        assert_eq!(typed_value(&Cell::Float(1.5), "1.5", "NaN".into(), false), Some(Cell::text("NaN")));
-        assert_eq!(typed_value(&Cell::text("5"), "5", "7".into(), false), Some(Cell::text("7")), "text stays text");
+    fn a_cell_that_cannot_be_edited_has_a_reason_to_show() {
+        use crate::results::{Editing, ReadOnly, WriteState, WriteStop};
+        let set = result(Editing::Loading);
+        assert_eq!(edit_blocked(&results::lock(&set)), Some(t("edit.loading", &[])));
+        for why in [ReadOnly::Query, ReadOnly::Connection, ReadOnly::NoKey, ReadOnly::NoInfo("denied".into()), ReadOnly::ReadFailed] {
+            let set = result(Editing::ReadOnly(why.clone()));
+            assert_eq!(edit_blocked(&results::lock(&set)), Some(why.reason()));
+            assert!(!why.reason().is_empty());
+        }
+        let set = result(Editing::Editable(Box::new(target())));
+        assert_eq!(edit_blocked(&results::lock(&set)), None);
+        results::lock(&set).write = WriteState::Writing(WriteStop::new());
+        assert_eq!(edit_blocked(&results::lock(&set)), Some(t("edit.writing", &[])));
+    }
+
+    #[test]
+    fn the_footer_carries_a_write_failure_in_full_before_anything_else() {
+        use crate::results::{Editing, ReadOnly, WriteState};
+        let long = "new row violates check constraint \"c\" (23514)\nDETAIL: Failing row contains (1, x).";
+        let set = result(Editing::Editable(Box::new(target())));
+        assert_eq!(long_message(&results::lock(&set)), None);
+        results::lock(&set).write = WriteState::failed(long);
+        assert_eq!(long_message(&results::lock(&set)), Some((long.to_owned(), true)), "the whole text, DETAIL line included");
+        assert_eq!(WriteState::failed("  "), WriteState::Failed(t("edit.failed", &[])), "a failure is never blank");
+
+        let set = result(Editing::ReadOnly(ReadOnly::NoKey));
+        assert_eq!(long_message(&results::lock(&set)), Some((ReadOnly::NoKey.reason(), false)));
+        results::lock(&set).edits.insert((0, 0), Cell::text("x"));
+        assert_eq!(long_message(&results::lock(&set)), None, "pending edits take the footer's room");
+        let set = result(Editing::ReadOnly(ReadOnly::ReadFailed));
+        {
+            let mut r = results::lock(&set);
+            r.columns.clear();
+            r.error = Some("connection reset".into());
+        }
+        assert_eq!(long_message(&results::lock(&set)).map(|m| m.1), Some(false));
     }
 
     #[test]
@@ -866,6 +1085,295 @@ mod tests {
         assert_eq!(tsv("a\tb"), "\"a\tb\"");
         assert_eq!(tsv("say \"hi\"\n"), "\"say \"\"hi\"\"\n\"");
         assert_eq!(one_line("a\nb"), "a ⏎ b");
+    }
+
+    mod composing {
+        //! An input method's composition is not typed text yet.
+        use super::*;
+        use gpui::{TestAppContext, VisualTestContext};
+
+        struct Host {
+            id: String,
+            result: u64,
+        }
+
+        impl Render for Host {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(600.0)).h(px(300.0)).child(element(
+                    &self.id,
+                    &serde_json::json!({ "result": self.result }),
+                    window,
+                    cx,
+                ))
+            }
+        }
+
+        fn save_keys() -> &'static str {
+            if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" }
+        }
+
+        fn settle(cx: &mut VisualTestContext) {
+            for _ in 0..3 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                cx.run_until_parked();
+            }
+        }
+
+        /// The first cell of the name column open for editing, with `typed` in the input method's composition.
+        fn composing<'a>(
+            cx: &'a mut TestAppContext,
+            name: &str,
+            typed: &str,
+        ) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
+            composing_in(cx, name, Cell::text("a"), typed)
+        }
+
+        /// The same, for a name column that holds `original`.
+        fn composing_in<'a>(
+            cx: &'a mut TestAppContext,
+            name: &str,
+            original: Cell,
+            typed: &str,
+        ) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
+            composing_in_column(cx, name, original, ("sqlite", "text"), typed)
+        }
+
+        /// The same, for a name column of `type_name` on `engine`, which says what clearing it means.
+        fn composing_in_column<'a>(
+            cx: &'a mut TestAppContext,
+            name: &str,
+            original: Cell,
+            (engine, type_name): (&str, &str),
+            typed: &str,
+        ) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
+            let (cx, input, set) = editing_in(cx, name, original, (engine, type_name));
+            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, typed, None, window, cx));
+            settle(cx);
+            assert!(
+                input.update_in(cx, |s, window, cx| s.marked_text_range(window, cx)).is_some(),
+                "the composition is marked"
+            );
+            (cx, input, set)
+        }
+
+        /// The name column's first cell open for editing, all of it selected.
+        fn editing_in<'a>(
+            cx: &'a mut TestAppContext,
+            name: &str,
+            original: Cell,
+            (engine, type_name): (&str, &str),
+        ) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
+            let set = results::create(name, "select * from people");
+            {
+                let mut r = results::lock(&set);
+                r.columns = vec![
+                    crate::model::Column::new("id", "int4"),
+                    crate::model::Column::new("name", type_name),
+                    crate::model::Column::new("note", "text"),
+                ];
+                r.rows = vec![vec![Cell::text("1"), original, Cell::text("n")]];
+                r.complete = true;
+                let mut target = target();
+                target.owner = name.to_owned();
+                target.config = serde_json::from_value(
+                    serde_json::json!({"name": "c", "engine": engine, "host": "h", "user": "u", "path": "t.sqlite"}),
+                )
+                .unwrap();
+                r.editing = crate::results::Editing::Editable(Box::new(target));
+            }
+            let (id, owner) = (results::lock(&set).id, name.to_owned());
+            cx.update(gpui_base::init);
+            let (_, cx) = cx.add_window_view(move |_, _| Host { id: owner, result: id });
+            settle(cx);
+            let grid = GRIDS.with(|g| g.borrow().get(name).cloned()).expect("the grid");
+            grid.update_in(cx, |g, window, cx| g.start_editing((0, 1), window, cx));
+            settle(cx);
+            let input =
+                grid.read_with(cx, |g, _| g.editing.as_ref().map(|e| e.input.clone())).expect("the editor is open");
+            (cx, input, set)
+        }
+
+        fn is_editing(cx: &mut VisualTestContext, name: &str) -> bool {
+            let grid = GRIDS.with(|g| g.borrow().get(name).cloned()).expect("the grid");
+            grid.read_with(cx, |g, _| g.editing.is_some())
+        }
+
+        #[gpui::test]
+        fn saving_leaves_a_composition_to_the_input_method(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, _, set) = composing(cx, "composing-save", "ㄓㄨㄥ");
+            cx.simulate_keystrokes(save_keys());
+            settle(cx);
+            let r = results::lock(&set);
+            assert!(r.edits.is_empty(), "the unchosen \"ㄓㄨㄥ\" was taken for the cell: {:?}", r.edits);
+            assert_eq!(r.write, crate::results::WriteState::Idle, "and written");
+            drop(r);
+            assert!(is_editing(cx, "composing-save"), "the editor stays open for the composition");
+        }
+
+        /// A pending edit in a cell other than the one being edited, so the footer offers Write back.
+        fn with_another_edit(cx: &mut VisualTestContext, set: &Arc<Mutex<ResultSet>>) {
+            let id = {
+                let mut r = results::lock(set);
+                r.set_edit(0, 2, Cell::text("other cell"));
+                r.id
+            };
+            results::changed(id);
+            settle(cx);
+        }
+
+        fn click(cx: &mut VisualTestContext, selector: &'static str) {
+            let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} is not on screen"));
+            cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+            settle(cx);
+        }
+
+        fn edit_of(set: &Arc<Mutex<ResultSet>>, column: u32) -> Option<Cell> {
+            results::lock(set).edits.get(&(0, column)).cloned()
+        }
+
+        #[gpui::test]
+        fn the_write_back_button_writes_what_was_chosen_and_not_the_composition(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = composing(cx, "composing-button", "ㄓㄨㄥ");
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "𠀀中", window, cx));
+            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, "ㄅ", None, window, cx));
+            with_another_edit(cx, &set);
+            click(cx, "grid-write");
+            assert_eq!(
+                edit_of(&set, 1),
+                Some(Cell::text("𠀀中")),
+                "the cell is what was chosen, without the composition"
+            );
+            assert_eq!(edit_of(&set, 2), Some(Cell::text("other cell")));
+            assert!(!is_editing(cx, "composing-button"));
+        }
+
+        #[gpui::test]
+        fn leaving_a_cell_keeps_what_was_chosen_and_not_the_composition(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = composing(cx, "composing-leave", "ㄓㄨㄥ");
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "中", window, cx));
+            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, "ㄅ", None, window, cx));
+            let bounds = cx.debug_bounds("grid-cell-0-0").expect("the id cell");
+            cx.simulate_mouse_down(bounds.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            settle(cx);
+            assert_eq!(edit_of(&set, 1), Some(Cell::text("中")));
+            assert!(!is_editing(cx, "composing-leave"));
+        }
+
+        #[gpui::test]
+        fn the_editor_losing_focus_keeps_what_was_chosen_and_not_the_composition(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = composing(cx, "composing-blur", "ㄓㄨㄥ");
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "中", window, cx));
+            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, "ㄅ", None, window, cx));
+            input.update_in(cx, |_, _, cx| cx.emit(InputEvent::Blur));
+            settle(cx);
+            assert_eq!(edit_of(&set, 1), Some(Cell::text("中")));
+        }
+
+        #[gpui::test]
+        fn a_null_cell_that_was_only_composed_in_stays_null(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, _, set) = composing_in(cx, "composing-null", Cell::Null, "ㄓㄨㄥ");
+            let bounds = cx.debug_bounds("grid-cell-0-0").expect("the id cell");
+            cx.simulate_mouse_down(bounds.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            settle(cx);
+            assert_eq!(edit_of(&set, 1), None, "an unchosen composition made the NULL something");
+        }
+
+        fn leave_the_cell(cx: &mut VisualTestContext) {
+            let bounds = cx.debug_bounds("grid-cell-0-0").expect("the id cell");
+            cx.simulate_mouse_down(bounds.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            settle(cx);
+        }
+
+        const NUMBER: (&str, &str) = ("mssql", "int");
+
+        #[gpui::test]
+        fn a_number_cell_cleared_for_an_input_method_is_null_and_the_composition_is_not_what_is_kept(
+            cx: &mut TestAppContext,
+        ) {
+            cx.executor().allow_parking();
+            let (cx, _, set) = composing_in_column(cx, "composing-clear", Cell::Int(5), NUMBER, "ㄓㄨㄥ");
+            leave_the_cell(cx);
+            assert_eq!(
+                edit_of(&set, 1),
+                Some(Cell::Null),
+                "what is left of the cell, once the composition is out, is nothing"
+            );
+            assert_eq!(
+                results::lock(&set).cell(0, 1),
+                Some(&Cell::Null),
+                "the cell says NULL before anything is written"
+            );
+        }
+
+        #[gpui::test]
+        fn a_null_number_cell_that_was_only_composed_in_stays_null(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, _, set) = composing_in_column(cx, "composing-null-number", Cell::Null, NUMBER, "ㄓㄨㄥ");
+            leave_the_cell(cx);
+            assert_eq!(edit_of(&set, 1), None, "an unchosen composition made the NULL something");
+            assert_eq!(results::lock(&set).cell(0, 1), Some(&Cell::Null));
+        }
+
+        #[gpui::test]
+        fn a_number_chosen_with_an_input_method_is_a_number_and_the_composition_beside_it_is_dropped(
+            cx: &mut TestAppContext,
+        ) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = composing_in_column(cx, "composing-number", Cell::Int(5), NUMBER, "ㄓㄨㄥ");
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "7", window, cx));
+            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, "ㄅ", None, window, cx));
+            leave_the_cell(cx);
+            assert_eq!(edit_of(&set, 1), Some(Cell::Int(7)));
+        }
+
+        #[gpui::test]
+        fn a_number_cell_cleared_by_hand_is_null_before_it_is_written(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = editing_in(cx, "clearing-number", Cell::Int(5), NUMBER);
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "", window, cx));
+            leave_the_cell(cx);
+            assert_eq!(edit_of(&set, 1), Some(Cell::Null));
+            assert_eq!(
+                results::lock(&set).cell(0, 1),
+                Some(&Cell::Null),
+                "the cell says NULL before anything is written"
+            );
+        }
+
+        #[gpui::test]
+        fn a_text_cell_cleared_by_hand_is_an_empty_string(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = editing_in(cx, "clearing-text", Cell::text("a"), ("mssql", "nvarchar"));
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "", window, cx));
+            leave_the_cell(cx);
+            assert_eq!(edit_of(&set, 1), Some(Cell::text("")));
+        }
+
+        /// Enter reaching the input (an input method that did not take it for itself).
+        fn press_enter(cx: &mut VisualTestContext, input: &Entity<InputState>) {
+            input.update_in(cx, |_, _, cx| cx.emit(InputEvent::PressEnter { secondary: false, shift: false }));
+            settle(cx);
+        }
+
+        #[gpui::test]
+        fn enter_keeps_the_cell_only_once_the_composition_is_chosen(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = composing(cx, "composing-enter", "ㄓㄨㄥ");
+            press_enter(cx, &input);
+            assert!(results::lock(&set).edits.is_empty(), "Enter while composing kept the unchosen text");
+            assert!(is_editing(cx, "composing-enter"));
+
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "中", window, cx));
+            settle(cx);
+            press_enter(cx, &input);
+            assert_eq!(results::lock(&set).edits.get(&(0, 1)), Some(&Cell::text("中")));
+            assert!(!is_editing(cx, "composing-enter"));
+        }
     }
 
     #[test]

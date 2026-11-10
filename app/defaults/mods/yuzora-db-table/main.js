@@ -9,7 +9,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, props, nextCommand, shared, setShared, focused } from "herdr";
 import { t } from "yuzora:core";
-import { connections, openTable, query, job, cancel, release, result, describe, DataGrid, SqlEditor, editorText, setEditorText, editorAction } from "yuzora:db";
+import { connections, openTable, query, job, cancel, stopWrite, release, result, describe, DataGrid, SqlEditor, editorText, setEditorText, editorAction } from "yuzora:db";
 import { gridColors, highlight } from "./ui.js";
 
 const OPEN = "yuzora.db.open";
@@ -69,13 +69,17 @@ export default class DbTable extends View {
     return this.conns.find((c) => c.id === this.target.connection) ?? null;
   }
 
-  /** Runs `action`, or first asks to drop the shown result's unsaved edits. */
-  guard(action) {
+  /**
+   * Runs `action(cx)`, or first asks to drop the shown result's unsaved edits.
+   * A `cx` only works during the call it was handed to: a deferred action gets
+   * the `cx` of the click that answers the bar, never the one that raised it.
+   */
+  guard(cx, action) {
     const st = this.state;
     const current = st?.results[Math.min(this.shown, Math.max(0, st.results.length - 1))];
     const count = current ? result(current.id)?.edits ?? 0 : 0;
     if (count) this.confirm = { count, action };
-    else action();
+    else action(cx);
   }
 
   load(cx, order) {
@@ -83,7 +87,7 @@ export default class DbTable extends View {
     this.info = null;
     this.infoError = null;
     this.shown = 0;
-    this.watch(cx, openTable(tg.connection, tg.database, this.key, { schema: tg.schema, name: tg.name }, order ?? null));
+    this.watch(cx, openTable(tg.connection, tg.database, this.key, { schema: tg.schema, name: tg.name }, order ?? null), "table");
     cx.spawn(async (cx) => {
       try {
         const info = await describe(tg.connection, tg.database, { schema: tg.schema, name: tg.name });
@@ -98,8 +102,9 @@ export default class DbTable extends View {
     });
   }
 
-  watch(cx, id) {
+  watch(cx, id, kind) {
     this.jobId = id;
+    this.jobKind = kind; // "table": the read of the table; "sql": a statement of the person's
     this.state = null;
     cx.notify();
     cx.spawn(async (cx) => {
@@ -108,7 +113,12 @@ export default class DbTable extends View {
         let st;
         try {
           st = await job(id, seen);
-        } catch (_e) {
+        } catch (e) {
+          // The core no longer has the job: say so instead of staying on "loading".
+          if (this.jobId === id) {
+            this.state = { id, running: false, version: seen, elapsedMs: 0, error: String(e?.message ?? e), cancelled: false, results: [] };
+            cx.notify();
+          }
           return;
         }
         if (this.jobId !== id) return;
@@ -126,10 +136,9 @@ export default class DbTable extends View {
   }
 
   run(cx) {
-    if (this.state?.running) return;
     if (this.tab === "sql") this.runSql(cx);
-    else if (this.target) {
-      this.guard(() => {
+    else if (this.target && !this.state?.running) {
+      this.guard(cx, (cx) => {
         this.sql = "";
         this.load(cx);
       });
@@ -137,16 +146,23 @@ export default class DbTable extends View {
     }
   }
 
+  /**
+   * Run in the SQL tab. A read of the table that is still going does not hold it back: it may be waiting for
+   * the very transaction this SQL ends (BEGIN; UPDATE … in this tab, then the table blocked on that row), and the
+   * core stops a pane's older job when a newer one starts. What the person asked for with a statement of their own is
+   * not stopped by another Run (Stop is for that), and unwritten edits are asked about first, as for any other
+   * way of leaving the result.
+   */
   runSql(cx) {
-    if (!this.target || this.state?.running) return;
+    if (!this.target || (this.state?.running && this.jobKind !== "table")) return;
     const text = editorText(`${this.key}:sql`);
     const sql = (text?.selection?.trim() ? text.selection : text?.text ?? "").trim();
     if (!sql) return;
-    this.guard(() => {
+    this.guard(cx, (cx) => {
       this.sql = sql;
       this.tab = "data";
       this.shown = 0;
-      this.watch(cx, query(this.target.connection, this.target.database, this.key, sql));
+      this.watch(cx, query(this.target.connection, this.target.database, this.key, sql), "sql");
     });
     cx.notify();
   }
@@ -155,52 +171,95 @@ export default class DbTable extends View {
     if (this.jobId) cancel(this.jobId);
   }
 
-  /** The sidebar picked another table for this pane. */
+  /**
+   * The sidebar picked another table for this pane. A pick is a value in shared state, which a mod can only see
+   * from a frame, and a frame may only look: the pane goes to it from a timer, in the frame's wake.
+   */
+  picked(cx) {
+    const o = shared(OPEN);
+    if (o && o.key === this.key && o.seq !== this.seq) cx.timer.after(0, (cx) => this.retarget(cx));
+  }
+
+  /** Goes to the newest pick, so two before the timer ran are one and the first is never read. A frame drawn before the timer ran asks again, to no effect. */
   retarget(cx) {
     const o = shared(OPEN);
     if (!o || o.key !== this.key || o.seq === this.seq) return;
     this.seq = o.seq;
-    this.guard(() => {
+    this.guard(cx, (cx) => {
       this.target = o.target;
       this.sql = "";
       this.tab = "data";
       this.load(cx);
     });
+    cx.notify();
   }
 
-  /** Unsaved edits would be lost: drop them and go on, or stay. */
+  stopSaving(id) {
+    stopWrite(id);
+  }
+
+  /**
+   * Unsaved edits stand in the way: drop them and go on, or stay. Edits that are
+   * being written are not the pane's to drop (they may reach the database
+   * anyway): then the choice is to wait for the write or to stop it.
+   */
   confirmBar(th) {
     const c = this.confirm;
-    const button = (id, text, danger, onClick) => div().id(id).h(20).px(10).flex().flex_none().items_center().rounded(4).text_size(11.5).cursor_pointer()
+    const st = this.state;
+    const current = st?.results[Math.min(this.shown, Math.max(0, st.results.length - 1))];
+    const now = current ? result(current.id) : null;
+    // Written or dropped since it was asked: nothing stands in the way any more.
+    if (!now || (!now.edits && !now.writing)) {
+      this.confirm = null;
+      return null;
+    }
+    const writing = Boolean(now.writing);
+    const button = (id, text, danger, onClick) => div().id(id).min_h(20).px(10).py(2).flex().flex_none().max_w("100%").items_center().rounded(4).text_size(11.5).cursor_pointer()
       .hover((s) => s.opacity(0.88)).on_click(onClick)
       .when(danger, (el) => el.border_1().border_color(th.input).text_color(th.blocked))
       .when(!danger, (el) => el.bg(th.solid).text_color(th.solid_foreground).font_semibold())
       .child(text);
-    return h_flex().h(30).flex_none().px(12).gap(8).items_center().bg(th.raised).text_size(12).border_b(1).border_color(th.divider ?? th.border)
-      .child(div().flex_1().min_w(0).truncate().text_color(th.blocked).child(t("unsaved", { count: c.count })))
-      .child(button("drop-edits", t("unsaved_drop"), true, (_e, cx) => { this.confirm = null; c.action(); cx.notify(); }))
-      .child(button("keep-edits", t("unsaved_keep"), false, (_e, cx) => { this.confirm = null; cx.notify(); }));
+    const leave = () => { this.confirm = null; };
+    // The pane is as narrow as the dock leaves it: the question takes the lines it needs, and the answers wrap under it.
+    return h_flex().min_h(30).flex_none().flex_wrap().px(12).py(4).gap_x(8).gap_y(4).items_center().bg(th.raised).text_size(12).border_b(1).border_color(th.divider ?? th.border)
+      .child(div().flex_auto().min_w(0).text_color(th.blocked).child(t(writing ? "unsaved_writing" : "unsaved", { count: now.edits })))
+      .child(h_flex().flex_none().flex_wrap().max_w("100%").gap(8).items_center()
+        .child(button("keep-edits", t(writing ? "unsaved_wait" : "unsaved_keep"), false, (_e, cx) => { leave(); cx.notify(); }))
+        .child(writing
+          ? button("stop-saving", t("unsaved_stop"), true, (_e, cx) => { this.stopSaving(current.id); leave(); cx.notify(); })
+          : button("drop-edits", t("unsaved_drop"), true, (_e, cx) => { leave(); c.action(cx); cx.notify(); })));
+  }
+
+  /** Stop is there for whatever goes on, on every tab: it is how the read of a table ends when there is no SQL to run over it. */
+  showsStop() {
+    return Boolean(this.state?.running);
+  }
+
+  /** Run is there when nothing goes on, and in the SQL tab over a read of the table (see runSql). Typing there does not run this render again (render_tests: the_database_table_pane_is_not_drawn_again_by_typing_in_its_sql_editor), so Run cannot wait for what is typed. */
+  showsRun() {
+    return !this.state?.running || (this.tab === "sql" && this.jobKind === "table");
   }
 
   toolbar(th, conn) {
     const tg = this.target;
-    const running = Boolean(this.state?.running);
     const where = [tg.database ?? conn?.database ?? "", tg.schema ? `${tg.schema}.${tg.name}` : tg.name].filter(Boolean).join(" · ");
-    return h_flex().h(28).flex_none().gap(7).pl(8).pr(6).items_center().text_size(12).border_b(1).border_color(th.divider ?? th.border)
-      .child(div().flex_none().font_semibold().child(conn?.name ?? tg.connection))
-      .child(div().min_w(0).truncate().text_size(11.5).text_color(th.dim).child(where))
-      .child(h_flex().flex_none().p(2).gap(2).rounded(5).bg(th.raised)
-        .children(TABS.map((id) => div().id(`tab-${id}`).h(18).px(8).flex().items_center().rounded(3).text_size(11).cursor_pointer()
-          .bg(this.tab === id ? th.selected : th.raised).text_color(this.tab === id ? th.foreground : th.muted)
-          .hover((s) => s.text_color(th.foreground))
-          .on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(t(`tab.${id}`)))))
-      .child(div().flex_1())
-      .child(running
-        ? div().id("stop").h(20).px(10).flex().flex_none().items_center().rounded(4).border_1().border_color(th.input)
-          .text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).on_click(() => this.stop()).child(t("stop"))
-        : div().id("run").h(20).px(10).flex().flex_none().items_center().rounded(4).bg(th.solid).text_color(th.solid_foreground)
-          .font_semibold().text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).tooltip(t(this.tab === "sql" ? "run_sql_tip" : "refresh_tip"))
-          .on_click((_e, cx) => this.run(cx)).child(t("run")));
+    // The pane is as narrow as the dock leaves it: what doesn't fit beside the
+    // name goes under it, and the button is always on a line of its own at worst.
+    return h_flex().flex_none().flex_wrap().min_h(28).gap_x(7).gap_y(3).pl(8).pr(6).py(3).items_center().text_size(12).border_b(1).border_color(th.divider ?? th.border)
+      .child(h_flex().flex_auto().min_w(0).gap(7).items_center()
+        .child(div().min_w(0).truncate().font_semibold().child(conn?.name ?? tg.connection))
+        .child(div().min_w(0).truncate().text_size(11.5).text_color(th.dim).child(where)))
+      .child(h_flex().flex_none().flex_wrap().max_w("100%").ml("auto").gap_x(7).gap_y(3).items_center().justify_end()
+        .child(h_flex().flex_wrap().max_w("100%").p(2).gap(2).rounded(5).bg(th.raised)
+          .children(TABS.map((id) => div().id(`tab-${id}`).h(18).px(8).flex().items_center().rounded(3).text_size(11).cursor_pointer()
+            .bg(this.tab === id ? th.selected : th.raised).text_color(this.tab === id ? th.foreground : th.muted)
+            .hover((s) => s.text_color(th.foreground))
+            .on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(t(`tab.${id}`)))))
+        .when(this.showsStop(), (el) => el.child(div().id("stop").h(20).px(10).flex().flex_none().items_center().rounded(4).border_1().border_color(th.input)
+          .text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).on_click(() => this.stop()).child(t("stop"))))
+        .when(this.showsRun(), (el) => el.child(div().id("run").h(20).px(10).flex().flex_none().items_center().rounded(4).bg(th.solid).text_color(th.solid_foreground)
+          .font_semibold().text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).tooltip(this.tab !== "sql" ? t("refresh_tip") : this.state?.running ? t("run_sql_over_read_tip") : t("run_sql_tip"))
+          .on_click((_e, cx) => this.run(cx)).child(t("run")))));
   }
 
   data(th) {
@@ -268,15 +327,21 @@ export default class DbTable extends View {
           .child(SqlEditor.new(`${this.key}:ddl`, { engine: this.conn()?.engine, value: info.ddl, readonly: true }))));
   }
 
+  /** What the SQL tab's footer says: how to run, or why a Run does not start (a statement of the person's is still going), or what it will stop. */
+  sqlHint() {
+    if (!this.state?.running) return t("sql_hint");
+    return this.jobKind === "table" ? t("sql_over_read") : t("sql_busy");
+  }
+
   sqlTab(th) {
     return v_flex().flex_1().min_h(0)
       .child(div().flex_1().min_h(0).child(SqlEditor.new(`${this.key}:sql`, { engine: this.conn()?.engine, value: this.sql })))
       .child(div().h(24).flex_none().px(12).flex().items_center().text_size(11).text_color(th.dim).border_t(1).border_color(th.divider ?? th.border)
-        .child(t("sql_hint")));
+        .child(this.sqlHint()));
   }
 
   render(cx) {
-    this.retarget(cx);
+    this.picked(cx);
     const th = theme();
     const root = v_flex().id("root").track_focus(this.handle).size_full().bg(th.background).text_color(th.foreground).text_size(12.5)
       .on_key_down((e, cx) => {
@@ -285,6 +350,7 @@ export default class DbTable extends View {
     if (!this.target) return root.child(div().p(16).text_size(12).text_color(th.dim).child(t("pick")));
     const conn = this.conn();
     const content = this.tab === "structure" ? this.structure(th) : this.tab === "sql" ? this.sqlTab(th) : this.data(th);
-    return root.child(this.toolbar(th, conn)).when(Boolean(this.confirm), (el) => el.child(this.confirmBar(th))).child(content);
+    const confirm = this.confirm ? this.confirmBar(th) : null;
+    return root.child(this.toolbar(th, conn)).when(Boolean(confirm), (el) => el.child(confirm)).child(content);
   }
 }
