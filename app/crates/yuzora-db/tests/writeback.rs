@@ -1214,7 +1214,11 @@ fn raw_postgres(database: &str) -> tokio_postgres::Client {
 }
 
 /// The write-back of `pane` on its way to the server, waiting on a row lock another connection holds.
-fn writing_on_a_row_lock(pane: &Opened, locker: &tokio_postgres::Client, database: &str) -> std::thread::JoinHandle<Result<u64, DbError>> {
+fn writing_on_a_row_lock(
+    pane: &Opened,
+    locker: &tokio_postgres::Client,
+    database: &str,
+) -> std::thread::JoinHandle<Result<u64, DbError>> {
     let writer = {
         let set = pane.set.clone();
         std::thread::spawn(move || runtime::block_on(session::write_back_set(&set)))
@@ -1222,7 +1226,9 @@ fn writing_on_a_row_lock(pane: &Opened, locker: &tokio_postgres::Client, databas
     until("the write-back never reported that it is waiting", || results::lock(&pane.set).is_writing());
     until("the server never saw the write-back wait for the lock", || {
         let waiting = runtime::block_on(locker.query_one(
-            &format!("SELECT count(*)::int FROM pg_stat_activity WHERE datname = '{database}' AND wait_event_type = 'Lock'"),
+            &format!(
+                "SELECT count(*)::int FROM pg_stat_activity WHERE datname = '{database}' AND wait_event_type = 'Lock'"
+            ),
             &[],
         ))
         .unwrap();
@@ -1254,13 +1260,20 @@ fn postgres_a_stopped_write_back_cannot_be_felt_by_what_the_pane_runs_next() {
     let next = session::start_query(&through, None, &pane.owner, "SELECT pg_sleep(2.5)");
     results::lock(&pane.set).stop_write();
     runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
-    assert_eq!(within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()), Err(DbError::Cancelled));
+    assert_eq!(
+        within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()),
+        Err(DbError::Cancelled)
+    );
 
     let state = within(Duration::from_secs(20), "the query after the write-back", move || wait(next));
     assert_eq!(state.error, None, "the Stop reached the query that ran after the write-back: {state:?}");
     assert!(!state.cancelled);
     assert!(state.elapsed_ms >= 2400, "the query was cut short: {state:?}");
-    assert_eq!(first_row(&direct, "SELECT name FROM t WHERE id = 1"), ["holder"], "nothing of the stopped write-back is written");
+    assert_eq!(
+        first_row(&direct, "SELECT name FROM t WHERE id = 1"),
+        ["holder"],
+        "nothing of the stopped write-back is written"
+    );
 
     let again = open(&through, "late-pane", &table("public", "t"));
     again.edit(again.row_where("id", "1"), "name", Some("mine"));
@@ -1320,14 +1333,20 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
         let stop_first = released_at > stopped_at + Duration::from_micros(300);
 
         let state = wait(next);
-        assert_eq!(state.error, None, "round {round} (offset {offset} µs): the Stop reached what ran after the write-back");
+        assert_eq!(
+            state.error, None,
+            "round {round} (offset {offset} µs): the Stop reached what ran after the write-back"
+        );
         let alive = wait(session::start_query(&id, None, &pane.owner, "SELECT 1"));
         assert_eq!(alive.error, None, "round {round} (offset {offset} µs): the pane's connection is left broken");
         let name: String = runtime::block_on(locker.query_one("SELECT name FROM t WHERE id = 1", &[])).unwrap().get(0);
         if stop_first {
             stop_came_first += 1;
             assert_eq!(written, Err(DbError::Cancelled), "round {round} (offset {offset} µs)");
-            assert_eq!(name, "holder", "round {round} (offset {offset} µs): a write-back stopped before the lock let go wrote anyway");
+            assert_eq!(
+                name, "holder",
+                "round {round} (offset {offset} µs): a write-back stopped before the lock let go wrote anyway"
+            );
         } else {
             assert!(name == "holder" || name == format!("mine-{round}"), "round {round} (offset {offset} µs): {name}");
         }
@@ -1350,7 +1369,10 @@ fn sqlite_a_write_back_stopped_while_it_waits_for_the_file_lock_writes_nothing_a
     let writer = write_back_on_a_lock(&pane.set);
 
     results::lock(&pane.set).stop_write();
-    assert_eq!(within(Duration::from_secs(5), "the stopped write-back", move || writer.join().unwrap()), Err(DbError::Cancelled));
+    assert_eq!(
+        within(Duration::from_secs(5), "the stopped write-back", move || writer.join().unwrap()),
+        Err(DbError::Cancelled)
+    );
     let owner = pane.owner.clone();
     let connection = id.clone();
     let state = within(Duration::from_secs(2), "the pane's connection after the stop", move || {
@@ -1427,7 +1449,9 @@ fn postgres_a_write_back_does_not_wait_for_a_count_that_borrowed_the_panes_conne
     let started = Instant::now();
     let written = {
         let set = set.clone();
-        within(Duration::from_secs(3), "the write-back, with a count on the pane's connection", move || runtime::block_on(session::write_back_set(&set)))
+        within(Duration::from_secs(3), "the write-back, with a count on the pane's connection", move || {
+            runtime::block_on(session::write_back_set(&set))
+        })
     };
     assert_eq!(written, Ok(1), "{:?}", results::lock(&set).write);
     assert!(started.elapsed() < Duration::from_secs(3), "the write-back waited for the count");

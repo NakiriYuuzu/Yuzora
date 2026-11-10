@@ -861,7 +861,13 @@ const STEP_ASIDE: Duration = Duration::from_secs(3);
 /// Counts on the connection `l` holds, which the job's Stop reaches meanwhile.
 /// `borrowed`: the connection is the pane's, and `stand_down` is how the count
 /// is asked to give it up.
-async fn count_on(mut l: Lease, engine: config::Engine, table: &ObjectRef, job: JobId, borrowed: Option<StandDown>) -> Option<u64> {
+async fn count_on(
+    mut l: Lease,
+    engine: config::Engine,
+    table: &ObjectRef,
+    job: JobId,
+    borrowed: Option<StandDown>,
+) -> Option<u64> {
     let canceller = l.conn().canceller();
     let _serving = serving(job, borrowed.clone().map_or(Stop::Statement(canceller.clone()), Stop::Count));
     let home = l.conn().database().map(str::to_owned);

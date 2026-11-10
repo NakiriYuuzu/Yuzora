@@ -20,9 +20,10 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
+use gpui::EntityInputHandler as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EntityInputHandler as _, FocusHandle, Focusable, Hsla, InteractiveElement,
+    AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render,
     ScrollWheelEvent,
     ScrollHandle, ScrollStrategy, StatefulInteractiveElement, Styled, Subscription, Task,
@@ -389,7 +390,9 @@ impl Grid {
     /// That text is not typed yet, and what Enter and the save key mean while it
     /// is there is the input method's to say.
     fn composing(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        self.editing.as_ref().is_some_and(|e| e.input.update(cx, |input, cx| input.marked_text_range(window, cx)).is_some())
+        self.editing
+            .as_ref()
+            .is_some_and(|e| e.input.update(cx, |input, cx| input.marked_text_range(window, cx)).is_some())
     }
 
     /// Keeps what the inline editor holds as a pending edit.
@@ -1096,7 +1099,7 @@ mod tests {
     mod composing {
         //! An input method's composition is not typed text yet.
         use super::*;
-        use gpui::{EntityInputHandler as _, TestAppContext, VisualTestContext};
+        use gpui::{TestAppContext, VisualTestContext};
 
         struct Host {
             id: String,
@@ -1105,7 +1108,12 @@ mod tests {
 
         impl Render for Host {
             fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                div().w(px(600.0)).h(px(300.0)).child(element(&self.id, &serde_json::json!({ "result": self.result }), window, cx))
+                div().w(px(600.0)).h(px(300.0)).child(element(
+                    &self.id,
+                    &serde_json::json!({ "result": self.result }),
+                    window,
+                    cx,
+                ))
             }
         }
 
@@ -1121,7 +1129,11 @@ mod tests {
         }
 
         /// The first cell of the name column open for editing, with `typed` in the input method's composition.
-        fn composing<'a>(cx: &'a mut TestAppContext, name: &str, typed: &str) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
+        fn composing<'a>(
+            cx: &'a mut TestAppContext,
+            name: &str,
+            typed: &str,
+        ) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
             let set = results::create(name, "select * from people");
             {
                 let mut r = results::lock(&set);
@@ -1139,10 +1151,14 @@ mod tests {
             let grid = GRIDS.with(|g| g.borrow().get(name).cloned()).expect("the grid");
             grid.update_in(cx, |g, window, cx| g.start_editing((0, 1), window, cx));
             settle(cx);
-            let input = grid.read_with(cx, |g, _| g.editing.as_ref().map(|e| e.input.clone())).expect("the editor is open");
+            let input =
+                grid.read_with(cx, |g, _| g.editing.as_ref().map(|e| e.input.clone())).expect("the editor is open");
             input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, typed, None, window, cx));
             settle(cx);
-            assert!(input.update_in(cx, |s, window, cx| s.marked_text_range(window, cx)).is_some(), "the composition is marked");
+            assert!(
+                input.update_in(cx, |s, window, cx| s.marked_text_range(window, cx)).is_some(),
+                "the composition is marked"
+            );
             (cx, input, set)
         }
 

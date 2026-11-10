@@ -276,7 +276,8 @@ fn an_open_failure_never_pushes_the_footer_out_of_a_pane_that_is_short_as_well_a
             let cx = window(cx, &owner, id, width, height);
             let pane = cx.debug_bounds("pane").expect("the pane");
             for selector in ["grid-discard", "grid-write", "grid-message", "grid-message-open"] {
-                let b = cx.debug_bounds(selector).unwrap_or_else(|| panic!("{width} x {height}: {selector} is not drawn"));
+                let b =
+                    cx.debug_bounds(selector).unwrap_or_else(|| panic!("{width} x {height}: {selector} is not drawn"));
                 assert!(inside(b, pane), "{width} x {height}: {selector} is at {b:?}, outside the pane {pane:?}");
             }
         }
