@@ -4,10 +4,11 @@
 //!
 //! A round trip is what the line sees: a flight of server data that follows a
 //! flight of client data, so these tests do not depend on how fast the machine
-//! is. They run when `YUZORA_DATABASE_TEST_ENGINES` names the engine
-//! (`YUZORA_P8_DATABASE_PASSWORD` overrides the fixture's password), make a
-//! database of their own and drop it again, and take turns: what they time
-//! must not share the runtime with each other.
+//! is. They run when `YUZORA_DATABASE_TEST_ENGINES` names the engine (and
+//! fail, rather than skip, for one `YUZORA_DATABASE_REQUIRE_ENGINES` names but
+//! the selection leaves out; `YUZORA_P8_DATABASE_PASSWORD` overrides the
+//! fixture's password), make a database of their own and drop it again, and
+//! take turns: what they time must not share the runtime with each other.
 
 mod common;
 
@@ -16,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use common::{ConnStat, DelayLine, ms};
+use common::{ConnStat, DelayLine, enabled, ms};
 use serde_json::json;
 use yuzora_db::config::{self, ConnectionConfig};
 use yuzora_db::model::ObjectRef;
@@ -45,11 +46,6 @@ static HOME: LazyLock<PathBuf> = LazyLock::new(|| {
     yuzora_core::settings::set_section(config::SECTION, section).unwrap();
     home
 });
-
-fn enabled(engine: &str) -> bool {
-    std::env::var("YUZORA_DATABASE_TEST_ENGINES")
-        .is_ok_and(|v| v.split(',').any(|e| e.trim().eq_ignore_ascii_case(engine)))
-}
 
 fn password() -> String {
     std::env::var("YUZORA_P8_DATABASE_PASSWORD").unwrap_or_else(|_| "Yuzora-P8-Only-2026!".to_owned())
