@@ -2385,11 +2385,41 @@ export default class Scenario extends Real {{
       configurable: true,
     }});
     this.stopSaving = () => note("stop");
+    this.run = () => {{}};
   }}
 }}
 "#
     );
     (id, source)
+}
+
+/// Where clicks land on what `note`s each of `names`, in one pass over the pane's top `height` px: the corners of each box of such points.
+fn clickables(s: &mut Scenario, names: &[&str], width: f32, height: f32) -> Vec<Option<(f32, f32, f32, f32)>> {
+    let mut found: Vec<Option<(f32, f32, f32, f32)>> = vec![None; names.len()];
+    for y in (0..height as i32).step_by(4) {
+        for x in (0..width as i32).step_by(4) {
+            s.notes.borrow_mut().clear();
+            let position = gpui::point(gpui::px(x as f32), gpui::px(y as f32));
+            let modifiers = gpui::Modifiers::default();
+            s.visual.simulate_event(gpui::MouseDownEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+            s.visual.simulate_event(gpui::MouseUpEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1 });
+            for (i, name) in names.iter().enumerate() {
+                if s.last(name).is_some() {
+                    let (x, y) = (x as f32, y as f32);
+                    found[i] = Some(found[i].map_or((x, y, x, y), |(x0, y0, x1, y1)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y))));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The answers of the bar, each pressable in the pane (`None`: the answer is not there).
+fn answers_inside(width: f32, boxes: &[Option<(f32, f32, f32, f32)>], names: &[&str]) {
+    for (name, found) in names.iter().zip(boxes) {
+        let (x0, _, x1, _) = found.unwrap_or_else(|| panic!("{width}px: {name} can't be clicked anywhere in the pane: {boxes:?}"));
+        assert!(x1 < width - 2.0 && x1 - x0 >= 24.0, "{width}px: {name} is only {x0}..{x1} inside the pane: {boxes:?}");
+    }
 }
 
 // The dock leaves a table pane 110 to 230 px: both answers stay in it, wherever the bar wraps them.
@@ -2400,10 +2430,8 @@ fn the_database_table_pane_asks_about_unwritten_edits_in_a_narrow_pane(cx: &mut 
     let (_, source) = db_confirm(false);
     for width in [110.0_f32, 150.0, 228.0, 320.0] {
         let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
-        for answer in ["drop", "closed"] {
-            let (x0, _, x1, _) = clickable(&mut s, answer, width, 200.0).unwrap_or_else(|| panic!("{width}px: {answer} can't be clicked anywhere in the pane"));
-            assert!(x1 < width - 2.0 && x1 - x0 >= 24.0, "{width}px: {answer} is only {x0}..{x1} inside the pane");
-        }
+        let names = ["drop", "closed"];
+        answers_inside(width, &clickables(&mut s, &names, width, 260.0), &names);
     }
 }
 
@@ -2415,10 +2443,8 @@ fn the_database_table_pane_does_not_offer_to_discard_edits_that_are_being_writte
     let (_, source) = db_confirm(true);
     for width in [110.0_f32, 228.0, 420.0] {
         let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
-        assert!(clickable(&mut s, "drop", width, 200.0).is_none(), "{width}px: the bar offers to discard edits that are being written");
-        for answer in ["stop", "closed"] {
-            let (x0, _, x1, _) = clickable(&mut s, answer, width, 200.0).unwrap_or_else(|| panic!("{width}px: {answer} can't be clicked anywhere in the pane"));
-            assert!(x1 < width - 2.0 && x1 - x0 >= 24.0, "{width}px: {answer} is only {x0}..{x1} inside the pane");
-        }
+        let boxes = clickables(&mut s, &["drop", "stop", "closed"], width, 260.0);
+        assert!(boxes[0].is_none(), "{width}px: the bar offers to discard edits that are being written: {boxes:?}");
+        answers_inside(width, &boxes[1..], &["stop", "closed"]);
     }
 }

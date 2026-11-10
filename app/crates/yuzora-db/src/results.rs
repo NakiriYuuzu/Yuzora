@@ -377,6 +377,7 @@ impl ResultSet {
             editable: self.editable(),
             not_editable: self.read_only_reason(),
             edits: self.edits.len(),
+            writing: self.is_writing(),
         }
     }
 }
@@ -398,6 +399,8 @@ pub struct Summary {
     pub editable: bool,
     pub not_editable: Option<String>,
     pub edits: usize,
+    /// A write-back of the edits is in flight.
+    pub writing: bool,
 }
 
 struct Entry {

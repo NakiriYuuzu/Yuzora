@@ -9,7 +9,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, props, nextCommand, shared, setShared, focused } from "herdr";
 import { t } from "yuzora:core";
-import { connections, openTable, query, job, cancel, release, result, describe, DataGrid, SqlEditor, editorText, setEditorText, editorAction } from "yuzora:db";
+import { connections, openTable, query, job, cancel, stopWrite, release, result, describe, DataGrid, SqlEditor, editorText, setEditorText, editorAction } from "yuzora:db";
 import { gridColors, highlight } from "./ui.js";
 
 const OPEN = "yuzora.db.open";
@@ -173,18 +173,40 @@ export default class DbTable extends View {
     });
   }
 
-  /** Unsaved edits would be lost: drop them and go on, or stay. */
+  stopSaving(id) {
+    stopWrite(id);
+  }
+
+  /**
+   * Unsaved edits stand in the way: drop them and go on, or stay. Edits that are
+   * being written are not the pane's to drop (they may reach the database
+   * anyway): then the choice is to wait for the write or to stop it.
+   */
   confirmBar(th) {
     const c = this.confirm;
-    const button = (id, text, danger, onClick) => div().id(id).h(20).px(10).flex().flex_none().items_center().rounded(4).text_size(11.5).cursor_pointer()
+    const st = this.state;
+    const current = st?.results[Math.min(this.shown, Math.max(0, st.results.length - 1))];
+    const now = current ? result(current.id) : null;
+    // Written or dropped since it was asked: nothing stands in the way any more.
+    if (!now || (!now.edits && !now.writing)) {
+      this.confirm = null;
+      return null;
+    }
+    const writing = Boolean(now.writing);
+    const button = (id, text, danger, onClick) => div().id(id).min_h(20).px(10).py(2).flex().flex_none().max_w("100%").items_center().rounded(4).text_size(11.5).cursor_pointer()
       .hover((s) => s.opacity(0.88)).on_click(onClick)
       .when(danger, (el) => el.border_1().border_color(th.input).text_color(th.blocked))
       .when(!danger, (el) => el.bg(th.solid).text_color(th.solid_foreground).font_semibold())
       .child(text);
-    return h_flex().h(30).flex_none().px(12).gap(8).items_center().bg(th.raised).text_size(12).border_b(1).border_color(th.divider ?? th.border)
-      .child(div().flex_1().min_w(0).truncate().text_color(th.blocked).child(t("unsaved", { count: c.count })))
-      .child(button("drop-edits", t("unsaved_drop"), true, (_e, cx) => { this.confirm = null; c.action(); cx.notify(); }))
-      .child(button("keep-edits", t("unsaved_keep"), false, (_e, cx) => { this.confirm = null; cx.notify(); }));
+    const leave = () => { this.confirm = null; };
+    // The pane is as narrow as the dock leaves it: the question takes the lines it needs, and the answers wrap under it.
+    return h_flex().min_h(30).flex_none().flex_wrap().px(12).py(4).gap_x(8).gap_y(4).items_center().bg(th.raised).text_size(12).border_b(1).border_color(th.divider ?? th.border)
+      .child(div().flex_auto().min_w(0).text_color(th.blocked).child(t(writing ? "unsaved_writing" : "unsaved", { count: now.edits })))
+      .child(h_flex().flex_none().flex_wrap().max_w("100%").gap(8).items_center()
+        .child(button("keep-edits", t(writing ? "unsaved_wait" : "unsaved_keep"), false, (_e, cx) => { leave(); cx.notify(); }))
+        .child(writing
+          ? button("stop-saving", t("unsaved_stop"), true, (_e, cx) => { this.stopSaving(current.id); leave(); cx.notify(); })
+          : button("drop-edits", t("unsaved_drop"), true, (_e, cx) => { leave(); c.action(); cx.notify(); })));
   }
 
   toolbar(th, conn) {
@@ -293,6 +315,7 @@ export default class DbTable extends View {
     if (!this.target) return root.child(div().p(16).text_size(12).text_color(th.dim).child(t("pick")));
     const conn = this.conn();
     const content = this.tab === "structure" ? this.structure(th) : this.tab === "sql" ? this.sqlTab(th) : this.data(th);
-    return root.child(this.toolbar(th, conn)).when(Boolean(this.confirm), (el) => el.child(this.confirmBar(th))).child(content);
+    const confirm = this.confirm ? this.confirmBar(th) : null;
+    return root.child(this.toolbar(th, conn)).when(Boolean(confirm), (el) => el.child(confirm)).child(content);
   }
 }
