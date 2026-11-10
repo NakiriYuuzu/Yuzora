@@ -82,8 +82,8 @@
 - **0.1.0 的 app 會沿用還活著的舊 core**（讀碼）：污染不會自己消退。新終端機要嘛進舊 `serve` 現有的 holder，要嘛由舊 `serve` 再生一個，cwd 都在安裝資料夾。
 - **怎麼清掉它**：
   - **重新開機一次（或登出再登入）**。這是唯一簡單、同時涵蓋 `serve`、holder 與使用者自己的 shell 的做法，release notes 與失敗說明都這樣寫。
-  - **進階：在 Yuzora 以外的終端機執行 `hc server stop`**（`hc` 是 herdr-core 的命令列）。這會結束 server，**所有終端機與裡面的 agent 都會結束**（讀碼：`api.rs` 的 `server_stop` → `runtime.rs` 的 `shutdown` kill 所有 live terminal，holder 收到 Shutdown 後結束）；損失與重新開機一樣，只是不必重開機。第三輪探針的 C7（`hc server stop` 之後交換成功嗎）與 C10（從 beta 的 core 經安裝程式到第一次自動更新，再 stop）量這一點。
-  - **不要**在工作管理員只結束 `herdr-core.exe serve`：holder 在 core 沒回來時會自己用 `spawn_core` 重啟一個，新的 `serve` 繼承 holder 的 cwd，仍在安裝資料夾（讀碼，`holder.rs` 的 `supervise`）。`hc server restart` 與 `hc update` 也不行：它們走 handover，holder 留著（讀碼；第三輪探針的 C6 量 `hc server restart` 之後交換成不成功）。
+  - **進階：在 Yuzora 以外的終端機執行 `hc server stop`**（`hc` 是 herdr-core 的命令列）。這會結束 server，**所有終端機與裡面的 agent 都會結束**（讀碼：`api.rs` 的 `server_stop` → `runtime.rs` 的 `shutdown` kill 所有 live terminal，holder 收到 Shutdown 後結束）；損失與重新開機一樣，只是不必重開機。實測（第三輪探針 run `42871881561`）：C7 在 `hc server stop` 之後沒有任何 herdr-core 行程以安裝資料夾為 cwd，Restart 一次就裝好；C10 從 beta 的 core 經安裝程式覆蓋安裝，第一次自動更新失敗（os error 32），`hc server stop` 之後同一個 Restart 成功。
+  - **不要**在工作管理員只結束 `herdr-core.exe serve`：holder 在 core 沒回來時會自己用 `spawn_core` 重啟一個，新的 `serve` 繼承 holder 的 cwd，仍在安裝資料夾（讀碼，`holder.rs` 的 `supervise`）。`hc server restart` 與 `hc update` 不當成出路寫給使用者：它們走 handover，holder 留著（讀碼）。實測只涵蓋一半：第三輪探針的 C6 在**沒有任何終端機開著**（`holders: []`）時執行 `hc server restart`，新的 `serve` 繼承執行 `hc` 的那個終端機的 cwd，安裝資料夾被放開，Restart 成功。有終端機開著時 holder 的 cwd 沒有量到（探針的 `terminal.open` 回 `no space yet`，沒有 `hold` 行程可讀），所以「有終端機時 restart 沒用」仍然只是讀碼的結論。
   - **不讓安裝程式或 app 自動結束舊 core**：那會無聲結束使用者所有終端機與 agent，違背「關掉、更新 Yuzora，agent 繼續跑」的承諾。要做在程式裡的話，應是交換失敗且原因是「被佔用」時，提供一個需要明確同意的動作「停止 herdr-core 並重試（會結束所有終端機）」，不在 0.1.0。
 - **誰會碰到**：從 beta 手動裝上 0.1.0、而且**beta 時期開的終端機還有一個活著**（它的 holder 就一直在）的人，**第一次**自動更新（0.1.0 → 0.1.1）會失敗；失敗時他們會看到下面的說明。0.1.0 全新安裝的人、或 core 與所有終端機都是 0.1.0 啟動的人（沒有 beta 時期的 core 或終端機還活著）不受影響。
 - **所以 release notes 要寫**：Windows 的 beta 使用者請手動下載安裝程式，裝完重新開機一次（文字見〈Release notes 建議文字〉）。
@@ -111,7 +111,7 @@
 
 > **Windows 上還在用 beta（0.1.0-beta.2 到 beta.4）的人：** beta 版在 Windows 上無法自動更新，請從這個 release 下載 `Yuzora-windows-x64-setup.exe`，直接執行覆蓋安裝，裝完請重新開機一次。beta 版啟動了一個背景程式（herdr-core），它還握著 Yuzora 的安裝資料夾，會讓 0.1.0 之後的第一次自動更新失敗，直到它結束為止；重新開機會結束它，裡面的終端機也會一起結束。不想重新開機的話，可以在 Yuzora 以外的終端機執行 `hc server stop`：它會結束所有終端機與裡面執行的 agent，和重新開機的損失一樣。從 0.1.0 起，Yuzora 會自己更新。
 
-（兩段的重點：一定要手動下載裝一次；重新開機是為了讓 0.1.0 → 下一版的第一次自動更新直接成功，不必先失敗一次；不要建議只在工作管理員結束 herdr-core，見上。「重新開機」與 `hc server stop` 何者確實夠用，第三輪探針的 C6、C7、C10 量；探針結果回來之後再核對這段文字。）
+（兩段的重點：一定要手動下載裝一次；重新開機是為了讓 0.1.0 → 下一版的第一次自動更新直接成功，不必先失敗一次；不要建議只在工作管理員結束 herdr-core，見上。`hc server stop` 夠用是實測（第三輪探針 C7、C10）；「重新開機」沒有在 runner 上量，它結束所有行程，推論一定夠用。）
 
 ### Linux
 
