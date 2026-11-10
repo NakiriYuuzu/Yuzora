@@ -3018,6 +3018,9 @@ const BASE: &str = r#"  /** A row. */
      */
     scroll_to_item(index: number, strategy?: "top" | "center"): void;
     scroll_to_bottom(): void;
+    // yuzora(git-copy): how far the list is scrolled.
+    /** How far a `v_virtual_list` is scrolled from its first row, in window pixels as of the last frame drawn: 0 at the top. */
+    offset(): number;
     /** Releases the handle. Using it afterwards throws. */
     release(): boolean;
   }
