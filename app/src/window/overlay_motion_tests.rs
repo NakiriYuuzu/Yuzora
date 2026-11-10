@@ -734,8 +734,8 @@ fn overlay_arrival_exempt(cx: &mut gpui::TestAppContext) {
     }
 }
 
-/// An overlay whose mod did not load (it shows the reason in a box) arrives too, and asks for its own frames: there
-/// is no mod view to ask for them.
+/// An overlay whose mod did not load (it shows the reason in a box) arrives too, and each frame of it asks for the next
+/// one itself: there is no mod view to ask for them.
 #[test]
 fn an_overlay_whose_mod_did_not_load_arrives_too() {
     in_own_process("overlay_arrival_unloaded");
@@ -759,10 +759,12 @@ fn overlay_arrival_unloaded(cx: &mut gpui::TestAppContext) {
         arrival_wide(&arrival_quads(cx), 300.0).is_none_or(|q| q.4.is_transparent()),
         "the first frame already shows it"
     );
-    assert!(
-        arrival_frame(cx, ARRIVAL_PANEL_MS / 2) > 0,
-        "it asks for its frames"
-    );
+    for step in 0..5 {
+        assert!(
+            arrival_frame(cx, ARRIVAL_PANEL_MS / 10) > 0,
+            "frame {step} of the arrival does not ask for the next"
+        );
+    }
     let mid = arrival_wide(&arrival_quads(cx), 300.0).expect("the dialog half way");
     assert_eq!(
         mid.4,
