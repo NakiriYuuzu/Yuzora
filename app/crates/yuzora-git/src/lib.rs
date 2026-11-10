@@ -88,8 +88,8 @@ export function discard(repo: string, paths: string[], rollback?: boolean): Prom
 /** Warnings before a commit: identity, conflicts, detached, nothing, large, crlf. */
 export function commitChecks(repo: string, amend?: boolean): Promise<{ kind: string; files?: string[]; count?: number }[]>;
 export function commit(repo: string, options: { message: string; amend?: boolean; signOff?: boolean; noVerify?: boolean; author?: string; date?: string; all?: boolean }): Promise<Outcome & { hash?: string }>;
-/** Message history (this repo), commit.template, the last message, recent authors. */
-export function messages(repo: string): Promise<{ history: string[]; template: string | null; last: string | null; authors: string[] }>;
+/** Message history (this repo), commit.template, the last message. */
+export function messages(repo: string): Promise<{ history: string[]; template: string | null; last: string | null }>;
 /** Loads a file diff: mode unstaged | staged | commit (rev) | compare (rev, to: null = work tree). */
 export function diffOpen(repo: string, spec: { path: string; orig?: string | null; mode: string; rev?: string; to?: string | null }): Promise<{ id: number }>;
 /** The rows of a loaded diff: layout side | unified, context lines (-1 all), whitespace none | trim | all. */
@@ -530,6 +530,64 @@ pub fn json_of(v: &HostValue) -> Value {
 mod tests {
     use super::*;
     use yuzora_core::HostArguments;
+
+    /// What one attach of the Git sidebar costs on a real repository (YUZORA_GIT_PERF_REPO, read
+    /// only), as the sidebar asks for it: `open`, `status`, then `messages`. Each run starts with the
+    /// repo closed, a second attach follows at once (a revisit: the repo is open and read).
+    /// YUZORA_GIT_PERF_RUNS sets the runs (5), YUZORA_GIT_PERF_NO_WATCH starts no file watch. With YUZORA_GIT_TIMELINE naming the log of a `git`
+    /// stand-in on PATH (scripts/git-attach-bench.sh), each phase also counts the git processes it started.
+    /// `cargo test -p yuzora-git --lib -- --ignored --nocapture perf_attach`.
+    #[test]
+    #[ignore = "needs a repository: YUZORA_GIT_PERF_REPO"]
+    fn perf_attach_to_a_repository() {
+        use std::time::Instant;
+        let Ok(path) = std::env::var("YUZORA_GIT_PERF_REPO") else {
+            return;
+        };
+        let runs: usize = std::env::var("YUZORA_GIT_PERF_RUNS")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(5);
+        let timeline = std::env::var("YUZORA_GIT_TIMELINE").ok();
+        // No file watch: what an attach costs without starting one (`open` starts it).
+        crate::watch::NO_WATCH
+            .with(|n| n.set(std::env::var_os("YUZORA_GIT_PERF_NO_WATCH").is_some()));
+        let spawned = || {
+            timeline.as_ref().map_or(0, |t| {
+                std::fs::read_to_string(t).map_or(0, |s| s.lines().count())
+            })
+        };
+        let phase = |what: &str, work: &mut dyn FnMut()| {
+            let (t, before) = (Instant::now(), spawned());
+            work();
+            format!(
+                "{what} {}ms/{}",
+                t.elapsed().as_millis(),
+                spawned() - before
+            )
+        };
+        for (n, kind) in (0..runs).flat_map(|n| [(n, "cold"), (n, "again")]) {
+            let mut repo = None;
+            let (total, before) = (Instant::now(), spawned());
+            let open = phase("open", &mut || {
+                repo = Some(repo::open(&path, None).unwrap())
+            });
+            let repo = repo.unwrap();
+            let status = phase("status", &mut || drop(status::read(&repo, false).unwrap()));
+            let messages = phase("messages", &mut || {
+                trust::check(&repo).unwrap();
+                ops::messages(&repo).unwrap();
+            });
+            println!(
+                "attach {kind} {n}: {} ms, {} git processes ({open}, {status}, {messages})",
+                total.elapsed().as_millis(),
+                spawned() - before
+            );
+            if kind == "again" {
+                repo::close(&repo.id);
+            }
+        }
+    }
 
     #[test]
     fn module_validates_and_reports_its_version() {

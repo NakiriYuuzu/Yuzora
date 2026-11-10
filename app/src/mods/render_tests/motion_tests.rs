@@ -238,7 +238,7 @@ export default class Slider extends View {
 // eased midpoint and arrives.
 #[gpui::test]
 fn a_transition_in_a_mod_tweens_what_is_painted(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut rig = Rig::mount(cx, &staged, SLIDER, Opts::new((200.0, 200.0)));
     let top = |rig: &mut Rig| rig.sized(40.0, 40.0)[0].1;
@@ -293,7 +293,7 @@ fn selection(rig: &mut Rig) -> Option<f32> {
 // apart), in the base speed, and the animation is the engine's alone: the script does not run for it.
 #[gpui::test]
 fn the_mode_bar_selection_slides_to_the_mode_picked(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut rig = bar(cx, &staged, Some("files"));
     let first = selection(&mut rig).expect("the mode shown is selected");
@@ -318,7 +318,7 @@ fn the_mode_bar_selection_slides_to_the_mode_picked(cx: &mut TestAppContext) {
 // and a mode opened after a close does not start from where the last one was.
 #[gpui::test]
 fn the_mode_bar_selection_does_not_slide_in_or_out_with_the_panel(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut rig = bar(cx, &staged, Some("files"));
     let first = selection(&mut rig).unwrap();
@@ -333,7 +333,7 @@ fn the_mode_bar_selection_does_not_slide_in_or_out_with_the_panel(cx: &mut TestA
 
 #[gpui::test]
 fn the_mode_bar_selection_jumps_when_the_system_asks_for_less_motion(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     cx.update(|cx| cx.set_reduce_motion(true));
     let staged = Staged::new();
     let mut rig = bar(cx, &staged, Some("files"));
@@ -347,7 +347,7 @@ fn the_mode_bar_selection_jumps_when_the_system_asks_for_less_motion(cx: &mut Te
 // The selection takes no press of its own: one over it reaches the button, selected or not.
 #[gpui::test]
 fn the_mode_bar_buttons_take_presses_over_the_selection(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut rig = bar(cx, &staged, Some("files"));
     let (x, top) = {
@@ -404,7 +404,7 @@ fn the_mode_bar_selection_is_exactly_on_its_button_at_every_zoom(cx: &mut TestAp
     if !alone("the_mode_bar_selection_is_exactly_on_its_button_at_every_zoom") {
         return;
     }
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut rig = wide_bar(cx, &staged, Some("files"), 1.0);
     for zoom in zoom_levels() {
@@ -425,7 +425,7 @@ fn the_mode_bar_selection_is_exactly_on_its_button_at_every_zoom(cx: &mut TestAp
 // The badge of the mode shown is painted on its button, so it must be painted after (over) the selection.
 #[gpui::test]
 fn the_mode_bar_selection_is_painted_under_the_button(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut o = Opts::new((44.0, 300.0));
     o.props = json!({"dock": "bar"});
@@ -450,7 +450,7 @@ fn the_mode_bar_selection_does_not_slide_when_the_zoom_changes(cx: &mut TestAppC
     if !alone("the_mode_bar_selection_does_not_slide_when_the_zoom_changes") {
         return;
     }
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut rig = wide_bar(cx, &staged, Some("ssh"), 1.0);
     let renders = rig.script_renders();
@@ -468,7 +468,7 @@ fn the_mode_bar_selection_does_not_slide_when_the_zoom_changes(cx: &mut TestAppC
 
 #[gpui::test]
 fn the_mode_bar_names_its_motion_in_the_description(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let tree = dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": "bar"}), &bar_layout(Some("git")), Value::Null, &[], &[], None).tree;
     assert!(tree.contains(":transition(top, 160ms, 0ms, ease-out)"), "{tree}");
@@ -487,7 +487,7 @@ fn perf_state(app: f64, core: f64, tools: f64) -> Value {
 // (the rows sort by memory, so a category can change places as its share changes).
 #[gpui::test]
 fn the_resource_bars_follow_a_new_sample_by_category(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut o = Opts::new((460.0, 700.0));
     o.commands = vec!["toggle"];
@@ -536,7 +536,7 @@ fn the_resource_bars_do_not_slide_when_the_zoom_changes(cx: &mut TestAppContext)
     if !alone("the_resource_bars_do_not_slide_when_the_zoom_changes") {
         return;
     }
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut o = Opts::new((1300.0, 1400.0));
     o.commands = vec!["toggle"];
@@ -580,7 +580,7 @@ fn first_switch_at(rig: &mut Rig, zoom: f32) -> ((f32, f32), (f32, f32)) {
 // A switch flips: the knob slides across its track in the fast speed.
 #[gpui::test]
 fn a_settings_switch_slides_its_knob(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut rig = settings_page(cx, &staged);
     let (track, knob) = first_switch(&mut rig);
@@ -606,7 +606,7 @@ fn a_settings_switch_does_not_slide_when_the_zoom_changes(cx: &mut TestAppContex
     if !alone("a_settings_switch_does_not_slide_when_the_zoom_changes") {
         return;
     }
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut rig = Rig::mount(cx, &staged, &shipped("yuzora-settings-general"), Opts::new((1200.0, 2400.0)));
     let before = first_switch(&mut rig);
@@ -621,7 +621,7 @@ fn a_settings_switch_does_not_slide_when_the_zoom_changes(cx: &mut TestAppContex
 
 #[gpui::test]
 fn a_settings_switch_jumps_when_the_system_asks_for_less_motion(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     cx.update(|cx| cx.set_reduce_motion(true));
     let staged = Staged::new();
     let mut rig = settings_page(cx, &staged);

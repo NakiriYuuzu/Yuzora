@@ -87,6 +87,22 @@ yuzora-git-settings ┘
   - symlink 不跳過而是跟著走兩層：指向別處的專案資料夾也列得出來；兩層的限制就足以擋住迴圈。
   - 另外限制往下看的資料夾數（5000）：走訪時就停，子資料夾上萬的 Space 資料夾不會讓列表變慢（遠端的 `find` 也接在 `head -n 5001` 後面：`head` 讀滿就結束，`find` 下一次寫出時跟著停）。
 
+### Git 模式的位置、記住的 repo 與動作的對象（v0.1.0 E1）
+
+使用者回報「切換專案時 Git 模式要等」。偵察與實測（本機兩個小 repo 之間切換，截圖取樣約 60 ms）：切換後 Git 模式換成新內容要 153–1047 ms，均勻散開；原因是它每 1 秒才比一次「現在看哪裡」，其次才是 attach 的行程數，而且 attach 一開始就把清單清成空白。
+
+- **位置在畫出來的那一幀就看**：`render()` 比對 `key()` 與 `this.ctx`，不同就 `attach`。herdr 在 `spaces`、`panes`、`focused` 或 shared 變動時重畫讀過它們的 mod，所以 Space 或焦點 pane 的資料夾一變，下一個畫面就開始換，不等計時器。1 秒計時器留給沒有畫出來的 copy（切到別的模式時，徽章與 `yuzora.status.git` 仍要跟著焦點）。狀態列的 git 區塊同樣：第一次畫到一個資料夾就問，不等 2 秒計時器；每個資料夾各有自己的詢問，慢的那個不擋新的（以前全部共用一個 `busy`）；計時器只剩「每 15 秒再問一次」。
+- **每個 repo 一份視圖**（`repoView`，`main.js` 最上面）：最後讀到的 status、這個 repo 的 commit 草稿（訊息、amend、作者）、動作的 `note`／`busy`／`warnings`、確認中的 discard、選取列、收合的段落、訊息歷史。畫面上的是 `this.v`；以 `repo.id` 為鍵，最近用過的 8 個留著，`seen` 記住 64 個位置各是哪個 repo。**手上有東西的視圖不被擠掉**（`holds`）：打著的 commit 訊息（只是 commit template 的不算）、作者、勾著的 amend、等著回答的警告（Commit anyway）、進行中的動作、動作失敗留下的錯誤訊息（`note` 的 `tone` 是 `error`，例如切走之後被拒的 push；下一次動作開頭會清掉，不會永久釘住）；所以留著的視圖數不設上限，但只有在使用者手上有未完成的事時才超過 8。
+- **顯示規則**：位置以前看過 → 同一個畫面先用那個 repo 上次的狀態，背景照原本的路徑（`open`→`status`→`messages`→`changed`）再讀一次；沒看過 → 在 `open` 回答它是哪個 repo 之前，畫面不動，所以 `cd` 進同一個 repo 的子資料夾、或焦點移到同一個 repo 的另一個 pane，清單不重置也不重讀；回答是另一個 repo → 換成它的視圖（沒讀過就是「讀取中」），不是 repo → 錯誤畫面。只有畫面上的 repo 被追蹤變動（`changed`）；離開的 repo 不再讀。看過的 repo 重新顯示時，第一次重讀就失敗（資料夾被刪、repo 壞了）→ 丟掉記住的清單改顯示錯誤，不再把已經不能確認的清單留在畫面上；之後 `changed` 觸發的重讀失敗則保留清單並顯示錯誤，和以前一樣。
+
+  **記住的清單先看、讀過才動手**（`v.confirmed`）：一個視圖每次被放上畫面（`show`）就是「未確認」，直到「放上畫面之後才開始」的 status 讀取回來（`reload`；上一次造訪晚到的讀取不算，以 `v.shown` 的造訪次數區分）。未確認時清單與徽章、狀態列照樣同一幀顯示（量到的即時感不變，畫面上的像素和確認後完全相同），**能看的照常能點**（開 diff、圖、分支、收合、選取、歷史訊息、勾選項），**會改 repo 或詢問要不要改的不動作**：列上的 ＋／−／↺、Stage all／Unstage all、Commit、Commit and push、Push、Commit anyway、操作列的 Continue／Abort／Skip、信任按鈕、右鍵選單、自動 fetch。取捨：舊清單可能已不是真的（回訪前檔案被改、repo 現在要信任），在 status 回來之前，點到的 ＋ 不會 stage 一個畫面上看不到的新狀態，也不會有人在一份舊的 trust 提示上按下「信任」；代價是本機約 20–130 ms（遠端到一次往返加 status）內的點擊被忽略，和位置切換的那一幀一樣是寧可沒反應。status 一回來帶著 `trust`，下一幀就換成信任提示；寫入在引擎端本來就先經 `trust::check`，這一層沒有動它。徽章與 `yuzora.status.git` 在這段時間顯示記住的值（和清單同一份資料）。**確認只等於「引擎的快取在這次讀取時是這樣」，不等於「磁碟現在是這樣」**（沒修，在引擎端，要碰 watcher）：離開超過 120 s（`repo::IDLE`）後 watcher 會放開；回來時 `open` 的 `used()` 在另一條執行緒重啟它，`invalidate_refs()` 要等 `watch::start` 回來才標記為髒（閒置時 9–12 ms，機器忙時 E1 量到 0.4–6 s），這段時間內第一次 status 回的是離開前的快取，視圖卻已經是 `confirmed`；遠端的 repo 沒有 watcher，離開後也沒有人輪詢，第一次 status 同樣是離開前（最多 25 s 前）的快取（這一點以前就是這樣，只是以前先顯示「讀取中」）。之後 `changed` 把它補上。所以 `confirmed` 擋的是「還沒讀過就動手」，擋不了「讀到的是舊快取」；建議的修法在引擎：`used()` 決定重啟 watcher 時同步 `invalidate_refs()`（再讓啟動完成後的那一次照舊），遠端回訪的第一次讀取 `force`。會刪東西的動作（確認框的 Yes、右鍵選單的 Discard）另外處理，見下。
+
+  **問的問題就是看到的問題**：Discard 的確認框不跨越切換（離開 repo 就取消，回來不再有）；確認框開著時下一次讀取如果顯示該檔案已變成另一種變更（例如被移出 index 成了未追蹤）或不再是變更，確認框取消（`discard` 在引擎端是照當下的狀態分流，未追蹤的檔會被整個刪掉，畫面上問的卻是 `M`）；確認框的 Yes 只捨棄它畫出來時問的那個檔案，而且按下 Yes 時先強制讀一次 git（`discardAsked`，一次完整的 refresh），那個檔案現在還是被問的那種變更才捨棄，否則什麼都不刪、顯示「已經不是你被問的那個變更」（`discard.changed`）：右鍵選單的 Discard（開著的 popup 自己 `open` 再 `discard`）也一樣：選單開啟時帶著該檔案被列為哪種變更（`kind`），按第二下確認後同樣先強制讀一次再決定。這兩個是會刪東西的路徑；上一段說的快取可能是舊的，而引擎的 `discard` 是照當下的狀態分流，未追蹤的檔會被整個刪掉。其他寫入不另外讀：stage、unstage 可逆；commit 本身作用在 git 的 index，但 `commitChecks` 用的是不強制重讀的 `status::refresh`（`ops.rs`），快取乾淨時什麼都不做，所以在上一段說的舊快取時窗裡，它的警告（large、crlf、`nothing`）可能依據舊快取：可能誤擋（`nothing`，安全的方向）或漏掉警告，不會提交錯的內容。Commit anyway 的警告框照舊跟著視圖（它是使用者剛按下 Commit 提出的問題，晚到也回到那個 repo），但要等確認才能按。
+- **動作只作用在畫面上那份清單所屬的 repo**：列的 key 含 repo id（`rowKey`），畫面換成別的 repo 之後，在舊畫面上開始的點擊找不到列，什麼都不做（即使兩個 repo 有同名檔案）；**畫面上每一個可以點的東西都由 `on(v, fn)` 做出來**（`v` 是畫出這一幀的 repo）：窗口把點擊交給「上一個畫出的 frame」，而 `open` 回來可以在兩次繪製之間把另一個 repo 換上畫面，這時舊 frame 裡的 Commit、Push、Commit anyway、amend、操作列的 Abort、分支、圖、repo 選擇器都不做事；⌘Enter 交給最後畫出的 frame（`this.drawn`），同一個規則。每個可點的東西的 id 都含 repo id（`name:<repo id>`，由 `button`／`checkbox`／`operationBar` 與 render 裡的 `id()` 統一加上），一次按壓不會在換畫面後的另一個 repo 的同名控制項上放開而算作點擊。`act`／`commit`／`push`／`toggleAmend` 沒有預設的視圖參數，漏接 `v` 會丟例外而不是作用在畫面上的 repo。`act`／`commit`／`push` 在開始時綁定當時的視圖：進行中的 commit、push 切走之後結果（錯誤、警告、清空訊息）回到它自己的視圖，不會出現在新位置的畫面上；晚到的 `open`（位置已換）直接丟掉；晚到的 `status`、`messages` 寫進它的視圖，不碰畫面；徽章與 `yuzora.status.git` 只發畫面上那個 repo 的。切走之後的 Push 不擋別的 repo 的按鈕（`busy` 是各 repo 的）。
+- **commit 訊息草稿**：以前整個側欄只有一個輸入框與一個作者欄，在 alpha 打的訊息切到 beta 之後按 Commit 會把它提交到 beta。現在草稿跟著 repo：換畫面時把現在框裡的存回離開的 repo，再把新 repo 的放進去。
+- **沒做的**：`open` 的快取（`rev-parse` 每次位置變動都跑一次，要碰 `check_top` 與信任，歸 trust 審查）；沒畫出來的 copy 跟隨位置仍是最多 1 秒（徽章與狀態文字）；位置切換的那一幀裡剛好按下的點擊會被丟掉（寧可沒反應，也不作用到別的 repo）。
+- 測試：`scripts/yuzora-git-sidebar.test.ts`（載入出貨的 `main.js`，每個 git 呼叫都等測試回答：位置跟隨、快取、`cd`、晚到的回應、點擊與按鈕的對象、訊息／作者草稿、進行中的 commit 與 push；v0.1.0 E1 r1：「畫出一幀、另一個 repo 在繪製之外換上畫面、再把那一幀的每個 handler 呼叫一遍」的全控制項掃描（merge 與 rebase 兩種操作列），確認沒有任何 git 呼叫、pane、popup、toast；每個可點的 id 含 repo id；未確認的回訪畫面做同樣的掃描，寫入類呼叫為 0，確認後才出現）、`scripts/yuzora-statusbar.test.ts`；`lifecycle_tests.rs` 的 `yuzora_git_sidebar_follows_its_place_in_the_frame_it_changes` 在真的 QuickJS 與視窗重畫下確認不靠計時器。
+
 ### virtual list 的限制
 
 gpui-shell 不允許在 `v_virtual_list` 的 item renderer 裡註冊事件（會丟例外、整個清單不畫）。列的點擊走清單的 `on_item_click(key)`／`on_item_secondary_click(key, event)`；一列裡有多個可點區域（右側模式的 +／−／↺、diff 的行號）時，清單外層用 `on_mouse_down` 記下按下的 x，再在 `on_item_click` 判斷。
@@ -236,6 +252,19 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 | 深處列的 metadata（第 26,468 列起 40 列） | 19–32 ms | — |
 | status 全量刷新 | 並行化前 480–740 ms；並行化後 238–467 ms（背景） | 不擋 UI |
 
+attach 的量測（v0.1.0 E1）：`app/scripts/git-bench/run-attach-bench.sh <yuzora-git 測試執行檔> <repo> [次數]` 跑 `lib.rs` 的 `perf_attach_to_a_repository`（ignored）：`open`、`status`、`messages` 各自的毫秒與 git 行程數，每次從關閉的 repo 開始（`cold`），緊接著再來一次（`again`＝回到看過的 repo）。分兩輪：PATH 前面放記錄起訖的 `git` 替身（算行程數；每個呼叫多約 15 ms 是替身自己的兩次 perl）和真的 git（毫秒）。`YUZORA_GIT_PERF_NO_WATCH=1` 不啟動檔案監看，用來分出 `open` 裡監看啟動的時間。
+
+結果（v0.1.0 E1，macOS Apple Silicon，真的 git，3 輪 × 5 次、各輪前後交錯，中位數與範圍；`open` 約 10 ms 不變，已含在總數裡）：
+
+| 一次 attach | 之前 | 之後 | 行程數（替身）之前 → 之後 |
+| --- | --- | --- | --- |
+| 1,100 commits／4,600 檔的 repo，從關閉開始（`cold`） | 215 ms（181–233） | 162 ms（140–195） | 12 → 11 |
+| 同一個 repo，緊接著再來一次（`again`＝回到看過的 repo） | 139 ms（120–154） | 116 ms（100–139） | 6 → 5 |
+| 5 個檔案的 repo，`cold` | 76 ms（71–132） | 43 ms（40–93） | 10 → 9 |
+| 5 個檔案的 repo，`again` | 40 ms（37–54） | 19 ms（18–25） | 4 → 3 |
+
+少掉的時間對得上單一指令的量測：`messages` 84 → 60 ms（拿掉 `log -n 300` 約 16 ms、`config` 與 `log -1` 並行約 12 ms），`status` 的 `cold` 112 → 89 ms（第二批 `numstat` 約 20–26 ms 與第一批重疊）。`status` 剩下的 90 ms 是兩個走整棵樹的 `ls-files --others`（單獨 50–60 ms，並行互搶 I/O 時各約 90 ms）與信任掃描，這次都沒動（信任關卡、ignored dirs 的列舉時機不在範圍）。
+
 ## A1–A12 完成度
 
 對照 [research/intellij-git-research.md](research/intellij-git-research.md) 的 A 段。標記：✅ 完成　🟡 部分　⏳ 未做（後續）　⛔ 不做（範圍外）。
@@ -346,6 +375,10 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - **popup／dialog 的截圖**：herdr CLI 沒辦法帶 props 開 overlay，分支 popup 與 push 對話框的實機截圖是開在分頁裡（`tab.new --mod`）。
 - **信任只管 Git**：repo 本地設定會自動執行程式時，Git 的所有操作都先等信任，但終端機與其他模式不受影響。狀態列（L1）與檔案樹（L5）的 git 呼叫要改用 `yuzora_core::git_trust`（#194 合併後）。整個 app 的信任模型要由殼層（L1）提供，Git 再改用它。
 - **遠端 repo 沒有 watcher**：靠 `changed()` 約 25 秒逾時輪詢一次 status。
+- **`status::full` 的未追蹤或 ignored 列舉失敗時，兩個 `numstat` 已經跑完再被丟棄**（v0.1.0 E1 r1 的 nit）：`numstat` 在 `status` 讀完時就出發，與兩個走整棵樹的列舉並行，行程出發後沒有取消的辦法；列舉失敗是少見的路徑，代價是多 2 個行程，結果與以前相同（錯誤照舊傳回）。要避免就得等列舉結束才出發，會拿掉這次省下的時間。
+- **回訪後第一次 status 可能是離開前的快取**（v0.1.0 E1 r2，這個改動之前也一樣，沒有放大）：本機是離開超過 `repo::IDLE`（120 s）後 watcher 重啟的時間（`used()` 的 `watch::start` 回來才 `invalidate_refs()`；閒置時約 10 ms，機器忙時 0.4–6 s），遠端沒有 watcher，最多 25 s（`changed()` 逾時輪詢）。這段時間內視圖已是 `confirmed`，stage、unstage 作用在 git 當下的狀態（可還原），`commitChecks` 的警告可能依據舊快取，會刪東西的兩條路（確認框的 Yes、右鍵選單的 Discard）先強制重讀所以不受影響。修法在引擎：`used()` 決定重啟 watcher 時同步 `invalidate_refs()`，遠端回訪的第一次讀取 `force`。
+- **輸入框裡的字與畫面上的 repo 在換畫面的那一幀可能對不上**：`show` 換畫面時同步把新 repo 的草稿放進輸入框，下一幀才畫出來；這一幀裡剛好打下的字會加進新 repo 的草稿。⌘Enter 不受影響（交給最後畫出的 frame），只有這一個字元的歸屬。
+- **一個 repo 本次執行的第一次 `open` 要等檔案監看啟動，機器忙的時候可以到好幾秒**（macOS，v0.1.0 E1）：`repo::open` 在登錄新 repo 時同步呼叫 `watch::start`（FSEvents 的 `watch()`）。其他 lane 同時在編譯、load average 12–15 時量到：5 個檔案的 repo 0.4–1.5 s，4,600 個檔案的 repo 1–6 s，不啟動監看（`YUZORA_GIT_PERF_NO_WATCH=1`）時整個 `open` 10–18 ms；load 約 6 時有沒有監看都是 9–12 ms。所以忙碌時，每個專案本次執行第一次顯示在 Git 模式，「讀取中」會多這麼久（之後同一個 repo 的 `open` 是登錄表命中，約 11 ms）。是 CPU 負載還是 fseventsd 被別的建置拖慢，沒有分開驗證。修法的形狀（沒做，要碰 `watch`、`open` 與一批假設 `open` 回來就已監看的測試）：`open` 登錄後立刻回傳，監看在 `used()` 重啟監看用的那條執行緒啟動，啟動完 `invalidate_refs()`（那一條路已經存在）。
 - **持久化 log index**：未做；圖只依賴 `RawCommit`，第二階段來源可以換成 index（見〈Log〉）。
 - **記憶體內編輯**只有 reword。
 - **diff 的跟隨請求不分 pane**（Codex 對 #208 的 P2，延後）：先關掉 `diffFollowPane`、在同一個 Space 開出好幾個 diff pane、再打開它時，同一個 Space 的 `yuzora.git.diff.<space id>` 會讓每個 diff pane 都換檔，`showDiff` 卻只 focus 其中一個。mod pane 不知道自己的 pane id（herdr 只把 `props().pane` 給 pane 標頭 mod，`run()` 回傳 `null`），要改上游 API 或另做 opener 與 pane 的 key 對應。
@@ -406,7 +439,7 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 
 - remote helper 的其他寫法（blocker）：remote 的名稱本身是 helper URL（`remote.<URL>.fetch`、`.skipDefaultUpdate`、`.promisor`）、`branch.*.remote`／`pushRemote`、`remote.pushDefault`、`remotes.<group>`、`submodule.*.url`。`ext::` 與一般 helper（`zz::`：git 的預設 policy，使用者裝了 `git-remote-zz`）都測，測試先證明 git 真的會叫起 helper，修正前掃描都回傳空清單。
 - 執行時再擋一層（`trust::reach`，見〈執行器〉）：tracked `.gitmodules` 掃描不到，也包括 `--recursive` 途中才遇到的巢狀 `.gitmodules`。另外實測未 checkout 的 submodule（`.git/modules/<name>`）在 manual fetch 時，git 2.50 會照預設 policy 叫起它設定的 helper，這個 git dir 也不在掃描範圍內。測試透過 `ops::fetch` 與 `ops::submodule_update` 確認信任前不跑、信任後會跑。（第四輪更正：`reach` 只擋得住 helper，同一個 git dir 的 filter、`core.sshCommand`、`gitProxy` 仍會執行；第四輪改成掃描這些 git dir，見下方。）
-- 右側模式自動讀的 commit 訊息（`messages`：`log -1`、`log -n 300`）在未信任時經 `own_read`，partial clone 缺的 commit 不會被抓。
+- 右側模式自動讀的 commit 訊息（`messages`：`log -1`、`log -n 300`）在未信任時經 `own_read`，partial clone 缺的 commit 不會被抓。（v0.1.0 起 `messages` 不再讀 `log -n 300`，也不回 `authors`：沒有 mod 用這份作者清單。）
 
 第三輪（reviewer 複審 `c9cb897e`），改成結構性的修法，不再逐一列舉寫法：
 
@@ -475,6 +508,7 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - `DiffSession::load`：index 項目、HEAD／commit 那一側、工作樹、mode 比對一起發出。**index 那一側例外**：等 index 項目回來之後，用它的 object id 讀（`cat-file --filters --path=<path> <oid>`），不用 `:path`，這樣 session 裡的內容和之後 `check_index` 檢查的 id 是同一份快照（另一個 git client 在兩次讀取之間 `git add` 時，不會拿到舊 id 配新內容而蓋掉對方 stage 的東西）。unstaged 遠端 5 輪 → 2 輪。unstaged 在 index 沒有該檔時不要左側，這時就算 `cat-file` 那一路出錯也不算（原本根本不會跑）。
 - `log::read_refs`：`for-each-ref`、`symbolic-ref`、`rev-parse`。3 輪 → 1 輪。`rev-parse`／`symbolic-ref` 非零（unborn）仍不是錯誤。
 - `status::full` 的 `operation()`（遠端要 `ls .git`，rebase 中還有逐檔 `cat`）搬進第一輪的平行區，少一輪。
+- （v0.1.0 E1）`status::full` 的兩個 `diff --numstat` 在 `status` 讀完、知道變更檔數沒有超過 `NUMSTAT_LIMIT` 的那一刻就出發，與兩個走整棵樹的 `ls-files --others` 並行，不再等第一輪全部結束；超過上限時不出發，和以前一樣略過。`ops::messages` 的 `config commit.template` 與 `log -1` 並行，並拿掉沒人用的 `log -n 300`（3 個行程串行變 2 個並行）。
 
 `exec::spawn_scoped` 讓測試用的 `TEST_ENV`（thread-local）也傳給這些執行緒。測試用記錄開始／結束的 `git` 替身（`repo::testing::timed_git`）證明同時在跑的數量，並證明任何一路失敗都不會被當成答案。
 
