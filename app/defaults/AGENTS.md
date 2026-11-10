@@ -1302,7 +1302,11 @@ with these differences.
 - A table's rows show as soon as they are read. Whether they can be edited
   is settled when the table's key has been read, which starts with the rows
   (on the sidebar's connection) and takes as long as it takes, so a table is
-  editable at the later of the two. Stop pressed before the key is back ends
+  editable at the later of the two; until then, trying to edit a cell on screen
+  says "Reading the table's key…". A table that another connection changed
+  while it was being opened (a column renamed, dropped or added) is read-only,
+  with the reason "the table changed while it was being opened": refresh the
+  table to edit it. Stop pressed before the key is back ends
   the load at once and leaves the rows on screen read-only, with the reason
   "could not read the table's key (stopped before it was read)": run the table
   again to edit it. Nothing about a table is kept from one run to the next, so
