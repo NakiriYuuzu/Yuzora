@@ -16,7 +16,7 @@ name: App package
 
 on:
   push:
-    branches: [beta2/integration]
+    branches: [main, beta2/integration]
     paths: &package-paths
       # The update notes are embedded at compile time (include_str! in app/src/yuzora/release/notes.rs),
       # so a CHANGELOG edit changes what gets packaged.
@@ -31,7 +31,7 @@ on:
       - 'app/src/yuzora/release/**'
       - '.github/workflows/app-package.yml'
   pull_request:
-    branches: [beta2/integration]
+    branches: [main, beta2/integration]
     paths: *package-paths
   # Before a release, or to check the Windows build (app-ci.yml has none).
   workflow_dispatch:
