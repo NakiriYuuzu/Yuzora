@@ -32,7 +32,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 完整宣告在 app home 的 `yuzora.d.ts`（由 `DECLARATIONS` 產生）。重點：
 
 - 連線：`connections()`（含 `status`）、`saveConnection(config, password?)`、`deleteConnection(id)`、`testConnection(config, password?)`、`connect(id, db?)`、`disconnect(id)`。
-- 目錄：`databases(id)`、`objects(id, db)`、`describe(id, db, {schema, name})`。
+- 目錄：`databases(id)`、`objects(id, db)`、`describe(id, db, {schema, name})`；`tableInfo(jobId)`：`openTable` 開的那一次所讀的 describe（見「效能」）。
 - 查詢：`query(id, db, owner, sql) → jobId`、`openTable(id, db, owner, table, order?) → jobId`、`job(jobId, seen?)`（長輪詢：版本超過 `seen` 或 250 ms 後回傳）、`cancel(jobId)`、`result(resultId)`。
 - 生命週期：`release(owner)` 關掉 owner（pane key）的連線、工作、結果集、grid 與 editor。pane 的 `close()` 必須呼叫。
 - 歷史：`history(id)`、`clearHistory(id)`；存在 app home 的 `db-history.json`，每個連線最多 200 筆、每筆最多 20,000 字，只存 SQL 不存結果。檔案權限是 0600（只有擁有者能讀）。含 `password`、`passwd`、`pwd=`、`secret`、`identified by`，或含帶 userinfo 的 URL（`postgresql://user:pass@host`，也包括只放 token 的 `https://token@host`）的 SQL，整段都不記錄（`history::carries_credentials`）。這個範圍刻意放寬，所以查 `password_hash` 欄位的查詢也不會進歷史。
@@ -56,6 +56,8 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 一個 pane 最多同時有三條連線，各管各的（`session::table_owner`、`session::count_owner`）：SQL 分頁的 `{owner}`、資料表的 `{owner}:table`、算總列數的 `{owner}:count`（算完就關）。資料表的連線只執行 app 自己組出來的語句（開表的 SELECT、型別查詢、寫回），SQL 分頁留在它那條連線上的東西（暫存表、`SET search_path`、`USE`，以及任何 `SET`）因此到不了資料表，資料表的設定也由 app 決定，不是留給 SQL 分頁的腳本。尚未結束的交易也留在 SQL 分頁的連線上，資料表讀不到它改的東西，但它持有的鎖仍會擋到同一個 pane 的資料表，見下面「還在的」。`release(owner)` 三條一起關。
 - 開表時 `COUNT(*)` 在列讀完後、工作結束前執行，所以按「停止」也能停掉 count。count 用自己的連線（`session::count_owner`，count 完就關），不佔資料表的連線：列讀完、決定好可不可編輯（`Editing`）之後 grid 就能編輯，寫回也不用排在 count 後面。
 - count 是輔助資訊：它的連線開不了（登入或資料庫有連線數上限、網路抖動）時，不改變連線的狀態（側欄不會變成「連線失敗」），改借 pane 的資料表連線、等它空閒時算，總列數照樣出現。借來的 count 永遠讓路：寫回、開表、重新整理一向 pane 的資料表連線要連線（SQL 分頁的查詢不在這裡：它在自己的連線上，不排在 count 後面）（`session::lease`，`Live::want`），count 就被叫停（`StandDown`，由 count 自己那個 task 取消自己的 statement 再放開連線），工作拿到連線；工作結束後 count 從頭再算一次（`count_between`）。使用者不會為了 count 等待。PostgreSQL 的取消若沒有被 count 的那句 statement 接住（伺服器沒回 `canceled`：count 剛好先結束，或伺服器在動作之前就先回覆了取消連線，像連線池那樣），count 的連線會被丟掉，下一個使用者開新連線（`Lease::retire`、`Conn::cancel_landed`）；接住了就留著，不用重連。
+- 開表的 describe（欄位、主鍵、索引、DDL）在「開表開始的當下」就在 sidebar 的連線（META）上送出，和資料表連線（`{owner}:table`）上的 `SELECT` 同時進行，列不等它：列讀完就顯示（`complete`），`Editing` 仍是 `Loading`，describe 回來後才決定可不可編輯（主鍵、產生欄），所以「可編輯」的時間是 max(讀取, describe)。describe 沒回來時按 Stop：工作馬上結束，列保留、唯讀，原因是「could not read the table's key (stopped before it was read)」（META 連線不是工作能取消的，describe 自己會在 META 上跑完，結果丟掉）。連線是唯讀、或讀取失敗時不等 describe。
+- 每次開表（含重新整理）都重新 describe，**不快取**：重新整理一定拿到表現在的主鍵，改過主鍵的表不會用舊的主鍵寫到錯的列（`sqlite_a_refresh_after_the_primary_key_moved…`）。Structure 分頁不再另外送 `describe`，改用 `tableInfo(jobId)` 取同一次的結果（`defaults/mods/yuzora-db-table/main.js` 的 `infoJob` 只認最新一次開表）；job 已被取代或不存在時 `tableInfo` 回 `NotFound`。
 - 每個「停止」只停它旁邊標示的那件事。工作的停止（工具列）只取消工作當下正在跑的那句：讀列時是資料表的連線（`{owner}:table`），count 時是 count 的連線（`Job.serving`；借資料表連線的 count 是請它自己放手，`Stop::Count`），讀完之後不再碰資料表的連線，因為那上面可能正在寫回。寫回的停止（footer）只結束那次寫回。SQL 分頁的查詢在自己的連線上，有自己的語句和自己的 Stop；工作仍是一個 pane 一個（`new_job` 先 `supersede`），所以在 SQL 分頁按 Run，會取消同一個 pane 還在讀的資料表或還在算的 count，並取代它的結果集。寫回不是工作：它在等列鎖時 SQL 分頁照常執行，兩邊的 Stop 互不影響（`postgres_a_sql_tab_statement_and_a_waiting_write_back_are_stopped_apart`、`mssql_a_sql_tab_statement_and_a_waiting_write_back_are_stopped_apart`）。
 - 連線還在建立時按「停止」也有效：引擎先把自己的取消機制準備好，然後在每個 statement 執行前檢查工作是否已經停止（`RowSink::cancelled`）。所以 UPDATE、DELETE 這類不回傳列的語句，不會在回報取消之後才執行。
 - 讀取是串流的：引擎每 512 列（`engine::BATCH`）交給 `RowSink` 一次，grid 立即重畫，不等整個查詢結束。
@@ -199,7 +201,7 @@ YUZORA_DATABASE_TEST_ENGINES=postgres,mssql YUZORA_PERF_KEEP=1 \
   --test perf_open_table -- --ignored --nocapture --test-threads=1 perf_open_table
 ```
 
-環境變數：`YUZORA_PERF_ENGINES`、`YUZORA_PERF_DELAYS`（單向毫秒，預設 `0,25`）、`YUZORA_PERF_TABLES`（`small,100k,1m,widecols,widetext`）、`YUZORA_PERF_MODES`（`cold,warm`，加 `cold-alone,warm-alone` 可去掉 pane 自己另外送的 `describe`）、`YUZORA_PERF_COLD`／`YUZORA_PERF_WARM`（樣本數）、`YUZORA_PERF_KEEP=1`（保留 fixture 資料庫 `yz_speed_pg`／`yz_speed_ms` 給下一次，預設結束時刪除）。其他測試：`perf_calibrate_the_delay_line`（先跑，確認轉送的延遲與往返次數）、`perf_phases_of_an_open`（連線、describe、SELECT、count 各自的時間）、`perf_sql_tab`（SQL 分頁與 Stop）、`perf_relay_overhead_on_a_big_result`。
+環境變數：`YUZORA_PERF_ENGINES`、`YUZORA_PERF_DELAYS`（單向毫秒，預設 `0,25`）、`YUZORA_PERF_TABLES`（`small,100k,1m,widecols,widetext`）、`YUZORA_PERF_MODES`（`cold,warm`，加 `cold-alone,warm-alone` 可去掉 pane 自己要 description 的那一步；現在它只是 `tableInfo`，不送任何東西，所以兩種一樣）、`YUZORA_PERF_COLD`／`YUZORA_PERF_WARM`（樣本數）、`YUZORA_PERF_KEEP=1`（保留 fixture 資料庫 `yz_speed_pg`／`yz_speed_ms` 給下一次，預設結束時刪除）。其他測試：`perf_calibrate_the_delay_line`（先跑，確認轉送的延遲與往返次數）、`perf_phases_of_an_open`（連線、describe、SELECT、count 各自的時間）、`perf_sql_tab`（SQL 分頁與 Stop）、`perf_relay_overhead_on_a_big_result`。
 
 ## 實機畫面
 
