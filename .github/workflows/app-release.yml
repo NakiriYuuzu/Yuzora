@@ -40,11 +40,6 @@ on:
         type: string
         required: false
         default: ''
-      exclude_targets:
-        description: Targets the manifest leaves out (0.1.0 - windows-x86_64); their files still ship
-        type: string
-        required: false
-        default: ''
       downloads_base:
         description: Dry run only. A server on this machine, like http://127.0.0.1:8765/NakiriYuuzu/Yuzora/releases/download
         type: string
@@ -102,7 +97,6 @@ jobs:
           STAGE: ${{ inputs.stage }}
           VERSION: ${{ inputs.version }}
           PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
-          EXCLUDE_TARGETS: ${{ inputs.exclude_targets }}
           DOWNLOADS_BASE: ${{ inputs.downloads_base }}
         run: bun app/scripts/yuzora/release.ts plan
       - name: Summary
@@ -437,7 +431,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release download "$TAG" --dir held --pattern 'yuzora-update.json*'
-          cmp held/yuzora-update.json signing/yuzora-update.json || { echo "::error::the manifest on $TAG is not the one these inputs write (another exclude list or pub date?)"; exit 1; }
+          cmp held/yuzora-update.json signing/yuzora-update.json || { echo "::error::the manifest on $TAG is not the one these inputs write (another package run, pub date or UNLISTED_TARGETS?)"; exit 1; }
           if [ "$have_signature" = true ]; then cp held/yuzora-update.json.sig signing/; fi
         env:
           have_signature: ${{ steps.release.outputs.have_signature }}
@@ -504,7 +498,6 @@ jobs:
     env:
       STAGE: ${{ needs.plan.outputs.stage }}
       VERSION: ${{ needs.plan.outputs.version }}
-      EXCLUDE: ${{ needs.plan.outputs.exclude }}
       DOWNLOADS: ${{ needs.plan.outputs.downloads }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -538,7 +531,8 @@ jobs:
           verify=$PWD/target/release/verify-manifest
           cd "$GITHUB_WORKSPACE"
           [ -s signed/yuzora-update.json.sig ] || { echo "::error::there is no signature to check"; exit 1; }
-          targets=$(EXCLUDE="$EXCLUDE" bun -e 'import { TARGETS } from "./app/scripts/yuzora/manifest.ts"; const out = (process.env.EXCLUDE ?? "").split(",").filter(Boolean); console.log(TARGETS.filter((t) => !out.includes(t)).join(","))')
+          # From the repository's table and the version alone, not from what the plan or the build was told.
+          targets=$(bun -e 'import { listedTargets } from "./app/scripts/yuzora/manifest.ts"; console.log(listedTargets(process.env.VERSION ?? "").join(","))')
           "$verify" signed/yuzora-update.json signed/yuzora-update.json.sig "$VERSION" "$DOWNLOADS" --targets "$targets" | tee "$RUNNER_TEMP/verified"
           # The check is not vacuous: one changed byte must fail it.
           sed 's/"schema": 1/"schema": 2/' signed/yuzora-update.json > "$RUNNER_TEMP/tampered.json"

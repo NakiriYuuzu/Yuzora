@@ -169,7 +169,7 @@ describe("plan, against a fake gh and a throwaway repository", () => {
   test("draft: a run on a commit already on main, no tag yet", () => {
     accepted();
     const out = plan(env());
-    expect(out).toMatchObject({ stage: "draft", version: "0.1.0", tag: "v0.1.0", sha, run_id: "42", prerelease: "false", exclude: "", cargo_version: "0.1.0", downloads: GITHUB_DOWNLOADS });
+    expect(out).toMatchObject({ stage: "draft", version: "0.1.0", tag: "v0.1.0", sha, run_id: "42", prerelease: "false", exclude: "windows-x86_64", cargo_version: "0.1.0", downloads: GITHUB_DOWNLOADS });
     expect(out.notes).toBe("> 繁體中文在前，English below.\n\n中文。\n\n---\n\n## English\n\nEnglish.\n");
     expect(out.upload_plan.split("\n")).toHaveLength(10);
     expect(out.upload_plan).toContain("Yuzora-macos-aarch64.dmg\tYuzora_0.1.0_aarch64.dmg");

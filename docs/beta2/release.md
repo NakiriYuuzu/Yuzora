@@ -204,7 +204,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 2. **簽章只發生在 `sign` job。** 只有它讀 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`；打包與 PR workflow 不讀。寫 release 的 job 不 checkout、不執行 repo 裡的程式；執行 repo 程式的 job 只有讀取權限。
 3. **分階段、可停、可重跑。** 重跑時，release 上已有同名同內容的檔案就略過，同名不同內容就失敗（絕不覆蓋）。
 4. **不刪 tag、不改寫已發布的舊 release。** tag 是 annotated tag，由 `draft` 階段用 API 建在被驗收的 commit 上。
-5. 0.1.0 **不附 `latest.json`**（不自動升級 v0.0.19／beta.1 的 Tauri 使用者），manifest **不列 `windows-x86_64`**（beta.2 至 beta.4 的 Windows 自我更新一定失敗；Windows 的 archive 與安裝檔仍照常上傳）。0.1.1 起 Windows 照常列。
+5. 0.1.0 **不附 `latest.json`**（不自動升級 v0.0.19／beta.1 的 Tauri 使用者），manifest **不列 `windows-x86_64`**（beta.2 至 beta.4 的 Windows 自我更新一定失敗；Windows 的 archive 與安裝檔仍照常上傳）。0.1.1 起 Windows 照常列。哪個版本不列哪些 target 由 repo 裡的表決定：`app/scripts/yuzora/manifest.ts` 的 `UNLISTED_TARGETS`（以完整版本字串為 key，沒有那一列就全部列出）。`plan` 讀它來寫 manifest，`verify-manifest` job 再自己讀它算出該有的 target 清單，用 `--targets` 逐一比對（多列或少列都會失敗）；dispatch 沒有任何輸入可以改這件事，所以漏打參數不會列出 Windows。要改就改表、過 review。
 6. 根目錄 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 等 Tauri 版本字串維持 `0.1.0-beta.1`。改它們會讓 `release.yml` 想發布 Tauri 版；`release.yml` 已加守衛（`app/Cargo.toml` 存在就在建 tag 前失敗），但不要依賴守衛。
 
 ### 6.2 階段
@@ -220,10 +220,9 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 dispatch：
 
 ```bash
-gh workflow run app-release.yml --ref main \
+gh workflow run "App release" --ref main \
   -f stage=draft -f version=0.1.0 -f package_run_id=<被驗收的 App package run id>
-# manifest 階段另外加 -f exclude_targets=windows-x86_64
-# 之後每個階段同樣的 version 與 package_run_id，只換 stage
+# 之後每個階段同樣的 version 與 package_run_id，只換 stage（manifest 要列哪些 target 由 repo 的表決定，不是輸入）
 gh run watch <run id>        # 每個階段的 job summary 會列出做了什麼、檔案與 sha256
 ```
 
@@ -271,7 +270,6 @@ gh run watch <run id>
 ```bash
 gh workflow run "App release" --ref release-dryrun/1 \
   -f stage=dry-run -f version=0.1.0 -f package_run_id=<候選 App package run id> \
-  -f exclude_targets=windows-x86_64 \
   -f downloads_base=http://127.0.0.1:8765/NakiriYuuzu/Yuzora/releases/download
 ```
 
@@ -337,10 +335,15 @@ env -i HOME=$T/home USER=$USER TMPDIR=$T/tmp TERM=xterm-256color LANG=en_US.UTF-
 **8. `manifest`**
 
 - 做之前：第 3 步的隔離檢查成功過；release 已公開；你決定好讓已安裝的 beta 開始更新。
-- 指令：`-f stage=manifest -f exclude_targets=windows-x86_64`。
+- 指令：`-f stage=manifest`（不需要另外指定不列 Windows：`UNLISTED_TARGETS["0.1.0"]` 決定，`plan` 的 summary 會寫「manifest leaves out: windows-x86_64」）。
 - 做完驗證：summary 有 `verified yuzora 0.1.0 (stable) targets=linux-aarch64,linux-x86_64,macos-aarch64 …`（沒有 windows）；`curl -sL https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0/yuzora-update.json | jq '.targets|keys'`；`gh release view v0.1.0 --json assets --jq '.assets[].name'` 多了 `yuzora-update.json` 與 `yuzora-update.json.sig`。
 - 單向？是。已暫存的更新收不回。**停止鍵**：刪掉 `.sig`（`gh release delete-asset v0.1.0 yuzora-update.json.sig --yes`）就讓之後的檢查看不到這個 release；已經暫存的 App 仍會在重啟時交換。
-- 重跑：manifest 與 `.sig` 已在 release 上就略過；manifest 內容與這次的輸入不同（例如換了 `exclude_targets`）會失敗，不會覆蓋。
+- 重跑：manifest 與 `.sig` 已在 release 上就略過；manifest 內容與這次的輸入不同（例如換了 package run 或 `UNLISTED_TARGETS`）會失敗，不會覆蓋。
+- **收回（manifest 已上傳之後才發現列錯，例如多列或少列了某個 target）**：
+  1. 先刪 `.sig`：`gh release delete-asset v0.1.0 yuzora-update.json.sig --yes`。release 要兩個檔都在才會被更新檢查看到（`channel.rs` 的 `pick_in`），所以從這一刻起沒有新的 App 會讀到它。
+  2. 再刪 manifest：`gh release delete-asset v0.1.0 yuzora-update.json --yes`。不刪的話，重跑 `manifest` 會因為內容不同（`cmp`）失敗。
+  3. 修正 `UNLISTED_TARGETS`，過 review 合併進 main，再 `gh workflow run "App release" --ref main -f stage=manifest -f version=0.1.0 -f package_run_id=<同一個 run id>`。重跑時 release 上沒有 manifest，會依新的表寫、簽、驗，先傳 manifest、最後傳 `.sig`。
+  - **不受收回影響的**：已經讀過舊 manifest、把 archive 下載並暫存（`<安裝位置>.new`）的 App，重啟或結束時仍會交換到 0.1.0。這一步收不回，所以列錯 target 的代價是：列了 Windows 就是 Windows 的 beta 使用者看到一個按不過去的更新；少列 macOS 或 Linux 就是那些使用者要等收回後的重跑才收得到更新。已經暫存的更新不會因為重傳而換成別的內容。
 
 **9. `latest`**
 
@@ -363,7 +366,7 @@ env -i HOME=$T/home USER=$USER TMPDIR=$T/tmp TERM=xterm-256color LANG=en_US.UTF-
 | `draft` 紅：`the run's artifacts are not the files 0.1.0 ships` | artifacts 過期（保留 7 天）或缺平台 | 在 7 天內做完 `draft`；缺平台就查那個 run |
 | 任何階段紅：`… is already on v0.1.0 with other content` | 重跑時檔案內容不同 | 查為什麼不同；draft 才能刪單一檔案後重跑，公開後不改，改發新版本 |
 | `publish` 紅：`the draft already has the manifest or its signature` | 有人提早上傳了 | 刪掉那兩個檔再 `publish` |
-| `manifest` 紅：`the manifest on v0.1.0 is not the one these inputs write` | 重跑用了不同的 `exclude_targets` | 用原本的輸入 |
+| `manifest` 紅：`the manifest on v0.1.0 is not the one these inputs write` | 重跑用了不同的 package run，或 `UNLISTED_TARGETS` 在兩次之間改過 | 用原本的輸入；真的要換內容就走第 8 步的收回 |
 | `verify-manifest` 紅 | 簽章或內容不被 App 的驗證接受 | 第 1 步的失敗說明；沒有東西被上傳 |
 
 ## 7. 資料遷移框架

@@ -3,7 +3,7 @@
 //
 //   bun scripts/yuzora/release.ts plan
 //
-// Reads STAGE, VERSION, PACKAGE_RUN_ID, EXCLUDE_TARGETS and DOWNLOADS_BASE from
+// Reads STAGE, VERSION, PACKAGE_RUN_ID and DOWNLOADS_BASE from
 // the environment (the workflow passes inputs that way, never inside a script),
 // checks them against GitHub (the accepted app-package run, the tag) and
 // against the commit being released, and writes what the later jobs need to
@@ -11,7 +11,7 @@
 // `gh` commands and execute none of this.
 import { spawnSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { REPO, TARGETS, archiveName, checkVersion } from "./manifest";
+import { REPO, TARGETS, archiveName, checkVersion, unlistedTargets } from "./manifest";
 
 export const STAGES = ["dry-run", "draft", "publish", "manifest", "latest"] as const;
 export type Stage = (typeof STAGES)[number];
@@ -27,7 +27,7 @@ export function isPrerelease(version: string) {
   return version.includes("-");
 }
 
-export type Inputs = { stage: Stage; version: string; runId: string; exclude: string[]; downloads: string };
+export type Inputs = { stage: Stage; version: string; runId: string; downloads: string };
 
 export function parseInputs(env: Record<string, string | undefined>): Inputs {
   const stage = (env.STAGE ?? "") as Stage;
@@ -36,15 +36,12 @@ export function parseInputs(env: Record<string, string | undefined>): Inputs {
   const runId = env.PACKAGE_RUN_ID ?? "";
   if (runId !== "" && !/^[1-9][0-9]{0,19}$/.test(runId)) throw new Error(`package run id must be a number: ${runId}`);
   if (runId === "" && stage !== "dry-run") throw new Error(`stage ${stage} needs the app-package run that was accepted`);
-  const exclude = (env.EXCLUDE_TARGETS ?? "").split(",").map((t) => t.trim()).filter(Boolean);
-  for (const target of exclude) if (!TARGETS.includes(target)) throw new Error(`cannot leave out ${target}: not a target Yuzora ships`);
-  if (new Set(exclude).size !== exclude.length) throw new Error("a target is excluded twice");
   let downloads = GITHUB_DOWNLOADS;
   if (stage === "dry-run") {
     downloads = (env.DOWNLOADS_BASE || DEFAULT_LOCAL_DOWNLOADS).replace(/\/+$/, "");
     if (!LOCAL_DOWNLOADS.test(downloads)) throw new Error(`a dry run may only name a server on this machine (http://127.0.0.1:<port>/...): ${downloads}`);
   }
-  return { stage, version, runId, exclude, downloads };
+  return { stage, version, runId, downloads };
 }
 
 /// Why a run cannot be the source of a release, or its commit.
@@ -170,7 +167,7 @@ export function plan(env: Record<string, string | undefined>) {
     run_id: inputs.runId,
     prerelease: String(isPrerelease(version)),
     cargo_version: cargo,
-    exclude: inputs.exclude.join(","),
+    exclude: unlistedTargets(version).join(","),
     downloads: inputs.downloads,
     pub_date: git("show", "-s", "--format=%cI", sha).trim(),
     upload_plan: uploadPlan(version).map(({ src, dest }) => `${src}\t${dest}`).join("\n"),

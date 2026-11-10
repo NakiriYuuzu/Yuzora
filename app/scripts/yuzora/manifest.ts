@@ -32,6 +32,13 @@ export const TAURI_MANIFEST = "latest.json";
 export const REPO = "NakiriYuuzu/Yuzora";
 /// What the app accepts (src/yuzora/release.rs `target()`); the macOS app is Apple Silicon only.
 export const TARGETS = ["macos-aarch64", "windows-x86_64", "linux-x86_64", "linux-aarch64"];
+/// Targets a version's manifest does not offer, by exact version (a version with no row offers every target). The
+/// archive still ships with the release. 0.1.0 leaves Windows out: an installed beta.2 to beta.4 cannot swap itself
+/// to it (#261), so the update prompt would never finish; 0.1.1 has no row. The workflow reads this table twice, to
+/// write the manifest and to check the signed one; nothing typed at a dispatch can change it.
+export const UNLISTED_TARGETS: Record<string, string[]> = {
+  "0.1.0": ["windows-x86_64"],
+};
 export const SCHEMA = 1;
 /// The notes in other languages, by the app's i18n locale, beside changelog.md.
 export const LOCALIZED_NOTES: Record<string, string> = { "zh-TW": "changelog.zh-TW.md" };
@@ -39,6 +46,18 @@ export const LOCALIZED_NOTES: Record<string, string> = { "zh-TW": "changelog.zh-
 export function checkVersion(version: string) {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$/.test(version)) throw new Error(`not a release version: ${version}`);
   return version;
+}
+
+export function unlistedTargets(version: string): string[] {
+  const unlisted = UNLISTED_TARGETS[version] ?? [];
+  for (const target of unlisted) if (!TARGETS.includes(target)) throw new Error(`UNLISTED_TARGETS[${version}]: ${target} is not a target Yuzora ships`);
+  if (new Set(unlisted).size !== unlisted.length) throw new Error(`UNLISTED_TARGETS[${version}] names a target twice`);
+  return unlisted;
+}
+
+export function listedTargets(version: string): string[] {
+  const unlisted = unlistedTargets(version);
+  return TARGETS.filter((t) => !unlisted.includes(t));
 }
 
 export function channelOf(version: string) {
