@@ -362,12 +362,12 @@ export default class GitDiff extends View {
     const ratio = this.ratio(), width = this.rowsWidth ?? 0, reach = this.reach(ratio);
     this.lay = { ratio, width, reach, sx: Math.min(this.scrollX, reach), l: ratio * 100, r: (1 - ratio) * 100 };
     return div().flex_1().min_h(0).relative().overflow_hidden().font_family(mono).text_size(11.5)
-      .child(div().id("diff-rows-box").size_full()
+      .child(div().id("diff-rows-box").size_full().pb(reach > 0 ? BAR : 0)
         .on_size_change((size, cx) => { if (Math.abs(size.width - (this.rowsWidth ?? -1)) > 0.5) { this.rowsWidth = size.width; cx.notify(); } })
         .on_mouse_down("left", (e) => { this.downX = e.local_position?.x ?? null; })
         .on_scroll_wheel((e, cx) => this.wheel(e, cx))
         .child(this.rowList(v, th, d, 0)))
-      .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().inset_0())
+      .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().top(0).left(0).right(0).bottom(reach > 0 ? BAR : 0))
       .child(this.splitter(th))
       .when(reach > 0, (el) => el.child(this.hbar(th)))
       .child(this.probes());
