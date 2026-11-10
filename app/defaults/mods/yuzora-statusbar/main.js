@@ -53,20 +53,29 @@ export default class Statusbar extends View {
   init(_props, cx) {
     this.git = {}; // JSON [machine, cwd] -> gitStatus() (null: not a repo)
     this.asked = {}; // the same key -> when it was last asked
+    this.asking = new Set(); // the keys being asked now
     cx.timer.every(2000, (cx) => this.refresh(cx));
   }
 
-  // The focused pane's folder: asked when it changes, then every 15 s while the window is in front.
+  // The focused pane's folder: asked in the frame it is first drawn in (render), then every 15 s while
+  // the window is in front.
   refresh(cx) {
     const key = this.key();
-    if (!key || this.busy) return;
+    if (!key) return;
     if (key in this.git && (!window()?.active || Date.now() - (this.asked[key] ?? 0) < 15000)) return;
+    this.ask(cx, key);
+  }
+
+  // One ask at a time for a folder, but not one at a time for all: a slow answer for the folder the focus
+  // left does not hold up the one it moved to.
+  ask(cx, key) {
+    if (this.asking.has(key)) return;
+    this.asking.add(key);
     this.asked[key] = Date.now();
-    this.busy = true;
     const [on, cwd] = JSON.parse(key);
     cx.spawn(async (cx) => {
       try { this.git[key] = await gitStatus(cwd, { on }); } catch { this.git[key] ??= null; }
-      this.busy = false;
+      this.asking.delete(key);
       cx.notify();
     });
   }
@@ -91,7 +100,7 @@ export default class Statusbar extends View {
     return JSON.stringify([machine, f.cwd]);
   }
 
-  render() {
+  render(cx) {
     const th = theme(), tk = tokens();
     const sp = spaces(), list = agents(), ps = panes(), badges = badgesOf(sp);
     const waiting = list.filter((a) => a.status === "blocked");
@@ -99,6 +108,7 @@ export default class Statusbar extends View {
     const f = focused();
     const space = sp.find((s) => s.id === f?.space);
     const key = this.key();
+    if (key && !(key in this.git)) this.ask(cx, key);
     const git = key ? this.git[key] : null;
     const shown = f?.pane ? ps.find((p) => p.pane === f.pane) : ps.find((p) => f?.terminal && p.terminal === f.terminal);
     const branch = git?.branch ?? shown?.branch ?? null;
