@@ -1145,6 +1145,8 @@ fn yuzora_diff_long_lines_with_wide_characters_open_and_keep_drawing(cx: &mut Te
         ("4,000,000 characters and an \u{e9}".into(), json!([text_row(None, Some(&format!("{}\u{e9}", "a".repeat(4_000_000))))])),
         ("4,000,000 wide characters".into(), json!([text_row(Some(&"\u{6f22}".repeat(4_000_000)), None)])),
         ("100 lines of 60,000 wide characters".into(), Value::Array((0..100).map(|_| text_row(Some(&"\u{6f22}".repeat(60_000)), None)).collect())),
+        ("100,000 short lines".into(), Value::Array((0..100_000).map(|i| json!({"k": "~", "h": 0, "r": i + 1, "ri": i, "rt": format!("line {i} of text {}", "x".repeat(i % 60))})).collect())),
+        ("10,000 lines of a whole file in context".into(), Value::Array((0..10_000).map(|i| json!({"k": "=", "l": i + 1, "r": i + 1, "t": format!("{}{}", "a".repeat(30), "b".repeat(i % 40))})).collect())),
         ("3,000 lines with wide characters".into(), Value::Array((0..3000).map(|i| text_row(Some(&format!("{} \u{6f22}\u{5b57} {i}", "word ".repeat(8 + i % 24))), Some(&format!("{} \u{1f600}", "word ".repeat(10 + i % 20))))).collect())),
     ];
     for file in ["docs/html/v0.0.16-workbench-verification-2026-09-22.html", "patches/@xterm%2Fxterm@6.0.0.patch", "docs/html/assets/herdr-e2e-20260923/native-transcripts.json"] {
@@ -1207,6 +1209,21 @@ fn yuzora_diff_an_ordinary_diff_scrolls_to_where_its_longest_line_ends(cx: &mut 
     let end = text_start(&mut pane, "a") + pane.text_width("a");
     let cell = pane.width("l");
     assert!((cell - 30. ..=cell).contains(&end), "scrolled as far as it goes, the longest line ends at {end}, its cell at {cell}");
+    pane.close();
+}
+
+// yuzora(v010): a whole file in context (every row unchanged, the same line on both sides) is read once for both and
+// measured in its first frame, up to where the budget for reading a diff runs out, and so scrolls to where its longest
+// line ends: 10,000 lines of up to 160 characters, the pane holding about 80 of them.
+#[gpui::test]
+fn yuzora_diff_a_whole_file_in_context_is_measured_in_its_first_frame(cx: &mut TestAppContext) {
+    let rows = Value::Array((0..10_000).map(|i| json!({"k": "=", "l": i + 1, "r": i + 1, "t": format!("{}{}", "a".repeat(30), "b".repeat(130 - i % 131))})).collect());
+    let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
+    assert!(pane.asked_frames() <= 2, "{} frames asked for lines to be laid out", pane.asked_frames());
+    pane.wheel(100., 100., -100000., 0.);
+    let end = text_start(&mut pane, "a") + pane.text_width("a");
+    let cell = pane.width("l");
+    assert!((cell - left_after_the_end() - 1.5 ..=cell - left_after_the_end() + 1.5).contains(&end), "scrolled as far as it goes, the widest line ends at {end}, its cell at {cell}");
     pane.close();
 }
 

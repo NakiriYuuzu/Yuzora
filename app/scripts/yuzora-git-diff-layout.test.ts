@@ -24,14 +24,13 @@ type Pane = {
   span(name: string): number;
 };
 const zoomed = { zoom: 1 };
-const { ratioOf, bound, rank, ranks, entry, cost, GitDiff, LINE, LAYOUT, WORST, HALF, FRAME, MEASURE, LOOK } = (() => {
+const { ratioOf, bound, ranks, entry, cost, GitDiff, LINE, LAYOUT, WORST, HALF, FRAME, MEASURE, LOOK } = (() => {
   const body = src.replace(/^import [\s\S]*?;\n/gm, "").replace("export default class GitDiff", "class GitDiff");
-  return new Function("View", "settings", `${body}; return { ratioOf, bound, rank, ranks, entry, cost, GitDiff, LINE, LAYOUT, WORST, HALF, FRAME, MEASURE, LOOK };`)(class {}, () => zoomed);
+  return new Function("View", "settings", `${body}; return { ratioOf, bound, ranks, entry, cost, GitDiff, LINE, LAYOUT, WORST, HALF, FRAME, MEASURE, LOOK };`)(class {}, () => zoomed);
 })() as {
   ratioOf: (v: unknown) => number;
   bound: (text: string, meter: { left: number }) => number;
-  rank: (rows: object[], side: "l" | "r", meter: { left: number }) => Rank;
-  ranks: (rows: object[]) => { l: Rank; r: Rank };
+  ranks: (rows: object[], meter?: { left: number }) => { l: Rank; r: Rank };
   entry: (rank: Rank, at: number) => { cells: number; r: Record<string, unknown> };
   cost: (chars: number, pieces: number) => number;
   GitDiff: { prototype: object };
@@ -85,7 +84,7 @@ const row = (lt?: string, rt?: string, pieces?: string[]) => ({
 });
 // The texts of a side in the order they are laid out in: widest first by what they can take at most.
 const order = (rows: object[], side: "l" | "r" = "l") => {
-  const r = rank(rows, side, plenty());
+  const r = ranks(rows, plenty())[side];
   return Array.from({ length: r.keys.length }, (_, i) => entry(r, r.keys.length - 1 - i));
 };
 const texts = (rows: object[], side: "l" | "r" = "l") => order(rows, side).map((e) => e.r[`${side}t`] ?? e.r.t);
@@ -105,6 +104,19 @@ test("a line drawn in pieces may take half a cell more for each piece after the 
   const [piecewise] = order([row(one, "b", pieces)]);
   expect(plain.cells).toBe(100);
   expect(piecewise.cells).toBe(100 + HALF * (pieces.length - 1));
+});
+
+test("a bound is a whole number of quarters of a cell, which is how it is kept in the order", () => {
+  const rows = [row("é".repeat(3), "b"), row("a漢\u{1f600}\u26a1é", "b", ["a", "漢", "\u{1f600}", "\u26a1é"]), row("x".repeat(7), "y", ["x", "x".repeat(6)])];
+  for (const e of [...order(rows), ...order(rows, "r")]) expect(Number.isInteger(e.cells * 4)).toBe(true);
+});
+
+test("a line that is the same on both sides, in an unchanged row, is read once", () => {
+  const same = Array.from({ length: 1000 }, (_, i) => ({ k: "=", t: `${"é".repeat(20)} ${i}` }));
+  const apart = same.map((r) => row(r.t, `${r.t} `));
+  const once = reading(() => ranks(same)).read, twice = reading(() => ranks(apart)).read;
+  expect(once).toBeLessThan(twice * 0.6);
+  expect(order(same, "r").map((e) => e.cells)).toEqual(order(same, "l").map((e) => e.cells));
 });
 
 test("an unchanged row counts on both sides, a side that has no line counts on none", () => {

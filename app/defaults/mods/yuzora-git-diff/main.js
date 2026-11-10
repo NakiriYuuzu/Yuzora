@@ -452,11 +452,11 @@ export default class GitDiff extends View {
   // The next lines of a side to lay out, widest first by what each can take at most, as many as a frame lays out,
   // and where they start in the order. Lines that cannot be laid out are passed over, and kept in `blind`.
   batch(name) {
-    const g = this.gauge[name], rank = this.fit[name], { text, texts } = SIDES[name], lines = [];
+    const g = this.gauge[name], rank = this.fit[name], { text, pieces } = SIDES[name], lines = [];
     let used = 0;
     for (let at = g.left; at >= 0 && g.spent + used < MEASURE && lines.length < GROW ** g.rounds; at--) {
-      const { cells, r } = entry(rank, at), long = text(r).length, pieces = texts(r), price = cost(long, pieces);
-      if (long > LAYOUT || pieces > TEXTS) {
+      const { cells, r } = entry(rank, at), long = (r[text] ?? r.t).length, cut = r[pieces]?.length || 1, price = cost(long, cut);
+      if (long > LAYOUT || cut > TEXTS) {
         if (lines.length) break;
         g.blind = Math.max(g.blind, cells);
         g.left = at - 1;
@@ -666,10 +666,11 @@ function bound(s, meter) {
   return cells;
 }
 
-// What of a row each side's line is: its text, and the pieces it is drawn in (one text if none are).
+// Where in a row each side's line is: its text (an unchanged row has one, `t`, for both), and the pieces it is drawn in
+// (one text if there are none).
 const SIDES = {
-  l: { text: (r) => r.lt ?? r.t, texts: (r) => r.ls?.length || 1 },
-  r: { text: (r) => r.rt ?? r.t, texts: (r) => r.rs?.length || 1 },
+  l: { text: "lt", pieces: "ls" },
+  r: { text: "rt", pieces: "rs" },
 };
 
 // What laying out a line costs, in the characters it has and the texts it is drawn in.
@@ -679,34 +680,49 @@ function cost(chars, pieces) {
 
 // Every line of a side, widest first by what it can take at most, in cells: [`bound`] of its text, and what its pieces
 // may be rounded up by. A line is read in full if it can beat the few widest read so far, else it is taken at three
-// cells a character. The order is a sort of numbers (a bound in quarter cells above, the row below, in one number),
+// cells a character. The order is a sort of numbers (a bound in quarters of a cell above, the row below, in one number),
 // so what a frame goes through of it is the few lines it takes off the end, and nothing depends on how many rows
 // there are. How wide the lines are is found by laying them out in that order: what the table of cells says is
-// wrong costs lines to lay out, not the range.
-function rank(rows, side, meter) {
-  const { text, texts } = SIDES[side];
-  const base = 2 ** Math.ceil(Math.log2(rows.length + 1)), keys = new Float64Array(rows.length), few = [];
-  let n = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i], s = text(r);
-    if (!s) continue;
-    const slack = HALF * (texts(r) - 1);
-    let cells = WORST * s.length + slack;
-    if (few.length < FEW || cells > few[FEW - 1]) {
-      cells = bound(s, meter) + slack;
-      few.push(cells);
-      few.sort((a, b) => b - a);
-      if (few.length > FEW) few.pop();
+// wrong costs lines to lay out, not the range. Both sides go by in one pass over the rows, and a line that is the same
+// on both (an unchanged row) is read once.
+function ranks(rows, meter = { left: LOOK }) {
+  const count = rows.length, base = 2 ** Math.ceil(Math.log2(count + 1));
+  const l = { keys: new Float64Array(count), few: [], floor: -1 }, r = { keys: new Float64Array(count), few: [], floor: -1 };
+  let ln = 0, rn = 0, lfloor = -1, rfloor = -1;
+  for (let i = 0; i < count; i++) {
+    const row = rows[i], t = row.t, lt = row.lt ?? t, rt = row.rt ?? t;
+    let same = 0;
+    if (lt) {
+      const cut = row.ls?.length;
+      let cells = WORST * lt.length + (cut > 1 ? HALF * (cut - 1) : 0);
+      if (cells > lfloor) { cells = read(l, lt, cut, meter); lfloor = l.floor; }
+      l.keys[ln++] = cells * 4 * base + i;
+      if (rt === lt && !row.ls && !row.rs) same = cells;
     }
-    keys[n++] = Math.ceil(cells * 4) * base + i;
+    if (rt) {
+      const cut = row.rs?.length;
+      let cells = same || WORST * rt.length + (cut > 1 ? HALF * (cut - 1) : 0);
+      if (same) { if (cells > rfloor) { keep(r, cells); rfloor = r.floor; } }
+      else if (cells > rfloor) { cells = read(r, rt, cut, meter); rfloor = r.floor; }
+      r.keys[rn++] = cells * 4 * base + i;
+    }
   }
-  return { keys: keys.subarray(0, n).sort(), base, rows };
+  return { l: { keys: l.keys.subarray(0, ln).sort(), base, rows }, r: { keys: r.keys.subarray(0, rn).sort(), base, rows } };
 }
 
-// The ranks of both sides of a diff's rows. They share what may be read.
-function ranks(rows) {
-  const meter = { left: LOOK };
-  return { l: rank(rows, "l", meter), r: rank(rows, "r", meter) };
+// A line read in full: its bound.
+function read(side, text, cut, meter) {
+  const cells = bound(text, meter) + (cut > 1 ? HALF * (cut - 1) : 0);
+  keep(side, cells);
+  return cells;
+}
+
+// The few widest bounds a side has read, which a line has to beat to be read.
+function keep(side, cells) {
+  side.few.push(cells);
+  side.few.sort((a, b) => b - a);
+  if (side.few.length > FEW) side.few.pop();
+  if (side.few.length === FEW) side.floor = side.few[FEW - 1];
 }
 
 // The line at a place in a rank: its row, and the most it can take, in cells.
