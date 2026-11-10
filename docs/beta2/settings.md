@@ -8,7 +8,7 @@
 | 項目 | 位置 | 狀態 |
 | --- | --- | --- |
 | 設定框架接上 Yuzora（品牌、隱私、「Yuzora」分組） | `app/defaults/frame/settings/yuzora.js`（新檔）＋ `main.js` 帶 `// yuzora(L6):` 的改動 | 完成 |
-| `general` 設定頁：外觀（主題、字型、字級、縮放）、啟動行為、終端機剪貼簿 | `yuzora-settings-general` | 完成；「啟動」區塊要等 L1 套用並設 `yuzora.startup.honored` 才顯示（見後續整合） |
+| `general` 設定頁：外觀（主題、字型、字級、縮放）、啟動行為、終端機剪貼簿 | `yuzora-settings-general` | 完成；「啟動」區塊（右側 dock 的開啟模式）在 dock 的 bar 或抽屜套用後設 `yuzora.startup.honored` 才顯示（beta.4 PR-4 已串接） |
 | Template 管理：各 machine 列出、表單＋body 編輯、存前驗證、移到垃圾桶 | `yuzora-settings-templates`、`yuzora-settings` 的 `templates`／`trash` | 完成 |
 | 以模板啟動 agent（選 Space／tab、輸入任務、`hc run` 帶 label） | `yuzora-settings-launch`、`yuzora-settings` 的 `launch` | 完成；「＋」選單入口由 L1 串接 |
 | MOD 管理：mods／layouts 清單、clone、開資料夾、check、還原內建、切換 layout、從資料夾安裝（含信任警告） | `yuzora-settings-mods`、`yuzora-settings` 的 `mods` | 完成；「以編輯器開啟」與 mod 立即還原需整合（見後續整合） |
@@ -55,7 +55,7 @@
 ```json
 {
   "general": {
-    "startup": { "sidebar": "last" }
+    "startup": { "dock": "last" }
   }
 }
 ```
@@ -63,7 +63,9 @@
 | key | 值 | 誰套用 |
 | --- | --- | --- |
 | `locale`（已移除） | 舊版存的 `system`／`en`／`zh-TW` | 不再讀取：介面只有英文，檔案裡留著也照常啟動 |
-| `startup.sidebar` | `last`（預設）／`workspace`／`files`／`git`／`database`／`ssh` | L1 的模式列在視窗開啟時呼叫 `yuzora:settings` 的 `startup()`，拿到 `yuzora-sidebar-<mode>` 就 `layout.select`（尚未串接；串接前一般頁不顯示這個設定） |
+| `startup.dock` | `last`（預設，維持離開時的樣子）／`none`（收起）／`files`／`git`／`database`／`ssh`（沒有 workspace：工作區模式不在 dock，Q6） | `yuzora-modebar` 的第一個 bar 或抽屜在每次啟動時呼叫 `yuzora:settings` 的 `startup()` 套用一次：bar 對 `panel-body` `layout.select` 該模式並顯示 panel（`none` 時 `layout.hide`），抽屜開該模式的 window；成功套用後設 `yuzora.startup.applied`（本次 `session()`）與 `yuzora.startup.honored`。舊的 `startup.sidebar` 不再讀 |
+
+同一個檔案另有 `shell` section（L1 的 dock 擁有、設定 › Mods 的 Layouts 頁寫入）：`{"shell": {"dock": {"layouts": {"<layout 名稱>": "auto"｜"drawer"｜"off"}}}}`，個人對每個 layout 的右側 dock 選擇，優先於 layout 檔的 `yuzora.dock`（見 shell.md「個人 dock 開關」）。
 
 外觀與剪貼簿寫的是 Herdr 自己的 `settings.json`，寫法與上游 frame 相同（讀 → 改 → 只在沒人改過時寫回）：`appearance`、`font`、`ui_font`、`font_size`、`clipboard_write`；主題用 `app.theme`、縮放用 `app.zoom_*`。主題與字型本身由 L1 提供，L6 只負責挑選 UI。
 
@@ -136,6 +138,7 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 - 錯誤：`herdr-app status`（以 app 自己的執行檔跑 `status`，繼承 app 的環境，所以隔離環境下也查得到同一個視窗），取 `mod <name>: …` 開頭的行。
 - check：`<app> check <home>/mods/<name>`（90 秒）。在 app home 內的 mod 上跑 check 是 AGENTS.md 的標準做法；它寫入的 helper 檔不會讓 shipped mod 變成 edited。
 - clone：`mod.clone {name, as}`／`layout.clone {name, as}`（layout clone 會直接切換過去）。
+- 右側 dock 開關（beta.4 PR-4）：Layouts 頁每一列有「Yuzora dock」的 Auto／Drawer／Off 三段切換（頁面是 Yuzora 自己的 `yuzora-settings-mods`，由上游 frame 的 nav 以 layout overlay 承載，不改上游 mod）。選擇寫進 `shell.dock.layouts.<name>`（`getSetting`／`setSetting("shell")`），目前顯示的 layout 接著 `layout.switch {name}` 立即生效，其他 layout 只存設定；未設定時顯示 layout 檔自己的 `yuzora.dock`（`listMods()` 的 layout 的 `dock` 欄位），沒有就是 Auto。
 - 還原內建：layout 用 `layout.reset {name}`。mod 沒有對應指令：`yuzora_settings::mods::reset_mod` 先把 edited 的資料夾移到 `<name>-edited`（與啟動時相同），再寫回 shipped 檔案。它需要 app 交出內嵌的 shipped 檔案（`set_shipped_mods(crate::mods::DEFAULT_MODS)`），目前尚未串接（見後續整合），所以 UI 只說明「下次啟動會還原」，不顯示按鈕。
 - 從資料夾安裝：`pickFolder` → `planInstall`（只讀）→ 顯示「mods 是受信任的程式碼」警告、會裝成什麼名稱、程式碼會不會執行程式／連網／讀寫檔案（字串掃描，只是提示）、有沒有 `keys.json` → 使用者按「我信任它，安裝」→ `installFolder(plan.token)`。
   - 裝的就是看過的：`planInstall` 讀進來的檔案（已改寫名稱）留在 Rust（只留最新一份），`installFolder` 只寫這一份，不再讀資料夾；token 不符（例如另一個視窗又規劃了一次）回 `stale`，要重新選。
@@ -161,12 +164,12 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 | `appStatus()`、`checkMod(name)` | 視窗 status、`check`（async） |
 | `planInstall(path)`、`installFolder(plan.token)` | 安裝計畫、安裝那份計畫讀到的檔案（async） |
 | `reveal(path)` | 在檔案管理員顯示 |
-| `startup()` | `general.startup` 要求的側欄模式 |
+| `startup()` | `general.startup.dock` 要求的右側 dock 模式（`{dock: "git"｜"none"｜null}`，null 是維持原樣） |
 | `session()` | 本次啟動的識別值（給存在 `shared` 但重啟後就沒意義的值用，例如 overlay id） |
 
 ## 後續整合（需要其他 lane 或總指揮）
 
-1. **L1 模式列套用啟動側欄**：模式列 init 時 `const s = startup().sidebar; if (s) run("layout.select", {stack: "yuzora-sidebar", child: s})`，每次 app 啟動只做一次（可用 `session()` 記本次啟動），並 `setShared("yuzora.startup.honored", true)`。一般頁要看到這個旗標才顯示「啟動」區塊，避免出現一個沒有作用的設定。
+1. **（已完成，beta.4 PR-4）L1 模式列套用啟動模式**——原計畫如下，實際做法見上表 `startup.dock`：模式列 init 時 `const s = startup().sidebar; if (s) run("layout.select", {stack: "yuzora-sidebar", child: s})`，每次 app 啟動只做一次（可用 `session()` 記本次啟動），並 `setShared("yuzora.startup.honored", true)`。一般頁要看到這個旗標才顯示「啟動」區塊，避免出現一個沒有作用的設定。
 2. **L1「＋」選單／側欄「新增」加「從模板啟動」**：`openOverlay({mod: "yuzora-settings-launch", kind: "dialog", width: 560, props: {space, tab}})`，或不帶 props 用 `run("mod.open", {name: "yuzora-settings-launch"})`（預設目前的 space 與 tab）。
 3. **L5 編輯器**：MOD 頁已預留「編輯」按鈕：偵測到 `yuzora:core` `panes()` 裡有 `yuzora-editor` 或 `yuzora-editor-*` 時，以 `tab.new {mod, props: {path}}` 開 `main.js`。L5 定案 props 介面後請對齊（`path` 是假設）。
 4. **mod 立即還原**（總指揮）：新增 `app/src/yuzora/settings.rs`：`pub fn init() { yuzora_settings::mods::set_shipped_mods(crate::mods::DEFAULT_MODS); }`，在 `mod.rs` 加 `mod settings;` 並在 `init_once()` 呼叫 `settings::init()`。lanes.md 只允許 lane 加 `mod <lane>;` 那一行，所以留給總指揮決定；串上之後 MOD 頁的「還原」按鈕就會出現。

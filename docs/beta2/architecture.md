@@ -17,6 +17,7 @@ beta.2 改以 [herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)（Rust
 
 - 指令：`git subtree add --prefix=app https://github.com/herdrdev/herdr-app.git master --squash`。
 - 上游 commit：`9c678b0fc84625b57ba7be4f56319802ee366765`（herdr-app v0.1.12 之後的 master）。squash commit `32fd5c6f`、merge commit `b486feb0` 帶有 `git-subtree-dir: app`／`git-subtree-split` metadata。
+- 最近一次同步（beta.4）：上游正式 tag **v0.1.14**（`2405bf38`，`distribution/core-version` 仍是 0.1.11、`hc::GENERATION` 仍是 1）。squash commit `f33087e0`、merge commit `15b4426d`。之前停在 `f6fe216e`（v0.1.12 之後）。
 - ghostty 是上游的 submodule。subtree 只帶進 gitlink（`app/vendor/ghostty` → `291fd050b9e9c293c8adb6a140742649b7e42d3a`），所以 root `.gitmodules` 另外登記同一個 URL：
 
   ```bash
@@ -137,9 +138,9 @@ mod 在自己的 `mod.json` 宣告，不需要任何人去改共用清單：
 ### D11. 預設 layout 與佔位 mods
 
 - 新安裝的預設 layout 是 `app/defaults/layouts/yuzora.json`（`DEFAULT_LAYOUT`）。已經有 layout 的 app home 不受影響。
-  - 左側 248px 側欄由上而下是 `yuzora-brand`、`stack` `yuzora-sidebar`（5 個模式 block：`yuzora-sidebar-workspace`／`files`／`git`／`database`／`ssh`）、`yuzora-modebar`（44px，以 `layout.select {stack: "yuzora-sidebar", child}` 切換，最右是設定齒輪 `app.settings`）。
-  - 右側由上而下是 tab 列（上游 `tabs` mod）、主區 `{tab: "active"}`（pane 間距 6、圓角 6、標頭 28）、`yuzora-statusbar`（26px）。
-  - 另有一個隱藏的 `panel` 欄（files／changes），保留給上游 tabs、welcome 會用到的指令。
+  - 左側 248px（`min 44`）側欄由上而下是上游的 `workspace-chrome`（40px 頂列，Herdr 圖示與搜尋）、`spaces`＋`agents`、`workspace-chrome` footer（Settings、Add machine）（beta.4 起；beta.3 以前是 `yuzora-brand`、`yuzora-sidebar` stack 與 `yuzora-modebar`，現為 legacy）。
+  - 中間由上而下是 tab 列（`yuzora-shell-tabs`）、主區 `{tab: "active"}`（pane 間距 6、圓角 6、標頭 28）、`yuzora-statusbar`（26px）。
+  - 右側是隱藏的 `panel` 欄（files／changes）；Yuzora 的四個模式（files／git／database／ssh）與它右邊的 40px 模式列由 `src/yuzora/dock.rs` 注入，不寫進 layout 檔。沒有 `panel` 的 layout 改用右緣的抽屜。個人可以在設定 › Mods › Layouts 對每個 layout 選 Auto／Drawer／Off（`settings.json` 的 `shell.dock.layouts`），優先於 layout 檔的 `yuzora.dock`；預設快捷鍵 `cmd-alt-b`／`ctrl-alt-b` 開關（見 [shell.md](shell.md)）。
 - 佔位 mods 只顯示 i18n 標題與「由 Lx lane 實作」。全部都能通過 `herdr-app check`（`app/scripts/yuzora/check-mods`）。
 
 ### D12. 遠端策略
@@ -180,9 +181,9 @@ git submodule update --init app/vendor/ghostty
 2. `app/CHANGELOG.md`：上游新版本會加在最上面，但 `update_notes` 測試要求第一筆版本等於 `CARGO_PKG_VERSION`。保持 Yuzora 的 `0.1.0-beta.2` 那筆在最上面。
 3. `app/.gitmodules` 與 root `.gitmodules` 的 ghostty URL 一致。
 4. `app/Cargo.lock` 有變動時，重產 `app/THIRD-PARTY-NOTICES`（見 lanes.md）。
-5. 跑完整的 app 測試與 `scripts/yuzora/check-mods`。上游新增的 telemetry、feedback、更新等外連端點要補上 D3 的開關。
+5. 跑完整的 app 測試（`cargo test --locked`、`bun test scripts`，後者含守護 L2c 信任閘門的 `yuzora-trust-mods.test.ts`）與 `scripts/yuzora/check-mods`。上游新增的 telemetry、feedback、更新等外連端點要補上 D3 的開關。
 
-subtree pull commit 之後執行 `app/scripts/yuzora/sync-check`，會依序做上面五項，並擋下只用 `HERDR_APP_HOME` 隔離的測試。加 `--quick` 不跑 cargo test 與 check-mods。說明見 [herdr-compat.md](herdr-compat.md) C2。
+subtree pull commit 之後執行 `app/scripts/yuzora/sync-check`，會依序做上面五項，並擋下只用 `HERDR_APP_HOME` 隔離的測試。加 `--quick` 不跑 cargo test 與 check-mods（bun 測試只要約 2 秒，仍會跑）。說明見 [herdr-compat.md](herdr-compat.md) C2。
 
 ## 合併規則
 

@@ -71,6 +71,10 @@ impl AppWindow {
     /// The windows a layout keeps, reopened (at start, or on switching to it).
     pub(super) fn open_kept_windows(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for spec in kept(&self.layout_name) {
+            if crate::yuzora::dock::stale_window(&spec, &self.chrome) {
+                forget(&self.layout_name, crate::yuzora::dock::PREFIX); // yuzora(dock): the drawer is gone (the person chose off or auto): its window stays closed
+                continue;
+            }
             self.open_overlay(mods::new_overlay_id(), spec, window, cx);
         }
     }

@@ -22,6 +22,8 @@ export default class Tabs extends View {
   syncPanel(space, panel, body, enabled) {
     if (!space || !panel) return;
     const now = panel.hidden ? null : body?.active ?? null;
+    // yuzora(dock): Yuzora's dock modes stay shown across Space switches (the old sidebar's way); only Files/Changes are per Space.
+    if (typeof now === "string" && now.startsWith("yuzora-dock-")) { this.space = space.id; this.pending = null; return; }
     if (space.id !== this.space) {
       const first = this.space === undefined;
       this.space = space.id; this.pending = null;

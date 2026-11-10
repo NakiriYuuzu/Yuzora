@@ -19,10 +19,28 @@ const SPLIT = "yuzora.shell.split"; // "right" | "down": where the new-pane menu
 
 // Spaces' badges (initial and kept color). The colors live in shared state; a Space seen the
 // first time gets one and it's written back, so every mod and every restart agree.
-const COLORS = "yuzora.space.colors";
+const COLORS = "yuzora.space.colors", SPACE_COLORS = "space.colors";
+
+// Herdr's own Space colors follow Yuzora's: the same as `syncSpaceColors` in yuzora-modebar (keep the two alike; a
+// mod imports only its own folder). The modebar is not drawn when the dock is off, and this bar always is in the
+// yuzora layout, so the left side's `spaces` mod would stay on theme color names ("ansi6") without it. A Space whose
+// Herdr color is already a hex (a pick in its UI) keeps it; a name is replaced, as `spaces` and `picker` fill one in on every render.
+function syncSpaceColors() {
+  const mine = shared(COLORS);
+  if (!mine || typeof mine !== "object") return;
+  const theirs = shared(SPACE_COLORS) ?? {};
+  const ids = new Set(spaces().map((s) => s.id));
+  let next = null;
+  for (const [id, hex] of Object.entries(mine)) {
+    if (ids.has(id) && typeof hex === "string" && hex.startsWith("#") && !String(theirs[id] ?? "").startsWith("#")) (next ??= { ...theirs })[id] = hex;
+  }
+  if (next) setShared(SPACE_COLORS, next);
+}
+
 function badgesOf(list) {
   const r = spaceBadges(list.map((s) => ({ id: s.id, name: s.name })), shared(COLORS));
   if (r.changed) setShared(COLORS, r.kept);
+  syncSpaceColors();
   return r.badges;
 }
 
@@ -181,9 +199,12 @@ export default class Tabs extends View {
 
   // The side panel (Files / Changes) is remembered per Space, as Herdr's tab bar does:
   // switching shows that Space's choice (closed if it never had one), opening or closing records it.
+  // Yuzora's dock modes are the exception: they stay shown across Spaces.
   syncPanel(space, panel, body, enabled) {
     if (!space || !panel) return;
     const now = panel.hidden ? null : body?.active ?? null;
+    // yuzora(dock): Yuzora's dock modes stay shown across Space switches (the old sidebar's way); only Files/Changes are per Space.
+    if (typeof now === "string" && now.startsWith("yuzora-dock-")) { this.space = space.id; this.pending = null; return; }
     if (space.id !== this.space) {
       const first = this.space === undefined;
       this.space = space.id;

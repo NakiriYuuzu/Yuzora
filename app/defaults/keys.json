@@ -46,6 +46,7 @@
     "ctrl-shift-/": "app.help",
     "ctrl-shift-?": "app.help",
     "ctrl-shift-b": "layout.toggle:sidebar",
+    "ctrl-alt-b": "yuzora-modebar.toggle",
     "ctrl-shift-n": "space.new",
     "ctrl-shift-t": "tab.new",
     "ctrl-shift-k": "mod.open:picker",
@@ -65,6 +66,7 @@
     "ctrl-right": "send:\u001bf",
     "ctrl-shift-c": "terminal.copy",
     "ctrl-shift-v": "terminal.paste",
+    "ctrl-shift-f": "terminal.search",
     "ctrl-v": "terminal.paste_image",
     "ctrl-insert": "terminal.copy",
     "shift-insert": "terminal.paste"

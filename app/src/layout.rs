@@ -381,6 +381,9 @@ pub struct Node {
     /// Dragging this node moves the window; a double-click maximizes it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub window_drag: bool,
+    // yuzora(dock): root only, `{"dock": "auto" | "drawer" | "off"}` (src/yuzora/dock.rs); kept so a rewrite of the file doesn't drop it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yuzora: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -418,6 +421,7 @@ impl Node {
             preview: None,
             terminal_menu: None,
             window_drag: false,
+            yuzora: None, // yuzora(dock)
         }
     }
 
@@ -570,6 +574,11 @@ impl Node {
         let removed = remove_inner(self, id)?;
         collapse(self);
         Some(removed)
+    }
+
+    /// Removes a composition slot without simplifying the authored layout.
+    pub fn remove_slot(&mut self, id: &str) -> Option<Node> {
+        remove_inner(self, id)
     }
 
     /// Puts `new` beside `target` along `axis` (after it). Reuses the parent
@@ -855,6 +864,18 @@ mod tests {
         let mut root = Node::container("ctx", Axis::Row, vec![term("x"), term("y")]);
         root.remove("y");
         assert_eq!((root.id.as_str(), root.children().len()), ("ctx", 1));
+    }
+
+    #[test]
+    fn removing_a_composition_slot_keeps_authored_containers() {
+        let mut panel = Node::container("panel", Axis::Column, vec![term("panel-body")]);
+        panel.hidden = true;
+        panel.size = Some(Size::Px { px: 368.0 });
+        let mut root = Node::container("work-body", Axis::Row, vec![term("coordinator"), term("main"), panel.clone()]);
+        assert!(root.remove_slot("coordinator").is_some());
+        assert!(root.find("coordinator").is_none());
+        assert_eq!(root.find("panel"), Some(&panel));
+        assert!(root.remove_slot("missing").is_none());
     }
 
     #[test]

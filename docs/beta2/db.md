@@ -1,6 +1,8 @@
 # L3 資料庫
 
-beta.2 的資料庫功能：連線管理、側欄 schema 樹、資料表 pane（資料／結構／SQL）、SQL 查詢 pane、儲存格編輯與寫回。原生層是 `app/crates/yuzora-db`（JS 模組 `yuzora:db`），畫面是四個 JS mod。架構總則見 [architecture.md](architecture.md)，lane 規則見 [lanes.md](lanes.md)。
+> beta.4 起，Files／Git／Database／SSH 是右側 dock 的模式（`panel` 右邊的模式列，沒有 panel 的 layout 是抽屜），不再是左側欄。本文原稱「側欄」「側欄模式」的地方已改稱「右側模式」；截圖與 beta.2／3 時期的設計描述（例如圖中的左側欄）未重寫。
+
+beta.2 的資料庫功能：連線管理、右側模式 schema 樹、資料表 pane（資料／結構／SQL）、SQL 查詢 pane、儲存格編輯與寫回。原生層是 `app/crates/yuzora-db`（JS 模組 `yuzora:db`），畫面是四個 JS mod。架構總則見 [architecture.md](architecture.md)，lane 規則見 [lanes.md](lanes.md)。
 
 ## 分層
 
@@ -12,7 +14,7 @@ beta.2 的資料庫功能：連線管理、側欄 schema 樹、資料表 pane（
 | 原生元件 | `src/grid.rs`、`src/editor.rs` | `DataGrid`（GPUI `uniform_list`）、`SqlEditor`（gpui-base Editor＋SQL 上色） |
 | 設定與憑證 | `src/config.rs`、`src/history.rs` | Yuzora settings 的 `db` section、keyring namespace `db`、查詢歷史 |
 | 執行環境 | `src/runtime.rs` | crate 自己的 tokio runtime（2 個 worker）；HostModule 的 async 函式把工作丟過去，用 oneshot 拿結果 |
-| mods | `app/defaults/mods/yuzora-sidebar-database`、`yuzora-db-connection`、`yuzora-db-table`、`yuzora-db-query` | 側欄、連線對話框、資料表 pane、SQL pane |
+| mods | `app/defaults/mods/yuzora-sidebar-database`、`yuzora-db-connection`、`yuzora-db-table`、`yuzora-db-query` | 右側模式、連線對話框、資料表 pane、SQL pane |
 
 gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。tokio-postgres、tiberius 都需要 tokio reactor，所以 crate 自帶 runtime，`runtime::run` 把 future 丟過去，回傳一個 `Send` 的 future 給 HostModule。
 
@@ -41,11 +43,11 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 
 | key | 寫入者 | 內容 |
 | --- | --- | --- |
-| `yuzora.status.db` | 側欄 | `{text, tone}`，例如 `PostgreSQL 16 · local-pg`；連線中 `working`、失敗 `blocked` |
-| `yuzora.badge.database` | 側欄 | 已連線的連線數，沒有時 `null` |
-| `yuzora.db.active` | 側欄 | 側欄正在看的 `{connection, database}` |
-| `yuzora.db.open` | 側欄 | `{key, target, seq}`：要求某個資料表 pane 換表 |
-| `yuzora.db.tabPanes` | 資料表 pane | `{tab: key}`：每個 tab 的資料表 pane（側欄點表時重用） |
+| `yuzora.status.db` | 右側模式 | `{text, tone}`，例如 `PostgreSQL 16 · local-pg`；連線中 `working`、失敗 `blocked` |
+| `yuzora.badge.database` | 右側模式 | 已連線的連線數，沒有時 `null` |
+| `yuzora.db.active` | 右側模式 | 右側模式正在看的 `{connection, database}` |
+| `yuzora.db.open` | 右側模式 | `{key, target, seq}`：要求某個資料表 pane 換表 |
+| `yuzora.db.tabPanes` | 資料表 pane | `{tab: key}`：每個 tab 的資料表 pane（右側模式點表時重用） |
 
 ## 查詢與結果集
 
@@ -145,7 +147,7 @@ grid 只繪製看得到的列（`uniform_list`），所以畫面成本與結果�
 
 隔離的 app home 與 `HC_SESSION`，`herdr-app shot` 截圖。資料是一個 SQLite 檔：customers 120,000 列、orders 30,000 列（含 FK 與兩個索引）、沒有 PK 的 audit_log、一個 view、一個 trigger。
 
-- [l3-db-data.png](evidence/l3-db-data.png)：側欄的連線與 schema 樹，orders 的資料分頁。
+- [l3-db-data.png](evidence/l3-db-data.png)：右側模式的連線與 schema 樹，orders 的資料分頁。
 - [l3-db-structure.png](evidence/l3-db-structure.png)：結構分頁，含欄位、PK、索引、FK 與 DDL。
 - [l3-db-query.png](evidence/l3-db-query.png)：SQL pane 一次執行四句，每個結果集一個分頁。
 - [l3-db-connection.png](evidence/l3-db-connection.png)：新增連線對話框。
@@ -159,7 +161,7 @@ grid 只繪製看得到的列（`uniform_list`），所以畫面成本與結果�
 - 排序只排已載入的列。
 - 「其他物件」（function、procedure、sequence、trigger）只列在 schema 樹，還不能開啟定義。
 - 含換行的文字與二進位值不能在表格內編輯。
-- `yuzora.status.db`、`yuzora.badge.database` 是共用狀態，會寫進 `shared.json`。App 重開後，在側欄的資料庫模式重新繪製之前，狀態列可能還顯示上一次的值。
+- `yuzora.status.db`、`yuzora.badge.database` 是共用狀態，會寫進 `shared.json`。App 重開後，在右側模式的資料庫模式重新繪製之前，狀態列可能還顯示上一次的值。
 
 ## 後續整合
 
