@@ -688,19 +688,15 @@ async fn open(
 ) -> Result<Client, Attempt> {
     let (host, port) = (spec.host(), spec.port());
     let mut cfg = tokio_postgres::Config::new();
-    cfg.user(spec.config.user.trim()).dbname(database).application_name("Yuzora").port(port);
+    cfg.user(spec.config.user.trim()).dbname(database).application_name("Yuzora");
     cfg.ssl_mode(tls::pg_mode(spec.config.ssl));
     if let Some(password) = &spec.password {
         cfg.password(password);
     }
-    let (name, address) = route(spec);
-    cfg.host(name);
-    if let Some(ip) = address {
-        cfg.hostaddr(ip);
-    }
+    cfg.host(route(spec).0);
     let ssl = spec.config.ssl;
     let fail = |error: DbError, code: Option<String>| Attempt { error, code };
-    match tokio::time::timeout_at(deadline, cfg.connect(tls.clone())).await {
+    match tokio::time::timeout_at(deadline, connect_any(spec, cfg, tls)).await {
         Err(_) => Err(fail(
             DbError::Connect(crate::i18n::t(
                 "engine.timeout",
@@ -708,7 +704,10 @@ async fn open(
             )),
             None,
         )),
-        Ok(Err(e)) => {
+        Ok(Err(Failure::Lookup(e))) => {
+            Err(fail(DbError::Connect(format!("{host}:{port}: error connecting to server: {e}")), None))
+        }
+        Ok(Err(Failure::Driver(e))) => {
             if let Some(db) = e.as_db_error() {
                 return Err(fail(DbError::Connect(server_message(db)), Some(db.code().code().to_owned())));
             }
@@ -731,13 +730,54 @@ async fn open(
                 None,
             ))
         }
-        Ok(Ok((client, connection))) => {
-            crate::runtime::handle().spawn(async move {
-                let _ = connection.await;
-            });
-            Ok(client)
+        Ok(Ok(client)) => Ok(client),
+    }
+}
+
+/// Why no address took the connection.
+enum Failure {
+    /// The host did not name an address.
+    Lookup(std::io::Error),
+    Driver(tokio_postgres::Error),
+}
+
+/// Connects to the first address that takes the connection, the way the driver
+/// does for a host name (any failure moves on to the next, the last one is the
+/// error), and runs the connection's driver on the crate's runtime. A unix
+/// socket is the driver's alone.
+async fn connect_any(
+    spec: &ConnectSpec,
+    base: tokio_postgres::Config,
+    tls: &MakeRustlsConnect,
+) -> Result<Client, Failure> {
+    let (name, _) = route(spec);
+    let connect = |cfg: tokio_postgres::Config| async move {
+        let (client, connection) = cfg.connect(tls.clone()).await.map_err(Failure::Driver)?;
+        crate::runtime::handle().spawn(async move {
+            let _ = connection.await;
+        });
+        Ok(client)
+    };
+    if name.starts_with('/') {
+        let mut cfg = base;
+        cfg.port(spec.port());
+        return connect(cfg).await;
+    }
+    let addresses = match &spec.addresses {
+        Some(addresses) => addresses.clone(),
+        None => tokio::net::lookup_host((spec.host(), spec.port())).await.map_err(Failure::Lookup)?.collect(),
+    };
+    let mut last =
+        Failure::Lookup(std::io::Error::new(std::io::ErrorKind::InvalidInput, "could not resolve any addresses"));
+    for address in addresses {
+        let mut cfg = base.clone();
+        cfg.hostaddr(address.ip()).port(address.port());
+        match connect(cfg).await {
+            Ok(client) => return Ok(client),
+            Err(e) => last = e,
         }
     }
+    Err(last)
 }
 
 fn tried_all(tried: Vec<String>, last: DbError) -> DbError {
