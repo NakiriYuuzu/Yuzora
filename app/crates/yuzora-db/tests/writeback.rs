@@ -842,6 +842,352 @@ fn sqlite_a_refresh_after_the_primary_key_moved_writes_by_the_new_key_and_by_non
     assert!(results::lock(&pane.set).read_only_reason().is_some_and(|r| r.contains("no primary key")));
 }
 
+// ---------------------------------------------------------------- the rows and the description are of one table
+
+/// The rows of `table`, as text, in a fixed order, whatever its columns are called by now.
+fn stored(connection: &str, table: &str) -> Vec<Vec<String>> {
+    let mut all = rows(connection, &format!("select * from {table}"));
+    all.sort();
+    all
+}
+
+/// `t` opened with its description out (the sidebar's connection is held here by hand): once its
+/// `rows` rows are read, `ddl` runs, and then the description is let in and the job ends. The rows
+/// are older than the description by a change of the table.
+fn rows_older_than_their_description(
+    connection: &str,
+    pane: &str,
+    t: &ObjectRef,
+    rows: usize,
+    ddl: &str,
+) -> std::sync::Arc<std::sync::Mutex<results::ResultSet>> {
+    let held = runtime::block_on(session::lease(connection, None, session::META)).unwrap();
+    let job = session::open_table(connection, None, &owner(connection, pane), t, None);
+    let mut found = None;
+    until("the rows never showed while the description was out", || {
+        found = session::job_state(job)
+            .and_then(|s| s.results.first().filter(|r| r.rows == rows && r.complete).map(|r| r.id));
+        found.is_some()
+    });
+    run(connection, "ddl", ddl);
+    drop(held);
+    assert_eq!(wait(job).error, None);
+    results::get(found.unwrap()).unwrap()
+}
+
+/// The rows of `t` (id, code, v: `1, 2, x` and `2, 1, y`) are older than its description by a rename
+/// of columns: they carry the names they were read under and the description the names the table has
+/// now, and a write-back that goes by both finds another row than the one the person edited. It has
+/// to write nothing, and the result has to say why.
+fn rows_older_than_the_names_in_their_description(connection: &str, pane: &str, t: &ObjectRef, ddl: &str) {
+    let name = qualified(t, connection);
+    let before = stored(connection, &name);
+    assert_eq!(before, [["1", "2", "x"], ["2", "1", "y"]]);
+
+    let set = rows_older_than_their_description(connection, pane, t, 2, ddl);
+    let (row, column) = {
+        let r = results::lock(&set);
+        let v = r.columns.iter().position(|c| c.name == "v").expect("the rows were read under the name v");
+        (r.rows.iter().position(|row| row[v].display() == "x").unwrap(), v)
+    };
+    results::lock(&set).set_edit(row, column, Cell::text("CHANGED"));
+    let written = runtime::block_on(session::write_back_set(&set));
+    assert_eq!(stored(connection, &name), before, "the write-back changed what the person did not edit ({written:?})");
+    assert!(matches!(written, Err(DbError::NotEditable(_))), "{written:?}");
+    let r = results::lock(&set);
+    assert!(!r.editable(), "{:?}", r.editing);
+    let why = r.read_only_reason().expect("read-only, with a reason");
+    assert!(why.contains("changed"), "{why}");
+}
+
+/// `ALTER TABLE … RENAME COLUMN` for each of `renames`, in order, in the words of `engine`.
+fn rename_columns(engine: &str, t: &str, renames: &[(&str, &str)]) -> String {
+    renames
+        .iter()
+        .map(|(from, to)| match engine {
+            "mssql" => format!("EXEC sp_rename N'{t}.{from}', N'{to}', N'COLUMN';"),
+            _ => format!("ALTER TABLE {t} RENAME COLUMN {from} TO {to};"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `id` and `code` exchange their names.
+const EXCHANGED: &[(&str, &str)] = &[("id", "tmp"), ("code", "id"), ("tmp", "code")];
+/// `id` is called `code` from now on, and `code` is called `k`.
+const MOVED: &[(&str, &str)] = &[("code", "k"), ("id", "code")];
+
+fn sqlite_rows_older_than_their_names(name: &str, renames: &[(&str, &str)]) {
+    let (id, _) = sqlite_connection(name);
+    run(&id, "setup", "create table t(id integer primary key, code text, v text); insert into t values (1, '2', 'x'), (2, '1', 'y');");
+    rows_older_than_the_names_in_their_description(&id, "renamed-pane", &table("", "t"), &rename_columns("sqlite", "t", renames));
+}
+
+fn postgres_rows_older_than_their_names(name: &str, renames: &[(&str, &str)]) {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new(&format!("yz_wb_{name}_o2"));
+    let id = scratch.connection();
+    run(
+        &id,
+        "setup",
+        "CREATE TABLE public.t(id int PRIMARY KEY, code text, v text); INSERT INTO public.t VALUES (1, '2', 'x'), (2, '1', 'y');",
+    );
+    rows_older_than_the_names_in_their_description(&id, "renamed-pane", &table("public", "t"), &rename_columns("postgres", "public.t", renames));
+}
+
+fn mssql_rows_older_than_their_names(name: &str, renames: &[(&str, &str)]) {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new(&format!("yz_wb_{name}_o2"));
+    let id = scratch.connection();
+    run(
+        &id,
+        "setup",
+        "CREATE TABLE dbo.t(id int PRIMARY KEY, code nvarchar(10), v nvarchar(10)); INSERT INTO dbo.t VALUES (1, N'2', N'x'), (2, N'1', N'y');",
+    );
+    rows_older_than_the_names_in_their_description(&id, "renamed-pane", &table("dbo", "t"), &rename_columns("mssql", "dbo.t", renames));
+}
+
+#[test]
+fn sqlite_rows_read_before_two_columns_exchanged_names_are_not_written_back() {
+    sqlite_rows_older_than_their_names("wb-exchanged", EXCHANGED);
+}
+
+#[test]
+fn sqlite_rows_read_before_the_key_column_took_another_name_are_not_written_back() {
+    sqlite_rows_older_than_their_names("wb-moved", MOVED);
+}
+
+#[test]
+fn postgres_rows_read_before_two_columns_exchanged_names_are_not_written_back() {
+    postgres_rows_older_than_their_names("exchanged", EXCHANGED);
+}
+
+#[test]
+fn postgres_rows_read_before_the_key_column_took_another_name_are_not_written_back() {
+    postgres_rows_older_than_their_names("moved", MOVED);
+}
+
+#[test]
+fn mssql_rows_read_before_two_columns_exchanged_names_are_not_written_back() {
+    mssql_rows_older_than_their_names("exchanged", EXCHANGED);
+}
+
+#[test]
+fn mssql_rows_read_before_the_key_column_took_another_name_are_not_written_back() {
+    mssql_rows_older_than_their_names("moved", MOVED);
+}
+
+/// Rows that name a column the table no longer has are not the table's: whatever else they agree on,
+/// nothing can be said about which row or column an edit of them means, so they are read-only.
+#[test]
+fn sqlite_rows_read_before_a_column_was_dropped_are_read_only() {
+    let (id, _) = sqlite_connection("wb-dropped-under");
+    run(&id, "setup", "create table t(id integer primary key, x text, y text, z text); insert into t values (1, 'x1', 'y1', 'z1');");
+    let set = rows_older_than_their_description(&id, "dropped-under-pane", &table("", "t"), 1, "alter table t drop column x");
+    let r = results::lock(&set);
+    assert_eq!(r.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "x", "y", "z"], "the rows are the old ones");
+    assert!(!r.editable(), "{:?}", r.editing);
+    let why = r.read_only_reason().expect("read-only, with a reason");
+    assert!(why.contains("changed"), "{why}");
+}
+
+/// Tables a person edits every day whose `SELECT *` and description do not list the same columns in
+/// the same way (a dropped column, a generated one, a hidden one, one folded into a column set, names
+/// with spaces and capitals). The rows are of the table they were read from: the check that the
+/// rows and the description are of one table must not take any of them for another.
+/// Each is (table, a text column to edit).
+fn tables_with_columns_of_their_own_stay_editable(connection: &str, schema: &str, tables: &[(&str, &str)]) {
+    let mut failed = Vec::new();
+    for (n, (name, column)) in tables.iter().enumerate() {
+        let pane_owner = owner(connection, &format!("ordinary-pane-{n}"));
+        let state = wait(session::open_table(connection, None, &pane_owner, &table(schema, name), None));
+        if let Some(error) = state.error {
+            failed.push(format!("{name}: did not open ({error})"));
+            continue;
+        }
+        let summary = &state.results[0];
+        if !summary.editable {
+            failed.push(format!("{name}: not editable ({:?})", summary.not_editable));
+            continue;
+        }
+        let pane = Opened { owner: pane_owner, id: summary.id, set: results::get(summary.id).expect("result") };
+        pane.edit(0, column, Some("changed"));
+        match runtime::block_on(session::write_back_set(&pane.set)) {
+            Ok(1) => {}
+            other => failed.push(format!("{name}: the write-back came to {other:?}")),
+        }
+        let again = open(connection, &format!("ordinary-pane-{n}"), &table(schema, name));
+        let at = again.column(column);
+        let shown = results::lock(&again.set).rows[0][at].display().into_owned();
+        if shown != "changed" {
+            failed.push(format!("{name}: {column} reads {shown:?} after the write-back"));
+        }
+        session::release_owner(&pane.owner);
+    }
+    assert!(failed.is_empty(), "{} of {} tables:\n{}", failed.len(), tables.len(), failed.join("\n"));
+}
+
+/// A view has no primary key; that is what it says, not that the table changed.
+fn views_say_they_have_no_key(connection: &str, schema: &str, views: &[&str]) {
+    for (n, name) in views.iter().enumerate() {
+        let state = wait(session::open_table(connection, None, &owner(connection, &format!("view-pane-{n}")), &table(schema, name), None));
+        assert_eq!(state.error, None, "{name}");
+        let summary = &state.results[0];
+        assert!(!summary.editable, "{name}");
+        let why = summary.not_editable.clone().unwrap_or_default();
+        assert!(why.contains("no primary key"), "{name}: {why}");
+    }
+}
+
+#[test]
+fn sqlite_tables_with_columns_of_their_own_stay_editable() {
+    let (id, _) = sqlite_connection("wb-own-columns");
+    run(
+        &id,
+        "setup",
+        "create table dropped(id integer primary key, gone text, v text); insert into dropped values (1, 'g', 'a');
+         alter table dropped drop column gone;
+         create table gen(id integer primary key, a int, b int generated always as (a * 2) stored, c int as (a + 1), v text);
+         insert into gen (id, a, v) values (1, 2, 'a');
+         create table \"Mixed Case\"(\"Id\" integer primary key, \"Some Col\" text, \"ünï\" text);
+         insert into \"Mixed Case\" values (1, 'a', 'b');
+         create table plain(a int, v text, b int, primary key (b, a)) without rowid; insert into plain values (1, 'a', 2);
+         create view seen as select id, v || '!' as w, id from dropped;",
+    );
+    tables_with_columns_of_their_own_stay_editable(
+        &id,
+        "",
+        &[("dropped", "v"), ("gen", "v"), ("Mixed Case", "Some Col"), ("Mixed Case", "ünï"), ("plain", "v")],
+    );
+    views_say_they_have_no_key(&id, "", &["seen"]);
+}
+
+#[test]
+fn postgres_tables_with_columns_of_their_own_stay_editable() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_own_o2");
+    let id = scratch.connection();
+    run(
+        &id,
+        "setup",
+        "CREATE TABLE dropped(id int PRIMARY KEY, gone text, v text); INSERT INTO dropped VALUES (1, 'g', 'a');
+         ALTER TABLE dropped DROP COLUMN gone;
+         CREATE TABLE gen(id int PRIMARY KEY, a int, b int GENERATED ALWAYS AS (a * 2) STORED, v text);
+         INSERT INTO gen (id, a, v) VALUES (1, 2, 'a');
+         CREATE TABLE ident(id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, v text); INSERT INTO ident (v) VALUES ('a');
+         CREATE TABLE \"Mixed Case\"(\"Id\" int PRIMARY KEY, \"Some Col\" text, \"ünï\" text); INSERT INTO \"Mixed Case\" VALUES (1, 'a', 'b');
+         CREATE TABLE plain(a int, v text, b int, PRIMARY KEY (b, a)); INSERT INTO plain VALUES (1, 'a', 2);
+         CREATE VIEW seen AS SELECT id, v || '!' AS w FROM dropped;",
+    );
+    tables_with_columns_of_their_own_stay_editable(
+        &id,
+        "public",
+        &[("dropped", "v"), ("gen", "v"), ("ident", "v"), ("Mixed Case", "Some Col"), ("Mixed Case", "ünï"), ("plain", "v")],
+    );
+    views_say_they_have_no_key(&id, "public", &["seen"]);
+}
+
+#[test]
+fn mssql_tables_with_columns_of_their_own_stay_editable() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_wb_own_o2");
+    let id = scratch.connection();
+    run(
+        &id,
+        "setup",
+        "CREATE TABLE dbo.computed(id int PRIMARY KEY, a int, b AS (a * 2) PERSISTED, v nvarchar(10)); INSERT INTO dbo.computed (id, a, v) VALUES (1, 2, N'a');
+         CREATE TABLE dbo.ident(id int IDENTITY PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.ident (v) VALUES (N'a');
+         CREATE TABLE dbo.[Mixed Case]([Id] int PRIMARY KEY, [Some Col] nvarchar(10), [ünï] nvarchar(10)); INSERT INTO dbo.[Mixed Case] VALUES (1, N'a', N'b');
+         CREATE TABLE dbo.plain(a int, v nvarchar(10), b int, PRIMARY KEY (b, a)); INSERT INTO dbo.plain VALUES (1, N'a', 2);
+         CREATE TABLE dbo.temporal(id int NOT NULL PRIMARY KEY CLUSTERED, v nvarchar(10),
+             ValidFrom datetime2 GENERATED ALWAYS AS ROW START HIDDEN NOT NULL, ValidTo datetime2 GENERATED ALWAYS AS ROW END HIDDEN NOT NULL,
+             PERIOD FOR SYSTEM_TIME (ValidFrom, ValidTo)) WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = dbo.temporal_history));
+         INSERT INTO dbo.temporal (id, v) VALUES (1, N'a');
+         CREATE TABLE dbo.sparse(id int PRIMARY KEY, s1 int SPARSE NULL, s2 nvarchar(10) SPARSE NULL, cs xml COLUMN_SET FOR ALL_SPARSE_COLUMNS, v nvarchar(10));
+         INSERT INTO dbo.sparse (id, v) VALUES (1, N'a');\nGO\n\
+         CREATE VIEW dbo.seen AS SELECT id, v + N'!' AS w FROM dbo.ident",
+    );
+    tables_with_columns_of_their_own_stay_editable(
+        &id,
+        "dbo",
+        &[
+            ("computed", "v"),
+            ("ident", "v"),
+            ("Mixed Case", "Some Col"),
+            ("Mixed Case", "ünï"),
+            ("plain", "v"),
+            ("temporal", "v"),
+            ("sparse", "v"),
+        ],
+    );
+    views_say_they_have_no_key(&id, "dbo", &["seen"]);
+}
+
+// ---------------------------------------------------------------- a SQLite statement names the columns it returns
+
+/// SQLite compiles a statement against the schema this connection last read; another connection that
+/// changed the table is noticed when the statement first runs, and the statement is compiled again
+/// there. The names of the columns have to be those of the statement that ran, or the values of one
+/// table sit under the headings of another.
+fn a_table_another_connection_dropped_a_column_of(file_name: &str, pane: &str) -> (String, Opened) {
+    let (id, _) = sqlite_connection(file_name);
+    run(&id, "setup", "create table t(id integer primary key, x text, y text, z text); insert into t values (1, 'x1', 'y1', 'z1');");
+    let first = open(&id, pane, &table("", "t"));
+    assert_eq!(results::lock(&first.set).columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "x", "y", "z"]);
+    run(&id, "ddl", "alter table t drop column x");
+    let refreshed = open(&id, pane, &table("", "t"));
+    (id, refreshed)
+}
+
+#[test]
+fn sqlite_a_refresh_after_another_connection_dropped_a_column_shows_the_columns_the_table_has_now() {
+    let (_, pane) = a_table_another_connection_dropped_a_column_of("wb-dropped-names", "dropped-names-pane");
+    let r = results::lock(&pane.set);
+    assert_eq!(r.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "y", "z"]);
+    let shown: Vec<_> = r.rows[0].iter().map(|c| c.display().into_owned()).collect();
+    assert_eq!(shown, ["1", "y1", "z1"]);
+}
+
+/// Whichever way a table the columns of which changed under the pane ends up, editable or not, an edit
+/// is saved into the column it was made in, or not at all.
+#[test]
+fn sqlite_a_refresh_after_another_connection_dropped_a_column_never_writes_into_a_column_it_did_not_show() {
+    let (id, pane) = a_table_another_connection_dropped_a_column_of("wb-dropped-writes", "dropped-writes-pane");
+    let shown = {
+        let r = results::lock(&pane.set);
+        let y = r.columns.iter().position(|c| c.name == "y").expect("a column y");
+        r.rows[0][y].display().into_owned()
+    };
+    pane.edit(0, "y", Some("CHANGED"));
+    let written = runtime::block_on(session::write_back_set(&pane.set));
+    let stored = first_row(&id, "select y, z from t");
+    match written {
+        Ok(_) => {
+            assert_eq!(shown, "y1", "the cell that was edited showed what another column holds");
+            assert_eq!(stored, ["CHANGED", "z1"]);
+        }
+        Err(_) => assert_eq!(stored, ["y1", "z1"], "refused, so nothing was written"),
+    }
+}
+
+#[test]
+fn sqlite_a_query_after_another_connection_dropped_a_column_names_the_columns_it_returns() {
+    let (id, _) = sqlite_connection("wb-dropped-query");
+    run(&id, "setup", "create table t(id integer primary key, x text, y text, z text); insert into t values (1, 'x1', 'y1', 'z1');");
+    let pane = owner(&id, "dropped-query-pane");
+    let names = |state: &JobState| {
+        let set = results::get(state.results.last().expect("a result").id).expect("result");
+        let r = results::lock(&set);
+        (r.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), r.rows[0].iter().map(|c| c.display().into_owned()).collect::<Vec<_>>())
+    };
+    let first = wait(session::start_query(&id, None, &pane, "select * from t"));
+    assert_eq!(names(&first).0, ["id", "x", "y", "z"]);
+    run(&id, "ddl", "alter table t drop column x");
+    let again = wait(session::start_query(&id, None, &pane, "select * from t"));
+    assert_eq!(again.error, None);
+    assert_eq!(names(&again), (vec!["id".to_owned(), "y".into(), "z".into()], vec!["1".to_owned(), "y1".into(), "z1".into()]));
+}
+
 // ---------------------------------------------------------------- what the server returns around the UPDATE
 
 #[test]

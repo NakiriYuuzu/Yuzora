@@ -1036,6 +1036,12 @@ mod tests {
     fn a_cell_that_cannot_be_edited_has_a_reason_to_show() {
         use crate::results::{Editing, ReadOnly, WriteState, WriteStop};
         let set = result(Editing::Loading);
+        assert_eq!(
+            edit_blocked(&results::lock(&set)),
+            Some(t("edit.reading_key", &[])),
+            "the rows are all in, what is awaited is the table's key"
+        );
+        results::lock(&set).complete = false;
         assert_eq!(edit_blocked(&results::lock(&set)), Some(t("edit.loading", &[])));
         for why in [ReadOnly::Query, ReadOnly::Connection, ReadOnly::NoKey, ReadOnly::NoInfo("denied".into()), ReadOnly::ReadFailed] {
             let set = result(Editing::ReadOnly(why.clone()));
