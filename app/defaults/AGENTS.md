@@ -1229,9 +1229,10 @@ with these differences.
 - The right dock's Files mode shows the focused pane's repo. A file opens in a tab
   of its own, after the selected tab of the shown Space, and "Open to the Side" in
   its right-click menu opens it beside the focused pane instead. A file that is
-  already open is shown where it is. The panes are `yuzora-editor` (code),
-  `yuzora-markdown` (`.md`: preview or source), `yuzora-files-image` (images and
-  SVG). Open one yourself with
+  already open is shown where it is, also after a restart (`panes()` lists a mod
+  pane's `props`, so a pane in a tab not shown yet is found by its `path`). The
+  panes are `yuzora-editor` (code), `yuzora-markdown` (`.md`: preview or
+  source), `yuzora-files-image` (images and SVG). Open one yourself with
   `tab.new {name: "file.rs", mod: "yuzora-editor", props: {path: "/abs/file.rs", line: 12}}`
   or beside a pane with `pane.split {direction: "right", mod: "yuzora-editor", props: {path: "/abs/file.rs", line: 12}}`
   (`on`: a machine for a remote space's file).

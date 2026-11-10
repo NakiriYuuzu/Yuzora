@@ -1584,7 +1584,10 @@ return JSON.stringify([a, b, c, d]); }})()"#
             return [strip("s1")];
         "#,
         );
-        assert_eq!(seen, ["[shell] [editor /srv/a.rs]* [shell] [editor /srv/a.rs]"]);
+        assert_eq!(
+            seen,
+            ["[shell] [editor /srv/a.rs]* [shell] [editor /srv/a.rs]"]
+        );
     }
 
     #[test]
@@ -1600,7 +1603,9 @@ return JSON.stringify([a, b, c, d]); }})()"#
         );
         assert_eq!(
             seen,
-            ["[shell, git-diff /r/a.rs, editor /r/a.png] [editor /r/a.rs] [image /r/a.png]* [shell]"]
+            [
+                "[shell, git-diff /r/a.rs, editor /r/a.png] [editor /r/a.rs] [image /r/a.png]* [shell]"
+            ]
         );
     }
 
@@ -1649,7 +1654,11 @@ return JSON.stringify([a, b, c, d]); }})()"#
         );
         assert_eq!(
             seen,
-            ["first", "second", "[shell, editor /r/a.rs, editor /r/a.rs]* [shell]"]
+            [
+                "first",
+                "second",
+                "[shell, editor /r/a.rs, editor /r/a.rs]* [shell]"
+            ]
         );
     }
 
