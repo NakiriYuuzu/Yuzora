@@ -49,6 +49,12 @@ pub struct MsCanceller {
 
 impl MsCanceller {
     pub async fn cancel(&self) {
+        self.cancel_now();
+    }
+
+    /// The stop is a count that the running `execute` watches: bumped here, it
+    /// is seen by the statement running now and by none that starts later.
+    pub(super) fn cancel_now(&self) {
         self.stop.send_modify(|n| *n += 1);
     }
 }
@@ -932,6 +938,15 @@ mod tests {
 
     fn t(schema: &str, name: &str) -> ObjectRef {
         ObjectRef { schema: schema.into(), name: name.into() }
+    }
+
+    #[test]
+    fn a_stop_from_where_nothing_can_wait_is_counted_before_it_returns() {
+        let canceller = MsCanceller { stop: Arc::new(watch::channel(0).0), commit: CommitSent::default() };
+        let running = canceller.stop.subscribe();
+        crate::engine::Canceller::Mssql(canceller.clone()).cancel_in_background();
+        assert!(running.has_changed().unwrap(), "the statement running now was not told");
+        drop(canceller);
     }
 
     #[test]

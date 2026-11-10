@@ -116,10 +116,22 @@ impl Canceller {
         }
     }
 
-    /// [`cancel`](Self::cancel) for work whose end nobody will see (a write-back
-    /// that was dropped): PostgreSQL's connection is let go of afterwards, since
-    /// the request may not have landed yet. SQL Server's socket is already gone,
-    /// and a SQLite interrupt cannot outlive the statement it was made for.
+    /// [`cancel`](Self::cancel) from where nothing can wait for it. What has to
+    /// happen before this returns happens: SQL Server's socket is told to go and
+    /// SQLite is interrupted at once, and PostgreSQL's request is counted on its
+    /// way ([`Conn::settled`]).
+    pub fn cancel_in_background(&self) {
+        match self {
+            Canceller::Postgres(c) => c.cancel_in_background(),
+            Canceller::Mssql(c) => c.cancel_now(),
+            Canceller::Sqlite(c) => c.cancel(),
+        }
+    }
+
+    /// [`cancel`](Self::cancel) for work that is dropped where it stands (a
+    /// write-back): PostgreSQL's connection is let go of afterwards rather than
+    /// trusted to be clean. SQL Server's socket is already gone, and a SQLite
+    /// interrupt cannot outlive the statement it was made for.
     pub async fn abandon(&self) {
         match self {
             Canceller::Postgres(c) => c.abandon().await,
@@ -198,11 +210,23 @@ impl Conn {
         }
     }
 
+    /// Waits until no stop is on its way to this connection's server. PostgreSQL
+    /// acts on a stop when the request gets there, and a statement started
+    /// before that is the one it finds. SQL Server's stop is the socket itself
+    /// and SQLite's an interrupt, both made where the stop is pressed.
+    pub async fn settled(&self) {
+        if let Conn::Postgres(c) = self {
+            c.settled().await;
+        }
+    }
+
     /// Whether the stop last sent to this connection reached its statement. A
-    /// stop that did not is a request still on its way to the server (PostgreSQL),
-    /// which may find a later statement instead: the connection is not safe to
-    /// give to other work. SQL Server's stop is the socket itself, SQLite's an
-    /// interrupt that only acts on a statement running when it is made.
+    /// stop that did not found the statement over; the server has dealt with it
+    /// by then, but a server that answers before it acts (a pooler may) would
+    /// leave a request still on its way, which may find a later statement: the
+    /// connection is not safe to give to other work. SQL Server's stop is the
+    /// socket itself, SQLite's an interrupt that only acts on a statement
+    /// running when it is made.
     pub fn cancel_landed(&self) -> bool {
         match self {
             Conn::Postgres(c) => c.cancel_landed(),
