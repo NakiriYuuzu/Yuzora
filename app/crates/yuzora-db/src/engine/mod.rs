@@ -5,6 +5,7 @@
 //! elsewhere while it is busy — stopping a query — goes through its
 //! [`Canceller`].
 
+mod date_text;
 pub mod mssql;
 pub mod postgres;
 pub mod sqlite;
@@ -32,6 +33,11 @@ pub struct ConnectSpec {
     /// host up. The host still names the server for TLS.
     pub addresses: Option<Vec<SocketAddr>>,
     pub connect_timeout: Duration,
+    /// The connection a table is read and written back on, which only this
+    /// crate's statements run on (`session::table_owner`). PostgreSQL prints
+    /// values the way they are read back there; any other connection keeps the
+    /// server's settings.
+    pub for_table: bool,
 }
 
 impl ConnectSpec {
@@ -43,6 +49,7 @@ impl ConnectSpec {
             endpoint: None,
             addresses: None,
             connect_timeout: Duration::from_secs(15),
+            for_table: false,
         }
     }
 
@@ -320,6 +327,18 @@ pub fn select_sql(
     match engine {
         Engine::Mssql => format!("SELECT TOP ({limit}) * FROM {table}{order};"),
         _ => format!("SELECT * FROM {table}{order} LIMIT {limit};"),
+    }
+}
+
+/// Said ahead of a table's SELECT, in the same batch (a round trip of its own is not spent).
+/// A SQL Server login or server whose default opens a transaction at the first statement that
+/// touches a table would leave one open after the read, and a write-back does not run beside
+/// one. The connection a table is read and saved on is the app's alone (`session::table_owner`),
+/// no SQL tab on it can end that transaction, so the app says it does not want one.
+pub fn table_prelude(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Mssql => "SET IMPLICIT_TRANSACTIONS OFF; ",
+        _ => "",
     }
 }
 
