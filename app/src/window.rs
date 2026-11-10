@@ -5721,7 +5721,9 @@ export default class Probe extends View {
         let listed = |id: &str| crate::mods::shared("probe.panes").and_then(|v| v.as_array()?.iter().find(|p| p["pane"] == id).cloned());
         let pane = listed("lab/pa175").expect("the pane of the tab not shown is listed");
         assert_eq!((&pane["mod"], &pane["props"]), (&json!("pane-probe"), &props));
+        assert_eq!(pane["started"], json!(false), "no copy of its mod runs: nothing has opened its file");
         assert!(listed("p1").expect("the terminal is listed").get("props").is_none());
+        assert!(listed("p1").unwrap().get("started").is_none(), "a terminal has no copy of a mod");
         assert_eq!(crate::mods::shared("probe.started"), None, "its tab has not been shown: no copy of the mod has started");
         assert!(!view.read_with(cx, |this, _| this.copies.contains_key("lab/pa175")));
         cx.update(|window, cx| view.update(cx, |this, cx| {
@@ -5730,6 +5732,13 @@ export default class Probe extends View {
         }));
         settle(cx);
         assert_eq!(crate::mods::shared("probe.started"), Some(json!(["/srv/a.rs"])), "shown, it starts with the props it is listed with");
+        assert_eq!(listed("lab/pa175").unwrap()["started"], json!(true), "and is listed as started");
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.select_tab("tb1");
+            this.sync(window, cx);
+        }));
+        settle(cx);
+        assert_eq!(listed("lab/pa175").unwrap()["started"], json!(true), "its copy keeps running when its tab is put away");
     }
 
     include!("window/pane_size_tests.rs");
