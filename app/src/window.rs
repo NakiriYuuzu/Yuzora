@@ -5828,6 +5828,7 @@ export default class Probe extends View {
 
     include!("window/pane_size_tests.rs");
     include!("window/overlay_motion_tests.rs"); // yuzora(motion): the arrival of dialogs, popups and toasts
+    include!("window/pane_replace_tests.rs"); // yuzora(v0.1.0 files-open): what replacing a pane with split and close keeps
 
     #[test]
     fn terminal_menu_preserves_clicked_target_and_uses_mod_dimensions() {
