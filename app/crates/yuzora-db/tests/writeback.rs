@@ -117,9 +117,13 @@ fn sqlite_connection(name: &str) -> (String, PathBuf) {
 }
 
 fn postgres_connection(name: &str) -> String {
+    postgres_in(name, "yuzora_p8")
+}
+
+fn postgres_in(name: &str, database: &str) -> String {
     save(
         json!({"name": name, "engine": "postgres", "host": "127.0.0.1", "port": 55432,
-               "user": "yuzora_full", "database": "yuzora_p8", "ssl": "prefer"}),
+               "user": "yuzora_full", "database": database, "ssl": "prefer"}),
         Some(&password()),
     )
 }
@@ -174,6 +178,50 @@ impl ScratchDatabase {
 }
 
 impl Drop for ScratchDatabase {
+    fn drop(&mut self) {
+        self.drop_it();
+    }
+}
+
+/// A PostgreSQL database of this test's own, dropped when it ends: a test that
+/// terminates backends must not take its neighbours' connections with it.
+struct PgScratchDatabase {
+    name: String,
+    maintenance: String,
+}
+
+impl PgScratchDatabase {
+    fn new(name: &str) -> Self {
+        let maintenance = postgres_in(&format!("pg-maintenance-{name}"), "postgres");
+        let scratch = PgScratchDatabase { name: name.to_owned(), maintenance };
+        scratch.drop_it();
+        run(&scratch.maintenance, "scratch", &format!("CREATE DATABASE {name}"));
+        scratch
+    }
+
+    fn connection(&self) -> String {
+        postgres_in(&format!("pg-{}", self.name), &self.name)
+    }
+
+    /// Drops the database; never panics (this also runs while a test unwinds).
+    fn drop_it(&self) {
+        let job = session::start_query(
+            &self.maintenance,
+            None,
+            &owner(&self.maintenance, "scratch"),
+            &format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.name),
+        );
+        let mut seen = 0;
+        while let Ok(state) = runtime::block_on(session::job_after(job, seen)) {
+            if !state.running {
+                break;
+            }
+            seen = state.version;
+        }
+    }
+}
+
+impl Drop for PgScratchDatabase {
     fn drop(&mut self) {
         self.drop_it();
     }
@@ -400,15 +448,15 @@ fn write_back_after_the_server_dropped_the_connection(connection: &str, t: Objec
 #[test]
 fn postgres_a_write_back_after_the_server_dropped_the_connection_still_saves() {
     only_with!("postgres");
-    let id = postgres_connection("pg-dropped");
-    run(&id, "setup", "DROP SCHEMA IF EXISTS yz_wb_dropped CASCADE; CREATE SCHEMA yz_wb_dropped; CREATE TABLE yz_wb_dropped.t(id int PRIMARY KEY, name text); INSERT INTO yz_wb_dropped.t VALUES (1, 'a');");
+    let scratch = PgScratchDatabase::new("yz_wb_dropped");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');");
     write_back_after_the_server_dropped_the_connection(
         &id,
-        table("yz_wb_dropped", "t"),
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'yuzora_p8' AND application_name = 'Yuzora' AND pid <> pg_backend_pid()",
-        "SELECT name FROM yz_wb_dropped.t WHERE id = 1",
+        table("public", "t"),
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'yz_wb_dropped' AND application_name = 'Yuzora' AND pid <> pg_backend_pid()",
+        "SELECT name FROM t WHERE id = 1",
     );
-    run(&id, "setup", "DROP SCHEMA yz_wb_dropped CASCADE");
 }
 
 #[test]
