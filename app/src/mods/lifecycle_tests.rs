@@ -490,17 +490,18 @@ impl DiffPane {
 
     /// The same in a window `wide` wide (more than `pane`: room to leave it), opened with `props` besides.
     fn mount_with(cx: &mut TestAppContext, rows: Value, pane: f32, wide: f32, shared: &Shared, props: Value) -> Self {
-        Self::mount_at(cx, rows, pane, wide, 600., 1., shared, props)
+        Self::mount_at(cx, rows, pane, (wide, 600.), 1., shared, props)
     }
 
     /// The diff of `rows` in a 1200px window as tall as it takes to show the probe row at `zoom` (a test that
     /// sets the zoom runs alone, in a process of its own: see [`alone`]).
     fn zoomed(cx: &mut TestAppContext, rows: Value, zoom: f32, props: Value) -> Self {
         gpui_shell::set_pixel_scale(zoom);
-        Self::mount_at(cx, rows, 1200., 1200., 1300., zoom, &Shared::default(), props)
+        Self::mount_at(cx, rows, 1200., (1200., 1300.), zoom, &Shared::default(), props)
     }
 
-    fn mount_at(cx: &mut TestAppContext, rows: Value, pane: f32, wide: f32, high: f32, zoom: f32, shared: &Shared, props: Value) -> Self {
+    /// As [`Self::mount_with`], in a window `(wide, high)` big, the zoom set to `zoom` (see [`Self::zoomed`]).
+    fn mount_at(cx: &mut TestAppContext, rows: Value, pane: f32, (wide, high): (f32, f32), zoom: f32, shared: &Shared, props: Value) -> Self {
         use gpui::{px, size};
         let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
         let class = "export default class GitDiff extends View {";
@@ -1480,7 +1481,7 @@ fn yuzora_diff_the_pointer_and_the_wheel_move_what_they_touch_at_every_zoom(cx: 
         pane.close();
 
         let shared = Shared::default();
-        let mut pane = DiffPane::mount_at(cx, long_rows(), 1200., 1200., 1300., zoom, &shared, json!({}));
+        let mut pane = DiffPane::mount_at(cx, long_rows(), 1200., (1200., 1300.), zoom, &shared, json!({}));
         let (side, divider) = (pane.width("l"), |pane: &DiffPane| pane.width("l") + z / 2.);
         let at = divider(&pane);
         pane.press(at, 100. * z, 1);
