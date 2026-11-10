@@ -1157,6 +1157,16 @@ impl DiffPane {
     /// A wheel or swipe of `dx`, `dy` pixels with the pointer at `x`, `y`.
     fn wheel(&mut self, x: f64, y: f64, dx: f64, dy: f64) {
         self.hover(x, y);
+        self.wheel_there(x, y, dx, dy);
+    }
+
+    /// The same with the left button down: the pointer is moved there by a drag, as a platform reports it.
+    fn wheel_held(&mut self, x: f64, y: f64, dx: f64, dy: f64) {
+        self.drag(x, y);
+        self.wheel_there(x, y, dx, dy);
+    }
+
+    fn wheel_there(&mut self, x: f64, y: f64, dx: f64, dy: f64) {
         self.visual.simulate_event(gpui::ScrollWheelEvent {
             position: Self::at(x, y),
             delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(dx as f32), gpui::px(dy as f32))),
@@ -1182,6 +1192,16 @@ impl DiffPane {
             }
         });
         self.settle();
+    }
+
+    /// The keyboard goes to something else in the window, as an app-wide shortcut that opens or shows another pane does; the pane
+    /// is sent no key. Keep the handle: dropping it gives the keyboard up again.
+    fn focus_elsewhere(&mut self) -> gpui::FocusHandle {
+        self.visual.update(|window, cx| {
+            let other = cx.focus_handle();
+            window.focus(&other, cx);
+            other
+        })
     }
 
     fn close(mut self) {
@@ -3150,7 +3170,7 @@ fn yuzora_diff_a_drag_while_the_rows_are_ranked_neither_ends_nor_stops_the_ranki
         "selected while the ranking is held"
     );
     // The ranking goes on with the button down, and the drag with it (a wheel lets it go: a key would end the drag).
-    pane.wheel(TEXT_LEFT, row_y(6), 1., 0.);
+    pane.wheel_held(TEXT_LEFT, row_y(6), 1., 0.);
     pane.drag(TEXT_LEFT, row_y(9));
     for _ in 0..30 {
         if !pane.pending() {
@@ -3192,7 +3212,7 @@ fn yuzora_diff_a_diff_read_again_during_a_drag_ends_it(cx: &mut TestAppContext) 
     pane.drag(TEXT_LEFT, row_y(5));
     assert_eq!(mark_of(&pane), json!(["left", 3, 5]));
     // A wheel makes the probe read the diff again, as a saved file would (a key would end the drag by itself).
-    pane.wheel(TEXT_LEFT, row_y(5), 1., 0.);
+    pane.wheel_held(TEXT_LEFT, row_y(5), 1., 0.);
     assert_eq!(
         mark_of(&pane),
         Value::Null,
@@ -3207,7 +3227,7 @@ fn yuzora_diff_a_diff_read_again_during_a_drag_ends_it(cx: &mut TestAppContext) 
     );
     // Pressed on a row and not yet moved off it: the row it was pressed on is a row of the old diff.
     pane.press(TEXT_LEFT, row_y(3), 1);
-    pane.wheel(TEXT_LEFT, row_y(3), 1., 0.);
+    pane.wheel_held(TEXT_LEFT, row_y(3), 1., 0.);
     pane.drag(TEXT_LEFT, row_y(6));
     pane.release(TEXT_LEFT, row_y(6));
     assert_eq!(
@@ -3244,6 +3264,95 @@ fn yuzora_diff_a_key_pressed_during_a_drag_copies_what_is_selected_and_ends_it(
     pane.close();
 }
 
+// yuzora(v010-git-diff-fu-r1): the release of a button can be missed (an app-wide shortcut pressed during the drag takes the key
+// away from the pane, and after a key the window counts the pointer as over nothing, so the pane's root sees no release),
+// and the first move after it says the button is up. It ends the drag whatever ended the button's hold: the rows are not selected
+// by a pointer moving with no button down, nor the list scrolled by one held at its edge.
+#[gpui::test]
+fn yuzora_diff_a_move_with_no_button_down_ends_a_drag_across_rows(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
+    let bottom = pane.high as f64 - 8.;
+    pane.press(TEXT_LEFT, row_y(3), 1);
+    pane.drag(TEXT_LEFT, row_y(5));
+    assert_eq!(mark_of(&pane), json!(["left", 3, 5]));
+    pane.hover(TEXT_LEFT, row_y(9));
+    assert_eq!(
+        mark_of(&pane),
+        json!(["left", 3, 5]),
+        "the pointer moving with no button down selects no more"
+    );
+    pane.hover(TEXT_LEFT, bottom);
+    pane.wait(10, 50);
+    near(
+        scrolled_in_frame(&pane),
+        0.,
+        "and held at the edge it scrolls nothing",
+    );
+    let built = pane.script_renders();
+    pane.wait(40, 50);
+    assert_eq!(pane.script_renders(), built, "and no clock builds a frame");
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 3, 6]])),
+        "what was selected stays"
+    );
+    pane.close();
+}
+
+// yuzora(v010-git-diff-fu-r1): the same for the divider's drag, which a missed release left on as well.
+#[gpui::test]
+fn yuzora_diff_a_move_with_no_button_down_ends_the_dividers_drag_and_keeps_its_share(
+    cx: &mut TestAppContext,
+) {
+    const PANE: f64 = 1200.;
+    let shared = Shared::default();
+    let mut pane = DiffPane::mount(cx, long_rows(), PANE as f32, &shared);
+    let half = (PANE - 1.) / 2.;
+    let at = pane.width("l") + 0.5;
+    pane.press(at, 100., 1);
+    pane.drag(at + 120., 100.);
+    pane.hover(at - 200., 100.);
+    near(
+        pane.width("l"),
+        half + 120.,
+        "the pointer moving with no button down drags nothing",
+    );
+    assert!(
+        (kept(&shared).as_f64().unwrap() - (half + 120.) / (PANE - 1.)).abs() < 0.001,
+        "and the share dragged to is kept: {:?}",
+        kept(&shared)
+    );
+    pane.close();
+}
+
+// yuzora(v010-git-diff-fu-r1): a drag goes on only while the pane has the keyboard it was given by the press: another pane shown
+// or opened by a shortcut takes it, and the clock of a drag the pane is not shown for would otherwise build a frame every 50 ms
+// for as long as the pointer is left where it was.
+#[gpui::test]
+fn yuzora_diff_a_drag_ends_when_the_pane_no_longer_has_the_keyboard(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
+    let bottom = pane.high as f64 - 8.;
+    pane.press(TEXT_LEFT, row_y(5), 1);
+    pane.drag(TEXT_LEFT, row_y(8));
+    pane.drag(TEXT_LEFT, bottom);
+    pane.wait(10, 50);
+    assert!(
+        scrolled_in_frame(&pane) >= 100.,
+        "held at the edge the list scrolls"
+    );
+    let elsewhere = pane.focus_elsewhere();
+    pane.wait(2, 50);
+    let (scrolled, built) = (scrolled_in_frame(&pane), pane.script_renders());
+    pane.wait(20, 50);
+    near(
+        scrolled_in_frame(&pane),
+        scrolled,
+        "the list scrolls no more",
+    );
+    assert_eq!(pane.script_renders(), built, "and no clock builds a frame");
+    drop(elsewhere);
+    pane.close();
+}
 // yuzora(v010-git-diff-fu): a drag that begins in a hunk makes it the current one, as the click on that row would: it is the hunk
 // the stage and discard buttons act on, and a drag ends on another row than the one pressed, so no click does it.
 #[gpui::test]
