@@ -470,6 +470,13 @@ struct DiffPane {
     /// What `diffView` answers next, in order, before the view the diff was opened with.
     views: Rc<RefCell<std::collections::VecDeque<Value>>>,
     wide: f32,
+    /// The window's height, and the zoom the person set (`settings().zoom`) with the runtime and root that tell
+    /// the mod it changed.
+    high: f32,
+    zoom: f32,
+    person: Rc<RefCell<Value>>,
+    runtime: Rc<ShellRuntime>,
+    root: gpui::Entity<ShellRoot>,
     _fixture: Fixture,
 }
 
@@ -483,6 +490,17 @@ impl DiffPane {
 
     /// The same in a window `wide` wide (more than `pane`: room to leave it), opened with `props` besides.
     fn mount_with(cx: &mut TestAppContext, rows: Value, pane: f32, wide: f32, shared: &Shared, props: Value) -> Self {
+        Self::mount_at(cx, rows, pane, wide, 600., 1., shared, props)
+    }
+
+    /// The diff of `rows` in a 1200px window as tall as it takes to show the probe row at `zoom` (a test that
+    /// sets the zoom runs alone, in a process of its own: see [`alone`]).
+    fn zoomed(cx: &mut TestAppContext, rows: Value, zoom: f32, props: Value) -> Self {
+        gpui_shell::set_pixel_scale(zoom);
+        Self::mount_at(cx, rows, 1200., 1200., 1300., zoom, &Shared::default(), props)
+    }
+
+    fn mount_at(cx: &mut TestAppContext, rows: Value, pane: f32, wide: f32, high: f32, zoom: f32, shared: &Shared, props: Value) -> Self {
         use gpui::{px, size};
         let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
         let class = "export default class GitDiff extends View {";
@@ -499,9 +517,12 @@ impl DiffPane {
             opened["pane"] = json!(pane);
         }
         opened.as_object_mut().unwrap().extend(props.as_object().unwrap().clone());
-        for (name, value) in [("theme", theme), ("props", opened), ("settings", json!({}))] {
+        for (name, value) in [("theme", theme), ("props", opened)] {
             herdr = herdr.function(name, move |_| Ok(to_host(&value)));
         }
+        let person = Rc::new(RefCell::new(json!({"zoom": zoom})));
+        let read = person.clone();
+        herdr = herdr.function("settings", move |_| Ok(to_host(&read.borrow())));
         for name in ["run", "panes", "focused", "closeOverlay"] {
             herdr = herdr.function(name, |_| Ok(HostValue::Null));
         }
@@ -538,10 +559,15 @@ impl DiffPane {
         }
         gpui_shell::policy::set_default(policy);
         let runtime = ShellRuntime::new_isolated().unwrap();
-        let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
+        let mut mounted = None;
+        let window = cx.add_window(|window, cx| {
+            let root = runtime.try_load(&fixture.0, window, cx).unwrap();
+            mounted = Some(root.clone());
+            Mounted(root)
+        });
         let visual = VisualTestContext::from_window(*window.deref(), cx);
-        visual.simulate_resize(size(px(wide), px(600.)));
-        let mut view = Self { visual, notes, views, wide, _fixture: fixture };
+        visual.simulate_resize(size(px(wide), px(high)));
+        let mut view = Self { visual, notes, views, wide, high, zoom, person, runtime, root: mounted.unwrap(), _fixture: fixture };
         view.settle();
         view
     }
@@ -555,7 +581,7 @@ impl DiffPane {
     fn resize(&mut self, width: f32) {
         use gpui::{px, size};
         self.wide = width;
-        self.visual.simulate_resize(size(px(width), px(600.)));
+        self.visual.simulate_resize(size(px(width), px(self.high)));
         self.settle();
     }
 
@@ -641,6 +667,47 @@ impl DiffPane {
 
     fn close(mut self) {
         self.visual.update(|window, _| window.remove_window());
+    }
+
+    /// The person sets the zoom while the diff is open: the pixel lengths scale and the mod, which reads
+    /// `settings()`, renders again. One frame is drawn, none after it, so what follows is what that frame drew.
+    fn set_zoom(&mut self, zoom: f32) {
+        gpui_shell::set_pixel_scale(zoom);
+        self.person.borrow_mut()["zoom"] = json!(zoom);
+        self.zoom = zoom;
+        self.visual.update(|_, cx| self.runtime.refresh(&self.root, cx).unwrap());
+        self.visual.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// The bar's thumb as the last frame painted it: where it starts and how long it is, in window pixels
+    /// (none: no bar). The bar is the only thing painted in the strip it has at the bottom of the window.
+    fn thumb(&mut self) -> Option<(f64, f64)> {
+        let (strip, scale) = (self.high - 8. * self.zoom - 1., self.visual.update(|window, _| window.scale_factor()));
+        let found: Vec<_> = self.visual.update(|window, _| window.painted_quads()).into_iter()
+            .filter(|q| !q.background.is_transparent())
+            .map(|q| (q.bounds.origin.x.as_f32() / scale, q.bounds.origin.y.as_f32() / scale, q.bounds.size.width.as_f32() / scale))
+            .filter(|(_, y, _)| *y >= strip)
+            .collect();
+        assert!(found.len() <= 1, "more than a thumb in the bar's strip: {found:?}");
+        found.first().map(|(x, _, w)| (*x as f64, *w as f64))
+    }
+
+    /// Where the first row's left text starts (its first character is `first`), in window pixels, from where the
+    /// pointer is over it (none: the pointer is over no text, which has all been scrolled out of sight).
+    fn start_of(&mut self, first: &str) -> Option<f64> {
+        let (x, y) = (100. * self.zoom as f64, 310. * self.zoom as f64);
+        let before = self.over().len();
+        self.hover(x, y);
+        let (found, from) = self.over().split_off(before).pop()?;
+        assert_eq!(found, first);
+        Some(x - from)
+    }
+
+    /// The lines scrolled as far as they go, and how much room is left after the first row's left text, which
+    /// starts with `first`: from its end to its cell's, in window pixels.
+    fn end_gap(&mut self, first: &str) -> Option<f64> {
+        self.wheel(100., 100., -100000., 0.);
+        Some(self.width("l") - (self.start_of(first)? + self.text_width(first)))
     }
 }
 
@@ -1244,6 +1311,219 @@ fn yuzora_diff_the_longest_lines_tail_scrolls_into_view_in_the_font_that_draws_i
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     });
+}
+
+/// A test that sets the zoom runs alone. The zoom is one value for the whole process (`gpui_shell::set_pixel_scale`)
+/// and the tests beside it read exact pixels at zoom 1, so this returns true in a test process of its own, and
+/// elsewhere runs the test in that one, checks it passed and returns false.
+fn alone(name: &str) -> bool {
+    if std::env::var("YUZORA_DIFF_ALONE").as_deref() == Ok(name) {
+        return true;
+    }
+    let out = crate::spawn::command(std::env::current_exe().unwrap().to_str().unwrap())
+        .args(["--exact", &format!("mods::lifecycle_tests::{name}"), "--nocapture", "--test-threads=1"])
+        .env("YUZORA_DIFF_ALONE", name)
+        .output()
+        .unwrap();
+    let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && log.contains("1 passed"), "{name} failed alone:\n{log}");
+    false
+}
+
+/// The zooms checked: below, at, and above 1, to the largest the person can pick but one.
+const ZOOMS: [f32; 5] = [0.8, 1., 1.2, 1.5, 2.];
+
+/// The first row's left line is the longest; where `rest` is set, four lines that look longer (a letter with an
+/// accent takes more than a cell at most) are laid out instead of it, so its width is the room for what was not.
+fn longest_first(rest: bool) -> Value {
+    let mut rows = vec![diff_row(Some((if rest { 124 } else { 300 }, "a")), Some((5, "b")))];
+    if rest {
+        rows.extend((0..4).map(|_| diff_row(Some((100, "\u{e9}")), Some((5, "b")))));
+    }
+    Value::Array(rows)
+}
+
+// yuzora(v010): at any zoom the lines scroll sideways to where the longest one ends and no further, and the
+// bar's thumb says so: it starts the track and ends it as the lines do, as long as the share of the lines it
+// stands for. A script's lengths are multiplied by the zoom and a size or a pointer comes back in window pixels,
+// so each of the two has to be turned into the other's unit before they meet.
+#[gpui::test]
+fn yuzora_diff_the_sideways_scroll_ends_where_the_longest_line_does_at_every_zoom(cx: &mut TestAppContext) {
+    if !alone("yuzora_diff_the_sideways_scroll_ends_where_the_longest_line_does_at_every_zoom") {
+        return;
+    }
+    let mut at_one = None;
+    let mut failures = Vec::new();
+    for zoom in [1.].into_iter().chain(ZOOMS) {
+        for (case, rest) in [("a line laid out", false), ("a line that was not", true)] {
+            let mut pane = DiffPane::zoomed(cx, longest_first(rest), zoom, json!({}));
+            let width = pane.wide as f64;
+            let home = pane.start_of("a").expect("the line at home");
+            let bar = pane.thumb();
+            let (gap, far) = (pane.end_gap("a"), pane.start_of("a"));
+            let thumb = pane.thumb();
+            pane.close();
+            let (z, mark) = (zoom as f64, format!("{case} at zoom {zoom}"));
+            let (Some(gap), Some(far)) = (gap, far) else { failures.push(format!("{mark}: scrolled to the end, no line is left in sight")); continue };
+            let travel = home - far;
+            let unit = gap / z;
+            let first = *at_one.get_or_insert(unit);
+            if zoom == 1. && !(0. ..30.).contains(&gap) {
+                failures.push(format!("{mark}: the widest line ends {gap} short of its cell's edge"));
+            }
+            if (unit - first).abs() > 1.5 / z {
+                failures.push(format!("{mark}: {gap} left after the end, {unit} of a pixel at zoom 1 when it is {first} there"));
+            }
+            let Some((start, long)) = bar else { failures.push(format!("{mark}: no bar at home")); continue };
+            let Some((end_start, end_long)) = thumb else { failures.push(format!("{mark}: no bar at the end")); continue };
+            if start.abs() > 1. {
+                failures.push(format!("{mark}: the thumb starts at {start} at home"));
+            }
+            let want = width * width / (width + travel);
+            if (long - want).abs() > 2. * z || (end_long - want).abs() > 2. * z {
+                failures.push(format!("{mark}: the thumb is {long} long at home and {end_long} at the end; the lines go {travel} of {width}: {want}"));
+            }
+            if (end_start + end_long - width).abs() > 1.5 {
+                failures.push(format!("{mark}: the thumb ends at {} of the {width} of the track at the end", end_start + end_long));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010): a zoom set while the diff is open is in the frame after it: the offset that was kept is brought
+// within the room there is at the new zoom, and the thumb is where the lines are, without waiting for the sizes
+// the new zoom makes to be reported.
+#[gpui::test]
+fn yuzora_diff_a_zoom_set_while_it_is_open_holds_from_the_next_frame(cx: &mut TestAppContext) {
+    if !alone("yuzora_diff_a_zoom_set_while_it_is_open_holds_from_the_next_frame") {
+        return;
+    }
+    let mut failures = Vec::new();
+    for (case, rest) in [("a line laid out", false), ("a line that was not", true)] {
+        let mut pane = DiffPane::zoomed(cx, longest_first(rest), 1., json!({}));
+        let base = pane.end_gap("a").expect("the line at the end");
+        pane.close();
+        let mut pane = DiffPane::zoomed(cx, longest_first(rest), 2., json!({}));
+        pane.wheel(100., 100., -100000., 0.);
+        let mut room = f64::MAX;
+        // Each zoom to the one after it: the room for the lines shrinks (the kept offset is more than there is), then grows.
+        for zoom in [1.5, 1., 0.8, 1.2, 2., 1.5] {
+            pane.set_zoom(zoom);
+            let next = pane.thumb();
+            pane.settle();
+            let settled = pane.thumb();
+            let mark = format!("{case}, set to {zoom}");
+            match (next, settled) {
+                (Some(a), Some(b)) if (a.0 - b.0).abs() <= 2. && (a.1 - b.1).abs() <= 2. => {}
+                (a, b) => failures.push(format!("{mark}: the next frame has the thumb at {a:?}, once the sizes are reported at {b:?}")),
+            }
+            let z = zoom as f64;
+            let gap = pane.start_of("a").map(|start| pane.width("l") - (start + pane.text_width("a")));
+            match gap {
+                None => failures.push(format!("{mark}: no line is in sight")),
+                Some(gap) if gap < -1.5 => failures.push(format!("{mark}: the widest line ends {} past its cell's edge", -gap)),
+                Some(gap) if zoom < 2. && z < room && (gap - base * z).abs() > 2. => failures.push(format!("{mark}: {gap} left after the end, when the offset is the farthest it can be: {}", base * z)),
+                Some(_) => {}
+            }
+            room = room.min(z);
+        }
+        pane.close();
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010): at any zoom a wheel or a swipe moves the lines as far as it went on the screen, the thumb
+// follows the pointer that drags it, the divider follows the pointer that drags it and its grab area is
+// where it is drawn, and a press on a line's number picks the line only on the number. Pointers and wheels
+// come in window pixels, and what the pane lays out and keeps is in the unit a script writes.
+#[gpui::test]
+fn yuzora_diff_the_pointer_and_the_wheel_move_what_they_touch_at_every_zoom(cx: &mut TestAppContext) {
+    if !alone("yuzora_diff_the_pointer_and_the_wheel_move_what_they_touch_at_every_zoom") {
+        return;
+    }
+    let mut failures = Vec::new();
+    for zoom in ZOOMS {
+        let z = zoom as f64;
+        let mut pane = DiffPane::zoomed(cx, longest_first(false), zoom, json!({}));
+        let home = pane.start_of("a").unwrap();
+        pane.wheel(100., 100., -200., 0.);
+        let moved = home - pane.start_of("a").unwrap_or(f64::NAN);
+        if (moved - 200.).abs() > 1.5 {
+            failures.push(format!("zoom {zoom}: a wheel of 200px moved the lines {moved}px"));
+        }
+        pane.wheel(100., 100., 100000., 0.);
+
+        let (start, long) = pane.thumb().expect("a bar");
+        let (grab, bar) = (start + long / 2., pane.high as f64 - 4. * z);
+        pane.press(grab, bar, 1);
+        pane.drag(grab + 100., bar);
+        match pane.thumb() {
+            Some((dragged, _)) if (dragged - start - 100.).abs() <= 2. => {}
+            now => failures.push(format!("zoom {zoom}: the pointer dragged the thumb 100px, from {start}, and it is at {now:?}")),
+        }
+        pane.drag(1199., bar);
+        pane.release(1199., bar);
+        match pane.thumb() {
+            Some((end, long)) if (end + long - 1200.).abs() <= 1.5 => {}
+            now => failures.push(format!("zoom {zoom}: dragged to the end of the track the thumb is at {now:?}")),
+        }
+        pane.close();
+
+        let shared = Shared::default();
+        let mut pane = DiffPane::mount_at(cx, long_rows(), 1200., 1200., 1300., zoom, &shared, json!({}));
+        let (side, divider) = (pane.width("l"), |pane: &DiffPane| pane.width("l") + z / 2.);
+        let at = divider(&pane);
+        pane.press(at, 100. * z, 1);
+        pane.drag(at + 120., 100. * z);
+        pane.release(at + 120., 100. * z);
+        if (pane.width("l") - side - 120.).abs() > 1.5 {
+            failures.push(format!("zoom {zoom}: the divider dragged 120px moved {}px", pane.width("l") - side));
+        }
+        let kept = kept(&shared).as_f64().unwrap_or(f64::NAN);
+        if (kept - pane.width("l") / (1200. - z)).abs() > 0.002 {
+            failures.push(format!("zoom {zoom}: the share kept is {kept} of a left side that is {} of the {} there is to share", pane.width("l"), 1200. - z));
+        }
+        // The grab area is drawn 5 around the divider's 1, 2 before it: in, and out.
+        for (from, grabbed) in [(-1.5 * z, true), (-3. * z, false)] {
+            let (side, at) = (pane.width("l"), divider(&pane) - z / 2. + from);
+            pane.press(at, 100. * z, 1);
+            pane.drag(at + 50., 100. * z);
+            pane.release(at + 50., 100. * z);
+            let moved = pane.width("l") - side;
+            if grabbed != (moved > 25.) {
+                failures.push(format!("zoom {zoom}: a press {from}px from the divider's edge {} (moved {moved}px)", if grabbed { "did not grab it" } else { "grabbed it" }));
+            }
+        }
+        pane.close();
+
+        let mut pane = DiffPane::zoomed(cx, json!([diff_row(Some((300, "a")), Some((300, "b")))]), zoom, json!({"real": true}));
+        let right = pane.width("l") + z;
+        for (x, want) in [(22. * z, Some("l")), (44. * z - 3., Some("l")), (44. * z + 3., None), (right + 22. * z, Some("r")), (right + 44. * z - 3., Some("r")), (right + 44. * z + 3., None)] {
+            let before = pane.notes.borrow().len();
+            pane.press(x, 38. * z, 1);
+            pane.release(x, 38. * z);
+            let picked: Vec<String> = pane.notes.borrow().iter().skip(before).filter(|n| n[0] == "pick").map(|n| n[1].as_str().unwrap_or("").to_owned()).collect();
+            if picked.first().map(String::as_str) != want || picked.len() > 1 {
+                failures.push(format!("zoom {zoom}: a click at x {x} picked {picked:?}, wanted {want:?}"));
+            }
+        }
+        pane.close();
+
+        let rows = json!([{"k": "-", "h": 0, "l": 1, "li": 0, "t": "old"}, {"k": "+", "h": 0, "r": 1, "ri": 0, "t": "new"}]);
+        let mut pane = DiffPane::zoomed(cx, rows, zoom, json!({"layout": "unified", "real": true}));
+        for (x, y, want) in [(22. * z, 38., Some(("l", 0))), (88. * z - 3., 38., Some(("l", 0))), (88. * z + 3., 38., None), (88. * z - 3., 58., Some(("r", 0))), (88. * z + 3., 58., None)] {
+            let before = pane.notes.borrow().len();
+            pane.press(x, y * z, 1);
+            pane.release(x, y * z);
+            let picked: Vec<(String, i64)> = pane.notes.borrow().iter().skip(before).filter(|n| n[0] == "pick").map(|n| (n[1].as_str().unwrap().to_owned(), n[2].as_i64().unwrap())).collect();
+            if picked.first().map(|(side, i)| (side.as_str(), *i)) != want || picked.len() > 1 {
+                failures.push(format!("zoom {zoom}: unified, a click at x {x}, y {y}z picked {picked:?}, wanted {want:?}"));
+            }
+        }
+        pane.close();
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 // yuzora(L2): the Git sidebar's main.js with its herdr, yuzora:core and yuzora:git imports
