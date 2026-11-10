@@ -399,16 +399,15 @@ impl Grid {
     fn commit_editing(&mut self, cx: &mut Context<Self>) {
         let (Some(editing), Some(set)) = (self.editing.take(), self.set.clone()) else { return };
         let value = editing.input.read(cx).value().to_string();
-        let Some(value) = typed_value(&editing.original, &editing.initial, value, editing.typed) else {
-            // Opened and left: a NULL stays NULL, 5 stays the number 5.
-            return cx.notify();
-        };
-        let id = {
+        let (kept, id) = {
             let mut r = results::lock(&set);
-            r.set_edit(editing.row, editing.column, value);
-            r.id
+            let kept = r.type_into(editing.row, editing.column, &editing.original, &editing.initial, value, editing.typed);
+            (kept, r.id)
         };
-        results::changed(id);
+        // Opened and left: a NULL stays NULL, 5 stays the number 5.
+        if kept {
+            results::changed(id);
+        }
         cx.notify();
     }
 
@@ -974,42 +973,9 @@ fn edit_blocked(r: &ResultSet) -> Option<String> {
     if r.is_writing() { Some(t("edit.writing", &[])) } else { r.editing.blocked() }
 }
 
-/// What the inline editor's text makes of a cell, if anything: opened and
-/// left as it was, nothing. A NULL cell opens blank, so blank there means an
-/// empty string only once it was typed into or Enter was pressed (`meant`).
-fn typed_value(original: &Cell, initial: &str, value: String, meant: bool) -> Option<Cell> {
-    (value != initial || (original.is_null() && meant)).then(|| original.edited(value))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_null_cell_can_become_an_empty_string() {
-        // Typed into (or Enter pressed on) a NULL cell left blank: an empty string.
-        assert_eq!(typed_value(&Cell::Null, "", String::new(), true), Some(Cell::text("")));
-        // Opened and left without a key: still NULL.
-        assert_eq!(typed_value(&Cell::Null, "", String::new(), false), None);
-        // A value left as it was is no edit, however it was left.
-        assert_eq!(typed_value(&Cell::Int(5), "5", "5".into(), true), None);
-        assert_eq!(typed_value(&Cell::text(""), "", String::new(), true), None, "an empty string stays one");
-        assert_eq!(typed_value(&Cell::text("a"), "a", "b".into(), false), Some(Cell::text("b")));
-        assert_eq!(typed_value(&Cell::Null, "", "x".into(), false), Some(Cell::text("x")));
-    }
-
-    #[test]
-    fn an_edited_number_stays_a_number() {
-        // SQLite keeps what is bound in a column without affinity: 7 must go as an integer.
-        assert_eq!(typed_value(&Cell::Int(5), "5", "7".into(), false), Some(Cell::Int(7)));
-        assert_eq!(typed_value(&Cell::Float(1.5), "1.5", "2".into(), false), Some(Cell::Float(2.0)));
-        // Not of the cell's kind: text, for the server to convert or refuse
-        // (SQL Server would cut a float 7.5 to 7 in an int column, silently).
-        assert_eq!(typed_value(&Cell::Int(5), "5", "7.5".into(), false), Some(Cell::text("7.5")));
-        assert_eq!(typed_value(&Cell::Int(5), "5", "five".into(), false), Some(Cell::text("five")));
-        assert_eq!(typed_value(&Cell::Float(1.5), "1.5", "NaN".into(), false), Some(Cell::text("NaN")));
-        assert_eq!(typed_value(&Cell::text("5"), "5", "7".into(), false), Some(Cell::text("7")), "text stays text");
-    }
 
     fn result(editing: crate::results::Editing) -> std::sync::Arc<std::sync::Mutex<ResultSet>> {
         let set = results::create("grid-tests", "select");

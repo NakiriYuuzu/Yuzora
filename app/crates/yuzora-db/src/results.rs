@@ -335,6 +335,16 @@ impl ResultSet {
         self.version += 1;
     }
 
+    /// Keeps what was typed into a cell as a pending edit, if it is one.
+    /// `original` is the cell as shown when the editor opened, `initial` the
+    /// text it opened with, `meant` whether the person typed into it or pressed
+    /// Enter (see [`typed_value`]). `false`: nothing to keep.
+    pub fn type_into(&mut self, row: usize, column: usize, original: &Cell, initial: &str, text: String, meant: bool) -> bool {
+        let Some(value) = typed_value(original, initial, text, meant) else { return false };
+        self.set_edit(row, column, value);
+        true
+    }
+
     /// Edits that are being written are not the result's to drop: they may
     /// reach the database whatever is done here. Stop the write first.
     pub fn discard_edits(&mut self) {
@@ -479,9 +489,42 @@ pub fn release_owner(owner: &str) {
     store().entries.retain(|_, e| e.owner != owner);
 }
 
+/// What the inline editor's text makes of a cell, if anything: opened and
+/// left as it was, nothing. A NULL cell opens blank, so blank there means an
+/// empty string only once it was typed into or Enter was pressed (`meant`).
+fn typed_value(original: &Cell, initial: &str, value: String, meant: bool) -> Option<Cell> {
+    (value != initial || (original.is_null() && meant)).then(|| original.edited(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_null_cell_can_become_an_empty_string() {
+        // Typed into (or Enter pressed on) a NULL cell left blank: an empty string.
+        assert_eq!(typed_value(&Cell::Null, "", String::new(), true), Some(Cell::text("")));
+        // Opened and left without a key: still NULL.
+        assert_eq!(typed_value(&Cell::Null, "", String::new(), false), None);
+        // A value left as it was is no edit, however it was left.
+        assert_eq!(typed_value(&Cell::Int(5), "5", "5".into(), true), None);
+        assert_eq!(typed_value(&Cell::text(""), "", String::new(), true), None, "an empty string stays one");
+        assert_eq!(typed_value(&Cell::text("a"), "a", "b".into(), false), Some(Cell::text("b")));
+        assert_eq!(typed_value(&Cell::Null, "", "x".into(), false), Some(Cell::text("x")));
+    }
+
+    #[test]
+    fn an_edited_number_stays_a_number() {
+        // SQLite keeps what is bound in a column without affinity: 7 must go as an integer.
+        assert_eq!(typed_value(&Cell::Int(5), "5", "7".into(), false), Some(Cell::Int(7)));
+        assert_eq!(typed_value(&Cell::Float(1.5), "1.5", "2".into(), false), Some(Cell::Float(2.0)));
+        // Not of the cell's kind: text, for the server to convert or refuse
+        // (SQL Server would cut a float 7.5 to 7 in an int column, silently).
+        assert_eq!(typed_value(&Cell::Int(5), "5", "7.5".into(), false), Some(Cell::text("7.5")));
+        assert_eq!(typed_value(&Cell::Int(5), "5", "five".into(), false), Some(Cell::text("five")));
+        assert_eq!(typed_value(&Cell::Float(1.5), "1.5", "NaN".into(), false), Some(Cell::text("NaN")));
+        assert_eq!(typed_value(&Cell::text("5"), "5", "7".into(), false), Some(Cell::text("7")), "text stays text");
+    }
 
     fn filled(owner: &str) -> Arc<Mutex<ResultSet>> {
         let set = create(owner, "select");
