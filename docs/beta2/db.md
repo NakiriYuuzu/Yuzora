@@ -159,6 +159,16 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 
 grid 只繪製看得到的列（`uniform_list`），所以畫面成本與結果大小無關。預設上限是 100,000 列。PostgreSQL 一列約 161 B，所以一個裝滿的結果集大約 16 MB。
 
+開表與 SQL 分頁從「使用者動作」到「第一批列、可編輯、總列數、Stop 結束」的時間，用 `crates/yuzora-db/tests/perf_open_table.rs` 量（全部 `#[ignore]`，每個樣本即時印一行 `PERF`）。app 與 fixture 之間放一個延遲轉送：每一塊資料在轉送裡等固定的單向延遲再放行，所以 pipeline 仍是 pipeline；沒有頻寬上限、掉包或抖動。轉送也記下每條連線的方向轉折，所以往返次數是量到的。量測用 `--config 'profile.dev.package.yuzora-db.opt-level=3'`（只重建這個 crate；依賴維持專案設定的 opt-level 2），絕對數字不能和 CI 的 opt-level 0 比。
+
+```bash
+YUZORA_DATABASE_TEST_ENGINES=postgres,mssql YUZORA_PERF_KEEP=1 \
+  cargo test --locked -p yuzora-db --config 'profile.dev.package.yuzora-db.opt-level=3' \
+  --test perf_open_table -- --ignored --nocapture --test-threads=1 perf_open_table
+```
+
+環境變數：`YUZORA_PERF_ENGINES`、`YUZORA_PERF_DELAYS`（單向毫秒，預設 `0,25`）、`YUZORA_PERF_TABLES`（`small,100k,1m,widecols,widetext`）、`YUZORA_PERF_MODES`（`cold,warm`，加 `cold-alone,warm-alone` 可去掉 pane 自己另外送的 `describe`）、`YUZORA_PERF_COLD`／`YUZORA_PERF_WARM`（樣本數）、`YUZORA_PERF_KEEP=1`（保留 fixture 資料庫 `yz_speed_pg`／`yz_speed_ms` 給下一次，預設結束時刪除）。其他測試：`perf_calibrate_the_delay_line`（先跑，確認轉送的延遲與往返次數）、`perf_phases_of_an_open`（連線、describe、SELECT、count 各自的時間）、`perf_sql_tab`（SQL 分頁與 Stop）、`perf_relay_overhead_on_a_big_result`。
+
 ## 實機畫面
 
 隔離的 app home 與 `HC_SESSION`，`herdr-app shot` 截圖。資料是一個 SQLite 檔：customers 120,000 列、orders 30,000 列（含 FK 與兩個索引）、沒有 PK 的 audit_log、一個 view、一個 trigger。
