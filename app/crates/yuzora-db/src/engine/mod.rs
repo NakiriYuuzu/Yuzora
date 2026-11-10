@@ -5,19 +5,21 @@
 //! elsewhere while it is busy — stopping a query — goes through its
 //! [`Canceller`].
 
+mod date_text;
 pub mod mssql;
 pub mod postgres;
 pub mod sqlite;
 mod tls;
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::config::{ConnectionConfig, Engine};
 use crate::error::DbResult;
 use crate::model::{Cell, Column, DbObject, ObjectRef, RowEdit, TableInfo};
+use crate::results::WriteStop;
 
 /// Everything needed to open one connection.
 #[derive(Clone, Debug)]
@@ -32,6 +34,11 @@ pub struct ConnectSpec {
     /// host up. The host still names the server for TLS.
     pub addresses: Option<Vec<SocketAddr>>,
     pub connect_timeout: Duration,
+    /// The connection a table is read and written back on, which only this
+    /// crate's statements run on (`session::table_owner`). PostgreSQL prints
+    /// values the way they are read back there; any other connection keeps the
+    /// server's settings.
+    pub for_table: bool,
 }
 
 impl ConnectSpec {
@@ -43,6 +50,7 @@ impl ConnectSpec {
             endpoint: None,
             addresses: None,
             connect_timeout: Duration::from_secs(15),
+            for_table: false,
         }
     }
 
@@ -89,23 +97,49 @@ pub enum Conn {
 /// Whether a write-back has sent COMMIT. Before that its transaction was never
 /// ended, so a stop leaves nothing in the database (the server rolls it back);
 /// after it, the server alone decides, and a stop cannot say which way.
+///
+/// It also holds the write-back's own stop, which is pressed from another
+/// thread and noticed by the write-back's task only when that gets to run: the
+/// commit asks it directly ([`CommitSent::mark`]), so a Stop pressed before
+/// COMMIT is sent is never overtaken by a task that has not looked yet.
 #[derive(Clone, Debug, Default)]
-pub struct CommitSent(Arc<AtomicBool>);
+pub struct CommitSent(Arc<CommitState>);
+
+#[derive(Debug, Default)]
+struct CommitState {
+    sent: AtomicBool,
+    stop: Mutex<Option<WriteStop>>,
+}
 
 impl CommitSent {
+    /// A write-back starts: COMMIT has not been sent, and `stop` is the one
+    /// that ends it.
+    fn arm(&self, stop: &WriteStop) {
+        *self.0.stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop.clone());
+        self.reset();
+    }
+
     /// COMMIT has not been sent (a write-back starts, or it took its mark back).
     fn reset(&self) {
-        self.0.store(false, Ordering::SeqCst);
+        self.0.sent.store(false, Ordering::SeqCst);
     }
 
     /// Called right before the COMMIT is sent, never after: a stop that
-    /// reads this as unset is one that COMMIT cannot follow.
-    fn mark(&self) {
-        self.0.store(true, Ordering::SeqCst);
+    /// reads this as unset is one that COMMIT cannot follow. `false` means a
+    /// Stop was pressed first: the mark is taken back and COMMIT is not to be
+    /// sent. The mark goes up before the Stop is looked for, so a Stop pressed
+    /// after the look finds it set.
+    fn mark(&self) -> bool {
+        self.0.sent.store(true, Ordering::SeqCst);
+        let pressed = self.0.stop.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(WriteStop::is_stopped);
+        if pressed {
+            self.reset();
+        }
+        !pressed
     }
 
     pub fn is_sent(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.sent.load(Ordering::SeqCst)
     }
 }
 
@@ -152,13 +186,13 @@ impl Canceller {
     }
 
     /// A write-back is about to run on the connection: COMMIT has not been
-    /// sent yet. Asked before anything of it can be stopped, so a stop never
-    /// reads what the write-back before it left.
-    pub fn write_back_starts(&self) {
+    /// sent yet, and `stop` is what ends it. Asked before anything of it can be
+    /// stopped, so a stop never reads what the write-back before it left.
+    pub fn write_back_starts(&self, stop: &WriteStop) {
         match self {
-            Canceller::Postgres(c) => c.commit.reset(),
-            Canceller::Mssql(c) => c.commit.reset(),
-            Canceller::Sqlite(c) => c.commit.reset(),
+            Canceller::Postgres(c) => c.commit.arm(stop),
+            Canceller::Mssql(c) => c.commit.arm(stop),
+            Canceller::Sqlite(c) => c.commit.arm(stop),
         }
     }
 
@@ -320,6 +354,18 @@ pub fn select_sql(
     match engine {
         Engine::Mssql => format!("SELECT TOP ({limit}) * FROM {table}{order};"),
         _ => format!("SELECT * FROM {table}{order} LIMIT {limit};"),
+    }
+}
+
+/// Said ahead of a table's SELECT, in the same batch (a round trip of its own is not spent).
+/// A SQL Server login or server whose default opens a transaction at the first statement that
+/// touches a table would leave one open after the read, and a write-back does not run beside
+/// one. The connection a table is read and saved on is the app's alone (`session::table_owner`),
+/// no SQL tab on it can end that transaction, so the app says it does not want one.
+pub fn table_prelude(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Mssql => "SET IMPLICIT_TRANSACTIONS OFF; ",
+        _ => "",
     }
 }
 

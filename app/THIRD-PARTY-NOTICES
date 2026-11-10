@@ -2,7 +2,7 @@ Herdr third-party notices
 =========================
 Regenerate with just notices. See licenses/README.md.
 
-Input-SHA256: 743de08540b3baae2d89cc7301f5c0c8897ae55fc007679717d217df4332a755 Cargo.lock
+Input-SHA256: 05ed7b8af2453ad4be8a1a119cf6441a9ae2828b08a291f8e01272f3eb15c475 Cargo.lock
 Input-SHA256: 3b9071de6ce2005ee4a45f855184d46817648a0ec009f8b71d743e567d11acdb Cargo.toml
 Input-SHA256: c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 LICENSE
 Input-SHA256: e58cb0de2dde300bcda769ca993fde2737f42c0274082f038621ab22975a49e2 about.toml
@@ -13034,8 +13034,6 @@ Apache License 2.0 (Apache-2.0)
   whoami 2.1.3 — https://github.com/ardaku/whoami
   winapi-i686-pc-windows-gnu 0.4.0 — https://github.com/retep998/winapi-rs
   winapi-x86_64-pc-windows-gnu 0.4.0 — https://github.com/retep998/winapi-rs
-  zstd-safe 7.2.4 — https://github.com/gyscos/zstd-rs
-  zstd-sys 2.0.16+zstd.1.5.7 — https://github.com/gyscos/zstd-rs
   zune-inflate 0.2.54
 
 Apache License
@@ -13942,6 +13940,78 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------------------
 BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License (BSD-3-Clause)
+  zstd-safe 7.4.0 — https://github.com/gyscos/zstd-rs
+  zstd-sys 2.1.2+zstd.1.5.7 — https://github.com/gyscos/zstd-rs
+  zstd 0.13.4 — https://github.com/gyscos/zstd-rs
+
+BSD 3-Clause License
+
+Copyright (c) 2026, Alexandre Bury
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+----------------------------------------------------------------------
+BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License (BSD-3-Clause)
+  zstd-sys 2.1.2+zstd.1.5.7 — https://github.com/gyscos/zstd-rs
+
+BSD License
+
+For Zstandard software
+
+Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook, nor Meta, nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+----------------------------------------------------------------------
+BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License (BSD-3-Clause)
   tiny-skia-path 0.11.4 — https://github.com/RazrFalcon/tiny-skia/tree/master/path
   tiny-skia 0.11.4 — https://github.com/RazrFalcon/tiny-skia
 
@@ -14249,6 +14319,44 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+----------------------------------------------------------------------
+BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License (BSD-3-Clause)
+  zstd-sys 2.1.2+zstd.1.5.7 — https://github.com/gyscos/zstd-rs
+
+The auto-generated bindings are under the 3-clause BSD license:
+
+BSD License
+
+For Zstandard software
+
+Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook, nor Meta, nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ----------------------------------------------------------------------
@@ -17812,7 +17920,7 @@ SOFTWARE.
 ----------------------------------------------------------------------
 MIT License (MIT)
   tokio-util 0.7.19 — https://github.com/tokio-rs/tokio
-  tokio 1.53.1 — https://github.com/tokio-rs/tokio
+  tokio 1.53.3 — https://github.com/tokio-rs/tokio
 
 MIT License
 
@@ -18905,20 +19013,6 @@ HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
-
-
-----------------------------------------------------------------------
-MIT License (MIT)
-  zstd 0.13.3 — https://github.com/gyscos/zstd-rs
-
-The MIT License (MIT)
-Copyright (c) 2016 Alexandre Bury
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 ----------------------------------------------------------------------

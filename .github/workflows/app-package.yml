@@ -162,6 +162,16 @@ jobs:
           [ "$(cat "$shared/theirs.txt")" = theirs ]
           [ "$(cat "$shared/yuzora.png")" = theirs ]
           [ ! -e "$shared/yuzora.exe" ]
+      # The step above ends with Yuzora uninstalled. This installs it again and
+      # updates it twice from a start in its install folder, as the Start menu
+      # shortcut starts it (src/yuzora/release/cwd.rs). Exit 1: the update did
+      # not work. Exit 2: the check could not run (the window did not open, say).
+      - name: Check that the installed Windows app updates itself
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        run: |
+          python scripts/yuzora/check-win-update.py --self-test
+          python scripts/yuzora/check-win-update.py dist/Yuzora-windows-x64-setup.exe
       - name: Check the Linux folder and its installer
         if: runner.os == 'Linux'
         run: |

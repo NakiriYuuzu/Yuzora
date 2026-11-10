@@ -7,6 +7,8 @@
 //! quietly opens a new connection. The pool treats a connection without a
 //! socket as closed, so it does not keep one around.
 
+use std::borrow::Cow;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures_util::future::{Either, select};
@@ -19,6 +21,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
+use super::date_text::{self, DateText};
 use super::{BATCH, CommitSent, ConnectSpec, RowSink};
 use crate::config::{Engine, SslMode};
 use crate::error::{DbError, DbResult};
@@ -325,21 +328,21 @@ impl MsConn {
         }
         let reused = self.client.is_some();
         let mut client = self.take_client().await?;
-        // Nested in a transaction the SQL tab left open, COMMIT only counts
-        // down: the tab's ROLLBACK would undo the write-back after it read as done.
+        // Nested in a transaction something else left open on this connection (the
+        // login's defaults, a trigger), COMMIT only counts down: that transaction's
+        // ROLLBACK would undo the write-back after it read as done.
         // Also the first thing sent: a socket the server closed while the
         // connection sat idle fails here, with nothing written, and is replaced.
-        const OPEN_TRANSACTIONS: &str = "SELECT CAST(@@TRANCOUNT AS nvarchar(11))";
-        let mut open_transactions = scalar(&mut client, OPEN_TRANSACTIONS).await;
-        if reused && open_transactions.as_ref().is_err_and(dropped) {
+        let mut state = transactions(&mut client).await;
+        if reused && state.as_ref().is_err_and(dropped) {
             client = open(&self.spec).await?;
-            open_transactions = scalar(&mut client, OPEN_TRANSACTIONS).await;
+            state = transactions(&mut client).await;
         }
-        match open_transactions {
-            Ok(n) if n == "0" => {}
-            Ok(_) => {
+        let implicit = match state {
+            Ok((0, implicit)) => implicit,
+            Ok((_, implicit)) => {
                 self.client = Some(client);
-                return Err(sql::open_transaction());
+                return Err(if implicit { sql::open_implicit_transaction() } else { sql::open_transaction() });
             }
             Err(e) => {
                 if !fatal(&e) {
@@ -347,22 +350,29 @@ impl MsConn {
                 }
                 return Err(query_error(e));
             }
-        }
-        match write_rows(&mut client, &self.database, table, &edits, &self.canceller.commit).await {
-            Ok(written) => {
+        };
+        // With IMPLICIT_TRANSACTIONS on, any statement that touches a table
+        // opens a transaction, and BEGIN opens one more: the COMMIT would leave
+        // the first open and the write-back would be lost with the connection.
+        // It is off for the write-back and back on after it, as the connection had it.
+        if implicit && let Err(e) = batch(&mut client, "SET IMPLICIT_TRANSACTIONS OFF").await {
+            if !fatal(&e) {
                 self.client = Some(client);
-                Ok(written)
             }
-            Err((error, usable)) => {
-                // Whatever the failure, nothing stays half written; a connection
-                // that can't even say so is let go.
-                if usable {
-                    let rolled_back = rollback(&mut client).await.is_ok();
-                    self.client = rolled_back.then_some(client);
-                }
-                Err(error)
-            }
+            return Err(query_error(e));
         }
+        let outcome = write_rows(&mut client, &self.database, table, &edits, &self.canceller.commit).await;
+        // Whatever the failure, nothing stays half written; a connection
+        // that can't even say so is let go.
+        let mut usable = match &outcome {
+            Ok(_) => true,
+            Err((_, usable)) => *usable && rollback(&mut client).await.is_ok(),
+        };
+        if usable && implicit {
+            usable = batch(&mut client, "SET IMPLICIT_TRANSACTIONS ON").await.is_ok();
+        }
+        self.client = usable.then_some(client);
+        outcome.map_err(|(error, _)| error)
     }
 
     /// The socket, opened again if it was given up.
@@ -375,10 +385,13 @@ impl MsConn {
 
     /// `sql` with parameters; the rows of its first result.
     ///
-    /// It only reads, so a socket the server closed while the connection sat
-    /// idle is replaced and the query runs again, once.
+    /// It only reads (the catalog), so a socket the server closed while the
+    /// connection sat idle is replaced and the query runs again, once, and a
+    /// read the server chose as the victim of a deadlock with someone's DDL runs
+    /// again, as the server's message asks, a few times at most.
     async fn rows(&mut self, sql: &str, params: &[&dyn ToSql]) -> DbResult<Vec<Row>> {
         let mut reused = self.client.is_some();
+        let mut reruns = 0;
         loop {
             let mut client = self.take_client().await?;
             match first_result(&mut client, sql, params).await {
@@ -387,6 +400,11 @@ impl MsConn {
                     return Ok(rows);
                 }
                 Err(e) if reused && dropped(&e) => reused = false,
+                Err(e) if deadlock_victim(&e) && reruns < DEADLOCK_RERUNS => {
+                    reruns += 1;
+                    self.client = Some(client);
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * reruns)).await;
+                }
                 Err(e) => {
                     if !fatal(&e) {
                         self.client = Some(client);
@@ -494,6 +512,17 @@ fn expand_home(path: &str) -> String {
         Some(rest) => yuzora_core::paths::home_dir().join(rest).to_string_lossy().into_owned(),
         None => path.to_owned(),
     }
+}
+
+/// How many transactions the connection has open, and whether it opens one by
+/// itself (`IMPLICIT_TRANSACTIONS`, also set by `ANSI_DEFAULTS`). Neither
+/// statement touches a table, so asking opens nothing.
+async fn transactions(client: &mut Tds) -> Result<(i32, bool), TdsError> {
+    let row = client.simple_query("SELECT @@TRANCOUNT, @@OPTIONS & 2").await?.into_row().await?;
+    let row = row.ok_or_else(|| TdsError::Protocol("no answer to the question of open transactions".into()))?;
+    let open: Option<i32> = row.try_get(0)?;
+    let options: Option<i32> = row.try_get(1)?;
+    Ok((open.unwrap_or(1), options.unwrap_or(0) != 0))
 }
 
 /// The first column of the first row.
@@ -715,6 +744,16 @@ fn dropped(e: &TdsError) -> bool {
     matches!(e, TdsError::Io { .. })
 }
 
+/// The server rolled the statement back because it picked this connection to
+/// give way in a deadlock (Msg 1205), and says to run it again.
+fn deadlock_victim(e: &TdsError) -> bool {
+    matches!(e, TdsError::Server(token) if token.code() == 1205)
+}
+
+/// How often a read that was a deadlock victim is run again before its error is
+/// the answer (50, 100, 150 and 200 ms apart).
+const DEADLOCK_RERUNS: u64 = 4;
+
 /// The connection can't be used after this one.
 fn fatal(e: &TdsError) -> bool {
     !matches!(e, TdsError::Server(_) | TdsError::Conversion(_) | TdsError::ParseInt(_) | TdsError::BulkInput(_))
@@ -753,7 +792,7 @@ fn opt_text(row: &Row, i: usize) -> DbResult<Option<String>> {
 
 /// A parameter of an `UPDATE`.
 enum Param<'a> {
-    Text(&'a str),
+    Text(Cow<'a, str>),
     Int(i64),
     Float(f64),
     Bool(bool),
@@ -764,15 +803,27 @@ enum Param<'a> {
 static NO_TEXT: Option<&str> = None;
 
 impl<'a> Param<'a> {
-    fn of(cell: &'a Cell) -> Self {
-        match cell {
+    /// `dates`: the columns that read a date from text by the session's `DATEFORMAT`.
+    fn of(column: &str, cell: &'a Cell, dates: &HashSet<String>) -> DbResult<Self> {
+        Ok(match cell {
             Cell::Null => Param::Null,
             Cell::Bool(b) => Param::Bool(*b),
             Cell::Int(i) => Param::Int(*i),
             Cell::Float(f) => Param::Float(*f),
-            Cell::Text(s) => Param::Text(s),
+            // A year-first date is never left for the server to read: it is sent the one
+            // way every session reads, or not at all (see `date_text`).
+            Cell::Text(s) => match dates.contains(column).then(|| date_text::classify(s)) {
+                Some(DateText::Client(iso)) => Param::Text(Cow::Owned(iso)),
+                Some(DateText::Refused) => {
+                    return Err(DbError::NotEditable(crate::i18n::t(
+                        "edit.bad_date",
+                        &[("column", column.to_owned()), ("text", s.to_string())],
+                    )));
+                }
+                Some(DateText::Session) | None => Param::Text(Cow::Borrowed(s)),
+            },
             Cell::Bytes(b) => Param::Bytes(b),
-        }
+        })
     }
 
     fn sql(&self) -> &dyn ToSql {
@@ -785,6 +836,45 @@ impl<'a> Param<'a> {
             Param::Null => &NO_TEXT,
         }
     }
+}
+
+/// Which of `columns` of `table` are `datetime` or `smalldatetime`: the two
+/// types that read a date from text by the session's `DATEFORMAT` (`date`,
+/// `datetime2` and `datetimeoffset` read the same text the same way under every
+/// one). A type made `FROM datetime` is one. The server describes the columns
+/// of the table as the write names it, so a temporary table, a view or a
+/// synonym are answered the same way.
+async fn date_columns(
+    client: &mut Tds,
+    database: &str,
+    table: &ObjectRef,
+    columns: &[&str],
+) -> Result<HashSet<String>, TdsError> {
+    let list = columns.iter().map(|c| super::quote_ident(Engine::Mssql, c)).collect::<Vec<_>>().join(", ");
+    let sql = format!("SELECT TOP (0) {list} FROM {}", super::qualified_in(Engine::Mssql, Some(database), table));
+    let mut stream = client.simple_query(sql).await?;
+    let dates = stream
+        .columns()
+        .await?
+        .unwrap_or_default()
+        .iter()
+        .filter(|c| matches!(c.column_type(), ColumnType::Datetime | ColumnType::Datetimen | ColumnType::Datetime4))
+        .map(|c| c.name().to_owned())
+        .collect();
+    stream.into_results().await?;
+    Ok(dates)
+}
+
+/// The columns whose text the server could read a day-first date from: the ones
+/// that hold a year-first date.
+fn year_first_columns<'a>(edits: &[&'a RowEdit]) -> Vec<&'a str> {
+    let mut columns: Vec<&str> = Vec::new();
+    for (column, cell) in edits.iter().flat_map(|e| e.changes.iter().chain(&e.key)) {
+        if matches!(cell, Cell::Text(s) if !matches!(date_text::classify(s), DateText::Session)) && !columns.contains(&column.as_str()) {
+            columns.push(column);
+        }
+    }
+    columns
 }
 
 /// `UPDATE [s].[t] SET [a] = @P1 WHERE [k] = @P2; SELECT ROWCOUNT_BIG();`:
@@ -817,12 +907,23 @@ async fn write_rows(
     commit: &CommitSent,
 ) -> Result<u64, (DbError, bool)> {
     let fail = |e: TdsError| (query_error(e.clone()), !fatal(&e));
+    // Everything that can be refused is refused before anything is sent.
+    let year_first = year_first_columns(edits);
+    let dates = if year_first.is_empty() {
+        HashSet::new()
+    } else {
+        date_columns(client, database, table, &year_first).await.map_err(fail)?
+    };
+    let all_params: Vec<Vec<Param<'_>>> = edits
+        .iter()
+        .map(|edit| edit.changes.iter().chain(&edit.key).map(|(n, c)| Param::of(n, c, &dates)).collect())
+        .collect::<DbResult<_>>()
+        .map_err(|e| (e, true))?;
     // The transaction commands are batches: run as an RPC (`execute`) the server
     // objects that the transaction count changed.
     batch(client, "BEGIN TRANSACTION").await.map_err(fail)?;
     let mut written = 0;
-    for edit in edits {
-        let params: Vec<Param<'_>> = edit.changes.iter().chain(&edit.key).map(|(_, c)| Param::of(c)).collect();
+    for (edit, params) in edits.iter().zip(&all_params) {
         let refs: Vec<&dyn ToSql> = params.iter().map(Param::sql).collect();
         let sql = update_sql(database, table, edit);
         let sets = client.query(sql, &refs).await.map_err(fail)?.into_results().await.map_err(fail)?;
@@ -837,8 +938,16 @@ async fn write_rows(
         }
         written += 1;
     }
-    commit.mark();
-    batch(client, "COMMIT TRANSACTION").await.map_err(fail)?;
+    if !commit.mark() {
+        return Err((DbError::Cancelled, true));
+    }
+    // A COMMIT that leaves the count above zero has not committed: said only
+    // after asking, so a write-back is never reported for work the server
+    // still holds open.
+    let left = scalar(client, "COMMIT TRANSACTION; SELECT CAST(@@TRANCOUNT AS nvarchar(11))").await.map_err(fail)?;
+    if left != "0" {
+        return Err((DbError::Query(crate::i18n::t("edit.not_committed", &[])), true));
+    }
     Ok(written)
 }
 

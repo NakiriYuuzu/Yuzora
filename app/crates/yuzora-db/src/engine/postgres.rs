@@ -45,6 +45,16 @@ pub struct PgConn {
     backslash: bool,
 }
 
+/// A value is shown as text and comes back as text: only ISO prints a zone as
+/// an offset (`CST` is read as -06:00 though Asia/Taipei printed it), and only
+/// extra_float_digits above 0 prints every digit of a float. The order of day
+/// and month in what a person types stays the session's. Set when the
+/// connection that reads and writes a table opens, whatever the database or the
+/// role has as its own. No script of a person's runs on that connection
+/// (`session::table_owner`), so nothing takes them back; the SQL tab and the
+/// count keep what the server says, as `psql` shows it.
+const PRINT_AS_READ: &str = "SET datestyle = 'ISO'; SET extra_float_digits = 3";
+
 /// Asks the server to stop what the connection is running (a second, short
 /// connection carries the request, over the same TLS settings).
 ///
@@ -230,7 +240,7 @@ impl PgConn {
         let mut tried = Vec::new();
         for (i, database) in candidates.iter().enumerate() {
             match open(spec, &tls, database, deadline).await {
-                Ok((client, target)) => return Self::ready(client, tls, target).await,
+                Ok((client, target)) => return Self::ready(client, tls, target, spec.for_table).await,
                 Err(Attempt { error, code }) => {
                     // Only a database that can't be had is worth moving on
                     // from: missing, no CONNECT right, connections disallowed.
@@ -245,10 +255,18 @@ impl PgConn {
         unreachable!("there is always one candidate database")
     }
 
-    async fn ready(client: Client, tls: MakeRustlsConnect, target: Option<Arc<Target>>) -> DbResult<Self> {
+    async fn ready(
+        client: Client,
+        tls: MakeRustlsConnect,
+        target: Option<Arc<Target>>,
+        for_table: bool,
+    ) -> DbResult<Self> {
         let row = client.query_one("SHOW server_version", &[]).await.map_err(|e| DbError::Connect(describe(&e)))?;
         let full: String = row.get(0);
         let version = format!("PostgreSQL {}", full.split_whitespace().next().unwrap_or(&full));
+        if for_table {
+            client.batch_execute(PRINT_AS_READ).await.map_err(|e| DbError::Connect(describe(&e)))?;
+        }
         let canceller = PgCanceller {
             token: client.cancel_token(),
             tls,
@@ -651,7 +669,9 @@ impl PgConn {
             }
             written += 1;
         }
-        self.canceller.commit.mark();
+        if !self.canceller.commit.mark() {
+            return Err(DbError::Cancelled);
+        }
         tx.commit().await.map_err(query_error)?;
         Ok(written)
     }

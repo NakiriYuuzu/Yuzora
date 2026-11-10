@@ -28,6 +28,9 @@ enum Hold {
     /// A cancel request, told apart by its first bytes (so only on a
     /// connection that does not start with TLS).
     Cancels(Duration),
+    /// A cancel request, until [`LaggingPostgres::release`]: however long the
+    /// test takes to look, the server has not heard it.
+    CancelsUntilReleased,
     /// Every connection made from now on, whatever it carries: each piece the
     /// client sends reaches the server this much later.
     Connections(Duration),
@@ -51,6 +54,7 @@ pub struct LaggingPostgres {
     port: u16,
     hold: Arc<Mutex<Hold>>,
     heard: Arc<Mutex<Vec<Heard>>>,
+    arrived: Arc<AtomicUsize>,
 }
 
 impl LaggingPostgres {
@@ -59,15 +63,16 @@ impl LaggingPostgres {
         let port = listener.local_addr().unwrap().port();
         let hold = Arc::new(Mutex::new(Hold::Nothing));
         let heard = Arc::new(Mutex::new(Vec::new()));
-        let (shared, log) = (hold.clone(), heard.clone());
+        let arrived = Arc::new(AtomicUsize::new(0));
+        let (shared, log, count) = (hold.clone(), heard.clone(), arrived.clone());
         std::thread::spawn(move || {
             for client in listener.incoming().flatten() {
                 let hold = *shared.lock().unwrap_or_else(|e| e.into_inner());
-                let log = log.clone();
-                std::thread::spawn(move || relay(client, hold, log));
+                let (log, gate, count) = (log.clone(), shared.clone(), count.clone());
+                std::thread::spawn(move || relay(client, hold, gate, log, count));
             }
         });
-        LaggingPostgres { port, hold, heard }
+        LaggingPostgres { port, hold, heard, arrived }
     }
 
     pub fn port(&self) -> u16 {
@@ -86,6 +91,10 @@ impl LaggingPostgres {
         self.set(Hold::Cancels(delay));
     }
 
+    pub fn hold_cancels_until_released(&self) {
+        self.set(Hold::CancelsUntilReleased);
+    }
+
     pub fn hold_connections(&self, delay: Duration) {
         self.set(Hold::Connections(delay));
     }
@@ -98,12 +107,36 @@ impl LaggingPostgres {
     pub fn heard(&self) -> Vec<Heard> {
         self.heard.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
+
+    /// [`heard`](Self::heard) once it has `count` things in it. What the client
+    /// sends after its own call returned (a dropped transaction's ROLLBACK) is
+    /// written by the connection's task and read by a relay thread, so it is
+    /// there when it gets there; ten seconds is the most this waits for it.
+    pub fn heard_until(&self, count: usize) -> Vec<Heard> {
+        let started = std::time::Instant::now();
+        loop {
+            let heard = self.heard();
+            if heard.len() >= count || started.elapsed() > Duration::from_secs(10) {
+                return heard;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Cancel requests that have reached the relay, held back or not: the
+    /// client has sent them, the server has not necessarily heard them.
+    pub fn stops_arrived(&self) -> usize {
+        self.arrived.load(Ordering::SeqCst)
+    }
 }
 
-fn relay(mut client: TcpStream, hold: Hold, heard: Arc<Mutex<Vec<Heard>>>) {
+fn relay(mut client: TcpStream, hold: Hold, gate: Arc<Mutex<Hold>>, heard: Arc<Mutex<Vec<Heard>>>, arrived: Arc<AtomicUsize>) {
     let mut buf = [0u8; 4096];
     let Ok(n) = client.read(&mut buf) else { return };
     let cancel = buf[..n].starts_with(&CANCEL_REQUEST);
+    if cancel {
+        arrived.fetch_add(1, Ordering::SeqCst);
+    }
     let note = |what| heard.lock().unwrap_or_else(|e| e.into_inner()).push(what);
     let (lead, lag) = match hold {
         Hold::Cancels(delay) if buf[..n].starts_with(&CANCEL_REQUEST) => (delay, Duration::ZERO),
@@ -111,6 +144,11 @@ fn relay(mut client: TcpStream, hold: Hold, heard: Arc<Mutex<Vec<Heard>>>) {
         _ => (Duration::ZERO, Duration::ZERO),
     };
     std::thread::sleep(lead);
+    let gated =
+        |gate: &Mutex<Hold>| matches!(*gate.lock().unwrap_or_else(|e| e.into_inner()), Hold::CancelsUntilReleased);
+    while cancel && matches!(hold, Hold::CancelsUntilReleased) && gated(&gate) {
+        std::thread::sleep(Duration::from_millis(2));
+    }
     let Ok(mut server) = TcpStream::connect(UPSTREAM) else { return };
     let (mut from_client, mut to_server) = (client.try_clone().unwrap(), server.try_clone().unwrap());
     let rollbacks = heard.clone();

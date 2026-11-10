@@ -90,6 +90,15 @@ fn rows(connection: &str, sql: &str) -> Vec<Vec<String>> {
     r.rows.iter().map(|row| row.iter().map(|c| c.display().into_owned()).collect()).collect()
 }
 
+/// The first row of `sql` run on the connection `owner` holds.
+fn first_row_on(connection: &str, owner: &str, sql: &str) -> Vec<String> {
+    let state = wait(session::start_query(connection, None, owner, sql));
+    assert_eq!(state.error, None, "{sql}");
+    let set = results::get(state.results.last().expect("a result").id).expect("result");
+    let r = results::lock(&set);
+    r.rows[0].iter().map(|c| c.display().into_owned()).collect()
+}
+
 fn first_row(connection: &str, sql: &str) -> Vec<String> {
     rows(connection, sql).into_iter().next().unwrap_or_default()
 }
@@ -368,7 +377,7 @@ fn sqlite_a_write_back_queued_behind_the_connection_shows_it_and_can_be_stopped(
     let pane = open(&id, "queued-pane", &table("", "people"));
     pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
 
-    let held = runtime::block_on(session::lease(&id, None, &pane.owner)).unwrap();
+    let held = runtime::block_on(session::lease(&id, None, &session::table_owner(&pane.owner))).unwrap();
     let rid = pane.id;
     let set = pane.set.clone();
     let writer = std::thread::spawn(move || runtime::block_on(session::write_back_set(&set)));
@@ -1131,7 +1140,7 @@ fn sqlite_a_count_without_a_connection_of_its_own_runs_on_the_panes_and_does_not
     let t = table("", "people");
     // The connections the read opens first are there: the count's is the only new one.
     runtime::block_on(session::describe(&id, None, &t)).unwrap();
-    drop(runtime::block_on(session::lease(&id, None, &pane_owner)).unwrap());
+    drop(runtime::block_on(session::lease(&id, None, &session::table_owner(&pane_owner))).unwrap());
     let moved = file.with_extension("moved");
     std::fs::rename(&file, &moved).unwrap();
 
@@ -1174,6 +1183,45 @@ fn postgres_a_connection_limit_does_not_fail_the_connection_or_hide_the_total() 
     assert_eq!(runtime::block_on(session::write_back_set(&set)), Ok(1));
     assert_eq!(first_row(&setup, "SELECT name FROM t WHERE id = 1"), ["mine"]);
     session::release_owner(&owner(&limited, "limit-pane"));
+    session::disconnect(&limited);
+}
+
+/// A pane with a table open and a SQL tab is two connections where it used to be one. On a
+/// login that may have two (the sidebar's and the table's) the SQL tab is the one that finds
+/// no room: it says why, and the table goes on being read and saved.
+#[test]
+fn postgres_a_sql_tab_beside_a_table_with_no_connection_to_spare_says_why_and_leaves_the_table_alone() {
+    only_with!("postgres");
+    let maintenance = postgres_in("pg-maintenance-r2lim", "postgres");
+    run(&maintenance, "role", "DROP ROLE IF EXISTS yz_r2_lim");
+    run(&maintenance, "role", "CREATE ROLE yz_r2_lim LOGIN PASSWORD 'yz-r2-lim-pw' CONNECTION LIMIT 2");
+    let _role = PgRole { maintenance: maintenance.clone(), name: "yz_r2_lim" };
+    let scratch = PgScratchDatabase::new("yz_r2_limit");
+    let setup = scratch.connection();
+    run(&setup, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a'), (2, 'b'); GRANT SELECT, UPDATE ON t TO yz_r2_lim;");
+    let limited = save(
+        json!({"name": "pg-r2-limited", "engine": "postgres", "host": "127.0.0.1", "port": 55432,
+               "user": "yz_r2_lim", "database": "yz_r2_limit", "ssl": "prefer"}),
+        Some("yz-r2-lim-pw"),
+    );
+    let pane_owner = owner(&limited, "lim-pane");
+    let opened = wait(session::open_table(&limited, None, &pane_owner, &table("public", "t"), None));
+    assert_eq!(opened.error, None);
+    assert_eq!(session::status(&limited).state, session::State::Connected);
+
+    let tab = wait(session::start_query(&limited, None, &pane_owner, "SELECT 1"));
+    let said = tab.error.expect("a third connection is not allowed");
+    assert!(said.contains("too many connections"), "the SQL tab says why it has no connection: {said}");
+
+    // The SQL tab replaced the table's result (that is what running anything there does):
+    // the table is opened again, on the connection it already has, and saved.
+    let opened = wait(session::open_table(&limited, None, &pane_owner, &table("public", "t"), None));
+    assert_eq!(opened.error, None);
+    let set = results::get(opened.results[0].id).unwrap();
+    results::lock(&set).set_edit(0, 1, Cell::text("mine"));
+    assert_eq!(runtime::block_on(session::write_back_set(&set)), Ok(1), "the table is saved though the SQL tab found no room");
+    assert_eq!(first_row(&setup, "SELECT name FROM t WHERE id = 1"), ["mine"]);
+    session::release_owner(&pane_owner);
     session::disconnect(&limited);
 }
 
@@ -1262,8 +1310,11 @@ fn postgres_a_stopped_write_back_cannot_be_felt_by_what_the_pane_runs_next() {
     runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
     let writer = writing_on_a_row_lock(&pane, &locker, "yz_wb_latecancel");
 
-    let next = session::start_query(&through, None, &pane.owner, "SELECT pg_sleep(2.5)");
+    let next = session::start_query(&through, None, &session::table_owner(&pane.owner), "SELECT pg_sleep(2.5)");
     results::lock(&pane.set).stop_write();
+    // The lock goes only after the write-back has sent its Stop: otherwise a write-back that has not
+    // looked at the Stop yet is stopped by the commit step instead, and no Stop is ever sent to be late.
+    until("the write-back never sent its Stop", || relay.stops_arrived() == 1);
     runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
     assert_eq!(
         within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()),
@@ -1313,7 +1364,7 @@ fn postgres_a_stopped_write_back_is_rolled_back_only_after_the_server_has_dealt_
     );
     runtime::block_on(locker.batch_execute("ROLLBACK")).unwrap();
     assert_eq!(
-        relay.heard(),
+        relay.heard_until(2),
         [common::Heard::StopDealtWith, common::Heard::RollBack],
         "the write-back was rolled back before the server had dealt with the stop, which could land on the ROLLBACK"
     );
@@ -1353,7 +1404,10 @@ fn postgres_a_stop_pressed_as_a_query_ends_is_not_felt_by_the_next_run() {
     assert!(state.elapsed_ms >= 2000, "the next run was cut short: {state:?}");
 }
 
-/// The same, with the pane opening a table next (its read is what the request finds).
+/// The same, with the table opening next (its read is what the request finds):
+/// the stop is for a statement on the table's own connection, which is the one
+/// the table is read on. A SQL tab's stop is for another connection, and no
+/// request of it can find the table (see the test below).
 #[test]
 fn postgres_a_stop_pressed_as_a_query_ends_is_not_felt_by_the_table_the_pane_opens_next() {
     only_with!("postgres");
@@ -1368,10 +1422,11 @@ fn postgres_a_stop_pressed_as_a_query_ends_is_not_felt_by_the_table_the_pane_ope
     let relay = common::LaggingPostgres::start();
     let id = postgres_behind_slow_cancels("pg-late-open", "yz_wb_lateopen", &relay);
     let pane = owner(&id, "late-open");
-    assert_eq!(wait(session::start_query(&id, None, &pane, "SELECT 1")).error, None);
+    let tables_connection = session::table_owner(&pane);
+    assert_eq!(wait(session::start_query(&id, None, &tables_connection, "SELECT 1")).error, None);
     relay.hold_cancels(Duration::from_millis(700));
 
-    let first = session::start_query(&id, None, &pane, "DO $$ BEGIN PERFORM pg_sleep(0.3); END $$");
+    let first = session::start_query(&id, None, &tables_connection, "DO $$ BEGIN PERFORM pg_sleep(0.3); END $$");
     std::thread::sleep(Duration::from_millis(150));
     session::cancel(first);
     assert_eq!(within(Duration::from_secs(10), "the query that ended by itself", move || wait(first)).error, None);
@@ -1380,6 +1435,261 @@ fn postgres_a_stop_pressed_as_a_query_ends_is_not_felt_by_the_table_the_pane_ope
     let state = within(Duration::from_secs(30), "the table", move || wait(opened));
     assert_eq!(state.error, None, "the Stop reached the table the pane opened after the query: {state:?}");
     assert_eq!(state.results.first().map(|r| (r.rows, r.error.clone())), Some((1, None)), "{state:?}");
+}
+
+/// A stop is for one connection. With a request for `stopped` held back from
+/// the server (the relay has not let it through, however long this takes), the
+/// pane's `other` connection is leased and used at once, and `stopped` is not
+/// handed to new work before the server has dealt with the request.
+fn a_stop_on_the_way_holds_back_only_its_own_connection(
+    relay: &common::LaggingPostgres,
+    id: &str,
+    stopped: &str,
+    other: &str,
+) {
+    relay.hold_cancels_until_released();
+    let before = relay.heard().len();
+    let mut lease = runtime::block_on(session::lease(id, None, stopped)).unwrap();
+    lease.conn().canceller().cancel_in_background();
+    drop(lease);
+    // A stop the server does not deal with in 5 s is given up on, and the connection with it
+    // (`CANCEL_WAIT`): from here to the release below has to take less than that.
+    let pressed = Instant::now();
+
+    let (connection, alone) = (id.to_owned(), other.to_owned());
+    let used =
+        within(Duration::from_secs(4), "the other connection, while a stop is on its way for this one", move || {
+            wait(session::start_query(&connection, None, &alone, "SELECT 1"))
+        });
+    assert_eq!(used.error, None, "{used:?}");
+    assert_eq!(
+        relay.heard().len(),
+        before,
+        "the request got to the server through the relay that holds it: the premise is gone"
+    );
+
+    let (heard, outcome) = mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let leased = runtime::block_on(session::lease(id, None, stopped)).map(|_| ());
+            let _ = heard.send((leased, relay.heard().split_off(before)));
+        });
+        let early = outcome.recv_timeout(Duration::from_millis(500));
+        relay.release();
+        assert!(
+            early.is_err(),
+            "the connection was handed to new work with a stop still on its way to the server ({:?} after the stop; \
+             the server is given 5 s): {early:?}",
+            pressed.elapsed()
+        );
+        let (leased, heard) = outcome
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the connection, once the server has dealt with the stop");
+        assert_eq!(leased, Ok(()));
+        assert_eq!(
+            heard,
+            [common::Heard::StopDealtWith],
+            "the connection was handed on before the server had dealt with the stop"
+        );
+    });
+    let after = wait(session::start_query(id, None, stopped, "SELECT 1"));
+    assert_eq!(after.error, None, "the connection the stop was dealt with on is still whole: {after:?}");
+}
+
+/// The pane's SQL tab and its table are two connections and keep their stops
+/// apart: a stop on the way for the table is waited for by the table alone,
+/// and the same for the tab. (`open_lease` is where it is waited for, and a
+/// lease is per connection.)
+#[test]
+fn postgres_a_stop_on_the_tables_connection_is_settled_there_and_holds_back_only_the_table() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    let id = postgres_behind_slow_cancels("pg-own-stop", "yuzora_p8", &relay);
+    let pane = owner(&id, "own-stop");
+    let (tab, table_connection) = (pane.clone(), session::table_owner(&pane));
+    for owner in [&tab, &table_connection] {
+        assert_eq!(wait(session::start_query(&id, None, owner, "SELECT 1")).error, None);
+    }
+    a_stop_on_the_way_holds_back_only_its_own_connection(&relay, &id, &table_connection, &tab);
+    a_stop_on_the_way_holds_back_only_its_own_connection(&relay, &id, &tab, &table_connection);
+}
+
+/// The same on SQL Server, where a stop ends the connection it is for: the
+/// write-back's ends the table's socket and the SQL tab's statement goes on.
+#[test]
+fn mssql_a_sql_tab_statement_and_a_waiting_write_back_are_stopped_apart() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_wb_twostops");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE dbo.t(id int PRIMARY KEY, name nvarchar(20)); INSERT INTO dbo.t VALUES (1, N'a');");
+    let pane = open(&id, "two-stops", &table("dbo", "t"));
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    run(&id, "locker", "BEGIN TRANSACTION; UPDATE dbo.t SET name = N'locked' WHERE id = 1");
+    let writer = {
+        let set = pane.set.clone();
+        std::thread::spawn(move || runtime::block_on(session::write_back_set(&set)))
+    };
+    let count = |what: &str| {
+        first_row(
+            &id,
+            &format!(
+                "SELECT CAST(count(*) AS varchar(5)) FROM sys.dm_exec_requests WHERE {what} AND database_id = DB_ID(N'yz_wb_twostops')"
+            ),
+        )
+    };
+    until("the server never saw the write-back wait for the lock", || count("blocking_session_id <> 0") == ["1"]);
+    let waiting = || count("command = N'WAITFOR'") == ["1"];
+
+    let query = session::start_query(&id, None, &pane.owner, "WAITFOR DELAY '00:01:00'");
+    until("the SQL tab's statement never ran beside the write-back that waits", waiting);
+    session::cancel(query);
+    assert!(within(Duration::from_secs(10), "the SQL tab's Stop", move || wait(query)).cancelled);
+    assert!(results::lock(&pane.set).is_writing(), "the SQL tab's Stop ended the write-back");
+    assert_eq!(count("blocking_session_id <> 0"), ["1"]);
+
+    let query = session::start_query(&id, None, &pane.owner, "WAITFOR DELAY '00:01:00'");
+    until("the SQL tab's second statement never ran", waiting);
+    results::lock(&pane.set).stop_write();
+    assert_eq!(
+        within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()),
+        Err(DbError::Cancelled)
+    );
+    assert!(waiting(), "the write-back's Stop ended the SQL tab's statement");
+    assert!(session::job_state(query).unwrap().running);
+    session::cancel(query);
+    assert!(within(Duration::from_secs(10), "the SQL tab's Stop", move || wait(query)).cancelled);
+    run(&id, "locker", "ROLLBACK TRANSACTION");
+    assert_eq!(first_row(&id, "SELECT name FROM dbo.t WHERE id = 1"), ["a"], "the stopped write-back wrote");
+}
+
+/// What a value is shown and written by is set where the table's connection is opened, and on
+/// the one that takes the place of it when it is retired, whatever the database says as its own.
+/// The SQL tab and the count keep the database's: a person's script reads dates and floats the
+/// way the server prints them, as `psql` does.
+#[test]
+fn postgres_only_the_connection_a_table_is_read_and_written_on_is_opened_with_the_settings_a_value_is_read_and_written_by()
+{
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_r3_printread");
+    let db = scratch.name.clone();
+    run(
+        &scratch.maintenance,
+        "style",
+        &format!("ALTER DATABASE {db} SET datestyle = 'SQL, DMY'; ALTER DATABASE {db} SET extra_float_digits = 0"),
+    );
+    let id = scratch.connection();
+    let pane = owner(&id, "print-read");
+    let says = |on: &str| -> Vec<String> {
+        let sql = "SELECT current_setting('datestyle'), current_setting('extra_float_digits'), pg_backend_pid()::text, \
+                   TIMESTAMP '2024-01-06 10:00:00'::text, (0.1::float8 + 0.2::float8)::text";
+        let state = wait(session::start_query(&id, None, on, sql));
+        assert_eq!(state.error, None);
+        let set = results::get(state.results.last().expect("a result").id).expect("result");
+        let r = results::lock(&set);
+        r.rows[0].iter().map(|c| c.display().into_owned()).collect()
+    };
+    let as_psql = ["SQL, DMY", "0", "06/01/2024 10:00:00", "0.3"];
+    let as_read = ["ISO, DMY", "3", "2024-01-06 10:00:00", "0.30000000000000004"];
+    let shown = |a: &[String]| [a[0].as_str(), a[1].as_str(), a[3].as_str(), a[4].as_str()].map(str::to_owned);
+
+    let tab = says(&pane);
+    assert_eq!(shown(&tab), as_psql, "the SQL tab prints what the database says");
+    let count = says(&session::count_owner(&pane));
+    assert_eq!(shown(&count), as_psql, "the count's connection is the database's too");
+
+    let table_connection = session::table_owner(&pane);
+    let table = says(&table_connection);
+    assert_eq!(shown(&table), as_read, "the table's connection");
+    let mut lease = runtime::block_on(session::lease(&id, None, &table_connection)).unwrap();
+    runtime::block_on(lease.conn().canceller().abandon());
+    drop(lease);
+    let again = says(&table_connection);
+    assert_eq!(shown(&again), as_read, "the connection that took the place of the retired one");
+    assert_ne!(again[2], table[2], "the retired connection was used again");
+    assert_eq!(shown(&says(&pane)), as_psql, "the SQL tab is untouched by the table's");
+}
+
+/// Closing a pane closes every connection it holds (the SQL tab's, the table's, the count's) and
+/// only those: it is what ends a transaction a SQL tab left open, and frees a login's connections.
+#[test]
+fn postgres_closing_a_pane_closes_the_connections_it_holds_and_no_other() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_r3_closepane");
+    let id = scratch.connection();
+    let (pane, neighbour) = (owner(&id, "closing"), owner(&id, "staying"));
+    let pid_on = |on: &str| -> String { first_row_on(&id, on, "SELECT pg_backend_pid()::text").remove(0) };
+    let watcher = raw_postgres(&scratch.name);
+    let alive = |pid: &str| -> bool {
+        let found = runtime::block_on(watcher.query_one(
+            &format!("SELECT count(*)::int FROM pg_stat_activity WHERE pid = {pid}"),
+            &[],
+        ))
+        .unwrap();
+        found.get::<_, i32>(0) == 1
+    };
+    let held: Vec<(String, String)> = [pane.clone(), session::table_owner(&pane), session::count_owner(&pane)]
+        .into_iter()
+        .map(|on| (pid_on(&on), on))
+        .collect();
+    let kept = pid_on(&neighbour);
+    for (pid, on) in &held {
+        assert!(alive(pid), "{on} should be open before the pane closes");
+    }
+
+    session::release_owner(&pane);
+    for (pid, on) in &held {
+        until(&format!("{on}: its connection stayed open after the pane closed"), || !alive(pid));
+    }
+    assert!(alive(&kept), "another pane's connection was closed with it");
+    session::release_owner(&neighbour);
+    session::disconnect(&id);
+}
+
+/// The query in the SQL tab and the write-back of the table run side by side,
+/// each on its connection: neither waits behind the other, and the Stop of one
+/// does not end the other.
+#[test]
+fn postgres_a_sql_tab_statement_and_a_waiting_write_back_are_stopped_apart() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_twostops");
+    let direct = scratch.connection();
+    run(&direct, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');");
+    let locker = raw_postgres("yz_wb_twostops");
+    let pane = open(&direct, "two-stops", &table("public", "t"));
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
+    let writer = writing_on_a_row_lock(&pane, &locker, "yz_wb_twostops");
+    // Not the locker: inside its transaction the server shows it the activity as it was at the first look.
+    let watcher = raw_postgres("yz_wb_twostops");
+    let sleeping = || {
+        let found = runtime::block_on(watcher.query_one(
+            "SELECT count(*)::int FROM pg_stat_activity WHERE datname = 'yz_wb_twostops' AND state = 'active' \
+             AND query LIKE '%pg_sleep(60)%' AND pid <> pg_backend_pid()",
+            &[],
+        ))
+        .unwrap();
+        found.get::<_, i32>(0) == 1
+    };
+
+    let query = session::start_query(&direct, None, &pane.owner, "SELECT pg_sleep(60)");
+    until("the SQL tab's statement never ran beside the write-back that waits", sleeping);
+    session::cancel(query);
+    assert!(within(Duration::from_secs(10), "the SQL tab's Stop", move || wait(query)).cancelled);
+    assert!(results::lock(&pane.set).is_writing(), "the SQL tab's Stop ended the write-back");
+
+    let query = session::start_query(&direct, None, &pane.owner, "SELECT pg_sleep(60)");
+    until("the SQL tab's second statement never ran", sleeping);
+    results::lock(&pane.set).stop_write();
+    assert_eq!(
+        within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()),
+        Err(DbError::Cancelled)
+    );
+    assert!(sleeping(), "the write-back's Stop ended the SQL tab's statement");
+    assert!(session::job_state(query).unwrap().running);
+    session::cancel(query);
+    assert!(within(Duration::from_secs(10), "the SQL tab's Stop", move || wait(query)).cancelled);
+    runtime::block_on(locker.batch_execute("ROLLBACK")).unwrap();
+    assert_eq!(first_row(&direct, "SELECT name FROM t WHERE id = 1"), ["a"], "the stopped write-back wrote");
 }
 
 /// The Stop and the end of the query a few hundred microseconds apart either
@@ -1427,14 +1737,15 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
         seed ^= seed << 13;
         seed ^= seed >> 7;
         seed ^= seed << 17;
-        // Microseconds between the Stop and the lock being let go; negative: the Stop first. The
-        // cancel lands late when the two are within a millisecond or two of each other.
+        // Microseconds between the Stop and the lock being let go; negative: the Stop first, which
+        // is the order they are called in, whatever the write-back's task got to see of them when.
+        // The cancel lands late when the two are within a millisecond or two of each other.
         let offset = (seed % 1601) as i64 - 1500;
         let pane = open(&id, "sweep-pane", &t);
         pane.edit(pane.row_where("id", "1"), "name", Some(&format!("mine-{round}")));
         runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
         let writer = writing_on_a_row_lock(&pane, &locker, "yz_wb_sweep");
-        let next = session::start_query(&id, None, &pane.owner, "SELECT pg_sleep(0.08)");
+        let next = session::start_query(&id, None, &session::table_owner(&pane.owner), "SELECT pg_sleep(0.08)");
         std::thread::sleep(Duration::from_millis(10));
 
         let spin = |micros: i64| {
@@ -1443,29 +1754,26 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
                 std::hint::spin_loop();
             }
         };
-        let (stopped_at, released_at);
-        if offset >= 0 {
-            released_at = Instant::now();
-            runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
-            spin(offset);
-            stopped_at = Instant::now();
+        let stop_first = offset < 0;
+        if stop_first {
             results::lock(&pane.set).stop_write();
+            spin(offset);
+            runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
         } else {
-            stopped_at = Instant::now();
-            results::lock(&pane.set).stop_write();
-            spin(offset);
-            released_at = Instant::now();
             runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
+            spin(offset);
+            results::lock(&pane.set).stop_write();
         }
         let written = writer.join().unwrap();
-        let stop_first = released_at > stopped_at + Duration::from_micros(300);
+        let nothing_written = results::lock(&pane.set).write_failure().map(str::to_owned)
+            == Some(yuzora_db::i18n::t("edit.stopped", &[]));
 
         let state = wait(next);
         assert_eq!(
             state.error, None,
             "round {round} (offset {offset} µs): the Stop reached what ran after the write-back"
         );
-        let alive = wait(session::start_query(&id, None, &pane.owner, "SELECT 1"));
+        let alive = wait(session::start_query(&id, None, &session::table_owner(&pane.owner), "SELECT 1"));
         assert_eq!(alive.error, None, "round {round} (offset {offset} µs): the pane's connection is left broken");
         let name: String = runtime::block_on(locker.query_one("SELECT name FROM t WHERE id = 1", &[])).unwrap().get(0);
         if stop_first {
@@ -1475,13 +1783,79 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
                 name, "holder",
                 "round {round} (offset {offset} µs): a write-back stopped before the lock let go wrote anyway"
             );
+            assert!(nothing_written, "round {round} (offset {offset} µs): it did not say that nothing was written");
         } else {
-            assert!(name == "holder" || name == format!("mine-{round}"), "round {round} (offset {offset} µs): {name}");
+            let (mine, holder) = (name == format!("mine-{round}"), name == "holder");
+            assert!(mine || holder, "round {round} (offset {offset} µs): {name}");
+            assert!(
+                written != Ok(1) || mine,
+                "round {round} (offset {offset} µs): it said it wrote, and {name} is there"
+            );
+            assert!(
+                !nothing_written || holder,
+                "round {round} (offset {offset} µs): it said nothing was written, and {name} is there"
+            );
         }
         runtime::block_on(locker.batch_execute("UPDATE t SET name = 'a' WHERE id = 1")).unwrap();
         session::release_owner(&pane.owner);
     }
     assert!(stop_came_first >= rounds / 4, "only {stop_came_first} of {rounds} rounds had the Stop first");
+}
+
+/// What the write-back is doing is not up to when it gets to look at the Stop:
+/// a Stop pressed before COMMIT is sent means no COMMIT, whether or not the
+/// write-back has noticed it yet. The write-back is polled by hand and left
+/// alone from the moment it waits on the lock until its UPDATE has gone
+/// through on the server, so the Stop is pressed while it cannot see anything.
+#[test]
+fn postgres_a_stop_pressed_before_the_commit_is_sent_writes_nothing_though_the_write_back_has_not_seen_it() {
+    use std::future::Future;
+    use std::task::Poll;
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_unseen");
+    let direct = scratch.connection();
+    run(&direct, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');");
+    let locker = raw_postgres("yz_wb_unseen");
+    let pane = open(&direct, "unseen-pane", &table("public", "t"));
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
+    let count = |state: &'static str| {
+        let locker = &locker;
+        async move {
+            let sql = format!("SELECT count(*)::int FROM pg_stat_activity WHERE datname = 'yz_wb_unseen' AND {state}");
+            locker.query_one(sql.as_str(), &[]).await.unwrap().get::<_, i32>(0)
+        }
+    };
+
+    let set = pane.set.clone();
+    let written = runtime::block_on(async {
+        let mut write = Box::pin(session::write_back_set(&set));
+        let mut polls = 0;
+        while count("wait_event_type = 'Lock'").await == 0 {
+            assert!(std::future::poll_fn(|cx| Poll::Ready(write.as_mut().poll(cx))).await.is_pending());
+            polls += 1;
+            assert!(polls < 2000, "the write-back never got to wait on the lock");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        results::lock(&pane.set).stop_write();
+        locker.batch_execute("COMMIT").await.unwrap();
+        let mut waited = 0;
+        while count("state = 'idle in transaction'").await == 0 {
+            waited += 1;
+            assert!(waited < 2000, "the UPDATE never went through once the lock was let go");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tokio::time::timeout(Duration::from_secs(10), write).await.expect("the write-back ends once it is polled again")
+    });
+
+    assert_eq!(written, Err(DbError::Cancelled));
+    assert_eq!(
+        results::lock(&pane.set).write_failure().map(str::to_owned),
+        Some(yuzora_db::i18n::t("edit.stopped", &[])),
+        "COMMIT had not been sent when the Stop was pressed, so the message must not say the database may have saved it"
+    );
+    assert_eq!(first_row(&direct, "SELECT name FROM t WHERE id = 1"), ["holder"], "a Stop before COMMIT wrote anyway");
+    assert_eq!(wait(session::start_query(&direct, None, &session::table_owner(&pane.owner), "SELECT 1")).error, None);
 }
 
 /// SQLite waits for another writer's lock inside the file, where an interrupt
@@ -1501,7 +1875,7 @@ fn sqlite_a_write_back_stopped_while_it_waits_for_the_file_lock_writes_nothing_a
         within(Duration::from_secs(5), "the stopped write-back", move || writer.join().unwrap()),
         Err(DbError::Cancelled)
     );
-    let owner = pane.owner.clone();
+    let owner = session::table_owner(&pane.owner);
     let connection = id.clone();
     let state = within(Duration::from_secs(2), "the pane's connection after the stop", move || {
         wait(session::start_query(&connection, None, &owner, "select name from people"))
@@ -1591,8 +1965,9 @@ fn postgres_a_write_back_does_not_wait_for_a_count_that_borrowed_the_panes_conne
     assert_eq!(session::status(&limited).state, session::State::Connected);
 }
 
-/// Whatever else asks for the pane's connection — the SQL tab, a refresh, a
-/// save — gets it at once when a count has borrowed it.
+/// Whatever else asks for the table's connection — a refresh, a save — gets it
+/// at once when a count has borrowed it. (A SQL tab's query has a connection of
+/// its own: `a_count_on_the_tables_connection_steps_aside_for_the_tables_work_and_not_for_the_sql_tabs`.)
 #[cfg(unix)]
 #[test]
 fn sqlite_a_count_that_borrowed_the_panes_connection_steps_aside_for_whoever_asks() {
@@ -1605,7 +1980,7 @@ fn sqlite_a_count_that_borrowed_the_panes_connection_steps_aside_for_whoever_ask
     let pane_owner = owner(&id, "aside-pane");
     let t = table("", "slow");
     runtime::block_on(session::describe(&id, None, &t)).unwrap();
-    drop(runtime::block_on(session::lease(&id, None, &pane_owner)).unwrap());
+    drop(runtime::block_on(session::lease(&id, None, &session::table_owner(&pane_owner))).unwrap());
     let moved = file.with_extension("moved");
     std::fs::rename(&file, &moved).unwrap();
     let job = session::open_table(&id, None, &pane_owner, &t, None);
@@ -1615,7 +1990,7 @@ fn sqlite_a_count_that_borrowed_the_panes_connection_steps_aside_for_whoever_ask
     std::thread::sleep(Duration::from_millis(300));
     assert!(session::job_state(job).unwrap().running, "the count is running");
 
-    let (connection, pane) = (id.clone(), pane_owner.clone());
+    let (connection, pane) = (id.clone(), session::table_owner(&pane_owner));
     let asked = Instant::now();
     let lease = within(Duration::from_secs(5), "the pane's connection, while a count has it", move || {
         runtime::block_on(session::lease(&connection, None, &pane))
@@ -1630,3 +2005,998 @@ fn sqlite_a_count_that_borrowed_the_panes_connection_steps_aside_for_whoever_ask
     session::cancel(job);
     assert!(within(Duration::from_secs(10), "the table's Stop", move || wait(job)).cancelled);
 }
+
+// ---------------------------------------------------------------- dates, whatever the session reads them as
+
+const LOGIN_PASSWORD: &str = "Yz-Dt-Only-2026!";
+
+/// Runs `sql` and waits for it; whatever it says, it says nothing (this runs while a test unwinds).
+fn quietly(connection: &str, sql: &str) {
+    let job = session::start_query(connection, None, &owner(connection, "quietly"), sql);
+    let mut seen = 0;
+    while let Ok(state) = runtime::block_on(session::job_after(job, seen)) {
+        if !state.running {
+            break;
+        }
+        seen = state.version;
+    }
+}
+
+/// A SQL Server login whose default language is `language`, owner of a database
+/// of its own. The database goes first, then the login.
+struct LanguageLogin {
+    scratch: ScratchDatabase,
+    login: String,
+}
+
+impl LanguageLogin {
+    fn new(database: &str, language: &str) -> Self {
+        let scratch = ScratchDatabase::new(database);
+        let login = LanguageLogin { login: format!("{database}_login"), scratch };
+        login.drop_login();
+        let name = &login.login;
+        run(
+            &login.scratch.master,
+            "login",
+            &format!("CREATE LOGIN {name} WITH PASSWORD = N'{LOGIN_PASSWORD}', DEFAULT_LANGUAGE = {language}, CHECK_POLICY = OFF"),
+        );
+        run(&login.scratch.connection(), "login", &format!("CREATE USER {name} FOR LOGIN {name}; ALTER ROLE db_owner ADD MEMBER {name}"));
+        login
+    }
+
+    fn connection(&self) -> String {
+        save(
+            json!({"name": format!("ms-login-{}", self.login), "engine": "mssql", "host": "127.0.0.1", "port": 51433,
+                   "user": self.login, "database": self.scratch.name, "ssl": "prefer"}),
+            Some(LOGIN_PASSWORD),
+        )
+    }
+
+    fn drop_login(&self) {
+        let name = &self.login;
+        quietly(
+            &self.scratch.master,
+            &format!(
+                "DECLARE @k nvarchar(max) = N''; \
+                 SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N'; ' FROM sys.dm_exec_sessions WHERE login_name = N'{name}'; \
+                 EXEC (@k); \
+                 IF SUSER_ID(N'{name}') IS NOT NULL DROP LOGIN {name}"
+            ),
+        );
+    }
+}
+
+impl Drop for LanguageLogin {
+    fn drop(&mut self) {
+        self.scratch.drop_it();
+        self.drop_login();
+    }
+}
+
+/// What a person types into a date cell, and what the table must hold afterwards.
+fn day_first_cases() -> Vec<Case> {
+    let s = "dbo";
+    vec![
+        Case { name: "datetime and smalldatetime cells, a day up to 12", setup: "CREATE TABLE dbo.c1(id int PRIMARY KEY, a datetime, b smalldatetime); INSERT INTO dbo.c1 VALUES (1, '20240105 10:00:00', '20240105 10:00:00');", schema: s, table: "c1", edits: vec![(0, "a", Some("2024-01-06 10:00:00")), (0, "b", Some("2024-01-07 10:01:00"))], check: "SELECT CONVERT(varchar(30), a, 121), CONVERT(varchar(30), b, 121) FROM dbo.c1", expect: Expect::Written(&["2024-01-06 10:00:00.000", "2024-01-07 10:01:00.000"]) },
+        Case { name: "datetime and smalldatetime cells, a day above 12", setup: "CREATE TABLE dbo.c2(id int PRIMARY KEY, a datetime, b smalldatetime); INSERT INTO dbo.c2 VALUES (1, '20240105 10:00:00', '20240105 10:00:00');", schema: s, table: "c2", edits: vec![(0, "a", Some("2024-01-13 10:00:00")), (0, "b", Some("2024-01-14 10:02:00"))], check: "SELECT CONVERT(varchar(30), a, 121), CONVERT(varchar(30), b, 121) FROM dbo.c2", expect: Expect::Written(&["2024-01-13 10:00:00.000", "2024-01-14 10:02:00.000"]) },
+        Case { name: "a datetime with milliseconds and a date without a time", setup: "CREATE TABLE dbo.c3(id int PRIMARY KEY, a datetime, b smalldatetime); INSERT INTO dbo.c3 VALUES (1, '20240105 10:00:00', '20240105 10:00:00');", schema: s, table: "c3", edits: vec![(0, "a", Some("2024-02-03 04:05:06.997")), (0, "b", Some("2024-02-04"))], check: "SELECT CONVERT(varchar(30), a, 121), CONVERT(varchar(30), b, 121) FROM dbo.c3", expect: Expect::Written(&["2024-02-03 04:05:06.997", "2024-02-04 00:00:00.000"]) },
+        Case { name: "a year-first date with slashes", setup: "CREATE TABLE dbo.c4(id int PRIMARY KEY, a datetime); INSERT INTO dbo.c4 VALUES (1, '20240105 10:00:00');", schema: s, table: "c4", edits: vec![(0, "a", Some("2024/01/13"))], check: "SELECT CONVERT(varchar(30), a, 121) FROM dbo.c4", expect: Expect::Written(&["2024-01-13 00:00:00.000"]) },
+        Case { name: "a datetime key, days up to 12 and above", setup: "CREATE TABLE dbo.k1(k datetime PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.k1 VALUES ('20240105 10:00:00', N'a'), ('20240113 10:00:00.997', N'b'), ('20240512 08:30:00', N'c');", schema: s, table: "k1", edits: vec![(0, "v", Some("zz")), (1, "v", Some("yy")), (2, "v", Some("xx"))], check: "SELECT STRING_AGG(v, N',') WITHIN GROUP (ORDER BY k) FROM dbo.k1", expect: Expect::Written(&["zz,yy,xx"]) },
+        Case { name: "a smalldatetime key, days up to 12 and above", setup: "CREATE TABLE dbo.k2(k smalldatetime PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.k2 VALUES ('20240105 10:00', N'a'), ('20240113 10:01', N'b');", schema: s, table: "k2", edits: vec![(0, "v", Some("zz")), (1, "v", Some("yy"))], check: "SELECT STRING_AGG(v, N',') WITHIN GROUP (ORDER BY k) FROM dbo.k2", expect: Expect::Written(&["zz,yy"]) },
+        Case { name: "a datetime key that is itself edited", setup: "CREATE TABLE dbo.k3(k datetime PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.k3 VALUES ('20240105 10:00:00', N'a');", schema: s, table: "k3", edits: vec![(0, "k", Some("2024-02-13 04:05:06"))], check: "SELECT CONVERT(varchar(30), k, 121) FROM dbo.k3", expect: Expect::Written(&["2024-02-13 04:05:06.000"]) },
+        Case { name: "a date typed the way the login's language writes it", setup: "CREATE TABLE dbo.c5(id int PRIMARY KEY, a datetime); INSERT INTO dbo.c5 VALUES (1, '20240105 10:00:00');", schema: s, table: "c5", edits: vec![(0, "a", Some("13/01/2024 10:00:00"))], check: "SELECT CONVERT(varchar(30), a, 121) FROM dbo.c5", expect: Expect::Written(&["2024-01-13 10:00:00.000"]) },
+        Case { name: "the other date and time types, and numbers", setup: "CREATE TABLE dbo.o1(id int PRIMARY KEY, b datetime2(7), d date, e time(7), f datetimeoffset(7), m money, n decimal(12,2), x float, r real); INSERT INTO dbo.o1 VALUES (1, SYSDATETIME(), GETDATE(), SYSDATETIME(), SYSDATETIMEOFFSET(), 1, 1, 1, 1);", schema: s, table: "o1", edits: vec![(0, "b", Some("2024-01-13 10:00:00.1234567")), (0, "d", Some("2024-01-13")), (0, "e", Some("11:22:33.1234567")), (0, "f", Some("2024-01-13 10:00:00.1234567 +08:00")), (0, "m", Some("1234.5678")), (0, "n", Some("19.99")), (0, "x", Some("0.1")), (0, "r", Some("0.25"))], check: "SELECT CONVERT(varchar(30), b, 121), CONVERT(varchar(30), d, 121), CONVERT(varchar(30), e, 121), CONVERT(varchar(40), f, 121), CONVERT(varchar(30), m, 2), CAST(n AS varchar(20)), CAST(x AS varchar(20)), CAST(r AS varchar(20)) FROM dbo.o1", expect: Expect::Written(&["2024-01-13 10:00:00.1234567", "2024-01-13", "11:22:33.1234567", "2024-01-13 10:00:00.1234567 +08:00", "1234.5678", "19.99", "0.1", "0.25"]) },
+        Case { name: "text that looks like a date stays text, in a cell and in a key", setup: "CREATE TABLE dbo.t1(k nvarchar(30) PRIMARY KEY, v nvarchar(30), w varchar(30)); INSERT INTO dbo.t1 VALUES (N'2024-01-06 10:00:00', N'a', 'a'), (N'2024-01-13 11:00:00', N'b', 'b');", schema: s, table: "t1", edits: vec![(0, "v", Some("2024-01-06 10:00:00")), (0, "w", Some("2024/01/13")), (1, "v", Some("zz"))], check: "SELECT STRING_AGG(v + N'|' + w, N',') WITHIN GROUP (ORDER BY k) FROM dbo.t1", expect: Expect::Written(&["2024-01-06 10:00:00|2024/01/13,zz|b"]) },
+    ]
+}
+
+#[test]
+fn mssql_a_login_that_reads_dates_day_first_writes_the_dates_it_is_given() {
+    only_with!("mssql");
+    for (n, language) in ["British", "German"].into_iter().enumerate() {
+        let login = LanguageLogin::new(&format!("yz_dt_lang{n}"), language);
+        let id = login.connection();
+        assert_eq!(
+            first_row(&id, "SELECT CONVERT(varchar(10), CAST(N'2024-01-06' AS datetime), 120)"),
+            ["2024-06-01"],
+            "{language} reads 2024-01-06 as the 1st of June, or this test would prove nothing"
+        );
+        go(&id, day_first_cases());
+    }
+}
+
+fn first_row_as(connection: &str, owner_name: &str, sql: &str) -> Vec<String> {
+    let state = run(connection, owner_name, sql);
+    let set = results::get(state.results.last().expect("a result").id).expect("result");
+    let r = results::lock(&set);
+    r.rows.first().map(|row| row.iter().map(|c| c.display().into_owned()).collect()).unwrap_or_default()
+}
+
+#[test]
+fn mssql_a_sql_tab_that_reads_dates_day_first_does_not_change_the_dates_the_table_writes() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_dt_pane");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE dbo.p(k datetime PRIMARY KEY, a datetime, b smalldatetime, v nvarchar(10)); INSERT INTO dbo.p VALUES ('20240105 10:00:00', '20240105 10:00:00', '20240105 10:00', N'a'), ('20240113 10:00:00', '20240105 10:00:00', '20240105 10:00', N'b');");
+    for (n, format) in ["dmy", "ydm", "dym"].into_iter().enumerate() {
+        let pane_name = format!("df-{format}");
+        run(&id, &pane_name, &format!("SET DATEFORMAT {format}"));
+        let pane = open(&id, &pane_name, &table("dbo", "p"));
+        let day = 10 + n;
+        for row in 0..2 {
+            pane.edit(row, "a", Some(&format!("2024-02-{day} 11:00:00")));
+            pane.edit(row, "b", Some(&format!("2024-03-{day} 12:01:00")));
+            pane.edit(row, "v", Some(format));
+        }
+        runtime::block_on(session::write_back_set(&pane.set)).unwrap_or_else(|e| panic!("{format}: {e}"));
+        assert_eq!(
+            rows(&id, "SELECT CONVERT(varchar(30), a, 121), CONVERT(varchar(30), b, 121), v FROM dbo.p ORDER BY k"),
+            vec![vec![format!("2024-02-{day} 11:00:00.000"), format!("2024-03-{day} 12:01:00.000"), format.to_owned()]; 2],
+            "{format}"
+        );
+        assert_eq!(
+            first_row_as(&id, &pane_name, "SELECT CONVERT(varchar(10), CAST(N'2024-01-06' AS datetime), 120)"),
+            ["2024-06-01"],
+            "{format}: the write-back left the pane's DATEFORMAT as it found it"
+        );
+        session::release_owner(&pane.owner);
+    }
+}
+
+/// A table per key type, each holding two rows: one with a day up to 12, one above.
+fn key_cases(types: &[(&'static str, &'static str, &'static str)]) -> Vec<Case> {
+    types
+        .iter()
+        .map(|(ty, one, two)| {
+            let name: &'static str = Box::leak(format!("{ty} key").into_boxed_str());
+            let table: &'static str = Box::leak(format!("pk_{}", ty.replace(' ', "_")).into_boxed_str());
+            let setup: &'static str = Box::leak(
+                format!("DROP TABLE IF EXISTS {table}; CREATE TABLE {table}(k {ty} PRIMARY KEY, v text); INSERT INTO {table} VALUES ({one}, 'a'), ({two}, 'b');")
+                    .into_boxed_str(),
+            );
+            let check: &'static str = Box::leak(format!("SELECT count(*)::text FROM {table} WHERE v IN ('zz', 'yy')").into_boxed_str());
+            Case { name, setup, schema: "public", table, edits: vec![(0, "v", Some("zz")), (1, "v", Some("yy"))], check, expect: Expect::Written(&["2"]) }
+        })
+        .collect()
+}
+
+#[test]
+fn postgres_dates_are_written_back_in_whatever_style_the_database_prints_them() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_dt_pg");
+    let db = scratch.name.clone();
+    for (n, (datestyle, intervalstyle)) in
+        [("ISO, MDY", "postgres"), ("SQL, DMY", "sql_standard"), ("German, DMY", "iso_8601"), ("Postgres, DMY", "postgres_verbose")]
+            .into_iter()
+            .enumerate()
+    {
+        run(
+            &scratch.maintenance,
+            "style",
+            &format!(
+                "ALTER DATABASE {db} SET datestyle = '{datestyle}'; ALTER DATABASE {db} SET intervalstyle = '{intervalstyle}'; \
+                 ALTER DATABASE {db} SET timezone = 'Asia/Taipei'"
+            ),
+        );
+        let id = postgres_in(&format!("pg-dt-{n}"), &db);
+        run(&id, "setup", "DROP TABLE IF EXISTS pc; CREATE TABLE pc(id int PRIMARY KEY, tz timestamptz, ts timestamp, d date, tm time, tmz timetz, iv interval); INSERT INTO pc VALUES (1, '2024-01-06 10:00:00+08', '2024-01-06 10:00:00', '2024-01-06', '10:00:00', '10:00:00+08', '1 day');");
+        let pane = open(&id, &format!("dt-pane-{n}"), &table("public", "pc"));
+        let shown = |column: &str| {
+            let at = pane.column(column);
+            results::lock(&pane.set).rows[0][at].display().into_owned()
+        };
+        // The person changes what the grid printed, the way it printed it.
+        let printed = (shown("tz"), shown("ts"), shown("d"));
+        pane.edit(0, "tz", Some(&shown("tz").replace("10:00:00", "11:00:00")));
+        pane.edit(0, "ts", Some(&shown("ts").replace("10:00:00", "11:00:00")));
+        pane.edit(0, "d", Some(&shown("d").replace("06", "07")));
+        pane.edit(0, "tm", Some(&shown("tm").replace("10:00:00", "11:00:00")));
+        pane.edit(0, "tmz", Some(&shown("tmz").replace("10:00:00", "11:00:00")));
+        pane.edit(0, "iv", Some("5 days 06:07:08"));
+        runtime::block_on(session::write_back_set(&pane.set)).unwrap_or_else(|e| panic!("{datestyle}: {e}"));
+        assert_eq!(
+            first_row(
+                &id,
+                "SELECT to_char(tz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), to_char(ts, 'YYYY-MM-DD HH24:MI:SS'), to_char(d, 'YYYY-MM-DD'), \
+                        to_char(tm, 'HH24:MI:SS'), (tmz AT TIME ZONE 'UTC')::time::text, floor(extract(epoch FROM iv))::bigint::text FROM pc"
+            ),
+            ["2024-01-06 03:00:00", "2024-01-06 11:00:00", "2024-01-07", "11:00:00", "03:00:00", "454028"],
+            "{datestyle} / {intervalstyle}: the grid printed {printed:?}"
+        );
+        session::release_owner(&pane.owner);
+        go(
+            &id,
+            key_cases(&[
+                ("timestamptz", "'2024-01-06 10:00:00+08'", "'2024-01-13 10:00:00.5+08'"),
+                ("timestamp", "'2024-01-06 10:00:00'", "'2024-01-13 10:00:00.123456'"),
+                ("date", "'2024-01-06'", "'2024-01-13'"),
+                ("time", "'10:00:00'", "'13:14:15.5'"),
+                ("timetz", "'10:00:00+08'", "'13:14:15.5-05'"),
+                ("interval", "'1 day 02:03:04'", "'3 mons 13 days 04:05:06.5'"),
+            ]),
+        );
+    }
+}
+
+#[test]
+fn postgres_float_keys_are_found_whatever_extra_float_digits_the_database_sets() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_dt_float");
+    run(&scratch.maintenance, "style", &format!("ALTER DATABASE {} SET extra_float_digits = 0", scratch.name));
+    let id = scratch.connection();
+    go(
+        &id,
+        key_cases(&[
+            ("float8", "0.1::float8 + 0.2::float8", "1.0::float8 / 3"),
+            ("real", "0.1::real", "(1.0 / 3)::real"),
+        ]),
+    );
+}
+
+// ---------------------------------------------------------------- a date typed year first, whatever the login reads
+
+/// Dates and times as a person might write them with the year first.
+fn year_first_inputs() -> Vec<String> {
+    let dates = [
+        "2024-01-06",
+        "2024/1/6",
+        "2024.01.06",
+        "20240106",
+        "2024-1-6",
+        "2024-06-01",
+        "2024-12-11",
+        "2024-01-13",
+        "2024-02-29",
+        "2023-02-29",
+        "2024-13-06",
+        "2024-01-32",
+        "0001-01-01",
+        "1752-12-31",
+        "1753-01-01",
+        "9999-12-31",
+        "2079-06-06",
+        "2079-06-07",
+        "2024 Jan 6",
+        "2024-Jan-06",
+        "2024-01",
+        "2024",
+    ];
+    let times = [
+        "",
+        " 10:00",
+        " 10:00:00",
+        " 10:00:00.5",
+        " 10:00:00.997",
+        " 10:00:00.9999",
+        " 2:30 PM",
+        " 2:30PM",
+        " 02:30 pm",
+        " 12:00 AM",
+        " 12:30 AM",
+        " 12:00 PM",
+        " 12:30 PM",
+        " 0:30 AM",
+        " 13:00 PM",
+        " 10AM",
+        " 10 PM",
+        " 10",
+        " 9:5",
+        " 10:00:5",
+        " 1:2:3",
+        " 10:00:00:000",
+        " 10:00:00:5",
+        " 24:00",
+        " 23:59:59",
+        " 23:59:59.999",
+        " 23:59:30",
+        " 10:00:29.999",
+        " 10:00:00+08:00",
+        " 10:00:00 +08:00",
+        "T10:00",
+        "T10:00:00",
+        " T10:00",
+        "T 10:00",
+        " 10:00 :00",
+        " 10 : 00",
+        "  10:00",
+        " 09:05",
+        " 9:05",
+        " 12:00:00.5 PM",
+        " 10:60",
+        " 10:00:60",
+    ];
+    let mut inputs = Vec::new();
+    for date in dates {
+        for time in ["", " 10:00", " 2:30 PM", " 10:00:00.5"] {
+            inputs.push(format!("{date}{time}"));
+        }
+    }
+    for date in ["2024-01-06", "2024/1/6", "20240106"] {
+        for time in times {
+            inputs.push(format!("{date}{time}"));
+        }
+    }
+    for date in ["2024-01-06", "2024/1/6", "2024.01.06", "20240106", "2024-02-03"] {
+        for time in ["10:00", "10:00:00", "10:00:00.5", "2:30 PM", "12:00 AM", "9:5", "10:00:00+08:00", "13:00 PM"] {
+            inputs.push(format!("{time} {date}"));
+        }
+        // ISO 8601 as the server itself reads it; the other writings with a Z are in the engine tests.
+        if date.starts_with("2024-") {
+            for time in ["10:00:00Z", "10:00:00.000Z", "10:00:00.250Z"] {
+                inputs.push(format!("{date}T{time}"));
+            }
+        }
+    }
+    inputs.sort();
+    inputs.dedup();
+    inputs
+}
+
+/// Typed the way the grid prints them, or a plain 12-hour clock: the write-back must take these.
+const YEAR_FIRST_STORED: &[&str] = &[
+    "2024-01-06",
+    "2024-01-06 10:00",
+    "2024-01-06 10:00:00",
+    "2024-01-06 10:00:00.5",
+    "2024-01-06 10:00:00.997",
+    "2024-01-06T10:00:00",
+    "2024/1/6 9:05",
+    "2024.01.06 10:00:00",
+    "2024-01-06 2:30 PM",
+    "2024-01-06 2:30PM",
+    "2024-01-06 12:00 AM",
+    "2024-01-06 12:30 PM",
+    "2024-01-06 10AM",
+    "20240106",
+    "20240106 10:00",
+    "2024-02-29 23:59:30",
+    "10:00 2024-01-06",
+    "2:30 PM 2024/1/6",
+    "10:00:00 2024.01.06",
+    "2024-01-06T10:00:00Z",
+    "2024-01-06T10:00:00.000Z",
+];
+
+/// The shapes a day-first login used to read as another day, or another time of day.
+const YEAR_FIRST_REFUSED: &[&str] = &[
+    "2024-01-06 9:5",
+    "2024-01-06 10:00:5",
+    "2024-01-06 1:2:3",
+    "2024-01-06 10:00:00:000",
+    "2024-01-06 10:00:00:5",
+    "2024-01-06 10:00:00+08:00",
+    "2024-13-06",
+    "2024-01-32",
+    "2023-02-29",
+];
+
+/// What a login that reads dates `language`-first stores for each text typed
+/// into a `datetime` and a `smalldatetime` cell: what a session that reads
+/// the same text year first (`sa`) reads from it, or nothing at all.
+fn year_first_sweep(language: &str, database: &str, inputs: &[String]) {
+    let login = LanguageLogin::new(database, language);
+    let id = login.connection();
+    let reference = login.scratch.connection();
+    assert_eq!(
+        first_row(&reference, "SELECT CONVERT(varchar(10), CAST(N'2024-01-06' AS datetime), 120)"),
+        ["2024-01-06"],
+        "the reference session reads year first"
+    );
+    assert_eq!(
+        first_row(&id, "SELECT CONVERT(varchar(10), CAST(N'2024-01-06' AS datetime), 120)"),
+        ["2024-06-01"],
+        "{language} reads 2024-01-06 as the 1st of June, or this test would prove nothing"
+    );
+    run(&reference, "setup", "CREATE TABLE dbo.s(id int PRIMARY KEY, a datetime, b smalldatetime); INSERT INTO dbo.s VALUES (1, '19990101', '19990101');");
+    let sentinel = ["1999-01-01 00:00:00.000".to_owned(), "1999-01-01 00:00:00.000".to_owned()];
+    let pane = open(&id, "sweep", &table("dbo", "s"));
+    let mut wrong = Vec::new();
+    let mut written = std::collections::BTreeSet::new();
+    for typed in inputs {
+        run(&reference, "reset", "UPDATE dbo.s SET a = '19990101', b = '19990101' WHERE id = 1");
+        pane.edit(0, "a", Some(typed));
+        pane.edit(0, "b", Some(typed));
+        let outcome = runtime::block_on(session::write_back_set(&pane.set));
+        let stored = first_row(&reference, "SELECT CONVERT(varchar(30), a, 121), CONVERT(varchar(30), b, 121) FROM dbo.s WHERE id = 1");
+        match outcome {
+            Ok(_) => {
+                // A `T` between the date and the time is only a separator; the server wants seconds after it, which a person need not type.
+                let spaced = typed.replacen('T', " ", 1);
+                let read_year_first = first_row(
+                    &reference,
+                    &format!(
+                        "SELECT CONVERT(varchar(30), COALESCE(TRY_CAST(N'{typed}' AS datetime), TRY_CAST(N'{spaced}' AS datetime)), 121), \
+                                CONVERT(varchar(30), COALESCE(TRY_CAST(N'{typed}' AS smalldatetime), TRY_CAST(N'{spaced}' AS smalldatetime)), 121)"
+                    ),
+                );
+                if stored == read_year_first {
+                    written.insert(typed.clone());
+                } else {
+                    wrong.push(format!("{typed:?}: stored {stored:?}, read year first it is {read_year_first:?}"));
+                }
+            }
+            Err(error) => {
+                if stored != sentinel {
+                    wrong.push(format!("{typed:?}: refused ({error}) but stored {stored:?}"));
+                }
+                results::lock(&pane.set).discard_edits();
+            }
+        }
+    }
+    for typed in YEAR_FIRST_STORED {
+        if inputs.iter().any(|i| i == typed) && !written.contains(*typed) {
+            wrong.push(format!("{typed:?}: the grid's own way of writing it was not saved"));
+        }
+    }
+    for typed in YEAR_FIRST_REFUSED {
+        if written.contains(*typed) {
+            wrong.push(format!("{typed:?}: saved, but no reading of it is certain"));
+        }
+    }
+    assert!(wrong.is_empty(), "{language}: {} of {} inputs went wrong:\n{}", wrong.len(), inputs.len(), wrong.join("\n"));
+}
+
+#[test]
+fn mssql_a_day_first_login_never_stores_a_year_first_date_as_another_day() {
+    only_with!("mssql");
+    year_first_sweep("British", "yz_r1_brit", &year_first_inputs());
+}
+
+#[test]
+fn mssql_a_german_login_never_stores_a_year_first_date_as_another_day() {
+    only_with!("mssql");
+    let mut inputs: Vec<String> = YEAR_FIRST_STORED.iter().chain(YEAR_FIRST_REFUSED).map(|s| (*s).to_owned()).collect();
+    inputs.extend(year_first_inputs().into_iter().filter(|i| i.starts_with("2024-01-06")));
+    inputs.sort();
+    inputs.dedup();
+    year_first_sweep("German", "yz_r1_ger", &inputs);
+}
+
+#[test]
+fn mssql_a_day_first_login_saves_dates_of_an_aliased_type_and_under_a_computed_key() {
+    only_with!("mssql");
+    let login = LanguageLogin::new("yz_r1_alias", "British");
+    let id = login.connection();
+    run(&login.scratch.connection(), "setup", "CREATE TYPE dbo.yz_when FROM datetime;");
+    let s = "dbo";
+    go(
+        &id,
+        vec![
+            Case { name: "a column of a type made from datetime", setup: "CREATE TABLE dbo.al(id int PRIMARY KEY, w dbo.yz_when NULL); INSERT INTO dbo.al VALUES (1, '20240105');", schema: s, table: "al", edits: vec![(0, "w", Some("2024-01-06 2:30 PM"))], check: "SELECT CONVERT(varchar(30), w, 121) FROM dbo.al", expect: Expect::Written(&["2024-01-06 14:30:00.000"]) },
+            Case { name: "the same, typed in a way nobody can read one way", setup: "CREATE TABLE dbo.al2(id int PRIMARY KEY, w dbo.yz_when NULL); INSERT INTO dbo.al2 VALUES (1, '20240105');", schema: s, table: "al2", edits: vec![(0, "w", Some("2024-01-06 9:5"))], check: "SELECT CONVERT(varchar(30), w, 121) FROM dbo.al2", expect: Expect::Refused("can't be saved as a date and time") },
+            Case { name: "a persisted computed column as the key", setup: "CREATE TABLE dbo.cp(a datetime NOT NULL, k AS (a) PERSISTED NOT NULL PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.cp(a, v) VALUES ('20240105 10:00:00', N'x'), ('20240113 11:00:00.997', N'y');", schema: s, table: "cp", edits: vec![(0, "v", Some("p")), (1, "v", Some("q"))], check: "SELECT STRING_AGG(v, N',') WITHIN GROUP (ORDER BY a) FROM dbo.cp", expect: Expect::Written(&["p,q"]) },
+            Case { name: "a date in a text column that the same table holds a datetime beside", setup: "CREATE TABLE dbo.mx(id int PRIMARY KEY, w datetime NULL, t nvarchar(30) NULL); INSERT INTO dbo.mx VALUES (1, '20240105', N'a');", schema: s, table: "mx", edits: vec![(0, "w", Some("2024-01-06 2:30 PM")), (0, "t", Some("2024-01-06 2:30 PM"))], check: "SELECT CONVERT(varchar(30), w, 121), t FROM dbo.mx", expect: Expect::Written(&["2024-01-06 14:30:00.000", "2024-01-06 2:30 PM"]) },
+        ],
+    );
+}
+
+#[test]
+fn mssql_a_date_the_column_rounds_is_found_again_by_the_next_write_back() {
+    only_with!("mssql");
+    let login = LanguageLogin::new("yz_r1_round", "British");
+    let id = login.connection();
+    let reference = login.scratch.connection();
+    run(
+        &reference,
+        "setup",
+        "CREATE TABLE dbo.r1(k datetime PRIMARY KEY, v nvarchar(10)); \
+         CREATE TABLE dbo.r2(k smalldatetime PRIMARY KEY, v nvarchar(10));",
+    );
+    for (table_name, typed, stored) in [
+        ("r1", "2024-02-13 11:00:00.001", "2024-02-13 11:00:00.000"),
+        ("r1", "2024-02-13 11:00:00.002", "2024-02-13 11:00:00.003"),
+        ("r1", "2024-02-13 11:00:59.999", "2024-02-13 11:01:00.000"),
+        ("r2", "2024-02-13 11:00:31", "2024-02-13 11:01:00.000"),
+        ("r2", "2024-02-13 11:00:29", "2024-02-13 11:00:00.000"),
+    ] {
+        run(&reference, "reset", &format!("DELETE dbo.{table_name}; INSERT INTO dbo.{table_name} VALUES ('20240106 10:00:00', N'a')"));
+        let pane = open(&id, &format!("round-{table_name}"), &table("dbo", table_name));
+        pane.edit(0, "k", Some(typed));
+        runtime::block_on(session::write_back_set(&pane.set)).unwrap_or_else(|e| panic!("{typed}: {e}"));
+        assert_eq!(first_row(&reference, &format!("SELECT CONVERT(varchar(30), k, 121) FROM dbo.{table_name}")), [stored], "{typed}");
+        // The grid now holds what was typed; the database holds what the column made of it.
+        pane.edit(0, "v", Some("next"));
+        runtime::block_on(session::write_back_set(&pane.set)).unwrap_or_else(|e| panic!("{typed}: the second write-back: {e}"));
+        assert_eq!(first_row(&reference, &format!("SELECT v FROM dbo.{table_name}")), ["next"], "{typed}");
+        session::release_owner(&pane.owner);
+    }
+}
+
+// ---------------------------------------------------------------- a connection that opens a transaction by itself
+
+/// The first cell of what `sql` reads on the connection the table pane `pane` reads and writes by.
+fn pane_value(connection: &str, pane: &str, sql: &str) -> String {
+    let state = wait(session::start_query(connection, None, &session::table_owner(&owner(connection, pane)), sql));
+    assert_eq!(state.error, None, "{sql}");
+    let set = results::get(state.results.last().expect("a result").id).expect("result");
+    let r = results::lock(&set);
+    r.rows.first().map(|row| row[0].display().into_owned()).unwrap_or_default()
+}
+
+// ---------------------------------------------------------------- PostgreSQL: what the SQL tab does to the session
+
+/// What a person's SQL tab can do to the settings a value is printed and read by.
+const SESSION_RESETS: &[&str] = &[
+    "RESET ALL",
+    "DISCARD ALL",
+    "RESET datestyle",
+    "SET datestyle = 'SQL, DMY'",
+    "SET extra_float_digits = 0",
+    "SELECT set_config('datestyle', 'SQL, DMY', false), set_config('extra_float_digits', '0', false)",
+];
+
+#[test]
+fn postgres_what_the_sql_tab_does_to_the_session_does_not_change_what_a_write_back_saves() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_r1_pgset");
+    let db = scratch.name.clone();
+    run(
+        &scratch.maintenance,
+        "style",
+        &format!(
+            "ALTER DATABASE {db} SET datestyle = 'SQL, DMY'; ALTER DATABASE {db} SET timezone = 'Asia/Taipei'; \
+             ALTER DATABASE {db} SET extra_float_digits = 0"
+        ),
+    );
+    let id = scratch.connection();
+    let mut wrong = Vec::new();
+    for (n, statement) in SESSION_RESETS.iter().enumerate() {
+        run(
+            &id,
+            "setup",
+            "DROP TABLE IF EXISTS pz; CREATE TABLE pz(k timestamptz PRIMARY KEY, t timestamptz, v text); \
+             INSERT INTO pz VALUES ('2024-01-06 10:00:00+08', '2024-01-06 10:00:00+08', 'a'); \
+             DROP TABLE IF EXISTS pf; CREATE TABLE pf(k float8 PRIMARY KEY, v text); \
+             INSERT INTO pf VALUES (0.1::float8 + 0.2::float8, 'a');",
+        );
+
+        // The SQL tab runs it; the table is read again afterwards, and edited as the grid prints it.
+        let name = format!("settings-pz-{n}");
+        run(&id, &name, statement);
+        let pane = open(&id, &name, &table("public", "pz"));
+        let at = pane.column("t");
+        let printed = results::lock(&pane.set).rows[0][at].display().into_owned();
+        pane.edit(0, "t", Some(&printed.replace("10:00:00", "11:00:00")));
+        pane.edit(0, "v", Some("b"));
+        match runtime::block_on(session::write_back_set(&pane.set)) {
+            Err(e) => wrong.push(format!("{statement}: a timestamptz key printed as {printed:?}: {e}")),
+            Ok(_) => {
+                let stored = first_row(&id, "SELECT v, to_char(t AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') FROM pz");
+                if stored != ["b", "2024-01-06 03:00:00"] {
+                    wrong.push(format!("{statement}: the grid printed {printed:?}, the table holds {stored:?}"));
+                }
+            }
+        }
+        session::release_owner(&pane.owner);
+
+        let name = format!("settings-pf-{n}");
+        run(&id, &name, statement);
+        let pane = open(&id, &name, &table("public", "pf"));
+        let at = pane.column("k");
+        let printed = results::lock(&pane.set).rows[0][at].display().into_owned();
+        pane.edit(0, "v", Some("b"));
+        match runtime::block_on(session::write_back_set(&pane.set)) {
+            Err(e) => wrong.push(format!("{statement}: a float key printed as {printed:?}: {e}")),
+            Ok(_) => assert_eq!(first_row(&id, "SELECT v FROM pf"), ["b"], "{statement}"),
+        }
+        session::release_owner(&pane.owner);
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+// ---------------------------------------------------------------- written means committed, on every engine
+
+#[test]
+fn sqlite_a_write_back_leaves_no_transaction_open_and_another_connection_reads_it() {
+    let (id, _file) = sqlite_connection("r1-committed");
+    run(&id, "setup", "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t VALUES (1, 'a');");
+    let pane = open(&id, "committed-pane", &table("", "t"));
+    pane.edit(0, "v", Some("z"));
+    runtime::block_on(session::write_back_set(&pane.set)).unwrap();
+    // A second BEGIN is an error while one is open.
+    pane_value(&id, "committed-pane", "BEGIN; ROLLBACK");
+    assert_eq!(first_row(&id, "SELECT v FROM t"), ["z"]);
+}
+
+#[test]
+fn postgres_a_write_back_leaves_no_transaction_open_and_another_connection_reads_it() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_r1_pgtx");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE t(id int PRIMARY KEY, v text); INSERT INTO t VALUES (1, 'a');");
+    let pane = open(&id, "committed-pane", &table("public", "t"));
+    pane.edit(0, "v", Some("z"));
+    runtime::block_on(session::write_back_set(&pane.set)).unwrap();
+    assert_eq!(first_row(&id, "SELECT v FROM t"), ["z"], "another connection reads it");
+    assert_eq!(pane_value(&id, "committed-pane", "SELECT (now() = statement_timestamp())::text"), "true", "the pane's connection is not inside a transaction");
+}
+
+// ---------------------------------------------------------------- a cleared cell
+
+impl Opened {
+    /// What the grid keeps of text typed into a cell and ended with Enter.
+    fn type_into(&self, row: usize, column: &str, text: &str) {
+        let at = self.column(column);
+        let mut r = results::lock(&self.set);
+        let original = r.cell(row, at).cloned().unwrap_or(Cell::Null);
+        let initial = if original.is_null() { String::new() } else { original.display().into_owned() };
+        r.type_into(row, at, &original, &initial, text.to_owned(), true);
+    }
+
+    /// A cell as the grid shows it now, a pending edit included.
+    fn shown(&self, row: usize, column: &str) -> String {
+        let at = self.column(column);
+        results::lock(&self.set).cell(row, at).map_or_else(|| "NULL".to_owned(), |c| c.display().into_owned())
+    }
+}
+
+/// A column type, a value of it, and whether an empty string is a value of the type.
+type Kind = (&'static str, &'static str, bool);
+
+const MSSQL_KINDS: &[Kind] = &[
+    ("datetime", "'20240105 10:00:00'", false),
+    ("smalldatetime", "'20240105 10:00'", false),
+    ("date", "'20240105'", false),
+    ("time", "'10:00:00'", false),
+    ("datetime2", "'20240105 10:00:00'", false),
+    ("datetimeoffset", "'2024-01-05 10:00:00 +08:00'", false),
+    ("int", "5", false),
+    ("bigint", "5", false),
+    ("smallint", "5", false),
+    ("tinyint", "5", false),
+    ("bit", "1", false),
+    ("float", "1.5", false),
+    ("real", "1.5", false),
+    ("decimal(10,2)", "1.5", false),
+    ("money", "1.5", false),
+    ("smallmoney", "1.5", false),
+    ("uniqueidentifier", "'6F9619FF-8B86-D011-B42D-00C04FC964FF'", false),
+    ("varchar(10)", "'a'", true),
+    ("nvarchar(10)", "N'a'", true),
+    ("char(5)", "'a'", true),
+    ("nchar(5)", "N'a'", true),
+    ("varchar(max)", "'a'", true),
+    ("nvarchar(max)", "N'a'", true),
+    ("text", "'a'", true),
+];
+
+const POSTGRES_KINDS: &[Kind] = &[
+    ("timestamp", "'2024-01-05 10:00:00'", false),
+    ("timestamptz", "'2024-01-05 10:00:00+08'", false),
+    ("date", "'2024-01-05'", false),
+    ("time", "'10:00:00'", false),
+    ("timetz", "'10:00:00+08'", false),
+    ("interval", "'1 day'", false),
+    ("int2", "5", false),
+    ("int4", "5", false),
+    ("int8", "5", false),
+    ("float4", "1.5", false),
+    ("float8", "1.5", false),
+    ("numeric(10,2)", "1.5", false),
+    ("money", "1.5", false),
+    ("bool", "true", false),
+    ("uuid", "'6f9619ff-8b86-d011-b42d-00c04fc964ff'", false),
+    ("inet", "'10.0.0.1'", false),
+    ("cidr", "'10.0.0.0/8'", false),
+    ("macaddr", "'08:00:2b:01:02:03'", false),
+    ("json", "'{}'", false),
+    ("jsonb", "'{}'", false),
+    ("text", "'a'", true),
+    ("varchar(10)", "'a'", true),
+    ("char(5)", "'a'", true),
+];
+
+/// Clears a cell of each type the way a person does (Backspace, Enter) and writes back, one type
+/// at a time; says which types do not show NULL before the write, or do not hold what a cleared
+/// cell means after it.
+fn clearing_every_kind(id: &str, kinds: &[Kind], schema: &str, as_text: impl Fn(&str) -> String) -> Vec<String> {
+    let columns: Vec<String> = kinds.iter().enumerate().map(|(i, (ty, _, _))| format!("c{i} {ty} NULL")).collect();
+    run(id, "setup", &format!("CREATE TABLE {schema}.e1(id int PRIMARY KEY, {})", columns.join(", ")));
+    for (i, (_, value, _)) in kinds.iter().enumerate() {
+        run(id, "setup", &format!("INSERT INTO {schema}.e1(id, c{i}) VALUES ({i}, {value})"));
+    }
+    let pane = open(id, "clear-pane", &table(schema, "e1"));
+    let mut wrong = Vec::new();
+    for (i, (ty, _, empty_is_a_value)) in kinds.iter().enumerate() {
+        let (row, column) = (pane.row_where("id", &i.to_string()), format!("c{i}"));
+        pane.type_into(row, &column, "");
+        let shown = pane.shown(row, &column);
+        let stored = match runtime::block_on(session::write_back_set(&pane.set)) {
+            Ok(_) => first_row(id, &format!("SELECT {} FROM {schema}.e1 WHERE id = {i}", as_text(&column))).remove(0),
+            Err(e) => {
+                results::lock(&pane.set).discard_edits();
+                format!("refused: {e}")
+            }
+        };
+        let want = if *empty_is_a_value { "" } else { "NULL" };
+        eprintln!("CLEARED {ty:<16} shown={shown:<6} stored={stored}");
+        if shown != want || stored.trim_end() != want {
+            wrong.push(format!("{ty}: the cleared cell shows {shown:?} and the table holds {stored:?}, wanted {want:?} in both"));
+        }
+    }
+    session::release_owner(&pane.owner);
+    wrong
+}
+
+#[test]
+fn mssql_a_cleared_cell_is_null_unless_the_type_holds_an_empty_string() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_e1_ms");
+    let wrong = clearing_every_kind(&scratch.connection(), MSSQL_KINDS, "dbo", |c| format!("ISNULL(CAST({c} AS nvarchar(40)), N'NULL')"));
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn postgres_a_cleared_cell_is_null_unless_the_type_holds_an_empty_string() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_e1_pg");
+    let wrong = clearing_every_kind(&scratch.connection(), POSTGRES_KINDS, "public", |c| format!("COALESCE({c}::text, 'NULL')"));
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+fn a_cleared_cell_of_a_column_that_cannot_be_null_is_refused(id: &str, schema: &str, number: &str, instant: &str) {
+    run(id, "setup", &format!("CREATE TABLE {schema}.nn(id int PRIMARY KEY, n {number} NOT NULL, d {instant} NOT NULL); INSERT INTO {schema}.nn VALUES (1, 5, '2024-01-05 10:00:00')"));
+    for column in ["n", "d"] {
+        let pane = open(id, &format!("nn-{column}"), &table(schema, "nn"));
+        pane.type_into(0, column, "");
+        assert_eq!(pane.shown(0, column), "NULL", "{schema}.{column}: the cell shows what it will write");
+        let refused = runtime::block_on(session::write_back_set(&pane.set)).expect_err("the server refuses a NULL it cannot store").to_string();
+        assert!(refused.to_lowercase().contains("null"), "{schema}.{column}: the server says why: {refused}");
+        let held = first_row(id, &format!("SELECT CAST(n AS varchar(10)), CAST(d AS varchar(30)) FROM {schema}.nn WHERE id = 1"));
+        assert_eq!(held[0], "5", "{schema}.{column}: nothing was written");
+        assert!(held[1].contains("10:00"), "{schema}.{column}: nothing was written ({held:?})");
+        session::release_owner(&pane.owner);
+    }
+}
+
+#[test]
+fn mssql_a_cleared_cell_of_a_column_that_cannot_be_null_is_refused_by_the_server() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_e1_nn");
+    a_cleared_cell_of_a_column_that_cannot_be_null_is_refused(&scratch.connection(), "dbo", "int", "datetime");
+}
+
+#[test]
+fn postgres_a_cleared_cell_of_a_column_that_cannot_be_null_is_refused_by_the_server() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_e1_pgnn");
+    a_cleared_cell_of_a_column_that_cannot_be_null_is_refused(&scratch.connection(), "public", "numeric", "timestamp");
+}
+
+// ---------------------------------------------------------------- what the SQL tab leaves on its connection
+
+/// A statement the SQL tab runs, how to ask the tab afterwards whether it still holds, and what it answers.
+struct TabState {
+    run: &'static str,
+    /// Fails: the state it leaves is what it did before it failed.
+    fails: bool,
+    ask: &'static str,
+    answer: &'static str,
+}
+
+fn tab_state(run: &'static str, ask: &'static str, answer: &'static str) -> TabState {
+    TabState { run, fails: run.ends_with("1/0"), ask, answer }
+}
+
+/// Runs `sql` as the SQL tab of `pane` would, and waits; a script that fails is no surprise to the caller.
+fn run_in_the_tab(connection: &str, pane: &str, sql: &str) -> JobState {
+    wait(session::start_query(connection, None, &owner(connection, pane), sql))
+}
+
+/// The first column of what the SQL tab of `pane` reads.
+fn tab_says(connection: &str, pane: &str, sql: &str) -> Vec<String> {
+    let state = run(connection, pane, sql);
+    let set = results::get(state.results.last().expect("a result").id).expect("result");
+    let r = results::lock(&set);
+    r.rows.iter().map(|row| row[0].display().into_owned()).collect()
+}
+
+/// What the server called the failure: `Msg 2628`, or the first words.
+fn refusal(error: &DbError) -> String {
+    let text = error.to_string();
+    text.split("(Msg ").nth(1).map_or_else(|| text.chars().take(40).collect(), |rest| format!("Msg {}", rest.split(',').next().unwrap_or("")))
+}
+
+/// What the table pane read and saved, to be the same whatever the SQL tab had done on its connection.
+#[derive(Debug, PartialEq)]
+struct Pane {
+    rows_read: usize,
+    long_cell: usize,
+    too_long: String,
+    too_big: String,
+    saved: String,
+    held: Vec<String>,
+}
+
+fn mssql_pane(id: &str, name: &str, tab: Option<&TabState>) -> Pane {
+    run(
+        id,
+        "reset",
+        "DELETE FROM dbo.s; INSERT INTO dbo.s VALUES (1, N'ab', 1, REPLICATE(CAST('x' AS varchar(max)), 5000), N'a'), (2, N'cd', 2, 'y', N'b'), (3, N'ef', 3, 'z', N'c')",
+    );
+    if let Some(tab) = tab {
+        let state = run_in_the_tab(id, name, tab.run);
+        assert_eq!(state.error.is_some(), tab.fails, "{}: {:?}", tab.run, state.error);
+    }
+    let pane = open(id, name, &table("dbo", "s"));
+    let rows_read = results::lock(&pane.set).rows.len();
+    let first = pane.row_where("id", "1");
+    let at = pane.column("big");
+    let long_cell = results::lock(&pane.set).rows[first][at].display().len();
+    let attempt = || match runtime::block_on(session::write_back_set(&pane.set)) {
+        Ok(_) => "saved".to_owned(),
+        Err(e) => {
+            results::lock(&pane.set).discard_edits();
+            format!("refused: {}", refusal(&e))
+        }
+    };
+    pane.edit(first, "short", Some("abcdefgh"));
+    let too_long = attempt();
+    pane.edit(first, "tiny", Some("300"));
+    let too_big = attempt();
+    pane.edit(first, "note", Some("ok"));
+    let saved = attempt();
+    let held = first_row(id, "SELECT short, CAST(tiny AS varchar(5)), CAST(LEN(big) AS varchar(10)), note FROM dbo.s WHERE id = 1");
+    Pane { rows_read, long_cell, too_long, too_big, saved, held }
+}
+
+/// A server whose own default opens a transaction at the first statement that touches a table
+/// (`sp_configure 'user options'` with 2): the connection the table is read and saved on starts
+/// out that way, and there is no SQL tab on it to end the transaction its read opened. The
+/// table must still save, without a person having to do anything; the setting a person's SQL
+/// tab has is theirs and is not asked about.
+#[test]
+fn mssql_a_table_connection_that_opens_transactions_by_itself_still_saves() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_r2_impl");
+    let id = scratch.connection();
+    for (n, setting) in ["SET IMPLICIT_TRANSACTIONS ON", "SET ANSI_DEFAULTS ON"].into_iter().enumerate() {
+        run(&id, "setup", "DROP TABLE IF EXISTS dbo.i; CREATE TABLE dbo.i(id int PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.i VALUES (1, N'a'), (2, N'b');");
+        let name = format!("impl-{n}");
+        // What the server's default does to a connection that was just opened: the table's.
+        pane_value(&id, &name, setting);
+        assert_eq!(pane_value(&id, &name, "SELECT CAST(@@OPTIONS & 2 AS varchar(5))"), "2", "{setting}: the connection opens transactions by itself");
+        let pane = open(&id, &name, &table("dbo", "i"));
+        pane.edit(0, "v", Some("z"));
+        runtime::block_on(session::write_back_set(&pane.set)).unwrap_or_else(|e| panic!("{setting}: {e}"));
+        assert_eq!(first_row(&id, "SELECT v FROM dbo.i WHERE id = 1"), ["z"], "{setting}: another connection reads what was written");
+        assert_eq!(pane_value(&id, &name, "SELECT CAST(@@TRANCOUNT AS varchar(2))"), "0", "{setting}: nothing is left open on the table's connection");
+        session::release_owner(&pane.owner);
+    }
+}
+
+#[test]
+fn mssql_what_the_sql_tab_sets_does_not_change_what_the_table_reads_and_saves() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_e2_ms");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE dbo.s(id int PRIMARY KEY, short nvarchar(5), tiny tinyint, big varchar(max), note nvarchar(20))");
+    let baseline = mssql_pane(&id, "e2-plain", None);
+    session::release_owner(&owner(&id, "e2-plain"));
+    assert_eq!(baseline.rows_read, 3);
+    assert_eq!(baseline.long_cell, 5000);
+    assert_eq!(baseline.saved, "saved");
+    assert!(baseline.too_long.starts_with("refused: Msg 2628") && baseline.too_big.starts_with("refused: Msg"), "{baseline:?}");
+    assert_eq!(baseline.held, ["ab", "1", "5000", "ok"]);
+
+    let tabs = [
+        tab_state("SET ANSI_WARNINGS OFF", "SELECT CAST(@@OPTIONS & 8 AS varchar(5))", "0"),
+        tab_state("SET ANSI_WARNINGS OFF; SET ARITHABORT OFF", "SELECT CAST(@@OPTIONS & 72 AS varchar(5))", "0"),
+        tab_state("SET ROWCOUNT 1", "SELECT CAST(id AS varchar(5)) FROM dbo.s", "1"),
+        tab_state("SET TEXTSIZE 8", "SELECT CAST(@@TEXTSIZE AS varchar(10))", "8"),
+        tab_state("SET LANGUAGE British", "SELECT @@LANGUAGE", "British"),
+        tab_state("SET LANGUAGE German", "SELECT @@LANGUAGE", "Deutsch"),
+        tab_state("SET DATEFORMAT dmy", "SELECT CONVERT(varchar(10), CAST(N'2024-01-06' AS datetime), 120)", "2024-06-01"),
+        tab_state("SET IMPLICIT_TRANSACTIONS ON", "SELECT CAST(@@OPTIONS & 2 AS varchar(5))", "2"),
+        tab_state("SET ANSI_DEFAULTS ON", "SELECT CAST(@@OPTIONS & 2 AS varchar(5))", "2"),
+        tab_state("SET NUMERIC_ROUNDABORT ON", "SELECT CAST(@@OPTIONS & 8192 AS varchar(10))", "8192"),
+        tab_state("SET XACT_ABORT ON", "SELECT CAST(@@OPTIONS & 16384 AS varchar(10))", "16384"),
+        tab_state("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED", "SELECT CAST(transaction_isolation_level AS varchar(5)) FROM sys.dm_exec_sessions WHERE session_id = @@SPID", "1"),
+        tab_state("SET DATEFIRST 3", "SELECT CAST(@@DATEFIRST AS varchar(5))", "3"),
+        tab_state("SET CONCAT_NULL_YIELDS_NULL OFF", "SELECT CAST(@@OPTIONS & 4096 AS varchar(10))", "0"),
+        tab_state("SET ANSI_NULLS OFF", "SELECT CAST(@@OPTIONS & 32 AS varchar(10))", "0"),
+        tab_state("SET QUOTED_IDENTIFIER OFF", "SELECT CAST(@@OPTIONS & 256 AS varchar(10))", "0"),
+        tab_state("SET LOCK_TIMEOUT 1", "SELECT CAST(@@LOCK_TIMEOUT AS varchar(10))", "1"),
+        tab_state("USE tempdb", "SELECT DB_NAME()", "tempdb"),
+        tab_state("CREATE TABLE #mine(x int); INSERT INTO #mine VALUES (7)", "SELECT CAST(x AS varchar(5)) FROM #mine", "7"),
+        tab_state("BEGIN TRANSACTION; CREATE TABLE #mine2(x int)", "SELECT CAST(@@TRANCOUNT AS varchar(5))", "1"),
+    ];
+    let mut wrong = Vec::new();
+    for (n, tab) in tabs.iter().enumerate() {
+        let name = format!("e2-{n}");
+        let pane = mssql_pane(&id, &name, Some(tab));
+        if pane != baseline {
+            wrong.push(format!("{}: the table pane did {pane:?}, without it {baseline:?}", tab.run));
+        }
+        let kept = tab_says(&id, &name, tab.ask);
+        if kept.first().map(String::as_str) != Some(tab.answer) {
+            wrong.push(format!("{}: the SQL tab answers {kept:?} afterwards, wanted {:?}: what it set was taken away", tab.run, tab.answer));
+        }
+        session::release_owner(&owner(&id, &name));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+fn postgres_pane(id: &str, name: &str, tab: Option<&TabState>) -> Vec<String> {
+    run(
+        id,
+        "reset",
+        "DELETE FROM pg_s; INSERT INTO pg_s VALUES (1, 'a', '{x,y}', '1 hour', '2024-01-06 10:00:00+08', 0.1::float8 + 0.2::float8, '2024-01-05', 1.5)",
+    );
+    if let Some(tab) = tab {
+        let state = run_in_the_tab(id, name, tab.run);
+        assert_eq!(state.error.is_some(), tab.fails, "{}: {:?}", tab.run, state.error);
+    }
+    let pane = open(id, name, &table("public", "pg_s"));
+    let shown = |column: &str| pane.shown(0, column);
+    let printed = vec![shown("ts"), shown("f"), shown("iv")];
+    pane.edit(0, "t", Some("中é"));
+    pane.edit(0, "arr", Some("{a,NULL}"));
+    pane.edit(0, "iv", Some("1 day 02:03:04"));
+    pane.edit(0, "ts", Some(&shown("ts").replace("10:00:00", "11:00:00")));
+    pane.edit(0, "d", Some("2024-02-03"));
+    pane.edit(0, "n", Some("2.5"));
+    let written = match runtime::block_on(session::write_back_set(&pane.set)) {
+        Ok(_) => "saved".to_owned(),
+        Err(e) => format!("refused: {e}"),
+    };
+    let mut outcome = printed;
+    outcome.push(written);
+    outcome.extend(first_row(
+        id,
+        "SELECT octet_length(t)::text, (arr[2] IS NULL)::text, EXTRACT(epoch FROM iv)::bigint::text, to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), to_char(d, 'YYYY-MM-DD'), n::text FROM pg_s WHERE id = 1",
+    ));
+    outcome
+}
+
+#[test]
+fn postgres_what_the_sql_tab_sets_does_not_change_what_the_table_reads_and_saves() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_e2_pg");
+    let db = scratch.name.clone();
+    run(
+        &scratch.maintenance,
+        "style",
+        &format!("ALTER DATABASE {db} SET datestyle = 'SQL, DMY'; ALTER DATABASE {db} SET timezone = 'Asia/Taipei'; ALTER DATABASE {db} SET extra_float_digits = 0"),
+    );
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE pg_s(id int PRIMARY KEY, t text, arr text[], iv interval, ts timestamptz, f float8, d date, n numeric(10,2))");
+    let baseline = postgres_pane(&id, "e2-plain", None);
+    session::release_owner(&owner(&id, "e2-plain"));
+    assert_eq!(baseline[3], "saved", "{baseline:?}");
+    assert_eq!(baseline[4..], ["5", "true", "93784", "2024-01-06 03:00:00", "2024-02-03", "2.50"], "{baseline:?}");
+
+    let tabs = [
+        tab_state("SET client_encoding = 'LATIN1'", "SHOW client_encoding", "LATIN1"),
+        tab_state("SET datestyle = 'German, DMY'", "SHOW datestyle", "German, DMY"),
+        tab_state("SET datestyle = 'SQL, DMY'; SELECT 1/0", "SHOW datestyle", "SQL, DMY"),
+        tab_state("SET extra_float_digits = 0", "SHOW extra_float_digits", "0"),
+        tab_state("SET IntervalStyle = 'sql_standard'", "SHOW intervalstyle", "sql_standard"),
+        tab_state("SET TimeZone = 'Asia/Kolkata'", "SHOW timezone", "Asia/Kolkata"),
+        tab_state("SET bytea_output = 'escape'", "SHOW bytea_output", "escape"),
+        tab_state("SET array_nulls = off", "SHOW array_nulls", "off"),
+        tab_state("SET search_path = pg_catalog", "SHOW search_path", "pg_catalog"),
+        tab_state("SET standard_conforming_strings = off", "SHOW standard_conforming_strings", "off"),
+        tab_state("SET default_transaction_read_only = on", "SHOW default_transaction_read_only", "on"),
+        tab_state("SELECT set_config('datestyle', 'SQL, DMY', false), set_config('extra_float_digits', '0', false)", "SHOW extra_float_digits", "0"),
+        tab_state("RESET ALL", "SHOW datestyle", "SQL, DMY"),
+        tab_state("DISCARD ALL", "SHOW datestyle", "SQL, DMY"),
+        tab_state("CREATE TEMP TABLE mine(x int); INSERT INTO mine VALUES (7)", "SELECT x::text FROM mine", "7"),
+        tab_state("BEGIN", "SELECT (now() = statement_timestamp())::text", "false"),
+    ];
+    let mut wrong = Vec::new();
+    for (n, tab) in tabs.iter().enumerate() {
+        let name = format!("e2-{n}");
+        let pane = postgres_pane(&id, &name, Some(tab));
+        if pane != baseline {
+            wrong.push(format!("{}: the table pane did {pane:?}, without it {baseline:?}", tab.run));
+        }
+        let kept = tab_says(&id, &name, tab.ask);
+        if kept.first().map(String::as_str) != Some(tab.answer) {
+            wrong.push(format!("{}: the SQL tab answers {kept:?} afterwards, wanted {:?}: what it set was taken away", tab.run, tab.answer));
+        }
+        session::release_owner(&owner(&id, &name));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
