@@ -70,15 +70,23 @@ fn keeps_given(settings: &serde_json::Value, running: &str, version: &str) -> bo
 /// Why the last swap failed, in words for the person.
 static SWAP_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+fn failure_slot() -> std::sync::MutexGuard<'static, Option<String>> {
+    SWAP_FAILURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// `swap` (src/update.rs) could not move the folders: keeps what "Restart" will say.
 pub fn note_swap_failure(e: &std::io::Error) {
-    let text = swap_failure_text(cfg!(windows) && busy_code(e.raw_os_error()), &e.to_string());
-    *SWAP_FAILURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(text);
+    let busy = cfg!(windows) && busy_code(e.raw_os_error());
+    *failure_slot() = Some(swap_failure_text(busy, &e.to_string()));
 }
 
 /// What `app.update` says when `apply` returned false: the swap's failure if it had one, else that nothing is waiting.
 pub fn apply_failure() -> String {
-    SWAP_FAILURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().unwrap_or_else(|| "no update is ready yet".into())
+    failure_slot()
+        .take()
+        .unwrap_or_else(|| "no update is ready yet".into())
 }
 
 /// Windows says "in use" with sharing violation (32), access denied (5) or lock violation (33).
@@ -89,9 +97,13 @@ fn busy_code(code: Option<i32>) -> bool {
 fn swap_failure_text(busy: bool, error: &str) -> String {
     let installer = format!("download the installer from https://github.com/{REPO}/releases");
     if busy {
-        format!("Yuzora could not install the update because another program is using its install folder. Close any terminal opened in that folder. If you came from a beta, restart your PC once. Then choose Restart again, or {installer}.")
+        format!(
+            "Yuzora could not install the update because another program is using its install folder. Close any terminal opened in that folder. If you came from a beta, restart your PC once. Then choose Restart again, or {installer}."
+        )
     } else {
-        format!("Yuzora could not install the update: {error}. Choose Restart to try again, or {installer}.")
+        format!(
+            "Yuzora could not install the update: {error}. Choose Restart to try again, or {installer}."
+        )
     }
 }
 
@@ -263,18 +275,33 @@ mod tests {
 
     #[test]
     fn a_folder_in_use_says_what_to_close_and_where_the_installer_is() {
-        let text = swap_failure_text(true, "The process cannot access the file because it is being used by another process. (os error 32)");
-        assert!(text.contains("another program is using its install folder"), "{text}");
+        let text = swap_failure_text(
+            true,
+            "The process cannot access the file because it is being used by another process. (os error 32)",
+        );
+        assert!(
+            text.contains("another program is using its install folder"),
+            "{text}"
+        );
         assert!(text.contains("Restart"), "{text}");
         assert!(text.contains("restart your PC"), "{text}");
-        assert!(text.contains("https://github.com/NakiriYuuzu/Yuzora/releases"), "{text}");
+        assert!(
+            text.contains("https://github.com/NakiriYuuzu/Yuzora/releases"),
+            "{text}"
+        );
     }
 
     #[test]
     fn any_other_swap_failure_carries_the_system_error() {
-        let text = swap_failure_text(false, "Cannot create a file when that file already exists. (os error 183)");
+        let text = swap_failure_text(
+            false,
+            "Cannot create a file when that file already exists. (os error 183)",
+        );
         assert!(text.contains("os error 183"), "{text}");
-        assert!(text.contains("https://github.com/NakiriYuuzu/Yuzora/releases"), "{text}");
+        assert!(
+            text.contains("https://github.com/NakiriYuuzu/Yuzora/releases"),
+            "{text}"
+        );
         assert!(!text.contains("install folder"), "{text}");
     }
 

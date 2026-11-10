@@ -15,9 +15,14 @@ pub fn leave_install_dir() {
     if !cfg!(windows) {
         return;
     }
-    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
     if let Some(from) = leave(&exe, &crate::mods::home()) {
-        tracing::info!("working directory moved from {} to the home folder", from.display());
+        tracing::info!(
+            "working directory moved from {} to the home folder",
+            from.display()
+        );
     }
 }
 
@@ -33,7 +38,11 @@ fn leave(exe: &Path, home: &Path) -> Option<PathBuf> {
     match std::env::set_current_dir(home) {
         Ok(()) => Some(cwd),
         Err(e) => {
-            tracing::warn!("cannot move out of {} to {}: {e}", cwd.display(), home.display());
+            tracing::warn!(
+                "cannot move out of {} to {}: {e}",
+                cwd.display(),
+                home.display()
+            );
             None
         }
     }
@@ -49,27 +58,49 @@ mod tests {
     /// The other half of `run`: leaves the way `leave_install_dir` does, then says where it is.
     #[test]
     fn child() {
-        let Ok(spec) = std::env::var(CHILD) else { return };
+        let Ok(spec) = std::env::var(CHILD) else {
+            return;
+        };
         let (exe, home) = spec.split_once('\n').unwrap();
         let left = leave(Path::new(exe), Path::new(home));
-        println!("left={}", left.map_or("-".into(), |p| p.display().to_string()));
+        println!(
+            "left={}",
+            left.map_or("-".into(), |p| p.display().to_string())
+        );
         println!("now={}", std::env::current_dir().unwrap().display());
     }
 
     /// `leave` in a process of its own, started in `cwd`: the working directory belongs to the process, and the other tests share this one.
     fn run(cwd: &Path, exe: &Path, home: &Path) -> (Option<PathBuf>, PathBuf) {
         let out = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "yuzora::release::cwd::tests::child", "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                "yuzora::release::cwd::tests::child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env(CHILD, format!("{}\n{}", exe.display(), home.display()))
             .current_dir(cwd)
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let text = String::from_utf8_lossy(&out.stdout).into_owned();
         // The harness prints "test … ... " before the child's first line.
-        let field = |name: &str| text.lines().find_map(|l| l.split_once(name).map(|(_, v)| v)).unwrap_or_else(|| panic!("no {name} in {text}")).to_owned();
+        let field = |name: &str| {
+            text.lines()
+                .find_map(|l| l.split_once(name).map(|(_, v)| v))
+                .unwrap_or_else(|| panic!("no {name} in {text}"))
+                .to_owned()
+        };
         let left = field("left=");
-        ((left != "-").then(|| PathBuf::from(left)), PathBuf::from(field("now=")))
+        (
+            (left != "-").then(|| PathBuf::from(left)),
+            PathBuf::from(field("now=")),
+        )
     }
 
     struct Folders {
@@ -81,14 +112,27 @@ mod tests {
 
     impl Folders {
         fn new(name: &str) -> Folders {
-            let base = std::env::temp_dir().canonicalize().unwrap().join(format!("yuzora-cwd-{name}-{}", std::process::id()));
+            let base = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("yuzora-cwd-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&base);
             let install = base.join("real/Yuzora");
-            for dir in [install.join("sub"), base.join("real/Yuzora.new"), base.join("home"), base.join("elsewhere")] {
+            for dir in [
+                install.join("sub"),
+                base.join("real/Yuzora.new"),
+                base.join("home"),
+                base.join("elsewhere"),
+            ] {
                 std::fs::create_dir_all(dir).unwrap();
             }
             std::fs::write(install.join("yuzora.exe"), "x").unwrap();
-            Folders { exe: install.join("yuzora.exe"), home: base.join("home"), install, base }
+            Folders {
+                exe: install.join("yuzora.exe"),
+                home: base.join("home"),
+                install,
+                base,
+            }
         }
     }
 
@@ -111,7 +155,11 @@ mod tests {
     #[test]
     fn a_folder_beside_the_install_folder_stays_put() {
         let f = Folders::new("beside");
-        for cwd in [f.base.join("real/Yuzora.new"), f.base.join("elsewhere"), f.base.join("real")] {
+        for cwd in [
+            f.base.join("real/Yuzora.new"),
+            f.base.join("elsewhere"),
+            f.base.join("real"),
+        ] {
             let (left, now) = run(&cwd, &f.exe, &f.home);
             assert_eq!((left, now), (None, cwd));
         }

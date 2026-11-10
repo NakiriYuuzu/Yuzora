@@ -42,7 +42,11 @@ pub fn is_install(dir: &Path) -> bool {
                 "update: {} has files that are not in {PACKAGE_LIST} ({}{}), so this install does not update itself; an update replaces the whole folder. Move them out to turn updates on",
                 dir.display(),
                 shown.join(", "),
-                if strays.len() > shown.len() { ", …" } else { "" }
+                if strays.len() > shown.len() {
+                    ", …"
+                } else {
+                    ""
+                }
             );
             false
         }
@@ -62,7 +66,10 @@ fn strays(dir: &Path) -> Option<Vec<String>> {
         match entry {
             Ok(entry) => {
                 let name = entry.file_name();
-                if name.to_str().is_none_or(|n| n != PACKAGE_LIST && !names.contains(n)) {
+                if name
+                    .to_str()
+                    .is_none_or(|n| n != PACKAGE_LIST && !names.contains(n))
+                {
                     strays.push(name.to_string_lossy().into_owned());
                 }
             }
