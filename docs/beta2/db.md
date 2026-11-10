@@ -53,7 +53,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 
 - 一個工作（job）跑一段 SQL，可以有多個 statement，每個 statement 一個結果集（有列的、或只有 affected 的）。
 - 一個 pane（owner）只顯示最新的工作：開新工作時，同一個 owner 還在跑的工作會被取消，舊工作和它的結果集一起釋放。`release(owner)` 也會先取消，再關連線。
-- 開表時 `COUNT(*)` 在列讀完後、工作結束前執行，所以按「停止」也能停掉 count。
+- 開表時 `COUNT(*)` 在列讀完後、工作結束前執行，所以按「停止」也能停掉 count。count 用自己的連線（`session::count_owner`，count 完就關），不佔 pane 的連線：列讀完、決定好可不可編輯（`Editing`）之後 grid 就能編輯，寫回也不用排在 count 後面。
 - 連線還在建立時按「停止」也有效：引擎先把自己的取消機制準備好，然後在每個 statement 執行前檢查工作是否已經停止（`RowSink::cancelled`）。所以 UPDATE、DELETE 這類不回傳列的語句，不會在回報取消之後才執行。
 - 讀取是串流的：引擎每 512 列（`engine::BATCH`）交給 `RowSink` 一次，grid 立即重畫，不等整個查詢結束。
 - 上限 `db.maxRows`（預設 100,000，可設 100～5,000,000）。真的有列放不下時才停止讀取並標成 truncated（剛好等於上限不算）；開表會多讀一列（`LIMIT maxRows + 1`）來判斷。
@@ -61,6 +61,12 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 開表時另外跑一次 `COUNT(*)`（MSSQL 是 `COUNT_BIG`），狀態列顯示「X 列 · 顯示 a–b · N ms」。
 
 ## 編輯與寫回
+
+- 結果集的可編輯狀態是 `results::Editing`：`Loading`（開表的列還在讀）、`Editable`、`ReadOnly(原因)`；寫回狀態是 `WriteState`：`Idle`、`Writing`（可用 `stop_write` 停止）、`Failed(訊息)`。每個唯讀都有一句原因（包括 SQL 查詢的結果集，`edit.query`），每個失敗都有訊息，雙擊被擋時 footer 會說明原因。
+- 寫回排在 pane 的連線後面，也會被伺服器上別的連線持有的列鎖擋住（PostgreSQL、SQL Server 預設不逾時）。等待期間 footer 顯示「Writing…」加「Stop」、「Discard」：Stop 結束等待，PostgreSQL／SQLite 另外叫伺服器取消那句 UPDATE，SQL Server 則是丟掉 socket（伺服器回滾）。停止後結果集會說明資料庫可能已經收到部分變更（`edit.stopped_maybe`），編輯仍保留。Cmd+S（Ctrl+S）等於「Write back」。
+- footer 的訊息（寫回失敗、唯讀原因）只顯示第一行，點一下展開全文；新的寫回失敗會自動展開（伺服器的 DETAIL、HINT 行在第二行以後）。
+- SQL Server 的連線被伺服器關掉（閒置逾時、防火牆、重啟、`KILL`）時，下一次使用才會發現：寫回的第一句（檢查未結束交易）和 metadata 查詢遇到這種斷線會自動換一條新連線重試一次（這時還沒寫入任何東西）；SQL 頁籤的語句不重試，因為答案遺失不代表語句沒執行。
+- SQL Server 驅動（tiberius）讀不了 `geography`／`geometry`／`hierarchyid` 等 CLR 型別和 `sql_variant`：開這種表會以 `unsupported column type` 結束，不會再卡在載入。要看這些欄位請在 SQL 頁籤自己轉型（`col.ToString()`、`CAST(col AS nvarchar(max))`）。
 
 - 只有「開表」產生的結果集可以編輯，而且資料表必須有 primary key；沒有就停用並顯示原因（`edit.no_key`）。連線設成唯讀（SQLite 的 `readOnly`）時也會停用（`edit.read_only`）。
 - 由資料庫計算的欄位不能編輯（`grid.generated`），包括產生欄、計算欄，以及 PostgreSQL 的 `GENERATED ALWAYS` identity 和 SQL Server 的 identity。否則寫回時整筆交易都會被伺服器拒絕。`describe` 的 `ColumnInfo.generated` 標示這類欄位。
