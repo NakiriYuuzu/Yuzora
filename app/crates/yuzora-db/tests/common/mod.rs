@@ -54,6 +54,7 @@ pub struct LaggingPostgres {
     port: u16,
     hold: Arc<Mutex<Hold>>,
     heard: Arc<Mutex<Vec<Heard>>>,
+    arrived: Arc<AtomicUsize>,
 }
 
 impl LaggingPostgres {
@@ -62,15 +63,16 @@ impl LaggingPostgres {
         let port = listener.local_addr().unwrap().port();
         let hold = Arc::new(Mutex::new(Hold::Nothing));
         let heard = Arc::new(Mutex::new(Vec::new()));
-        let (shared, log) = (hold.clone(), heard.clone());
+        let arrived = Arc::new(AtomicUsize::new(0));
+        let (shared, log, count) = (hold.clone(), heard.clone(), arrived.clone());
         std::thread::spawn(move || {
             for client in listener.incoming().flatten() {
                 let hold = *shared.lock().unwrap_or_else(|e| e.into_inner());
-                let (log, gate) = (log.clone(), shared.clone());
-                std::thread::spawn(move || relay(client, hold, gate, log));
+                let (log, gate, count) = (log.clone(), shared.clone(), count.clone());
+                std::thread::spawn(move || relay(client, hold, gate, log, count));
             }
         });
-        LaggingPostgres { port, hold, heard }
+        LaggingPostgres { port, hold, heard, arrived }
     }
 
     pub fn port(&self) -> u16 {
@@ -105,12 +107,36 @@ impl LaggingPostgres {
     pub fn heard(&self) -> Vec<Heard> {
         self.heard.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
+
+    /// [`heard`](Self::heard) once it has `count` things in it. What the client
+    /// sends after its own call returned (a dropped transaction's ROLLBACK) is
+    /// written by the connection's task and read by a relay thread, so it is
+    /// there when it gets there; ten seconds is the most this waits for it.
+    pub fn heard_until(&self, count: usize) -> Vec<Heard> {
+        let started = std::time::Instant::now();
+        loop {
+            let heard = self.heard();
+            if heard.len() >= count || started.elapsed() > Duration::from_secs(10) {
+                return heard;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Cancel requests that have reached the relay, held back or not: the
+    /// client has sent them, the server has not necessarily heard them.
+    pub fn stops_arrived(&self) -> usize {
+        self.arrived.load(Ordering::SeqCst)
+    }
 }
 
-fn relay(mut client: TcpStream, hold: Hold, gate: Arc<Mutex<Hold>>, heard: Arc<Mutex<Vec<Heard>>>) {
+fn relay(mut client: TcpStream, hold: Hold, gate: Arc<Mutex<Hold>>, heard: Arc<Mutex<Vec<Heard>>>, arrived: Arc<AtomicUsize>) {
     let mut buf = [0u8; 4096];
     let Ok(n) = client.read(&mut buf) else { return };
     let cancel = buf[..n].starts_with(&CANCEL_REQUEST);
+    if cancel {
+        arrived.fetch_add(1, Ordering::SeqCst);
+    }
     let note = |what| heard.lock().unwrap_or_else(|e| e.into_inner()).push(what);
     let (lead, lag) = match hold {
         Hold::Cancels(delay) if buf[..n].starts_with(&CANCEL_REQUEST) => (delay, Duration::ZERO),
