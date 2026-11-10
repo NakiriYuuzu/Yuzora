@@ -236,11 +236,9 @@ export default class FilesSidebar extends View {
 
   // New file / folder / rename: one bar above the tree.
 
-  // The change is for the machine and the Space the name was asked in, whatever the tree shows by the time Enter is heard.
   startEdit(kind, path, dir, cx) {
-    const here = this.here;
     const value = kind === "rename" ? base(path) : "";
-    this.edit = { kind, path, dir: dir ?? (path ? parent(path) : here.root), here, loc: this.loc, on: here.on ?? null };
+    this.edit = { kind, path, dir: dir ?? (path ? parent(path) : this.here.root) };
     this.editInput.set_value(value);
     if (value) {
       const dot = value.lastIndexOf(".");
@@ -255,7 +253,9 @@ export default class FilesSidebar extends View {
     if (!edit) return;
     if (!name || name === "." || name === ".." || /[\\/\0]/.test(name)) { notify({ title: t("error.name"), level: "warning" }); return; }
     this.edit = null;
-    const { here, loc, on } = edit, target = join(edit.dir, name);
+    // The change is for the machine and the Space it was asked in (the bar is dropped when another Space is shown),
+    // whatever is shown by the time the machine answers.
+    const here = this.here, loc = this.loc, on = here.on ?? null, target = join(edit.dir, name);
     cx.spawn(async cx => {
       try {
         if (edit.kind === "new-file") { await createFile(target, { on }); if (this.loc === loc) openFile(target, on); }
