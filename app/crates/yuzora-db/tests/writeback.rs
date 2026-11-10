@@ -1264,6 +1264,9 @@ fn postgres_a_stopped_write_back_cannot_be_felt_by_what_the_pane_runs_next() {
 
     let next = session::start_query(&through, None, &pane.owner, "SELECT pg_sleep(2.5)");
     results::lock(&pane.set).stop_write();
+    // The lock goes only after the write-back has sent its Stop: otherwise a write-back that has not
+    // looked at the Stop yet is stopped by the commit step instead, and no Stop is ever sent to be late.
+    until("the write-back never sent its Stop", || relay.stops_arrived() == 1);
     runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
     assert_eq!(
         within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()),
@@ -1313,7 +1316,7 @@ fn postgres_a_stopped_write_back_is_rolled_back_only_after_the_server_has_dealt_
     );
     runtime::block_on(locker.batch_execute("ROLLBACK")).unwrap();
     assert_eq!(
-        relay.heard(),
+        relay.heard_until(2),
         [common::Heard::StopDealtWith, common::Heard::RollBack],
         "the write-back was rolled back before the server had dealt with the stop, which could land on the ROLLBACK"
     );
@@ -1427,8 +1430,9 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
         seed ^= seed << 13;
         seed ^= seed >> 7;
         seed ^= seed << 17;
-        // Microseconds between the Stop and the lock being let go; negative: the Stop first. The
-        // cancel lands late when the two are within a millisecond or two of each other.
+        // Microseconds between the Stop and the lock being let go; negative: the Stop first, which
+        // is the order they are called in, whatever the write-back's task got to see of them when.
+        // The cancel lands late when the two are within a millisecond or two of each other.
         let offset = (seed % 1601) as i64 - 1500;
         let pane = open(&id, "sweep-pane", &t);
         pane.edit(pane.row_where("id", "1"), "name", Some(&format!("mine-{round}")));
@@ -1443,22 +1447,19 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
                 std::hint::spin_loop();
             }
         };
-        let (stopped_at, released_at);
-        if offset >= 0 {
-            released_at = Instant::now();
-            runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
-            spin(offset);
-            stopped_at = Instant::now();
+        let stop_first = offset < 0;
+        if stop_first {
             results::lock(&pane.set).stop_write();
+            spin(offset);
+            runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
         } else {
-            stopped_at = Instant::now();
-            results::lock(&pane.set).stop_write();
-            spin(offset);
-            released_at = Instant::now();
             runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
+            spin(offset);
+            results::lock(&pane.set).stop_write();
         }
         let written = writer.join().unwrap();
-        let stop_first = released_at > stopped_at + Duration::from_micros(300);
+        let nothing_written = results::lock(&pane.set).write_failure().map(str::to_owned)
+            == Some(yuzora_db::i18n::t("edit.stopped", &[]));
 
         let state = wait(next);
         assert_eq!(
@@ -1475,8 +1476,18 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
                 name, "holder",
                 "round {round} (offset {offset} µs): a write-back stopped before the lock let go wrote anyway"
             );
+            assert!(nothing_written, "round {round} (offset {offset} µs): it did not say that nothing was written");
         } else {
-            assert!(name == "holder" || name == format!("mine-{round}"), "round {round} (offset {offset} µs): {name}");
+            let (mine, holder) = (name == format!("mine-{round}"), name == "holder");
+            assert!(mine || holder, "round {round} (offset {offset} µs): {name}");
+            assert!(
+                written != Ok(1) || mine,
+                "round {round} (offset {offset} µs): it said it wrote, and {name} is there"
+            );
+            assert!(
+                !nothing_written || holder,
+                "round {round} (offset {offset} µs): it said nothing was written, and {name} is there"
+            );
         }
         runtime::block_on(locker.batch_execute("UPDATE t SET name = 'a' WHERE id = 1")).unwrap();
         session::release_owner(&pane.owner);
