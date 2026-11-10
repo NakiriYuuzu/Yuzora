@@ -1286,8 +1286,9 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
         seed ^= seed << 13;
         seed ^= seed >> 7;
         seed ^= seed << 17;
-        // Microseconds from the Stop to the lock being let go; negative: the lock first.
-        let offset = (seed % 2001) as i64 - 1500;
+        // Microseconds between the Stop and the lock being let go; negative: the Stop first. The
+        // cancel lands late when the two are within a millisecond or two of each other.
+        let offset = (seed % 1601) as i64 - 1500;
         let pane = open(&id, "sweep-pane", &t);
         pane.edit(pane.row_where("id", "1"), "name", Some(&format!("mine-{round}")));
         runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
