@@ -1,0 +1,670 @@
+# Yuzora v0.1.0: publishes the app in app/. The accepted `App package` run is
+# the release: its files are tagged, signed and uploaded as they are, never
+# rebuilt. Each stage is a separate dispatch so a person looks between them
+# (docs/beta2/release.md, "Releasing"):
+#
+#   dry-run   sign a manifest with the release key, check it with the app's own
+#             code, keep it as an artifact. Writes nothing to the repository.
+#   draft     tag the accepted commit; a draft release with the installers,
+#             archives and changelogs. Invisible to everyone.
+#   publish   the draft becomes public, not Latest. No updater sees it yet: both
+#             need a file this stage does not upload.
+#   manifest  sign yuzora-update.json, check it, upload it, and its .sig last.
+#             From here installed betas update themselves.
+#   latest    the release becomes Latest (the website's and README's links).
+#
+# Only the `sign` job reads the signing secrets; the jobs that write to the
+# release run no repository code and read no secrets; the jobs that run
+# repository code cannot write. A stage can be run again: a file already on the
+# release with the same content is left alone, with other content it fails.
+#
+# A push to release-dryrun/** runs the dry run alone, which also registers this
+# workflow for dispatching before it is on main (GitHub dispatches a workflow
+# file that has run once, from any branch).
+name: App release
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: dry-run, draft, publish, manifest or latest
+        type: choice
+        required: true
+        options: [dry-run, draft, publish, manifest, latest]
+      version:
+        description: Version without the v (0.1.0)
+        type: string
+        required: true
+      package_run_id:
+        description: The App package run that was accepted (all stages but a dry run)
+        type: string
+        required: false
+        default: ''
+      exclude_targets:
+        description: Targets the manifest leaves out (0.1.0 - windows-x86_64); their files still ship
+        type: string
+        required: false
+        default: ''
+      downloads_base:
+        description: Dry run only. A server on this machine, like http://127.0.0.1:8765/NakiriYuuzu/Yuzora/releases/download
+        type: string
+        required: false
+        default: ''
+  push:
+    branches: ['release-dryrun/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-release
+  cancel-in-progress: false
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  plan:
+    name: Check the inputs
+    if: github.repository == 'NakiriYuuzu/Yuzora'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      stage: ${{ steps.plan.outputs.stage }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      sha: ${{ steps.plan.outputs.sha }}
+      run_id: ${{ steps.plan.outputs.run_id }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      cargo_version: ${{ steps.plan.outputs.cargo_version }}
+      exclude: ${{ steps.plan.outputs.exclude }}
+      downloads: ${{ steps.plan.outputs.downloads }}
+      pub_date: ${{ steps.plan.outputs.pub_date }}
+      upload_plan: ${{ steps.plan.outputs.upload_plan }}
+      expected_assets: ${{ steps.plan.outputs.expected_assets }}
+      notes: ${{ steps.plan.outputs.notes }}
+    steps:
+      # This workflow's own ref is the tooling; every branch's history is there
+      # to read the accepted commit from.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: Check the inputs, the run and the tag
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE: ${{ github.event_name == 'push' && 'dry-run' || inputs.stage }}
+          VERSION: ${{ github.event_name == 'push' && '0.1.0' || inputs.version }}
+          PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+          EXCLUDE_TARGETS: ${{ github.event_name == 'push' && 'windows-x86_64' || inputs.exclude_targets }}
+          DOWNLOADS_BASE: ${{ inputs.downloads_base }}
+        run: bun app/scripts/yuzora/release.ts plan
+      - name: Summary
+        env:
+          STAGE: ${{ steps.plan.outputs.stage }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          SHA: ${{ steps.plan.outputs.sha }}
+          RUN_ID: ${{ steps.plan.outputs.run_id }}
+          EXCLUDE: ${{ steps.plan.outputs.exclude }}
+        run: |
+          {
+            echo "### $STAGE $TAG"
+            echo
+            echo "- commit: \`$SHA\`"
+            echo "- App package run: ${RUN_ID:-none (made-up archives)}"
+            echo "- manifest leaves out: ${EXCLUDE:-nothing}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  draft:
+    name: Tag and draft
+    needs: plan
+    if: needs.plan.outputs.stage == 'draft'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: yuzora-release
+    # No checkout and no repository code: this job can write to the repository.
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      SHA: ${{ needs.plan.outputs.sha }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+      RUN_ID: ${{ needs.plan.outputs.run_id }}
+      UPLOAD_PLAN: ${{ needs.plan.outputs.upload_plan }}
+      NOTES: ${{ needs.plan.outputs.notes }}
+    steps:
+      - &helpers
+        name: Helpers
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/release-lib.sh" <<'LIB'
+          set -euo pipefail
+          sha256_of() { sha256sum "$1" | cut -d' ' -f1; }
+          # The release for $TAG, drafts included (only a token that can write sees drafts).
+          release_json() {
+            local found
+            found=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\")" | jq -s '.')
+            [ "$(jq length <<<"$found")" -le 1 ] || { echo "::error::more than one release for $TAG" >&2; return 1; }
+            jq '.[0] // empty' <<<"$found"
+          }
+          # "<id> <state> <sha256 or ->" of the asset called $1 on release $RELEASE_ID; nothing when it is not there.
+          asset_row() {
+            gh api --paginate "repos/$GH_REPO/releases/$RELEASE_ID/assets?per_page=100" --jq ".[] | select(.name == \"$1\") | \"\(.id) \(.state) \((.digest // \"-\") | sub(\"^sha256:\"; \"\"))\""
+          }
+          held_sha256() { # <id> <digest or ->
+            if [ "$2" != "-" ]; then echo "$2"; else gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$1" | sha256sum | cut -d' ' -f1; fi
+          }
+          # Puts <file> on the release under its own file name, once: the same
+          # content again is left alone, other content stops the stage.
+          upload_asset() {
+            local file=$1 name want id state have row
+            name=$(basename "$file")
+            want=$(sha256_of "$file")
+            row=$(asset_row "$name")
+            if [ -n "$row" ]; then
+              read -r id state have <<<"$row"
+              if [ "$state" = uploaded ]; then
+                have=$(held_sha256 "$id" "$have")
+                if [ "$have" = "$want" ]; then echo "same      $name $want"; return 0; fi
+                echo "::error::$name is already on $TAG with other content ($have, not $want); nothing is overwritten"
+                return 1
+              fi
+              # An upload that never finished holds no content.
+              gh api --method DELETE "repos/$GH_REPO/releases/assets/$id" >/dev/null
+            fi
+            gh release upload "$TAG" "$file"
+            row=$(asset_row "$name")
+            read -r id state have <<<"$row"
+            have=$(held_sha256 "$id" "$have")
+            if [ "$state" != uploaded ] || [ "$have" != "$want" ]; then
+              echo "::error::$name: GitHub holds it as $state with $have after the upload, expected $want"
+              return 1
+            fi
+            echo "uploaded  $name $want"
+          }
+          LIB
+      - name: Download the accepted run's files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          run-id: ${{ needs.plan.outputs.run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          pattern: yuzora-*
+          merge-multiple: true
+          path: artifacts
+      - name: Check the files against the run's own manifest
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/release-lib.sh"
+          cd artifacts
+          printf '%s\n' "$UPLOAD_PLAN" | cut -f1 | sort -u > "$RUNNER_TEMP/wanted"
+          ls -1 | grep -vx yuzora-update.json | sort > "$RUNNER_TEMP/found" || true
+          if ! diff "$RUNNER_TEMP/wanted" "$RUNNER_TEMP/found"; then
+            echo "::error::the run's artifacts are not the files $VERSION ships (wanted <, found >)"
+            exit 1
+          fi
+          # The run's manifest was written from the same files in another job.
+          jq -r '[.targets[], .notes, (.localized_notes // {})[]] | .[] | "\(.url | split("/") | last) \(.sha256)"' yuzora-update.json | while read -r name want; do
+            [ "$(sha256_of "$name")" = "$want" ] || { echo "::error::$name does not match the sha256 in the run's manifest"; exit 1; }
+          done
+          {
+            echo "### Files of run $RUN_ID"
+            echo
+            echo '```'
+            sha256sum -- * | grep -v 'yuzora-update.json$'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Tag the commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG exists already; the plan checked it is $SHA"
+          else
+            object=$(gh api --method POST "repos/$GH_REPO/git/tags" -f tag="$TAG" -f message="Yuzora $TAG" -f object="$SHA" -f type=commit --jq .sha)
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" >/dev/null
+            echo "created annotated tag $TAG -> $SHA"
+          fi
+      - name: Draft the release and upload
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/release-lib.sh"
+          printf '%s' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          release=$(release_json)
+          if [ -z "$release" ]; then
+            flags=(--draft --verify-tag --title "Yuzora $TAG" --notes-file "$RUNNER_TEMP/notes.md")
+            if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); else flags+=(--latest=false); fi
+            gh release create "$TAG" "${flags[@]}"
+            release=$(release_json)
+          else
+            [ "$(jq -r .draft <<<"$release")" = true ] || { echo "::error::$TAG is published already; a published release is not changed"; exit 1; }
+            gh api --method PATCH "repos/$GH_REPO/releases/$(jq -r .id <<<"$release")" -F body=@"$RUNNER_TEMP/notes.md" >/dev/null
+          fi
+          RELEASE_ID=$(jq -r .id <<<"$release")
+          export RELEASE_ID
+          mkdir "$RUNNER_TEMP/staged"
+          while IFS=$'\t' read -r src dest; do
+            cp "artifacts/$src" "$RUNNER_TEMP/staged/$dest"
+          done <<<"$UPLOAD_PLAN"
+          {
+            echo "### Draft $TAG"
+            echo
+            echo '```'
+            for file in "$RUNNER_TEMP"/staged/*; do upload_asset "$file"; done
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish (not Latest)
+    needs: plan
+    if: needs.plan.outputs.stage == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: yuzora-release
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+      EXPECTED_ASSETS: ${{ needs.plan.outputs.expected_assets }}
+    steps:
+      - *helpers
+      - name: Check the draft
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/release-lib.sh"
+          release=$(release_json)
+          [ -n "$release" ] || { echo "::error::no release for $TAG; run the draft stage first"; exit 1; }
+          echo "RELEASE_ID=$(jq -r .id <<<"$release")" >> "$GITHUB_ENV"
+          jq -r '.assets[] | select(.state == "uploaded") | .name' <<<"$release" | sort > "$RUNNER_TEMP/held"
+          printf '%s\n' "$EXPECTED_ASSETS" | sort > "$RUNNER_TEMP/expected"
+          if [ "$(jq -r .draft <<<"$release")" = true ]; then
+            comm -13 "$RUNNER_TEMP/held" "$RUNNER_TEMP/expected" | sed 's/^/missing: /' > "$RUNNER_TEMP/missing"
+            [ ! -s "$RUNNER_TEMP/missing" ] || { cat "$RUNNER_TEMP/missing"; echo "::error::the draft is incomplete"; exit 1; }
+            # The updater sees a release by these two files; they come in the manifest stage.
+            if grep -qx -e yuzora-update.json -e yuzora-update.json.sig "$RUNNER_TEMP/held"; then
+              echo "::error::the draft already has the manifest or its signature; publishing would start updates"
+              exit 1
+            fi
+            echo "DRAFT=true" >> "$GITHUB_ENV"
+          else
+            echo "$TAG is public already"
+            echo "DRAFT=false" >> "$GITHUB_ENV"
+          fi
+      - name: Publish without making it Latest
+        if: env.DRAFT == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # make_latest defaults to true for a release that is newly published.
+          gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" -F draft=false -F prerelease="$PRERELEASE" -f make_latest=false >/dev/null
+      - name: Check what the public gets
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/release-lib.sh"
+          set -euo pipefail
+          release=$(gh api "repos/$GH_REPO/releases/$RELEASE_ID")
+          [ "$(jq -r .draft <<<"$release")" = false ] && [ "$(jq -r .prerelease <<<"$release")" = "$PRERELEASE" ]
+          if [ "$PRERELEASE" = false ] && [ "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "$TAG" ]; then
+            echo "::error::$TAG became Latest; the website's links changed before they were ready"
+            exit 1
+          fi
+          mkdir "$RUNNER_TEMP/public"
+          {
+            echo "### Published $TAG"
+            echo
+            echo '```'
+            jq -r '.assets[] | "\(.name) \(.browser_download_url) \(.digest // "-")"' <<<"$release" | while read -r name url digest; do
+              ok=false
+              for attempt in 1 2 3 4 5; do
+                if curl -fsSL --retry 2 -o "$RUNNER_TEMP/public/$name" "$url"; then ok=true; break; fi
+                sleep 10
+              done
+              $ok || { echo "::error::$url is not downloadable"; exit 1; }
+              got=$(sha256_of "$RUNNER_TEMP/public/$name")
+              [ "$digest" = "-" ] || [ "$digest" = "sha256:$got" ] || { echo "::error::$name downloads as $got, GitHub says $digest"; exit 1; }
+              echo "$got  $name"
+              rm "$RUNNER_TEMP/public/$name"
+            done
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  build-manifest:
+    name: Write the unsigned manifest
+    needs: plan
+    if: needs.plan.outputs.stage == 'manifest' || needs.plan.outputs.stage == 'dry-run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      have_signature: ${{ steps.release.outputs.have_signature }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      STAGE: ${{ needs.plan.outputs.stage }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      CARGO_VERSION: ${{ needs.plan.outputs.cargo_version }}
+      RUN_ID: ${{ needs.plan.outputs.run_id }}
+      EXCLUDE: ${{ needs.plan.outputs.exclude }}
+      DOWNLOADS: ${{ needs.plan.outputs.downloads }}
+      PUB_DATE: ${{ needs.plan.outputs.pub_date }}
+      EXPECTED_ASSETS: ${{ needs.plan.outputs.expected_assets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: The published release's archives and changelogs
+        id: release
+        if: env.STAGE == 'manifest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          release=$(gh release view "$TAG" --json isDraft,isPrerelease,assets 2>/dev/null) || { echo "::error::$TAG is not a published release; run the publish stage first"; exit 1; }
+          [ "$(jq -r .isDraft <<<"$release")" = false ] || { echo "::error::$TAG is still a draft"; exit 1; }
+          jq -r '.assets[].name' <<<"$release" | sort > "$RUNNER_TEMP/held"
+          printf '%s\n' "$EXPECTED_ASSETS" | sort > "$RUNNER_TEMP/expected"
+          [ -z "$(comm -13 "$RUNNER_TEMP/held" "$RUNNER_TEMP/expected")" ] || { comm -13 "$RUNNER_TEMP/held" "$RUNNER_TEMP/expected" | sed 's/^/missing: /'; echo "::error::the release is incomplete"; exit 1; }
+          mkdir dist
+          gh release download "$TAG" --dir dist --pattern 'yuzora-*.tar.gz' --pattern 'changelog*.md'
+          have_manifest=false; have_signature=false
+          grep -qx yuzora-update.json "$RUNNER_TEMP/held" && have_manifest=true
+          grep -qx yuzora-update.json.sig "$RUNNER_TEMP/held" && have_signature=true
+          if [ "$have_signature" = true ] && [ "$have_manifest" = false ]; then
+            echo "::error::$TAG has a signature but no manifest"
+            exit 1
+          fi
+          echo "have_manifest=$have_manifest" >> "$GITHUB_ENV"
+          echo "have_signature=$have_signature" >> "$GITHUB_OUTPUT"
+      - name: The run's archives (dry run)
+        if: env.STAGE == 'dry-run' && needs.plan.outputs.run_id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          run-id: ${{ needs.plan.outputs.run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          pattern: yuzora-*
+          merge-multiple: true
+          path: dist
+      - name: Name them for the version (dry run)
+        if: env.STAGE == 'dry-run'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ -n "$RUN_ID" ]; then
+            # An earlier build of the same bytes under the version being signed for.
+            for f in dist/yuzora-"$CARGO_VERSION"-*.tar.gz; do
+              [ "$CARGO_VERSION" = "$VERSION" ] || cp "$f" "dist/yuzora-$VERSION-${f#dist/yuzora-"$CARGO_VERSION"-}"
+            done
+          else
+            for target in macos-aarch64 windows-x86_64 linux-x86_64 linux-aarch64; do
+              head -c 1048576 /dev/urandom > "dist/yuzora-$VERSION-$target.tar.gz"
+            done
+            printf '## [%s] - 2026-01-01\n\n- a made-up changelog for a dry run\n' "$VERSION" > dist/changelog.md
+          fi
+      - name: Write the manifest
+        shell: bash
+        env:
+          YUZORA_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Only a dry run names a server of its own; the release is always GitHub's.
+          if [ "$STAGE" = dry-run ]; then export YUZORA_DOWNLOADS="$DOWNLOADS/v$VERSION"; else unset YUZORA_DOWNLOADS; fi
+          bun app/scripts/yuzora/manifest.ts yuzora dist --exclude "$EXCLUDE" --pub-date "$PUB_DATE"
+          mkdir signing
+          cp dist/yuzora-update.json signing/
+      - name: Compare with what the release holds
+        if: env.STAGE == 'manifest' && env.have_manifest == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --dir held --pattern 'yuzora-update.json*'
+          cmp held/yuzora-update.json signing/yuzora-update.json || { echo "::error::the manifest on $TAG is not the one these inputs write (another exclude list or pub date?)"; exit 1; }
+          if [ "$have_signature" = true ]; then cp held/yuzora-update.json.sig signing/; fi
+        env:
+          have_signature: ${{ steps.release.outputs.have_signature }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: manifest-unsigned
+          path: signing/yuzora-update.json*
+          if-no-files-found: error
+          retention-days: 3
+
+  sign:
+    name: Sign the manifest
+    needs: [plan, build-manifest]
+    if: needs.build-manifest.outputs.have_signature != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: yuzora-release
+    permissions:
+      contents: read
+    steps:
+      # The lockfile pins the Tauri CLI that signs; its install scripts do not run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: manifest-unsigned
+          path: signing
+      - name: Sign
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ] || { echo "::error::TAURI_SIGNING_PRIVATE_KEY is empty or missing"; exit 1; }
+          [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ] || { echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is empty or missing"; exit 1; }
+          # The CLI reads both from the environment; its output is only the public signature.
+          ./node_modules/.bin/tauri signer sign signing/yuzora-update.json > /dev/null
+          test -s signing/yuzora-update.json.sig
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: manifest-signed
+          path: |
+            signing/yuzora-update.json
+            signing/yuzora-update.json.sig
+          if-no-files-found: error
+          retention-days: 3
+
+  # What build-manifest found already signed on the release comes through as the
+  # same artifact, so the check below is the same for a rerun.
+  verify-manifest:
+    name: Check the signed manifest
+    needs: [plan, build-manifest, sign]
+    if: always() && needs.build-manifest.result == 'success' && (needs.sign.result == 'success' || needs.sign.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      STAGE: ${{ needs.plan.outputs.stage }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      EXCLUDE: ${{ needs.plan.outputs.exclude }}
+      DOWNLOADS: ${{ needs.plan.outputs.downloads }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: The signature the release already has
+        if: needs.sign.result == 'skipped'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: manifest-unsigned
+          path: signed
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.sign.result == 'success'
+        with:
+          name: manifest-signed
+          path: signed
+      - name: Check it with the app's own code
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd app/scripts/yuzora/verify-manifest
+          cargo test --locked
+          cargo build --locked --release
+          verify=$PWD/target/release/verify-manifest
+          cd "$GITHUB_WORKSPACE"
+          [ -s signed/yuzora-update.json.sig ] || { echo "::error::there is no signature to check"; exit 1; }
+          targets=$(EXCLUDE="$EXCLUDE" bun -e 'import { TARGETS } from "./app/scripts/yuzora/manifest.ts"; const out = (process.env.EXCLUDE ?? "").split(",").filter(Boolean); console.log(TARGETS.filter((t) => !out.includes(t)).join(","))')
+          "$verify" signed/yuzora-update.json signed/yuzora-update.json.sig "$VERSION" "$DOWNLOADS" --targets "$targets" | tee "$RUNNER_TEMP/verified"
+          # The check is not vacuous: one changed byte must fail it.
+          sed 's/"schema": 1/"schema": 2/' signed/yuzora-update.json > "$RUNNER_TEMP/tampered.json"
+          if "$verify" "$RUNNER_TEMP/tampered.json" signed/yuzora-update.json.sig "$VERSION" "$DOWNLOADS" --targets "$targets" 2> "$RUNNER_TEMP/refused"; then
+            echo "::error::a changed manifest was accepted"
+            exit 1
+          fi
+          {
+            echo "### $STAGE: signed manifest for $VERSION"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/verified"
+            echo "tampered copy refused: $(cat "$RUNNER_TEMP/refused")"
+            sha256sum signed/yuzora-update.json signed/yuzora-update.json.sig
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: manifest-verified
+          path: |
+            signed/yuzora-update.json
+            signed/yuzora-update.json.sig
+          if-no-files-found: error
+          retention-days: 3
+
+  upload-manifest:
+    name: Upload the manifest, then its signature
+    needs: [plan, verify-manifest]
+    if: needs.plan.outputs.stage == 'manifest' && needs.verify-manifest.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: yuzora-release
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - *helpers
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: manifest-verified
+          path: signed
+      - name: Upload
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/release-lib.sh"
+          release=$(release_json)
+          [ "$(jq -r .draft <<<"$release")" = false ] || { echo "::error::$TAG is a draft; the updater sees nothing of it until it is published"; exit 1; }
+          RELEASE_ID=$(jq -r .id <<<"$release")
+          export RELEASE_ID
+          {
+            echo "### Updates start now: $TAG"
+            echo
+            echo '```'
+            upload_asset signed/yuzora-update.json
+            # Last: a release counts for the updater once both files are there.
+            upload_asset signed/yuzora-update.json.sig
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Check what the public gets
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/release-lib.sh"
+          set -euo pipefail
+          for name in yuzora-update.json yuzora-update.json.sig; do
+            ok=false
+            for attempt in 1 2 3 4 5; do
+              if curl -fsSL --retry 2 -o "$RUNNER_TEMP/$name" "https://github.com/$GH_REPO/releases/download/$TAG/$name"; then ok=true; break; fi
+              sleep 10
+            done
+            $ok || { echo "::error::$name is not downloadable"; exit 1; }
+            [ "$(sha256_of "$RUNNER_TEMP/$name")" = "$(sha256_of "signed/$name")" ] || { echo "::error::$name downloads as something else"; exit 1; }
+          done
+          echo "both files download as uploaded" >> "$GITHUB_STEP_SUMMARY"
+
+  latest:
+    name: Make it Latest
+    needs: plan
+    if: needs.plan.outputs.stage == 'latest'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: yuzora-release
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+      EXPECTED_ASSETS: ${{ needs.plan.outputs.expected_assets }}
+    steps:
+      - *helpers
+      - name: Set Latest
+        shell: bash
+        run: |
+          source "$RUNNER_TEMP/release-lib.sh"
+          [ "$PRERELEASE" = false ] || { echo "::error::a pre-release is never Latest"; exit 1; }
+          release=$(release_json)
+          [ -n "$release" ] && [ "$(jq -r .draft <<<"$release")" = false ] || { echo "::error::$TAG is not a published release"; exit 1; }
+          jq -r '.assets[] | select(.state == "uploaded") | .name' <<<"$release" | sort > "$RUNNER_TEMP/held"
+          printf '%s\n' "$EXPECTED_ASSETS" | sort > "$RUNNER_TEMP/expected"
+          [ -z "$(comm -13 "$RUNNER_TEMP/held" "$RUNNER_TEMP/expected")" ] || { echo "::error::the release is incomplete"; exit 1; }
+          if ! grep -qx yuzora-update.json.sig "$RUNNER_TEMP/held"; then
+            echo "::warning::$TAG has no signed manifest yet: installed betas are not offered this update"
+          fi
+          gh api --method PATCH "repos/$GH_REPO/releases/$(jq -r .id <<<"$release")" -f make_latest=true >/dev/null
+          [ "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "$TAG" ] || { echo "::error::GitHub does not report $TAG as Latest"; exit 1; }
+      - name: Check the links that follow Latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### $TAG is Latest"
+            echo
+            for name in Yuzora-macos-aarch64.dmg Yuzora-windows-x64-setup.exe; do
+              ok=false
+              for attempt in 1 2 3 4 5 6; do
+                # A byte of it: the redirect is signed for GET.
+                code=$(curl -sL -r 0-0 -o /dev/null -w '%{http_code}' "https://github.com/$GH_REPO/releases/latest/download/$name") || code=000
+                if [ "$code" = 200 ] || [ "$code" = 206 ]; then ok=true; break; fi
+                sleep 10
+              done
+              $ok || { echo "::error::releases/latest/download/$name answers $code"; exit 1; }
+              echo "- releases/latest/download/$name: $code"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
