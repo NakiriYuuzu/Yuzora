@@ -257,6 +257,11 @@ async fn open_lease(connection: &str, database: Option<&str>, owner: &str, usage
     let wanting = report.then(|| entry.want());
     let mut guard = entry.conn.clone().lock_owned().await;
     drop(wanting);
+    // A Stop pressed for what ran here before may still be on its way to the
+    // server, and would be felt by whatever starts now.
+    if let Some(conn) = guard.as_ref() {
+        conn.settled().await;
+    }
     if guard.as_ref().is_some_and(Conn::is_closed) {
         *guard = None;
     }
@@ -413,6 +418,28 @@ enum Stop {
     Count(StandDown),
 }
 
+impl Stop {
+    /// Presses the stop, with the jobs lock held. `Serving` lets go of its
+    /// stop under that lock, and does so before the job lets go of the
+    /// connection, so a stop that was pressed is counted on its way before
+    /// any other work can have the connection and not wait for it.
+    fn press(&self, _jobs: &MutexGuard<'static, (JobId, HashMap<JobId, Job>)>) {
+        #[cfg(test)]
+        PRESSED_WITH_THE_LOCK_HELD
+            .with(|held| held.set(Some(matches!(JOBS.try_lock(), Err(std::sync::TryLockError::WouldBlock)))));
+        match self {
+            Stop::Statement(c) => c.cancel_in_background(),
+            Stop::Count(count) => count.call(),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether the last stop pressed on this thread was pressed with the jobs lock held.
+    static PRESSED_WITH_THE_LOCK_HELD: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
 /// While the guard lives, `job`'s Stop reaches what `stop` belongs to: the
 /// statement the job runs on the connection it holds. Take it once that lease
 /// is held and let it go before the lease is: a pane's connection also carries
@@ -496,21 +523,18 @@ pub async fn job_after(id: JobId, seen: u64) -> DbResult<JobState> {
 /// running, the sink stops reading. Nothing else on the pane's connections is
 /// touched: a write-back is not the job's.
 pub fn cancel(id: JobId) {
-    let target = {
+    {
         let mut all = jobs();
         let Some(job) = all.1.get_mut(&id) else { return };
         if !job.running {
             return;
         }
         job.cancelled = true;
-        job.serving.clone()
-    };
-    update_job(id, |_| {});
-    match target {
-        Some(Stop::Statement(c)) => runtime::spawn(async move { c.cancel().await }),
-        Some(Stop::Count(count)) => count.call(),
-        None => {}
+        if let Some(stop) = job.serving.clone() {
+            stop.press(&all);
+        }
     }
+    update_job(id, |_| {});
 }
 
 /// Cancels `owner`'s running jobs and forgets all of them with their results.
@@ -1069,12 +1093,12 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
     outcome
 }
 
-/// Ends work the person stopped: `signal` tells the engine while `work` still
-/// holds the connection it runs on. Let go of first, whatever queued for that
-/// connection would start on it, and the stop would land on that instead.
-/// That is not all of it: the request can still be on its way when the signal
-/// returns, which is why the signal is [`Canceller::abandon`] and the
-/// connection does not outlive it.
+/// Ends work the person stopped: `signal` tells the engine, and returns once
+/// the server has dealt with the stop, while `work` still holds the connection
+/// it runs on. What dropping `work` sends next (a write-back's ROLLBACK) is
+/// therefore the first the server hears after the stop, not something the stop
+/// can land on. The connection does not outlive it all the same
+/// ([`Canceller::abandon`]): `work` is dropped where it stands.
 async fn stop_work<W>(work: W, signal: impl std::future::Future<Output = ()>) {
     signal.await;
     drop(work);
@@ -1096,6 +1120,24 @@ mod tests {
         supersede("sink-test");
     }
 
+    /// The stop is counted on its way under the lock `Serving` lets go of its
+    /// stop under, which the job does before it lets go of the connection. The
+    /// race this closes (the connection handed to the next work between the
+    /// stop being found and being counted) cannot be made to happen on cue, so
+    /// the test looks at what it depends on: the stop is pressed with the lock held.
+    #[test]
+    fn a_stop_is_pressed_with_the_jobs_lock_held() {
+        let id = new_job("stop-under-lock");
+        PRESSED_WITH_THE_LOCK_HELD.with(|held| held.set(None));
+        let count = StandDown::new();
+        let _serving = serving(id, Stop::Count(count.clone()));
+        cancel(id);
+        let held = PRESSED_WITH_THE_LOCK_HELD.with(|held| held.get());
+        supersede("stop-under-lock");
+        assert_eq!(held, Some(true), "the stop was pressed without the jobs lock (None: not pressed at all)");
+        assert!(count.0.subscribe().borrow().to_owned(), "the stop reached the count");
+    }
+
     #[test]
     fn the_engine_is_told_to_stop_while_the_work_still_holds_the_connection() {
         runtime::block_on(async {
@@ -1111,6 +1153,59 @@ mod tests {
             stop_work(work, signal).await;
             assert!(slot.try_lock().is_ok(), "the connection is let go of once the engine was told");
         });
+    }
+
+    /// A Stop is made where it is pressed, not by a task that waits for a free
+    /// worker of the runtime: with both of them busy, SQLite's statement still ends.
+    #[test]
+    fn the_toolbars_stop_acts_where_it_is_pressed() {
+        let file = std::env::temp_dir().join(format!("yuzora-db-stop-now-{}.sqlite", std::process::id()));
+        std::fs::File::create(&file).unwrap();
+        let config = ConnectionConfig {
+            name: "stop-now".into(),
+            engine: config::Engine::Sqlite,
+            path: file.to_string_lossy().into_owned(),
+            ..ConnectionConfig::default()
+        };
+        let id = new_job("stop-now-test");
+        let ended = runtime::block_on(async {
+            let mut conn = Conn::connect(&ConnectSpec::new(config, None)).await.unwrap();
+            let _serving = serving(id, Stop::Statement(conn.canceller()));
+            let go = Arc::new(AtomicBool::new(false));
+            let busy = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            for _ in 0..2 {
+                let (go, busy) = (go.clone(), busy.clone());
+                runtime::spawn(async move {
+                    busy.fetch_add(1, Ordering::SeqCst);
+                    while !go.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                });
+            }
+            while busy.load(Ordering::SeqCst) < 2 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let stop = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                cancel(id);
+            });
+            let release = go.clone();
+            let freed = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(1500));
+                release.store(true, Ordering::SeqCst);
+            });
+            let started = Instant::now();
+            let sql = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 200000000) SELECT count(*) FROM c";
+            let outcome = conn.execute(sql, &mut FirstCell { job: id, cell: None }).await;
+            let took = started.elapsed();
+            go.store(true, Ordering::SeqCst);
+            let _ = (stop.join(), freed.join());
+            (outcome, took)
+        });
+        supersede("stop-now-test");
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(ended.0, Err(DbError::Cancelled));
+        assert!(ended.1 < Duration::from_millis(1000), "the Stop waited for the runtime: {:?}", ended.1);
     }
 
     #[test]

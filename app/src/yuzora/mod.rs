@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 pub mod dock;
 pub mod herdr_compat;
+pub mod motion;
 pub mod release;
 pub mod shell;
 pub mod trust;

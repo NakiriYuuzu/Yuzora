@@ -16,14 +16,18 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use futures_util::FutureExt;
 use yuzora_db::config::{ConnectionConfig, Engine, SslMode};
 use yuzora_db::engine::{Conn, ConnectSpec, RowSink};
 use yuzora_db::error::DbError;
 use yuzora_db::model::{Cell, Column, ObjectKind, ObjectRef, RowEdit};
 use yuzora_db::runtime;
+
+mod common;
 
 // ---------------------------------------------------------------- helpers
 
@@ -1041,6 +1045,239 @@ fn postgres_a_stop_pressed_before_the_statement_keeps_it_from_running() {
         assert_eq!(conn.execute("UPDATE yz_stop SET v = 2", &mut Stopped).await, Err(DbError::Cancelled));
         assert_eq!(scalar(&mut conn, "SELECT v FROM yz_stop").await, "1");
     });
+}
+
+/// The fixture through a relay that can hold the server back from hearing of
+/// a cancel (the relay lives as long as the test).
+async fn pg_through(relay: &common::LaggingPostgres, ssl: SslMode) -> Conn {
+    let mut spec = pg_spec("yuzora_full", ssl);
+    spec.config.port = Some(relay.port());
+    Conn::connect(&spec).await.expect("connect to the PostgreSQL fixture through the relay")
+}
+
+/// A stop is a request to the server about whatever the connection runs when
+/// the request gets there. Once the engine says the stop is done, nothing that
+/// the connection runs afterwards may be its target.
+#[test]
+fn postgres_a_stop_that_the_server_hears_late_is_not_felt_by_what_runs_after_it() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    for ssl in [SslMode::Prefer, SslMode::Disable] {
+        run(async {
+            let mut conn = pg_through(&relay, ssl).await;
+            query(&mut conn, "CREATE TEMP TABLE yz_late (v int); INSERT INTO yz_late VALUES (1)").await.unwrap();
+            relay.hold_connections(Duration::from_millis(250));
+            conn.canceller().cancel().await;
+            relay.release();
+            assert_eq!(conn.execute("UPDATE yz_late SET v = 2", &mut Stopped).await, Err(DbError::Cancelled));
+            let after = query(&mut conn, "SELECT v, pg_sleep(1.5) FROM yz_late").await.map(|_| ());
+            assert_eq!(after, Ok(()), "{ssl:?}: the stop, still on its way, cancelled the statement that ran after it");
+            assert_eq!(scalar(&mut conn, "SELECT v FROM yz_late").await, "1");
+        });
+    }
+}
+
+/// Keeps the runtime's worker threads busy until dropped: a task spawned
+/// meanwhile cannot start.
+struct BusyWorkers(Arc<AtomicBool>);
+
+impl BusyWorkers {
+    fn new() -> Self {
+        let (go, busy) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+        for _ in 0..2 {
+            let (go, busy) = (go.clone(), busy.clone());
+            runtime::spawn(async move {
+                busy.fetch_add(1, Ordering::SeqCst);
+                let since = Instant::now();
+                while !go.load(Ordering::SeqCst) && since.elapsed() < Duration::from_secs(10) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            });
+        }
+        while busy.load(Ordering::SeqCst) < 2 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        BusyWorkers(go)
+    }
+}
+
+impl Drop for BusyWorkers {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The connection is not handed to new work while a stop is on its way, and
+/// the stop counts as on its way from the moment it is pressed, not from when
+/// the task that sends it first gets to run.
+#[test]
+fn postgres_a_stop_from_the_background_is_on_its_way_before_it_returns() {
+    only_with!("postgres");
+    run(async {
+        let mut conn = pg().await;
+        let busy = BusyWorkers::new();
+        conn.canceller().cancel_in_background();
+        let counted = conn.settled().now_or_never().is_none();
+        drop(busy);
+        assert!(counted, "the stop was not counted on its way when it returned");
+        conn.settled().await;
+        assert!(!conn.is_closed());
+        assert_eq!(scalar(&mut conn, "SELECT 'after', pg_sleep(0.3)").await, "after");
+    });
+}
+
+/// A stop that was not heard to be dealt with may still arrive: the connection
+/// it was for is not trusted with another statement.
+#[test]
+fn postgres_a_stop_the_server_does_not_answer_retires_the_connection() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    run(async {
+        let conn = pg_through(&relay, SslMode::Disable).await;
+        relay.hold_cancels(Duration::from_secs(8));
+        let started = Instant::now();
+        conn.canceller().cancel().await;
+        assert!(started.elapsed() < Duration::from_secs(7), "{:?}", started.elapsed());
+        assert!(conn.is_closed(), "the connection is kept for statements a stop can still arrive in");
+        relay.release();
+        assert_eq!(scalar(&mut pg_through(&relay, SslMode::Disable).await, "SELECT 'new'").await, "new");
+    });
+}
+
+#[test]
+fn postgres_a_stop_the_server_hears_late_still_ends_the_statement_it_was_for() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    run(async {
+        let mut conn = pg_through(&relay, SslMode::Prefer).await;
+        relay.hold_connections(Duration::from_millis(250));
+        let canceller = conn.canceller();
+        runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            canceller.cancel().await;
+        });
+        let started = Instant::now();
+        assert_eq!(conn.execute("SELECT pg_sleep(30)", &mut Collect::default()).await, Err(DbError::Cancelled));
+        let took = started.elapsed();
+        assert!((Duration::from_millis(450)..Duration::from_secs(5)).contains(&took), "{took:?}");
+        relay.release();
+        assert!(!conn.is_closed());
+        assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
+    });
+}
+
+/// A statement of three seconds with the connection's stop pressed 300 ms into it.
+async fn stopped_while_it_sleeps(conn: &mut Conn) -> Result<(), DbError> {
+    let canceller = conn.canceller();
+    runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        canceller.cancel().await;
+    });
+    conn.execute("SELECT pg_sleep(3)", &mut Collect::default()).await
+}
+
+/// A host can name several addresses, some of which are other servers or none
+/// at all. The connection is made to one of them, and a stop is for the server
+/// that connection is with: not for the first address the host gives when the
+/// stop is pressed, nor for what the configuration points at.
+#[test]
+fn postgres_a_stop_goes_to_the_address_the_connection_was_made_to() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    let door = common::ClosedDoor::start();
+    for ssl in [SslMode::Disable, SslMode::Prefer] {
+        run(async {
+            let mut spec = pg_spec("yuzora_full", ssl);
+            spec.config.port = Some(door.addr().port());
+            spec.addresses = Some(vec![door.addr(), relay.addr()]);
+            let mut conn = Conn::connect(&spec).await.expect("connect past the address that closes at once");
+            let taken = door.taken();
+            let outcome = stopped_while_it_sleeps(&mut conn).await;
+            assert_eq!(outcome, Err(DbError::Cancelled), "{ssl:?}: the statement ran to its end, the stop went astray");
+            assert_eq!(door.taken(), taken, "{ssl:?}: the stop was sent to an address the connection is not with");
+            assert!(!conn.is_closed());
+            assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
+        });
+    }
+}
+
+/// Through a tunnel the bytes go to its local end and the configured host is
+/// only the name the certificate is for: it is not looked up, by the
+/// connection or by a stop.
+#[test]
+fn postgres_a_stop_goes_to_the_tunnels_end_and_not_to_the_configured_host() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    for ssl in [SslMode::Disable, SslMode::Prefer] {
+        run(async {
+            let mut spec = pg_spec("yuzora_full", ssl);
+            spec.config.host = "no-such-host.invalid".into();
+            spec.endpoint = Some(("127.0.0.1".into(), relay.port()));
+            let mut conn = Conn::connect(&spec).await.expect("connect through the tunnel's end");
+            assert_eq!(stopped_while_it_sleeps(&mut conn).await, Err(DbError::Cancelled), "{ssl:?}");
+            assert!(!conn.is_closed());
+        });
+    }
+}
+
+/// A host name as the machine resolves it (`localhost` is `::1` and
+/// `127.0.0.1` where there is IPv6): the connection and its stop are with the
+/// same server.
+#[test]
+fn postgres_a_host_name_is_looked_up_and_its_stop_ends_the_statement() {
+    only_with!("postgres");
+    run(async {
+        let mut spec = pg_spec("yuzora_full", SslMode::Prefer);
+        spec.config.host = "localhost".into();
+        let mut conn = Conn::connect(&spec).await.expect("connect to localhost");
+        assert_eq!(stopped_while_it_sleeps(&mut conn).await, Err(DbError::Cancelled));
+        assert!(!conn.is_closed());
+        assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
+    });
+}
+
+/// The write-back is a run of statements of its own, each of them a target of
+/// a stop that is late: the UPDATE, and the COMMIT, which a deferred trigger
+/// keeps busy for a while.
+fn a_write_back_after_a_stop_the_server_hears_late(ddl: &str) {
+    let relay = common::LaggingPostgres::start();
+    run(async {
+        let mut conn = pg_through(&relay, SslMode::Prefer).await;
+        query(&mut conn, "CREATE TEMP TABLE yz_wb (id int PRIMARY KEY, v text); INSERT INTO yz_wb VALUES (1, 'a')")
+            .await
+            .unwrap();
+        query(&mut conn, ddl).await.unwrap();
+        let t = pg_object(&pg_temp_schema(&mut conn).await, "yz_wb");
+        relay.hold_connections(Duration::from_millis(250));
+        conn.canceller().cancel().await;
+        relay.release();
+        assert_eq!(
+            conn.apply_edits(&t, &[one_edit("z")]).await,
+            Ok(1),
+            "the stop, still on its way, cut the write-back short"
+        );
+        assert_eq!(scalar(&mut conn, "SELECT v FROM yz_wb").await, "z");
+        assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
+    });
+}
+
+#[test]
+fn postgres_a_write_back_is_not_cut_short_in_its_update_by_a_stop_the_server_hears_late() {
+    only_with!("postgres");
+    a_write_back_after_a_stop_the_server_hears_late(
+        "CREATE FUNCTION pg_temp.slow_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1.5); RETURN NEW; END $$;
+         CREATE TRIGGER slow_update BEFORE UPDATE ON yz_wb FOR EACH ROW EXECUTE FUNCTION pg_temp.slow_update();",
+    );
+}
+
+#[test]
+fn postgres_a_write_back_is_not_cut_short_in_its_commit_by_a_stop_the_server_hears_late() {
+    only_with!("postgres");
+    a_write_back_after_a_stop_the_server_hears_late(
+        "CREATE FUNCTION pg_temp.slow_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1.5); RETURN NULL; END $$;
+         CREATE CONSTRAINT TRIGGER slow_commit AFTER UPDATE ON yz_wb DEFERRABLE INITIALLY DEFERRED
+           FOR EACH ROW EXECUTE FUNCTION pg_temp.slow_commit();",
+    );
 }
 
 #[test]

@@ -19,6 +19,7 @@
   "unstage": "Unstage",
   "discard": "Discard",
   "discard.ask": "Discard the changes to {path}? This cannot be undone.",
+  "discard.changed": "{path} is not the change you were asked about any more, so nothing was discarded. Look at it again.",
   "cancel": "Cancel",
   "resolve": "Resolve…",
   "history": "Show history",
