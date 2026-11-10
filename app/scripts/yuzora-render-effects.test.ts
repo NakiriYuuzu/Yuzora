@@ -99,6 +99,16 @@ export default class P extends View { render(cx) { ui.pick(1, (e, cx) => cx.noti
   expect(keys(files)).toEqual(["ui.js#head:cx.notify"]);
 });
 
+test("a super call, a subclass that inherits its render, and the window, theme and dock calls the engine refuses", () => {
+  const files = {
+    "base.js": `import { View } from "gpui-kit"; import { set_theme } from "gpui-kit";
+export class Base extends View { render(cx) { set_theme("x"); return this.body(cx); } body(cx) { window.refresh(); return 1; } }`,
+    "main.js": `import { Base } from "./base.js";
+export default class P extends Base { body(cx) { cx.new(Q, {}); return super.body(cx); } }`,
+  };
+  expect(keys(files)).toEqual(["P.body:cx.new", "base.js#Base.body:refresh", "base.js#Base.render:set_theme"]);
+});
+
 test("template literals, regular expressions and comments do not hide or invent calls", () => {
   const src = `${HEAD}
 export default class P extends View {

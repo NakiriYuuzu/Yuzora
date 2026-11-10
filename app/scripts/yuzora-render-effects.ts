@@ -272,7 +272,9 @@ export function parse(file: string, src: string): Unit {
 
 // What the engine refuses in a frame (vendor/gpui-kit/crates/shell/src/engine/quickjs: refuse_*, allows_notify).
 const INPUT_CALLS = new Set(["set_selected_range", "set_value", "replace_with_token", "replace_range_with_token", "focus"]);
-const STATE_CLASSES = new Set(["InputState", "TextareaState", "EditorState", "SliderState", "CalendarState", "OtpState", "VirtualListScrollHandle"]);
+const STATE_CLASSES = new Set(["InputState", "TextareaState", "EditorState", "SliderState", "CalendarState", "OtpState", "VirtualListScrollHandle", "DockArea"]);
+// The window, theme, dock and nested-view calls that are refused the same way (window_api, theme_api, dock_api, mod.rs refuse_nested_view_mutation).
+const REFUSED_CALLS = new Set(["set_theme", "set_rem_size", "focus_next", "focus_prev", "activate_window", "minimize_window", "zoom_window", "toggle_fullscreen", "dispatch_action", "add_panel", "remove_panel", "toggle_dock", "remove_dock", "set_dock_size", "set_dock_collapsible", "set_locked", "zoom_out", "set_props"]);
 // What the `herdr` module does to the app when it is called (it queues the change).
 const HERDR_CHANGES = new Set(["setShared", "run", "openOverlay", "closeOverlay", "notify", "playSound", "setAgentOrder", "presentUpdateNotes", "writeTextFile", "sendFeedback", "pickFolder", "exec", "hc", "feedbackPasteImage", "feedbackClearImages", "feedbackAttachImages", "feedbackPickImages"]);
 
@@ -293,7 +295,7 @@ const KEEPS = new Set(["hover", "tooltip", "then", "catch", "finally", "after", 
 
 export type Finding = { mod: string; file: string; where: string; effect: string; detail: string; chain: string[]; line: number };
 
-type Event = { kind: "this" | "call" | "effect"; name: string; effect?: string; at: number; ids: string[]; ns?: string };
+type Event = { kind: "this" | "super" | "call" | "effect"; name: string; effect?: string; at: number; ids: string[]; ns?: string };
 type Scope = { events: Event[]; closures: Map<string, Fn>; unclassified: Set<string> };
 type Ctx = {
   resolveThis(name: string): { fn: Fn; unit: Unit } | undefined;
@@ -405,8 +407,9 @@ function scopeOf(unit: Unit, fn: Fn, ctx: Ctx, invokes: (target: { fn: Fn; unit:
         call("effect", "spawn", "spawn");
         for (const a of literal) now.add(a);
       } else if (t.v === "notify") call("effect", "cx.notify", "notify");
-      else if (t.v === "focus_handle" || t.v === "bind_keys") call("effect", t.v, "refused");
-      else if (t.v === "new" && STATE_CLASSES.has(obj?.v)) call("effect", `${obj.v}.new`, "refused");
+      else if (t.v === "focus_handle" || t.v === "bind_keys" || REFUSED_CALLS.has(t.v) || (t.v === "refresh" && obj?.v === "window")) call("effect", t.v, "refused");
+      else if (t.v === "new" && (STATE_CLASSES.has(obj?.v) || obj?.v === "cx")) call("effect", `${obj.v}.new`, "refused");
+      else if (obj?.v === "super") call("super", t.v);
       else if (INPUT_CALLS.has(t.v)) call("effect", t.v, "input");
       else if (viaThis) {
         call("this", t.v);
@@ -425,6 +428,7 @@ function scopeOf(unit: Unit, fn: Fn, ctx: Ctx, invokes: (target: { fn: Fn; unit:
     if (prev?.v === "new" || KEYWORDS.has(t.v)) continue;
     const imported = unit.imports.get(t.v);
     if (imported?.from === "herdr" && HERDR_CHANGES.has(imported.name)) { call("effect", imported.name === "notify" ? "toast" : imported.name, "changes"); continue; }
+    if (imported?.from.startsWith("gpui") && REFUSED_CALLS.has(imported.name)) { call("effect", imported.name, "refused"); continue; }
     call("call", t.v);
     const target = ctx.resolveBare(unit, t.v, closures);
     if (target) args.forEach((a, k) => { if (a.arrow >= 0 && invokes(target, k)) now.add(a.arrow); });
@@ -466,6 +470,12 @@ function classOf(mod: Mod, unit: Unit, name: string): { cls: Cls; unit: Unit } |
   return cls ? { cls, unit: target } : null;
 }
 
+/** The class `fn` is a method of extends, for `super.x()`. */
+function parentOf(mod: Mod, unit: Unit, fn: Fn): { cls: Cls; unit: Unit } | null {
+  const own = fn.owner ? unit.classes.get(fn.owner) : undefined;
+  return own?.ext ? classOf(mod, unit, own.ext) : null;
+}
+
 /** Every method of `cls` and of its parents, nearest first. */
 function methodsOf(mod: Mod, unit: Unit, cls: Cls): Map<string, { fn: Fn; unit: Unit }> {
   const all = new Map<string, { fn: Fn; unit: Unit }>();
@@ -492,8 +502,8 @@ export function scanMod(mod: Mod): Report {
   const renders: string[] = [];
   for (const unit of mod.units.values()) {
     for (const cls of unit.classes.values()) {
-      if (!cls.methods.has("render")) continue;
       const methods = methodsOf(mod, unit, cls);
+      if (!methods.has("render")) continue;
       renders.push(`${mod.name}/${cls.name}`);
       const resolveBare = (from: Unit, name: string, closures: Map<string, Fn>, ns?: string) => {
         if (ns) {
@@ -554,7 +564,8 @@ export function scanMod(mod: Mod): Report {
             if (!found.has(id)) found.set(id, { mod: mod.name, file: node.unit.file, where: label(node.fn), effect: e.effect!, detail: e.name, chain: [...node.chain, e.name], line: lineOf(node.unit, e.at) });
             continue;
           }
-          const next = e.kind === "this" ? methods.get(e.name) : resolveBare(node.unit, e.name, inScope, e.ns);
+          const parent = e.kind === "super" ? parentOf(mod, node.unit, node.fn) : null;
+          const next = e.kind === "this" ? methods.get(e.name) : parent ? methodsOf(mod, parent.unit, parent.cls).get(e.name) : e.kind === "call" ? resolveBare(node.unit, e.name, inScope, e.ns) : undefined;
           const imp = e.kind === "call" && !e.ns ? node.unit.imports.get(e.name) : undefined;
           if (imp && (imp.from.startsWith("yuzora:") || imp.from === "herdr")) host.add(`${imp.from}.${imp.name}`);
           if (imp?.from.startsWith("yuzora:") && !HOST_READS.has(`${imp.from}.${imp.name}`)) {
