@@ -25,6 +25,16 @@ enum Hold {
     Connections(Duration),
 }
 
+/// What the relay saw the server do, in the order it happened.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Heard {
+    /// The server closed the connection a cancel request came on: it has
+    /// acted on the request, as it does before it closes.
+    StopDealtWith,
+    /// A client sent ROLLBACK to the server.
+    RollBack,
+}
+
 /// A TCP relay in front of the PostgreSQL fixture that holds back what it is
 /// told to before the server hears of it. Cancelling is a message to the
 /// server about whatever the connection runs when it gets there: this makes
@@ -32,6 +42,7 @@ enum Hold {
 pub struct LaggingPostgres {
     port: u16,
     hold: Arc<Mutex<Hold>>,
+    heard: Arc<Mutex<Vec<Heard>>>,
 }
 
 impl LaggingPostgres {
@@ -39,14 +50,16 @@ impl LaggingPostgres {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let hold = Arc::new(Mutex::new(Hold::Nothing));
-        let shared = hold.clone();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let (shared, log) = (hold.clone(), heard.clone());
         std::thread::spawn(move || {
             for client in listener.incoming().flatten() {
                 let hold = *shared.lock().unwrap_or_else(|e| e.into_inner());
-                std::thread::spawn(move || relay(client, hold));
+                let log = log.clone();
+                std::thread::spawn(move || relay(client, hold, log));
             }
         });
-        LaggingPostgres { port, hold }
+        LaggingPostgres { port, hold, heard }
     }
 
     pub fn port(&self) -> u16 {
@@ -72,11 +85,18 @@ impl LaggingPostgres {
     pub fn release(&self) {
         self.set(Hold::Nothing);
     }
+
+    /// What the server has been seen to do since the relay started.
+    pub fn heard(&self) -> Vec<Heard> {
+        self.heard.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
 }
 
-fn relay(mut client: TcpStream, hold: Hold) {
+fn relay(mut client: TcpStream, hold: Hold, heard: Arc<Mutex<Vec<Heard>>>) {
     let mut buf = [0u8; 4096];
     let Ok(n) = client.read(&mut buf) else { return };
+    let cancel = buf[..n].starts_with(&CANCEL_REQUEST);
+    let note = |what| heard.lock().unwrap_or_else(|e| e.into_inner()).push(what);
     let (lead, lag) = match hold {
         Hold::Cancels(delay) if buf[..n].starts_with(&CANCEL_REQUEST) => (delay, Duration::ZERO),
         Hold::Connections(delay) => (Duration::ZERO, delay),
@@ -85,10 +105,14 @@ fn relay(mut client: TcpStream, hold: Hold) {
     std::thread::sleep(lead);
     let Ok(mut server) = TcpStream::connect(UPSTREAM) else { return };
     let (mut from_client, mut to_server) = (client.try_clone().unwrap(), server.try_clone().unwrap());
+    let rollbacks = heard.clone();
     std::thread::spawn(move || {
         let mut piece = buf[..n].to_vec();
         loop {
             std::thread::sleep(lag);
+            if piece.windows(8).any(|w| w == b"ROLLBACK") {
+                rollbacks.lock().unwrap_or_else(|e| e.into_inner()).push(Heard::RollBack);
+            }
             if to_server.write_all(&piece).is_err() {
                 break;
             }
@@ -100,6 +124,9 @@ fn relay(mut client: TcpStream, hold: Hold) {
         let _ = to_server.shutdown(Shutdown::Write);
     });
     let _ = std::io::copy(&mut server, &mut client);
+    if cancel {
+        note(Heard::StopDealtWith);
+    }
     let _ = client.shutdown(Shutdown::Both);
 }
 
