@@ -1253,7 +1253,10 @@ with these differences.
   one its SQL tab runs on. What a SQL tab did (`SET`, `USE`, a temporary
   table, a transaction left open) never reaches the table, and what the SQL
   tab has not committed is not in the table either. The table's Stop and the
-  SQL tab's Stop each end only their own statement. A pane that uses both
+  SQL tab's Stop each end only their own statement, and a write-back that
+  waits does not hold the SQL tab up. A pane still has one job at a time, so
+  running a statement in the SQL tab replaces what the pane showed of the
+  table, as it always did. A pane that uses both
   holds one connection more than a pane that only opens a table, so on a
   login with a very small connection limit the SQL tab can fail to connect
   (the server's message is shown) while a table is open.
