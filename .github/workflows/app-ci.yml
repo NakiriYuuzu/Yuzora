@@ -21,6 +21,8 @@ on:
       - '.gitmodules'
       - 'tests/database/**'
       - '.github/workflows/app-ci.yml'
+      # Its contract test (app/scripts/yuzora/app-release.test.ts) runs below.
+      - '.github/workflows/app-release.yml'
   pull_request:
     branches: [main, beta2/integration]
     paths: *app-paths
