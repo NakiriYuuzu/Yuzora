@@ -5,11 +5,23 @@ use super::*;
 use gpui::{Entity, VisualTestContext};
 use gpui_shell::ShellRoot;
 use std::ops::Deref;
-use std::sync::{Mutex, MutexGuard};
 
-// The zoom is one value for the whole process (`gpui_shell::set_pixel_scale`), so a test that reads exact
-// pixels owns it while its rig lives: the other tests of this file wait, and the zoom is 1 again when it is gone.
-static ZOOM: Mutex<()> = Mutex::new(());
+/// The zoom is one value for the whole process (`gpui_shell::set_pixel_scale`), and the tests beside this one read
+/// exact pixels at zoom 1. A test that changes it therefore runs alone, in a test process of its own: this returns
+/// true there, and elsewhere runs the test in that process, checks it passed and returns false.
+fn alone(name: &str) -> bool {
+    if std::env::var("YUZORA_MOTION_ALONE").as_deref() == Ok(name) {
+        return true;
+    }
+    let out = crate::spawn::command(std::env::current_exe().unwrap().to_str().unwrap())
+        .args(["--exact", &format!("mods::render_tests::motion_tests::{name}"), "--nocapture", "--test-threads=1"])
+        .env("YUZORA_MOTION_ALONE", name)
+        .output()
+        .unwrap();
+    let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && log.contains("1 passed"), "{name} failed alone:\n{log}");
+    false
+}
 
 /// What a mod's view is mounted with: the props and `layout()` it is given, the shared values and queued commands
 /// it starts with, the window's size.
@@ -38,13 +50,6 @@ struct Rig {
     perf: Rc<RefCell<Value>>,
     calls: Rc<RefCell<Calls>>,
     settings: Rc<RefCell<Value>>,
-    _zoom: MutexGuard<'static, ()>,
-}
-
-impl Drop for Rig {
-    fn drop(&mut self) {
-        gpui_shell::set_pixel_scale(1.0);
-    }
 }
 
 /// `yuzora:perf` with a state the test sets: the real one samples processes on a thread of its own.
@@ -77,8 +82,9 @@ fn shipped(name: &str) -> String {
 
 impl Rig {
     fn mount(cx: &mut TestAppContext, staged: &Staged, main: &str, o: Opts) -> Self {
-        let zoom = ZOOM.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        gpui_shell::set_pixel_scale(o.zoom);
+        if o.zoom != 1.0 {
+            gpui_shell::set_pixel_scale(o.zoom);
+        }
         let calls = Rc::new(RefCell::new(Calls::default()));
         // "When Yuzora opens" is applied once per run by the first dock: as if that was done, so what the person
         // set never reaches these copies.
@@ -122,7 +128,7 @@ impl Rig {
         });
         let visual = VisualTestContext::from_window(*window.deref(), cx);
         visual.simulate_resize(gpui::size(gpui::px(o.size.0), gpui::px(o.size.1)));
-        let mut rig = Self { visual, runtime, root: mounted.unwrap(), layout, perf, calls, settings, _zoom: zoom };
+        let mut rig = Self { visual, runtime, root: mounted.unwrap(), layout, perf, calls, settings };
         rig.settle();
         rig
     }
@@ -395,6 +401,9 @@ fn selection_box(rig: &mut Rig, mode: &str) -> (f32, f32, f32, f32) {
 // by one by the layout, so the selection cannot be a position worked out once.
 #[gpui::test]
 fn the_mode_bar_selection_is_exactly_on_its_button_at_every_zoom(cx: &mut TestAppContext) {
+    if !alone("the_mode_bar_selection_is_exactly_on_its_button_at_every_zoom") {
+        return;
+    }
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut rig = wide_bar(cx, &staged, Some("files"), 1.0);
@@ -438,6 +447,9 @@ fn the_mode_bar_selection_is_painted_under_the_button(cx: &mut TestAppContext) {
 // A new zoom moves every button at once, and so the selection with them: only picking another mode slides it.
 #[gpui::test]
 fn the_mode_bar_selection_does_not_slide_when_the_zoom_changes(cx: &mut TestAppContext) {
+    if !alone("the_mode_bar_selection_does_not_slide_when_the_zoom_changes") {
+        return;
+    }
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut rig = wide_bar(cx, &staged, Some("ssh"), 1.0);
@@ -521,6 +533,9 @@ fn the_resource_bars_follow_a_new_sample_by_category(cx: &mut TestAppContext) {
 // A new zoom resizes the track, and a bar is its share of it from that frame on: only a new sample moves a bar.
 #[gpui::test]
 fn the_resource_bars_do_not_slide_when_the_zoom_changes(cx: &mut TestAppContext) {
+    if !alone("the_resource_bars_do_not_slide_when_the_zoom_changes") {
+        return;
+    }
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut o = Opts::new((1300.0, 1400.0));
@@ -588,6 +603,9 @@ fn a_settings_switch_slides_its_knob(cx: &mut TestAppContext) {
 // A new zoom moves the knob with the switch; only a press slides it.
 #[gpui::test]
 fn a_settings_switch_does_not_slide_when_the_zoom_changes(cx: &mut TestAppContext) {
+    if !alone("a_settings_switch_does_not_slide_when_the_zoom_changes") {
+        return;
+    }
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let mut rig = Rig::mount(cx, &staged, &shipped("yuzora-settings-general"), Opts::new((1200.0, 2400.0)));
