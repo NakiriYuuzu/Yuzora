@@ -535,6 +535,8 @@ fn the_resource_bars_do_not_slide_when_the_zoom_changes(cx: &mut TestAppContext)
     };
     let before = fills(&mut rig);
     assert_eq!(before.len(), 3, "the details are open and have three bars");
+    rig.advance(300);
+    assert_eq!(rig.pending_frames(), 0, "the details are at rest");
     rig.set_zoom(1.5);
     let at = fills(&mut rig);
     assert_eq!(rig.pending_frames(), 0, "nothing is left to animate");

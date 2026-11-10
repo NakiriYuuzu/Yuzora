@@ -6,7 +6,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Popover, ToggleGroup, Toggle } from "gpui-base";
-import { theme, window, nextCommand } from "herdr";
+import { theme, window, settings, nextCommand } from "herdr";
 import { t, tokens, motion } from "yuzora:core";
 import { state, tick } from "yuzora:perf";
 
@@ -129,8 +129,9 @@ export default class Perf extends View {
               .child(key === "memory" ? `${one(mb(r.memory))} MB` : `${one(r.cpu)} %`))
             .child(muted(div()).child(share === null ? t("no_share") : t("share", { value: one(share) })))))
         .child(div().h(3).w_full().rounded(2).bg(th.divider).overflow_hidden()
-          // Keyed by category: the rows sort by memory, so a bar changes places as its share changes.
-          .child(div().id(`share-${r.id}`).h_full().rounded(2).bg(th.dim).w(TRACK_W * Math.min(100, Math.max(0, share ?? 0)) / 100)
+          // Keyed by category: the rows sort by memory, so a bar changes places as its share changes. And by the
+          // zoom: a new zoom is a new bar, which starts at its width instead of sliding there.
+          .child(div().id(`share-${r.id}-${settings().zoom}`).h_full().rounded(2).bg(th.dim).w(TRACK_W * Math.min(100, Math.max(0, share ?? 0)) / 100)
             .transition("width", motion("base"))));
     };
     const close = h_flex().id("close").size(22).flex_none().rounded(5).items_center().justify_center().cursor_pointer()
