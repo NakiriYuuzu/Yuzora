@@ -328,8 +328,9 @@ impl MsConn {
         }
         let reused = self.client.is_some();
         let mut client = self.take_client().await?;
-        // Nested in a transaction the SQL tab left open, COMMIT only counts
-        // down: the tab's ROLLBACK would undo the write-back after it read as done.
+        // Nested in a transaction something else left open on this connection (the
+        // login's defaults, a trigger), COMMIT only counts down: that transaction's
+        // ROLLBACK would undo the write-back after it read as done.
         // Also the first thing sent: a socket the server closed while the
         // connection sat idle fails here, with nothing written, and is replaced.
         let mut state = transactions(&mut client).await;
@@ -353,7 +354,7 @@ impl MsConn {
         // With IMPLICIT_TRANSACTIONS on, any statement that touches a table
         // opens a transaction, and BEGIN opens one more: the COMMIT would leave
         // the first open and the write-back would be lost with the connection.
-        // It is off for the write-back and back on after it, as the SQL tab left it.
+        // It is off for the write-back and back on after it, as the connection had it.
         if implicit && let Err(e) = batch(&mut client, "SET IMPLICIT_TRANSACTIONS OFF").await {
             if !fatal(&e) {
                 self.client = Some(client);

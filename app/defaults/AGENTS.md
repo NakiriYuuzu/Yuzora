@@ -1267,15 +1267,37 @@ with these differences.
   table again with edits not yet written asks first.
 - A table is read and written back on a connection of its own, apart from the
   one its SQL tab runs on. What a SQL tab did (`SET`, `USE`, a temporary
-  table, a transaction left open) never reaches the table, and what the SQL
-  tab has not committed is not in the table either. The table's Stop and the
+  table) stays on the SQL tab's connection and does not change what the table
+  reads or saves. A transaction the SQL tab left open is not seen by the
+  table, and it can hold the table up (next bullet). The table's Stop and the
   SQL tab's Stop each end only their own statement, and a write-back that
-  waits does not hold the SQL tab up. A pane still has one job at a time, so
-  running a statement in the SQL tab replaces what the pane showed of the
-  table, as it always did. A pane that uses both
-  holds one connection more than a pane that only opens a table, so on a
-  login with a very small connection limit the SQL tab can fail to connect
-  (the server's message is shown) while a table is open.
+  waits on another connection's lock does not hold the SQL tab up. A pane
+  still has one job at a time, so running a statement in the SQL tab replaces
+  what the pane showed of the table, as it always did. A pane that uses both
+  holds one connection more than a pane that only opens a table (closing the
+  pane closes all of them).
+- A transaction left open in the SQL tab (`BEGIN` without `COMMIT` or
+  `ROLLBACK`) is the one thing that reaches across the two connections, and
+  only as a lock: while it holds locks the table needs, the table's read or
+  write-back in the same pane waits for it. SQL Server waits without end
+  (the table stays on Loading or Writing until it is stopped); the locks of an
+  `UPDATE` block the table's read of those rows. SQLite fails the table's
+  write-back with `database is locked` after about 5 seconds, and a read-only
+  `BEGIN; SELECT …` left open is enough to cause it. PostgreSQL does not
+  block a read except behind a strong lock (an uncommitted `ALTER TABLE`), but
+  a write-back to a row the transaction changed waits. To recover, press Stop
+  on the table, go to the SQL tab, `COMMIT` or `ROLLBACK`, and run the table
+  again. What the SQL tab has not committed is not in the table either. Tell
+  the person this when a table will not load or save after they used the SQL
+  tab.
+- Connections count against a login's limit (`too many connections …`; the
+  server's message is shown). With a very small limit either side can fail,
+  not only the SQL tab: the SQL tab fails when a table is open, and the
+  table fails to open when the SQL tab holds the room, for example after the
+  table's connection was lost (a Stop of a write-back, an idle timeout, the
+  network) and the SQL tab connected in the meantime. Running the table again
+  in that pane keeps failing; close the pane (that releases all of its
+  connections) and open the table in a new one.
 - Clearing a cell (Backspace, then Enter) makes it NULL where the column's
   type has no empty value (numbers, dates, times, `uuid`, `bool`, `json`),
   and the cell shows NULL before anything is written; a text column keeps the
