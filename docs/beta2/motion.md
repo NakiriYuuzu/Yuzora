@@ -35,12 +35,20 @@ Yuzora 的 UI 動畫是克制的功能性動畫：幫使用者看出「什麼變
 | 右側 dock 的模式列（`yuzora-modebar`） | 切到另一個模式 | 選取指示條滑到新位置（開關面板時不滑，直接出現或消失） | `base` |
 | 資源用量 popover（`yuzora-perf`） | 每 2 秒一次取樣、或切換排序 | 各類別的占比條平滑變到新的占比 | `base` |
 | 設定頁的開關（`yuzora-settings-*/ui.js`，目前只有 General 用） | 按開關 | 旋鈕滑到另一端 | `fast` |
-| 對話框與 popup（設定、歡迎畫面、diff、選單、picker、指令面板；`src/window.rs`） | overlay 加入時，一次 | 由透明淡入，並從上方 6 px 落到定位；對話框後面的暗層一起淡入 | `fast` |
+| 對話框與 popup（指令面板、選單與 picker 類 popup、prompt／confirm、Git 的 push／diff 等 mod 對話框、新開的 Herdr 設定區段；`src/window.rs`） | overlay 加入時，一次 | 由透明淡入，並從上方 6 px 落到定位；對話框後面的暗層一起淡入 | `fast` |
 | toast（`src/window.rs`） | toast 加入時，一次 | 由透明淡入，並從下方 6 px 升到定位 | `base` |
 
-進場只在 overlay「加入」時播一次：重新 render、內容更新、視窗大小改變、焦點切換都不會重播；同一個 id 關掉再開會再播；系統要求減少動態效果時直接是終態。動畫期間 overlay 立即可互動，位移是 layout 的位移（不是只在 paint 時偏移），所以點擊落在看到的位置上。結束後回到與沒有動畫時完全相同的元素樹，也不再要求任何 frame。關閉仍是瞬間。
+進場只在 overlay「加入」時播一次：重新 render、內容更新、視窗大小改變、焦點切換都不會重播；同一個 id 關掉後隔一幀再開會再播；系統要求減少動態效果時直接是終態。系統設定在 macOS 與 Windows 只在 App 啟動時讀一次，改了「減少動態效果」要重啟 App 才生效（Linux 走 portal，第一個回覆到之前開的 overlay 照播，沒有 portal 的 session 永遠照播）。動畫期間 overlay 立即可互動，位移是 layout 的位移（不是只在 paint 時偏移），所以點擊落在看到的位置上。結束後回到與沒有動畫時完全相同的元素樹，也不再要求任何 frame。關閉仍是瞬間。
 
-不做進場的 overlay：`window`（dock 的抽屜、feedback：放好就留著，開啟時也不該每次重播）與以 `layout` 組成的 overlay（目前只有終端機 peek：裡面是終端機 view，由它自己的 cache 重畫）。
+同一次更新裡，一個對話框或 popup 取代剛關掉的同類（同為對話框，或同為 popup）時，使用者看到的是同一個東西換內容，不是新開：新的承接舊的進場進度（舊的已到位就直接到位），後面的暗層不中斷，也不再播一次。例子是設定從 Yuzora 頁切到 Herdr 區段、設定開著時按更新膠囊的 What changed、指令面板執行的指令接著開對話框。判斷靠 `yuzora::motion::Handover`：`remove_overlay` 記下剛關的對話框與 popup，`open_overlay` 沿用同類最近一個的進場時間（只用一次），畫完一幀就清空，所以隔一幀以上再開、或不同類（對話框關掉換成 popup）、或 toast，都照常進場。
+
+**會進場**：指令面板、選單與 picker 類 popup、prompt／confirm、Git 的 push／diff 等 mod 對話框、toast，以及新開（設定本來沒開著）的 Herdr 設定區段。
+
+**不進場**：
+- 設定的 Yuzora 頁（General、Launch、Mods、Templates）。它們是以 `layout` 組成的對話框，⌘, 開的預設設定也是先畫空白框、再轉成 General 頁以 layout 對話框重開。
+- 歡迎畫面與 What's new：兩者是 `kind: "window"`。
+- `window`（dock 的抽屜、feedback：放好就留著，開啟時也不該每次重播）。
+- 以 `layout` 組成的 overlay（終端機 peek，以及上面的設定頁：裡面是終端機或多個 mod view，各有自己的 cache 要重畫）。
 
 ## 驗證
 
@@ -54,7 +62,7 @@ overlay 的進場在 `app/src/window/overlay_motion_tests.rs`（`window::tests`�
 
 ## 上游檔的改動
 
-`app/src/window.rs`，每處都以 `// yuzora(motion):` 註記（約 16 行）：`OverlayKind` 改成 `pub(crate)`（`yuzora::motion` 要讀它）；`Overlay` 多一個欄位 `entered`（加入的時間，在 `open_overlay` 的 struct 裡設定；以 `cx.background_executor().now()` 取，測試才能移動時鐘）；`render_overlays` 多收 `window`（要求下一個 frame），並在 `body` 完成後、`match o.kind` 之前算相位並套用，對話框暗層的 alpha 乘上相位；呼叫端多傳 `window`。其餘邏輯都在 `yuzora/motion.rs`。同步上游時若 `render_overlays` 或 `Overlay` 被改動，看這幾處。
+`app/src/window.rs`，每處都以 `// yuzora(motion):` 註記（約 21 行）：`OverlayKind` 改成 `pub(crate)`（`yuzora::motion` 要讀它）；`Overlay` 多一個欄位 `entered`（加入的時間，在 `open_overlay` 的 struct 裡設定；以 `cx.background_executor().now()` 取，測試才能移動時鐘）；`render_overlays` 多收 `window`（要求下一個 frame），並在 `body` 完成後、`match o.kind` 之前算相位並套用，對話框暗層的 alpha 乘上相位；呼叫端多傳 `window`。`AppWindow` 多一個欄位 `handover`（剛關掉的對話框與 popup），`remove_overlay` 記下、`open_overlay` 沿用、`render` 畫完清空。其餘邏輯都在 `yuzora/motion.rs`。同步上游時若 `render_overlays` 或 `Overlay` 被改動，看這幾處。
 
 ## 之後
 
