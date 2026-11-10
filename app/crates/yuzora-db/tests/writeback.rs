@@ -1863,6 +1863,15 @@ fn year_first_inputs() -> Vec<String> {
             inputs.push(format!("{date}{time}"));
         }
     }
+    for date in ["2024-01-06", "2024/1/6", "2024.01.06", "20240106", "2024-02-03"] {
+        for time in ["10:00", "10:00:00", "10:00:00.5", "2:30 PM", "12:00 AM", "10:00:00Z", "9:5", "10:00:00+08:00", "13:00 PM"] {
+            inputs.push(format!("{time} {date}"));
+        }
+        for time in ["10:00:00Z", "10:00:00.000Z", "10:00:00.250Z", "10:00Z"] {
+            inputs.push(format!("{date}T{time}"));
+            inputs.push(format!("{date} {time}"));
+        }
+    }
     inputs.sort();
     inputs.dedup();
     inputs
@@ -1886,6 +1895,12 @@ const YEAR_FIRST_STORED: &[&str] = &[
     "20240106",
     "20240106 10:00",
     "2024-02-29 23:59:30",
+    "10:00 2024-01-06",
+    "2:30 PM 2024/1/6",
+    "10:00:00 2024.01.06",
+    "2024-01-06T10:00:00Z",
+    "2024-01-06T10:00:00.000Z",
+    "2024-01-06 10:00:00Z",
 ];
 
 /// The shapes a day-first login used to read as another day, or another time of day.
@@ -1936,7 +1951,8 @@ fn year_first_sweep(language: &str, database: &str, inputs: &[String]) {
                 let read_year_first = first_row(
                     &reference,
                     &format!(
-                        "SELECT CONVERT(varchar(30), TRY_CAST(N'{spaced}' AS datetime), 121), CONVERT(varchar(30), TRY_CAST(N'{spaced}' AS smalldatetime), 121)"
+                        "SELECT CONVERT(varchar(30), COALESCE(TRY_CAST(N'{typed}' AS datetime), TRY_CAST(N'{spaced}' AS datetime)), 121), \
+                                CONVERT(varchar(30), COALESCE(TRY_CAST(N'{typed}' AS smalldatetime), TRY_CAST(N'{spaced}' AS smalldatetime)), 121)"
                     ),
                 );
                 if stored == read_year_first {
@@ -2163,5 +2179,369 @@ fn postgres_a_write_back_leaves_no_transaction_open_and_another_connection_reads
     runtime::block_on(session::write_back_set(&pane.set)).unwrap();
     assert_eq!(first_row(&id, "SELECT v FROM t"), ["z"], "another connection reads it");
     assert_eq!(pane_value(&id, "committed-pane", "SELECT (now() = statement_timestamp())::text"), "true", "the pane's connection is not inside a transaction");
+}
+
+// ---------------------------------------------------------------- a cleared cell
+
+impl Opened {
+    /// What the grid keeps of text typed into a cell and ended with Enter.
+    fn type_into(&self, row: usize, column: &str, text: &str) {
+        let at = self.column(column);
+        let mut r = results::lock(&self.set);
+        let original = r.cell(row, at).cloned().unwrap_or(Cell::Null);
+        let initial = if original.is_null() { String::new() } else { original.display().into_owned() };
+        r.type_into(row, at, &original, &initial, text.to_owned(), true);
+    }
+
+    /// A cell as the grid shows it now, a pending edit included.
+    fn shown(&self, row: usize, column: &str) -> String {
+        let at = self.column(column);
+        results::lock(&self.set).cell(row, at).map_or_else(|| "NULL".to_owned(), |c| c.display().into_owned())
+    }
+}
+
+/// A column type, a value of it, and whether an empty string is a value of the type.
+type Kind = (&'static str, &'static str, bool);
+
+const MSSQL_KINDS: &[Kind] = &[
+    ("datetime", "'20240105 10:00:00'", false),
+    ("smalldatetime", "'20240105 10:00'", false),
+    ("date", "'20240105'", false),
+    ("time", "'10:00:00'", false),
+    ("datetime2", "'20240105 10:00:00'", false),
+    ("datetimeoffset", "'2024-01-05 10:00:00 +08:00'", false),
+    ("int", "5", false),
+    ("bigint", "5", false),
+    ("smallint", "5", false),
+    ("tinyint", "5", false),
+    ("bit", "1", false),
+    ("float", "1.5", false),
+    ("real", "1.5", false),
+    ("decimal(10,2)", "1.5", false),
+    ("money", "1.5", false),
+    ("smallmoney", "1.5", false),
+    ("uniqueidentifier", "'6F9619FF-8B86-D011-B42D-00C04FC964FF'", false),
+    ("varchar(10)", "'a'", true),
+    ("nvarchar(10)", "N'a'", true),
+    ("char(5)", "'a'", true),
+    ("nchar(5)", "N'a'", true),
+    ("varchar(max)", "'a'", true),
+    ("nvarchar(max)", "N'a'", true),
+    ("text", "'a'", true),
+];
+
+const POSTGRES_KINDS: &[Kind] = &[
+    ("timestamp", "'2024-01-05 10:00:00'", false),
+    ("timestamptz", "'2024-01-05 10:00:00+08'", false),
+    ("date", "'2024-01-05'", false),
+    ("time", "'10:00:00'", false),
+    ("timetz", "'10:00:00+08'", false),
+    ("interval", "'1 day'", false),
+    ("int2", "5", false),
+    ("int4", "5", false),
+    ("int8", "5", false),
+    ("float4", "1.5", false),
+    ("float8", "1.5", false),
+    ("numeric(10,2)", "1.5", false),
+    ("money", "1.5", false),
+    ("bool", "true", false),
+    ("uuid", "'6f9619ff-8b86-d011-b42d-00c04fc964ff'", false),
+    ("inet", "'10.0.0.1'", false),
+    ("cidr", "'10.0.0.0/8'", false),
+    ("macaddr", "'08:00:2b:01:02:03'", false),
+    ("json", "'{}'", false),
+    ("jsonb", "'{}'", false),
+    ("text", "'a'", true),
+    ("varchar(10)", "'a'", true),
+    ("char(5)", "'a'", true),
+];
+
+/// Clears a cell of each type the way a person does (Backspace, Enter) and writes back, one type
+/// at a time; says which types do not show NULL before the write, or do not hold what a cleared
+/// cell means after it.
+fn clearing_every_kind(id: &str, kinds: &[Kind], schema: &str, as_text: impl Fn(&str) -> String) -> Vec<String> {
+    let columns: Vec<String> = kinds.iter().enumerate().map(|(i, (ty, _, _))| format!("c{i} {ty} NULL")).collect();
+    run(id, "setup", &format!("CREATE TABLE {schema}.e1(id int PRIMARY KEY, {})", columns.join(", ")));
+    for (i, (_, value, _)) in kinds.iter().enumerate() {
+        run(id, "setup", &format!("INSERT INTO {schema}.e1(id, c{i}) VALUES ({i}, {value})"));
+    }
+    let pane = open(id, "clear-pane", &table(schema, "e1"));
+    let mut wrong = Vec::new();
+    for (i, (ty, _, empty_is_a_value)) in kinds.iter().enumerate() {
+        let (row, column) = (pane.row_where("id", &i.to_string()), format!("c{i}"));
+        pane.type_into(row, &column, "");
+        let shown = pane.shown(row, &column);
+        let stored = match runtime::block_on(session::write_back_set(&pane.set)) {
+            Ok(_) => first_row(id, &format!("SELECT {} FROM {schema}.e1 WHERE id = {i}", as_text(&column))).remove(0),
+            Err(e) => {
+                results::lock(&pane.set).discard_edits();
+                format!("refused: {e}")
+            }
+        };
+        let want = if *empty_is_a_value { "" } else { "NULL" };
+        eprintln!("CLEARED {ty:<16} shown={shown:<6} stored={stored}");
+        if shown != want || stored.trim_end() != want {
+            wrong.push(format!("{ty}: the cleared cell shows {shown:?} and the table holds {stored:?}, wanted {want:?} in both"));
+        }
+    }
+    session::release_owner(&pane.owner);
+    wrong
+}
+
+#[test]
+fn mssql_a_cleared_cell_is_null_unless_the_type_holds_an_empty_string() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_e1_ms");
+    let wrong = clearing_every_kind(&scratch.connection(), MSSQL_KINDS, "dbo", |c| format!("ISNULL(CAST({c} AS nvarchar(40)), N'NULL')"));
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn postgres_a_cleared_cell_is_null_unless_the_type_holds_an_empty_string() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_e1_pg");
+    let wrong = clearing_every_kind(&scratch.connection(), POSTGRES_KINDS, "public", |c| format!("COALESCE({c}::text, 'NULL')"));
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+fn a_cleared_cell_of_a_column_that_cannot_be_null_is_refused(id: &str, schema: &str, number: &str, instant: &str) {
+    run(id, "setup", &format!("CREATE TABLE {schema}.nn(id int PRIMARY KEY, n {number} NOT NULL, d {instant} NOT NULL); INSERT INTO {schema}.nn VALUES (1, 5, '2024-01-05 10:00:00')"));
+    for column in ["n", "d"] {
+        let pane = open(id, &format!("nn-{column}"), &table(schema, "nn"));
+        pane.type_into(0, column, "");
+        assert_eq!(pane.shown(0, column), "NULL", "{schema}.{column}: the cell shows what it will write");
+        let refused = runtime::block_on(session::write_back_set(&pane.set)).expect_err("the server refuses a NULL it cannot store").to_string();
+        assert!(refused.to_lowercase().contains("null"), "{schema}.{column}: the server says why: {refused}");
+        let held = first_row(id, &format!("SELECT CAST(n AS varchar(10)), CAST(d AS varchar(30)) FROM {schema}.nn WHERE id = 1"));
+        assert_eq!(held[0], "5", "{schema}.{column}: nothing was written");
+        assert!(held[1].starts_with("2024-01-05 10:00:00"), "{schema}.{column}: nothing was written ({held:?})");
+        session::release_owner(&pane.owner);
+    }
+}
+
+#[test]
+fn mssql_a_cleared_cell_of_a_column_that_cannot_be_null_is_refused_by_the_server() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_e1_nn");
+    a_cleared_cell_of_a_column_that_cannot_be_null_is_refused(&scratch.connection(), "dbo", "int", "datetime");
+}
+
+#[test]
+fn postgres_a_cleared_cell_of_a_column_that_cannot_be_null_is_refused_by_the_server() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_e1_pgnn");
+    a_cleared_cell_of_a_column_that_cannot_be_null_is_refused(&scratch.connection(), "public", "numeric", "timestamp");
+}
+
+// ---------------------------------------------------------------- what the SQL tab leaves on its connection
+
+/// A statement the SQL tab runs, how to ask the tab afterwards whether it still holds, and what it answers.
+struct TabState {
+    run: &'static str,
+    /// Fails: the state it leaves is what it did before it failed.
+    fails: bool,
+    ask: &'static str,
+    answer: &'static str,
+}
+
+fn tab_state(run: &'static str, ask: &'static str, answer: &'static str) -> TabState {
+    TabState { run, fails: run.ends_with("1/0"), ask, answer }
+}
+
+/// Runs `sql` as the SQL tab of `pane` would, and waits; a script that fails is no surprise to the caller.
+fn run_in_the_tab(connection: &str, pane: &str, sql: &str) -> JobState {
+    wait(session::start_query(connection, None, &owner(connection, pane), sql))
+}
+
+/// The first column of what the SQL tab of `pane` reads.
+fn tab_says(connection: &str, pane: &str, sql: &str) -> Vec<String> {
+    let state = run(connection, pane, sql);
+    let set = results::get(state.results.last().expect("a result").id).expect("result");
+    let r = results::lock(&set);
+    r.rows.iter().map(|row| row[0].display().into_owned()).collect()
+}
+
+/// What the server called the failure: `Msg 2628`, or the first words.
+fn refusal(error: &DbError) -> String {
+    let text = error.to_string();
+    text.split("(Msg ").nth(1).map_or_else(|| text.chars().take(40).collect(), |rest| format!("Msg {}", rest.split(',').next().unwrap_or("")))
+}
+
+/// What the table pane read and saved, to be the same whatever the SQL tab had done on its connection.
+#[derive(Debug, PartialEq)]
+struct Pane {
+    rows_read: usize,
+    long_cell: usize,
+    too_long: String,
+    too_big: String,
+    saved: String,
+    held: Vec<String>,
+}
+
+fn mssql_pane(id: &str, name: &str, tab: Option<&TabState>) -> Pane {
+    run(
+        id,
+        "reset",
+        "DELETE FROM dbo.s; INSERT INTO dbo.s VALUES (1, N'ab', 1, REPLICATE(CAST('x' AS varchar(max)), 5000), N'a'), (2, N'cd', 2, 'y', N'b'), (3, N'ef', 3, 'z', N'c')",
+    );
+    if let Some(tab) = tab {
+        let state = run_in_the_tab(id, name, tab.run);
+        assert_eq!(state.error.is_some(), tab.fails, "{}: {:?}", tab.run, state.error);
+    }
+    let pane = open(id, name, &table("dbo", "s"));
+    let rows_read = results::lock(&pane.set).rows.len();
+    let first = pane.row_where("id", "1");
+    let at = pane.column("big");
+    let long_cell = results::lock(&pane.set).rows[first][at].display().len();
+    let attempt = || match runtime::block_on(session::write_back_set(&pane.set)) {
+        Ok(_) => "saved".to_owned(),
+        Err(e) => {
+            results::lock(&pane.set).discard_edits();
+            format!("refused: {}", refusal(&e))
+        }
+    };
+    pane.edit(first, "short", Some("abcdefgh"));
+    let too_long = attempt();
+    pane.edit(first, "tiny", Some("300"));
+    let too_big = attempt();
+    pane.edit(first, "note", Some("ok"));
+    let saved = attempt();
+    let held = first_row(id, "SELECT short, CAST(tiny AS varchar(5)), CAST(LEN(big) AS varchar(10)), note FROM dbo.s WHERE id = 1");
+    Pane { rows_read, long_cell, too_long, too_big, saved, held }
+}
+
+#[test]
+fn mssql_what_the_sql_tab_sets_does_not_change_what_the_table_reads_and_saves() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_e2_ms");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE dbo.s(id int PRIMARY KEY, short nvarchar(5), tiny tinyint, big varchar(max), note nvarchar(20))");
+    let baseline = mssql_pane(&id, "e2-plain", None);
+    session::release_owner(&owner(&id, "e2-plain"));
+    assert_eq!(baseline.rows_read, 3);
+    assert_eq!(baseline.long_cell, 5000);
+    assert_eq!(baseline.saved, "saved");
+    assert!(baseline.too_long.starts_with("refused: Msg 2628") && baseline.too_big.starts_with("refused: Msg"), "{baseline:?}");
+    assert_eq!(baseline.held, ["ab", "1", "5000", "ok"]);
+
+    let tabs = [
+        tab_state("SET ANSI_WARNINGS OFF", "SELECT CAST(@@OPTIONS & 8 AS varchar(5))", "0"),
+        tab_state("SET ANSI_WARNINGS OFF; SET ARITHABORT OFF", "SELECT CAST(@@OPTIONS & 72 AS varchar(5))", "0"),
+        tab_state("SET ROWCOUNT 1", "SELECT CAST(id AS varchar(5)) FROM dbo.s", "1"),
+        tab_state("SET TEXTSIZE 8", "SELECT CAST(@@TEXTSIZE AS varchar(10))", "8"),
+        tab_state("SET LANGUAGE British", "SELECT @@LANGUAGE", "British"),
+        tab_state("SET LANGUAGE German", "SELECT @@LANGUAGE", "Deutsch"),
+        tab_state("SET DATEFORMAT dmy", "SELECT CONVERT(varchar(10), CAST(N'2024-01-06' AS datetime), 120)", "2024-06-01"),
+        tab_state("SET IMPLICIT_TRANSACTIONS ON", "SELECT CAST(@@OPTIONS & 2 AS varchar(5))", "2"),
+        tab_state("SET ANSI_DEFAULTS ON", "SELECT CAST(@@OPTIONS & 2 AS varchar(5))", "2"),
+        tab_state("SET NUMERIC_ROUNDABORT ON", "SELECT CAST(@@OPTIONS & 8192 AS varchar(10))", "8192"),
+        tab_state("SET XACT_ABORT ON", "SELECT CAST(@@OPTIONS & 16384 AS varchar(10))", "16384"),
+        tab_state("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED", "SELECT CAST(transaction_isolation_level AS varchar(5)) FROM sys.dm_exec_sessions WHERE session_id = @@SPID", "1"),
+        tab_state("SET DATEFIRST 3", "SELECT CAST(@@DATEFIRST AS varchar(5))", "3"),
+        tab_state("SET CONCAT_NULL_YIELDS_NULL OFF", "SELECT CAST(@@OPTIONS & 4096 AS varchar(10))", "0"),
+        tab_state("SET ANSI_NULLS OFF", "SELECT CAST(@@OPTIONS & 32 AS varchar(10))", "0"),
+        tab_state("SET QUOTED_IDENTIFIER OFF", "SELECT CAST(@@OPTIONS & 256 AS varchar(10))", "0"),
+        tab_state("SET LOCK_TIMEOUT 1", "SELECT CAST(@@LOCK_TIMEOUT AS varchar(10))", "1"),
+        tab_state("USE tempdb", "SELECT DB_NAME()", "tempdb"),
+        tab_state("CREATE TABLE #mine(x int); INSERT INTO #mine VALUES (7)", "SELECT CAST(x AS varchar(5)) FROM #mine", "7"),
+        tab_state("BEGIN TRANSACTION; CREATE TABLE #mine2(x int)", "SELECT CAST(@@TRANCOUNT AS varchar(5))", "1"),
+    ];
+    let mut wrong = Vec::new();
+    for (n, tab) in tabs.iter().enumerate() {
+        let name = format!("e2-{n}");
+        let pane = mssql_pane(&id, &name, Some(tab));
+        if pane != baseline {
+            wrong.push(format!("{}: the table pane did {pane:?}, without it {baseline:?}", tab.run));
+        }
+        let kept = tab_says(&id, &name, tab.ask);
+        if kept.first().map(String::as_str) != Some(tab.answer) {
+            wrong.push(format!("{}: the SQL tab answers {kept:?} afterwards, wanted {:?}: what it set was taken away", tab.run, tab.answer));
+        }
+        session::release_owner(&owner(&id, &name));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+fn postgres_pane(id: &str, name: &str, tab: Option<&TabState>) -> Vec<String> {
+    run(
+        id,
+        "reset",
+        "DELETE FROM pg_s; INSERT INTO pg_s VALUES (1, 'a', '{x,y}', '1 hour', '2024-01-06 10:00:00+08', 0.1::float8 + 0.2::float8, '2024-01-05', 1.5)",
+    );
+    if let Some(tab) = tab {
+        let state = run_in_the_tab(id, name, tab.run);
+        assert_eq!(state.error.is_some(), tab.fails, "{}: {:?}", tab.run, state.error);
+    }
+    let pane = open(id, name, &table("public", "pg_s"));
+    let shown = |column: &str| pane.shown(0, column);
+    let printed = vec![shown("ts"), shown("f"), shown("iv")];
+    pane.edit(0, "t", Some("中é"));
+    pane.edit(0, "arr", Some("{a,NULL}"));
+    pane.edit(0, "iv", Some("1 day 02:03:04"));
+    pane.edit(0, "ts", Some(&shown("ts").replace("10:00:00", "11:00:00")));
+    pane.edit(0, "d", Some("2024-02-03"));
+    pane.edit(0, "n", Some("2.5"));
+    let written = match runtime::block_on(session::write_back_set(&pane.set)) {
+        Ok(_) => "saved".to_owned(),
+        Err(e) => format!("refused: {e}"),
+    };
+    let mut outcome = printed;
+    outcome.push(written);
+    outcome.extend(first_row(
+        id,
+        "SELECT octet_length(t)::text, (arr[2] IS NULL)::text, EXTRACT(epoch FROM iv)::text, to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), d::text, n::text FROM pg_s WHERE id = 1",
+    ));
+    outcome
+}
+
+#[test]
+fn postgres_what_the_sql_tab_sets_does_not_change_what_the_table_reads_and_saves() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_e2_pg");
+    let db = scratch.name.clone();
+    run(
+        &scratch.maintenance,
+        "style",
+        &format!("ALTER DATABASE {db} SET datestyle = 'SQL, DMY'; ALTER DATABASE {db} SET timezone = 'Asia/Taipei'; ALTER DATABASE {db} SET extra_float_digits = 0"),
+    );
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE pg_s(id int PRIMARY KEY, t text, arr text[], iv interval, ts timestamptz, f float8, d date, n numeric(10,2))");
+    let baseline = postgres_pane(&id, "e2-plain", None);
+    session::release_owner(&owner(&id, "e2-plain"));
+    assert_eq!(baseline[3], "saved", "{baseline:?}");
+    assert_eq!(baseline[4..], ["5", "true", "93784", "2024-01-06 03:00:00", "2024-02-03", "2.50"], "{baseline:?}");
+
+    let tabs = [
+        tab_state("SET client_encoding = 'LATIN1'", "SHOW client_encoding", "LATIN1"),
+        tab_state("SET datestyle = 'German, DMY'", "SHOW datestyle", "German, DMY"),
+        tab_state("SET datestyle = 'SQL, DMY'; SELECT 1/0", "SHOW datestyle", "SQL, DMY"),
+        tab_state("SET extra_float_digits = 0", "SHOW extra_float_digits", "0"),
+        tab_state("SET IntervalStyle = 'sql_standard'", "SHOW intervalstyle", "sql_standard"),
+        tab_state("SET TimeZone = 'Asia/Kolkata'", "SHOW timezone", "Asia/Kolkata"),
+        tab_state("SET bytea_output = 'escape'", "SHOW bytea_output", "escape"),
+        tab_state("SET array_nulls = off", "SHOW array_nulls", "off"),
+        tab_state("SET search_path = pg_catalog", "SHOW search_path", "pg_catalog"),
+        tab_state("SET standard_conforming_strings = off", "SHOW standard_conforming_strings", "off"),
+        tab_state("SET default_transaction_read_only = on", "SHOW default_transaction_read_only", "on"),
+        tab_state("SELECT set_config('datestyle', 'SQL, DMY', false), set_config('extra_float_digits', '0', false)", "SHOW extra_float_digits", "0"),
+        tab_state("RESET ALL", "SHOW datestyle", "SQL, DMY"),
+        tab_state("DISCARD ALL", "SHOW datestyle", "SQL, DMY"),
+        tab_state("CREATE TEMP TABLE mine(x int); INSERT INTO mine VALUES (7)", "SELECT x::text FROM mine", "7"),
+        tab_state("BEGIN", "SELECT (now() = statement_timestamp())::text", "false"),
+    ];
+    let mut wrong = Vec::new();
+    for (n, tab) in tabs.iter().enumerate() {
+        let name = format!("e2-{n}");
+        let pane = postgres_pane(&id, &name, Some(tab));
+        if pane != baseline {
+            wrong.push(format!("{}: the table pane did {pane:?}, without it {baseline:?}", tab.run));
+        }
+        let kept = tab_says(&id, &name, tab.ask);
+        if kept.first().map(String::as_str) != Some(tab.answer) {
+            wrong.push(format!("{}: the SQL tab answers {kept:?} afterwards, wanted {:?}: what it set was taken away", tab.run, tab.answer));
+        }
+        session::release_owner(&owner(&id, &name));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 

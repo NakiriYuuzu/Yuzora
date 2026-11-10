@@ -2209,3 +2209,278 @@ fn perf_mssql_reads_100k_rows_then_stops() {
         }
     });
 }
+
+// ---------------------------------------------------------------- text typed into datetime cells
+
+/// What a person means by a text typed into a `datetime` and a `smalldatetime` cell, and so what the
+/// table may hold afterwards. There is no outcome besides these: a cell holds what the person meant,
+/// or the write is refused and the row is as it was.
+#[derive(Clone, Debug)]
+enum Meant {
+    /// Saved as this (`YYYY-MM-DD HH:MM:SS.mmm`): a way of writing it the cell takes by design.
+    Saved(String),
+    /// This, or refused: a way of writing it that one reading only is certain of, whoever's language.
+    Safe(String),
+    /// Refused: no reading of it is certain.
+    Refused,
+    /// Written the way the session's language writes a date (the day or the month first, a two-digit
+    /// year): what the session itself reads from it, or refused.
+    Session,
+}
+
+#[derive(Clone, Debug)]
+struct Typed {
+    text: String,
+    meant: Meant,
+}
+
+/// (how a clock is typed, what it is: `HH:MM:SS.mmm`, or `None` where no reading is certain)
+const CLOCKS: &[(&str, Option<&str>)] = &[
+    ("10:00", Some("10:00:00.000")),
+    ("10:00:00", Some("10:00:00.000")),
+    ("10:00:00.5", Some("10:00:00.500")),
+    ("10:00:00.997", Some("10:00:00.997")),
+    ("09:05", Some("09:05:00.000")),
+    ("9:05", Some("09:05:00.000")),
+    ("23:59:59", Some("23:59:59.000")),
+    ("2:30 PM", Some("14:30:00.000")),
+    ("2:30PM", Some("14:30:00.000")),
+    ("02:30 pm", Some("14:30:00.000")),
+    ("12:00 AM", Some("00:00:00.000")),
+    ("12:30 AM", Some("00:30:00.000")),
+    ("12:00 PM", Some("12:00:00.000")),
+    ("12:30 PM", Some("12:30:00.000")),
+    ("10AM", Some("10:00:00.000")),
+    ("10 PM", Some("22:00:00.000")),
+    ("12:30:15.5 PM", Some("12:30:15.500")),
+    ("10:00:00Z", Some("10:00:00.000")),
+    ("10:00:00.250Z", Some("10:00:00.250")),
+    ("10:00Z", Some("10:00:00.000")),
+    ("9:5", None),
+    ("10:00:5", None),
+    ("1:2:3", None),
+    ("10:00:00:5", None),
+    ("10:00:00:000", None),
+    ("24:00", None),
+    ("10:60", None),
+    ("10:00:60", None),
+    ("13:00 PM", None),
+    ("0:30 AM", None),
+    ("10", None),
+    ("10:00:00+08:00", None),
+    ("10:00:00-05:00", None),
+    ("10:00 :00", None),
+    ("10 : 00", None),
+    ("10:00:00.", None),
+    ("10:00:00 Z", None),
+];
+
+fn year_first_matrix(thin: bool) -> Vec<Typed> {
+    let days: &[(u32, u32, u32)] =
+        if thin { &[(2024, 1, 6), (2024, 2, 3), (2024, 1, 13)] } else { &[(2024, 1, 6), (2024, 2, 3), (2024, 1, 13), (2024, 12, 11), (2024, 6, 1)] };
+    let mut out = Vec::new();
+    for &(y, m, d) in days {
+        let iso_day = format!("{y}-{m:02}-{d:02}");
+        let mut writings: Vec<String> = vec![format!("{y}-{m:02}-{d:02}"), format!("{y}/{m}/{d}"), format!("{y}{m:02}{d:02}")];
+        if !thin {
+            writings.extend([
+                format!("{y}-{m}-{d}"),
+                format!("{y}/{m:02}/{d:02}"),
+                format!("{y}.{m:02}.{d:02}"),
+                format!("{y}.{m}.{d}"),
+            ]);
+        }
+        writings.sort();
+        writings.dedup();
+        for writing in &writings {
+            out.push(Typed { text: writing.clone(), meant: Meant::Saved(format!("{iso_day} 00:00:00.000")) });
+            for &(clock, at) in CLOCKS {
+                let mut shapes = vec![format!("{writing} {clock}"), format!("{clock} {writing}")];
+                if !thin {
+                    shapes.extend([
+                        format!("{writing}T{clock}"),
+                        format!("{writing}  {clock}"),
+                        format!("  {writing} {clock}  "),
+                        format!("{clock}  {writing}"),
+                    ]);
+                }
+                for text in shapes {
+                    // `T` and a clock with AM or PM after it is a way nobody writes it; the cell is not asked to take it.
+                    let meant = match at {
+                        Some(time) if text.contains('T') && !clock.contains(['A', 'P', 'a', 'p']) => Meant::Saved(format!("{iso_day} {time}")),
+                        Some(time) if text.contains('T') => Meant::Safe(format!("{iso_day} {time}")),
+                        Some(time) => Meant::Saved(format!("{iso_day} {time}")),
+                        None => Meant::Refused,
+                    };
+                    out.push(Typed { text, meant });
+                }
+            }
+        }
+    }
+    let refused = [
+        "2024-02-30",
+        "2023-02-29",
+        "2024-13-06",
+        "2024-01-32",
+        "2024-00-06",
+        "2024-01-00",
+        "2024- 01- 06",
+        "2024 -01 -06",
+        "2024 - 01 - 06",
+        "2024/ 1/ 6",
+        "2024. 01. 06",
+        "2024\t-01-06",
+        "2024-01/06",
+        "2024/01.06",
+        "2024-01",
+        "2024/1",
+        "2024-1-6-",
+        "2024-01-06.",
+        "2024-01-06,",
+        "2024--01--06",
+        "(2024-01-06)",
+        "'2024-01-06'",
+        "{ts '2024-01-06 10:00:00'}",
+        "x2024-01-06",
+        "2024-01-06x",
+        "+2024-01-06",
+        "2024-01-0610:00",
+        "2024-01-06 2024-01-07",
+        "10:00 2024-01-06 11:00",
+        "2024-01-06 10:00 2024-01-07",
+        "2024-01-06 10:00 2024",
+        "2024-01-06 10",
+        "2024-01-06 AM",
+        "2024-01-06T",
+        "2024-01-06 T10:00",
+        "2024-01-06T 10:00",
+        "10:00 2024- 01- 06",
+        "2:30 PM 2024- 1- 6",
+        "2024-01-06 10:00:00.1234567890",
+        "2024-01-06 10:00:00Z Z",
+        "2024-01-06Z",
+        "Z2024-01-06",
+    ];
+    out.extend(refused.iter().map(|t| Typed { text: (*t).to_owned(), meant: Meant::Refused }));
+    // One reading only, whatever the language: the date has a month's name, or no separators at all.
+    let safe = [
+        ("2024", "2024-01-01 00:00:00.000"),
+        ("240106", "2024-01-06 00:00:00.000"),
+        ("2024 Jan 6", "2024-01-06 00:00:00.000"),
+        ("2024-Jan-06", "2024-01-06 00:00:00.000"),
+        ("2024 January 6", "2024-01-06 00:00:00.000"),
+        ("Jan 6 2024", "2024-01-06 00:00:00.000"),
+        ("6 Jan 2024", "2024-01-06 00:00:00.000"),
+        ("Jan 6 2024 2:30 PM", "2024-01-06 14:30:00.000"),
+        ("10:00", "1900-01-01 10:00:00.000"),
+        ("10:00:00.5", "1900-01-01 10:00:00.500"),
+        ("2:30 PM", "1900-01-01 14:30:00.000"),
+    ];
+    out.extend(safe.iter().map(|(t, v)| Typed { text: (*t).to_owned(), meant: Meant::Safe((*v).to_owned()) }));
+    let session = [
+        "1/6/2024",
+        "01/06/2024",
+        "13/01/2024",
+        "6.1.2024",
+        "06-01-2024",
+        "1/6/24",
+        "01-06-24 10:00",
+        "1/6/2024 2:30 PM",
+        "10:00 06/01/2024",
+        "12/11/2024 10:00:00.5",
+    ];
+    out.extend(session.iter().map(|t| Typed { text: (*t).to_owned(), meant: Meant::Session }));
+    out
+}
+
+/// Every text of `inputs`, typed into both cells of a row in a session set up by `setup`: the
+/// ones that went wrong.
+async fn typed_dates_under(setup: &str, inputs: &[Typed]) -> Vec<String> {
+    let mut conn = ms_sa("tempdb").await;
+    query(&mut conn, setup).await.unwrap();
+    query(&mut conn, "CREATE TABLE #dt(id int PRIMARY KEY, a datetime, b smalldatetime); INSERT INTO #dt VALUES (1, '19990101', '19990101')")
+        .await
+        .unwrap();
+    let t = ms_object("", "#dt");
+    let sentinel = vec!["1999-01-01 00:00:00.000".to_owned(), "1999-01-01 00:00:00.000".to_owned()];
+    let mut small = std::collections::HashMap::new();
+    let mut wrong = Vec::new();
+    for typed in inputs {
+        let edit = RowEdit {
+            key: vec![("id".into(), Cell::Int(1))],
+            changes: vec![("a".into(), text(&typed.text)), ("b".into(), text(&typed.text))],
+        };
+        let outcome = conn.apply_edits(&t, &[edit]).await;
+        let stored = grid(&mut conn, "SELECT CONVERT(varchar(30), a, 121), CONVERT(varchar(30), b, 121) FROM #dt").await.remove(0);
+        if outcome.is_ok() {
+            query(&mut conn, "UPDATE #dt SET a = '19990101', b = '19990101'").await.unwrap();
+        }
+        let verdict = match &typed.meant {
+            Meant::Saved(v) | Meant::Safe(v) => {
+                if !small.contains_key(v) {
+                    let iso = v.replacen(' ', "T", 1);
+                    let rounded =
+                        scalar(&mut conn, &format!("SELECT CONVERT(varchar(30), CAST(CAST('{iso}' AS datetime) AS smalldatetime), 121)")).await;
+                    small.insert(v.clone(), vec![v.clone(), rounded]);
+                }
+                let wanted = &small[v];
+                match (&typed.meant, &outcome) {
+                    (Meant::Saved(_) | Meant::Safe(_), Ok(_)) if stored == *wanted => None,
+                    (Meant::Safe(_), Err(_)) if stored == sentinel => None,
+                    (_, Ok(_)) => Some(format!("saved as {stored:?}, meant {wanted:?}")),
+                    (_, Err(e)) => Some(format!("refused ({e}), meant {wanted:?}")),
+                }
+            }
+            Meant::Refused => match &outcome {
+                Err(_) if stored == sentinel => None,
+                Err(_) => Some(format!("refused but the row changed to {stored:?}")),
+                Ok(_) => Some(format!("saved as {stored:?}, but no reading of it is certain")),
+            },
+            Meant::Session => {
+                let esc = typed.text.replace('\'', "''");
+                let reading = grid(
+                    &mut conn,
+                    &format!("SELECT CONVERT(varchar(30), TRY_CAST(N'{esc}' AS datetime), 121), CONVERT(varchar(30), TRY_CAST(N'{esc}' AS smalldatetime), 121)"),
+                )
+                .await
+                .remove(0);
+                match &outcome {
+                    Ok(_) if stored == reading => None,
+                    Err(_) if stored == sentinel => None,
+                    Ok(_) => Some(format!("saved as {stored:?}, the session reads {reading:?}")),
+                    Err(e) => Some(format!("refused ({e}) and the row changed to {stored:?}")),
+                }
+            }
+        };
+        if let Some(verdict) = verdict {
+            wrong.push(format!("{:?}: {verdict}", typed.text));
+        }
+    }
+    wrong
+}
+
+#[test]
+fn mssql_a_date_typed_into_a_datetime_cell_is_saved_as_meant_or_refused_under_every_language_and_dateformat() {
+    only_with!("mssql");
+    let full = year_first_matrix(false);
+    let thin = year_first_matrix(true);
+    assert!(full.len() > 4000, "the matrix has {} inputs", full.len());
+    let mut sessions: Vec<(String, Vec<Typed>)> = ["us_english", "British", "German", "Japanese", "French", "Hungarian"]
+        .iter()
+        .map(|language| (format!("SET LANGUAGE {language}"), full.clone()))
+        .collect();
+    sessions.extend(["mdy", "dmy", "ymd", "ydm", "myd", "dym"].iter().map(|f| (format!("SET LANGUAGE us_english; SET DATEFORMAT {f}"), thin.clone())));
+    let total: usize = sessions.iter().map(|(_, inputs)| inputs.len()).sum();
+    eprintln!("DATE MATRIX {} sessions, {total} inputs", sessions.len());
+    let failures = run(async {
+        let runs = sessions.iter().map(|(setup, inputs)| async move { (setup.clone(), typed_dates_under(setup, inputs).await) });
+        futures_util::future::join_all(runs).await
+    });
+    let mut report = Vec::new();
+    for (setup, wrong) in failures {
+        if !wrong.is_empty() {
+            report.push(format!("{setup}: {} went wrong\n  {}", wrong.len(), wrong.iter().take(25).cloned().collect::<Vec<_>>().join("\n  ")));
+        }
+    }
+    assert!(report.is_empty(), "{}", report.join("\n"));
+}
