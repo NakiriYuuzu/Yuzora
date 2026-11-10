@@ -1504,6 +1504,24 @@ return JSON.stringify([a, b, c, d]); }})()"#
     }
 
     #[test]
+    fn a_file_opened_just_before_another_is_still_shown_by_its_own_tab() {
+        let seen = in_the_open(
+            r#"
+            show("s2");
+            openFile("/srv/README.md", "lab"); flush();
+            openFile("/srv/b.rs", "lab"); flush();
+            run("pane.focus", { pane: "p3" }); flush();
+            openFile("/srv/README.md", "lab"); flush();
+            return [strip("s2"), focus()];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            ["[shell] [markdown /srv/README.md]* [editor /srv/b.rs]", "markdown /srv/README.md"]
+        );
+    }
+
+    #[test]
     fn a_file_opens_in_the_space_it_was_asked_in_though_another_is_shown_when_the_command_runs() {
         let seen = in_the_open(
             r#"
@@ -2043,6 +2061,103 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "[shell, image /r/b.png] [shell] [image /r/pics/c.png]* image /r/pics/c.png",
             ]
         );
+    }
+
+    /// `doc-pane.js` as shipped, its imports stubbed: one pane (`kind` "editor" or "markdown") over a document the
+    /// test sets with `docState`, in a window where `focusedPane` has the keys. `calls` records the host calls that
+    /// say whose document is whose (`note <doc> <pane>`) and where the cursor goes.
+    fn in_a_doc_pane(body: &str) -> Vec<String> {
+        let source = include_str!("../../../defaults/mods/yuzora-editor/doc-pane.js");
+        let mut skipping = false;
+        let code = source
+            .lines()
+            .filter(|line| {
+                let starts = line.starts_with("import ");
+                if starts || skipping {
+                    skipping = !line.trim_end().ends_with(';');
+                    return false;
+                }
+                true
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("export class", "class");
+        let stubs = r#"
+            const calls = [];
+            let propsNow = {}, docState = null, focusedPane = null, paneList = [];
+            class View {}
+            const div = () => ({}), svg = div, v_flex = div, h_flex = div, Input = {}, Editor = {}, Markdown = {};
+            const InputState = { new: () => ({ on() {}, value: () => "" }) };
+            const theme = () => ({}), settings = () => ({}), agents = () => [], notify = () => {}, home = () => "/home/me";
+            const win = () => ({ platform: "macos" }), shared = () => null, setShared = () => {};
+            const watchFolder = () => new Promise(() => {}), nextCommand = () => new Promise(() => {});
+            const focused = () => (focusedPane ? { pane: focusedPane } : null), panes = () => paneList, props = () => propsNow;
+            const t = key => key, tokens = () => ({});
+            const openDocument = () => 7, releaseDocument = () => {}, documentState = () => docState;
+            const documentChanged = () => new Promise(() => {}), checkDisk = () => Promise.resolve();
+            const saveDocument = () => {}, reloadDocument = () => {}, keepMine = () => {}, find = () => {}, findStep = () => {};
+            const endFind = () => {}, replaceOne = () => {}, replaceAll = () => {}, unsavedCount = () => 0, startedAt = () => 0;
+            const focusDocument = () => calls.push("focus document"), gotoLine = (d, line, column) => calls.push(`goto ${line}:${column}`);
+            const notePane = (doc, pane) => calls.push(`note ${doc} ${pane}`);
+            const localStorage = { getItem: () => null, setItem() {} };
+            const cx = { focus_handle: () => ({}), spawn() {}, timer: { every() {} }, notify() {} };
+            const pane = kind => {
+              const made = new (class extends DocPane { kind() { return kind; } })();
+              made.init(null, cx);
+              return made;
+            };
+        "#;
+        let script = ["(() => {", stubs, &code, body, "})()"].join("\n");
+        let runtime = quickjs::Runtime::new().unwrap();
+        let context = quickjs::Context::full(&runtime).unwrap();
+        context.with(|ctx| match ctx.eval::<Vec<String>, _>(script) {
+            Ok(seen) => seen,
+            Err(error) => panic!("{error}: {:?}", ctx.catch()),
+        })
+    }
+
+    #[test]
+    fn a_pane_just_opened_does_not_give_its_document_to_the_pane_that_has_the_keys() {
+        for kind in ["markdown", "editor"] {
+            let seen = in_a_doc_pane(&format!(
+                r#"
+                propsNow = {{ path: "/srv/a", on: "lab", opened: Date.now() }};
+                docState = {{ phase: "ready", owner: null, focused: false, pane: null, dirty: false, reveal: null, path: "/srv/a", name: "a" }};
+                paneList = [{{ pane: "mine", mod: "yuzora-{kind}" }}, {{ pane: "other", mod: "yuzora-editor" }}];
+                // Another file was opened right after this one, and has the keys.
+                focusedPane = "other";
+                const made = pane("{kind}");
+                docState.owner = made.owner;
+                made.state = docState;
+                made.settle();
+                return calls;
+            "#
+            ));
+            assert!(seen.iter().all(|c| !c.starts_with("note ")), "{kind}: {seen:?}");
+        }
+    }
+
+    #[test]
+    fn a_pane_gives_its_document_to_the_pane_with_the_keys_when_its_editor_or_its_keys_say_it_is_that_pane() {
+        let seen = in_a_doc_pane(
+            r#"
+            propsNow = { path: "/srv/a", on: "lab", opened: 1 };
+            docState = { phase: "ready", owner: null, focused: false, pane: null, dirty: false, reveal: null, path: "/srv/a", name: "a" };
+            paneList = [{ pane: "mine", mod: "yuzora-editor" }];
+            focusedPane = "mine";
+            const made = pane("editor");
+            made.settle();
+            const quiet = calls.length;
+            docState.focused = true;
+            made.state = docState;
+            made.settle();
+            const afterEditor = calls.length;
+            docState.focused = false; made.state = docState; calls.length = 0;
+            made.key({ modifiers: {}, key: "a" }, { stop_propagation() {} });
+            return [String(quiet), String(afterEditor), JSON.stringify(calls)];
+        "#,
+        );
+        assert_eq!(seen, ["0", "1", r#"["note 7 mine"]"#]);
     }
 
     #[test]
