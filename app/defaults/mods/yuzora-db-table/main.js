@@ -191,21 +191,24 @@ export default class DbTable extends View {
     const tg = this.target;
     const running = Boolean(this.state?.running);
     const where = [tg.database ?? conn?.database ?? "", tg.schema ? `${tg.schema}.${tg.name}` : tg.name].filter(Boolean).join(" · ");
-    return h_flex().h(28).flex_none().gap(7).pl(8).pr(6).items_center().text_size(12).border_b(1).border_color(th.divider ?? th.border)
-      .child(div().flex_none().font_semibold().child(conn?.name ?? tg.connection))
-      .child(div().min_w(0).truncate().text_size(11.5).text_color(th.dim).child(where))
-      .child(h_flex().flex_none().p(2).gap(2).rounded(5).bg(th.raised)
-        .children(TABS.map((id) => div().id(`tab-${id}`).h(18).px(8).flex().items_center().rounded(3).text_size(11).cursor_pointer()
-          .bg(this.tab === id ? th.selected : th.raised).text_color(this.tab === id ? th.foreground : th.muted)
-          .hover((s) => s.text_color(th.foreground))
-          .on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(t(`tab.${id}`)))))
-      .child(div().flex_1())
-      .child(running
-        ? div().id("stop").h(20).px(10).flex().flex_none().items_center().rounded(4).border_1().border_color(th.input)
-          .text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).on_click(() => this.stop()).child(t("stop"))
-        : div().id("run").h(20).px(10).flex().flex_none().items_center().rounded(4).bg(th.solid).text_color(th.solid_foreground)
-          .font_semibold().text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).tooltip(t(this.tab === "sql" ? "run_sql_tip" : "refresh_tip"))
-          .on_click((_e, cx) => this.run(cx)).child(t("run")));
+    // The pane is as narrow as the dock leaves it: what doesn't fit beside the
+    // name goes under it, and the button is always on a line of its own at worst.
+    return h_flex().flex_none().flex_wrap().min_h(28).gap_x(7).gap_y(3).pl(8).pr(6).py(3).items_center().text_size(12).border_b(1).border_color(th.divider ?? th.border)
+      .child(h_flex().flex_auto().min_w(0).gap(7).items_center()
+        .child(div().min_w(0).truncate().font_semibold().child(conn?.name ?? tg.connection))
+        .child(div().min_w(0).truncate().text_size(11.5).text_color(th.dim).child(where)))
+      .child(h_flex().flex_none().flex_wrap().max_w("100%").ml("auto").gap_x(7).gap_y(3).items_center().justify_end()
+        .child(h_flex().flex_wrap().max_w("100%").p(2).gap(2).rounded(5).bg(th.raised)
+          .children(TABS.map((id) => div().id(`tab-${id}`).h(18).px(8).flex().items_center().rounded(3).text_size(11).cursor_pointer()
+            .bg(this.tab === id ? th.selected : th.raised).text_color(this.tab === id ? th.foreground : th.muted)
+            .hover((s) => s.text_color(th.foreground))
+            .on_click((_e, cx) => { this.tab = id; cx.notify(); }).child(t(`tab.${id}`)))))
+        .child(running
+          ? div().id("stop").h(20).px(10).flex().flex_none().items_center().rounded(4).border_1().border_color(th.input)
+            .text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).on_click(() => this.stop()).child(t("stop"))
+          : div().id("run").h(20).px(10).flex().flex_none().items_center().rounded(4).bg(th.solid).text_color(th.solid_foreground)
+            .font_semibold().text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).tooltip(t(this.tab === "sql" ? "run_sql_tip" : "refresh_tip"))
+            .on_click((_e, cx) => this.run(cx)).child(t("run"))));
   }
 
   data(th) {

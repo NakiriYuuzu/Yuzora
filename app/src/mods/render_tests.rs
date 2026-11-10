@@ -2304,3 +2304,49 @@ fn yuzora_dock_selected_mode_uses_the_theme_foreground(cx: &mut TestAppContext) 
 fn tokens_text_strong() -> String {
     yuzora_core::tokens::for_theme(false)["text"]["strong"].as_str().unwrap().to_owned()
 }
+
+/// The Database table pane's toolbar with a job running (its Stop shows), whose clicks `note`.
+const DB_TOOLBAR: &str = r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import { note } from "probe";
+export default class Scenario extends Real {
+  init(p, cx) {
+    super.init(p, cx);
+    this.target = { connection: "c", database: null, schema: "public", name: "customers_with_a_long_name", kind: "table" };
+    this.state = { id: 1, running: true, version: 1, elapsedMs: 0, error: null, cancelled: false, results: [] };
+    this.stop = () => note("stop");
+  }
+}
+"#;
+
+/// Where a click lands on what `note`s `name` when clicked: the corners of the box of such points.
+fn clickable(s: &mut Scenario, name: &str, width: f32, height: f32) -> Option<(f32, f32, f32, f32)> {
+    let mut found: Option<(f32, f32, f32, f32)> = None;
+    for y in (0..height as i32).step_by(3) {
+        for x in (0..width as i32).step_by(3) {
+            s.notes.borrow_mut().clear();
+            let position = gpui::point(gpui::px(x as f32), gpui::px(y as f32));
+            let modifiers = gpui::Modifiers::default();
+            s.visual.simulate_event(gpui::MouseDownEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+            s.visual.simulate_event(gpui::MouseUpEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1 });
+            if s.last(name).is_some() {
+                let (x, y) = (x as f32, y as f32);
+                found = Some(found.map_or((x, y, x, y), |(x0, y0, x1, y1)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y))));
+            }
+        }
+    }
+    found
+}
+
+// The dock leaves a table pane 110 to 230 px: the toolbar's Stop was pushed out of it by the name and the tabs.
+#[gpui::test]
+fn the_database_toolbars_stop_stays_inside_a_narrow_pane(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for width in [110.0_f32, 150.0, 240.0] {
+        let mut s = Scenario::mount(cx, &staged, DB_TOOLBAR, width, 400.0);
+        let (x0, _, x1, _) = clickable(&mut s, "stop", width, 100.0).unwrap_or_else(|| panic!("{width}px: Stop can't be clicked anywhere in the pane"));
+        assert!(x1 < width - 6.0, "{width}px: Stop reaches the pane's edge ({x0}..{x1}), so it is cut off");
+        assert!(x1 - x0 >= 30.0, "{width}px: only {x0}..{x1} of Stop can be pressed");
+    }
+}
