@@ -69,13 +69,17 @@ export default class DbTable extends View {
     return this.conns.find((c) => c.id === this.target.connection) ?? null;
   }
 
-  /** Runs `action`, or first asks to drop the shown result's unsaved edits. */
-  guard(action) {
+  /**
+   * Runs `action(cx)`, or first asks to drop the shown result's unsaved edits.
+   * A `cx` only works during the call it was handed to: a deferred action gets
+   * the `cx` of the click that answers the bar, never the one that raised it.
+   */
+  guard(cx, action) {
     const st = this.state;
     const current = st?.results[Math.min(this.shown, Math.max(0, st.results.length - 1))];
     const count = current ? result(current.id)?.edits ?? 0 : 0;
     if (count) this.confirm = { count, action };
-    else action();
+    else action(cx);
   }
 
   load(cx, order) {
@@ -134,7 +138,7 @@ export default class DbTable extends View {
     if (this.state?.running) return;
     if (this.tab === "sql") this.runSql(cx);
     else if (this.target) {
-      this.guard(() => {
+      this.guard(cx, (cx) => {
         this.sql = "";
         this.load(cx);
       });
@@ -147,7 +151,7 @@ export default class DbTable extends View {
     const text = editorText(`${this.key}:sql`);
     const sql = (text?.selection?.trim() ? text.selection : text?.text ?? "").trim();
     if (!sql) return;
-    this.guard(() => {
+    this.guard(cx, (cx) => {
       this.sql = sql;
       this.tab = "data";
       this.shown = 0;
@@ -165,7 +169,7 @@ export default class DbTable extends View {
     const o = shared(OPEN);
     if (!o || o.key !== this.key || o.seq === this.seq) return;
     this.seq = o.seq;
-    this.guard(() => {
+    this.guard(cx, (cx) => {
       this.target = o.target;
       this.sql = "";
       this.tab = "data";
@@ -206,7 +210,7 @@ export default class DbTable extends View {
         .child(button("keep-edits", t(writing ? "unsaved_wait" : "unsaved_keep"), false, (_e, cx) => { leave(); cx.notify(); }))
         .child(writing
           ? button("stop-saving", t("unsaved_stop"), true, (_e, cx) => { this.stopSaving(current.id); leave(); cx.notify(); })
-          : button("drop-edits", t("unsaved_drop"), true, (_e, cx) => { leave(); c.action(); cx.notify(); })));
+          : button("drop-edits", t("unsaved_drop"), true, (_e, cx) => { leave(); c.action(cx); cx.notify(); })));
   }
 
   toolbar(th, conn) {
