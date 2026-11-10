@@ -20,6 +20,12 @@ async function load(mod: string, scope: Record<string, unknown>, take: string[])
 // Anything gpui-kit hands a view: every call and every property is the same inert builder.
 const chain: any = new Proxy(function () {}, { get: (_t, k) => (k === Symbol.toPrimitive ? () => "" : chain), apply: () => chain });
 
+// The run the app is in, and the run an earlier app left its shared.json from.
+const SESSION = "4242-2000";
+const EARLIER = "4100-1000";
+const RUN = "yuzora.git.run";
+const PLAIN_KEYS = ["yuzora.git.diff", "yuzora.git.merge", "yuzora.git.rebase"];
+
 function world(spaces: Space[], panes: Pane[], settings: object = {}) {
   const calls: unknown[][] = [];
   const store = new Map<string, unknown>();
@@ -39,6 +45,7 @@ function world(spaces: Space[], panes: Pane[], settings: object = {}) {
     closeOverlay: (id: unknown) => calls.push(["closeOverlay", id]),
     gitSettings: () => ({ diffOpenIn: "modal", diffKeepIn: "split", diffFollowPane: true, ...settings }),
     t: (k: string) => k,
+    session: () => SESSION,
   };
   const ran = (name: string) => calls.filter((c) => c[0] === "run" && c[1] === name).map((c) => c[2]);
   const show = (id: string) => state.spaces.forEach((s) => { s.active = s.id === id; });
@@ -413,6 +420,7 @@ test("the diff pane follows its own space's request or a plain one, the newer of
   const next = (path: string, at: number) => ({ ...props, path, at });
   const wanted = async (put: [string, object][]) => {
     const w = world(two(), []);
+    w.store.set(RUN, SESSION);
     for (const [k, v] of put) w.store.set(k, v);
     const { view } = await diffPane(w, props);
     view.born = 0;
@@ -475,12 +483,14 @@ for (const [mod, name, start] of FOLLOWERS) {
 
   test(`${mod}: a pane with no props takes a plain request, an agent's, and the newer of that and its space's`, async () => {
     const w = world(two(), []);
+    w.store.set(RUN, SESSION);
     w.store.set(KEY, { cwd: "/agent" });
     const pane = await follower(w, mod, name, start, {});
     pane.draw();
     expect(pane.asked).toEqual([{ cwd: "/agent" }]);
 
     const both = world(two(), []);
+    both.store.set(RUN, SESSION);
     both.store.set(KEY, { cwd: "/agent", at: 30 });
     both.store.set(`${KEY}.s2`, { cwd: "/projects/two", at: 20 });
     const newer = await follower(both, mod, name, start, {});
@@ -503,8 +513,89 @@ for (const [mod, name, start] of FOLLOWERS) {
   });
 }
 
+// shared.json outlives the app, and a plain request is an order given during one run, so what an
+// earlier run left in it (beta.4 wrote every request there, and a pane of a new space was
+// shown it) is not followed by any pane.
+for (const [mod, name, start] of FOLLOWERS) {
+  const KEY = `yuzora.git.${mod.slice("yuzora-git-".length)}`;
+  const left = { cwd: "/projects/one", on: null, path: "a.txt", at: 5 };
+
+  test(`${mod}: a plain request an earlier run left is not taken by a pane in a space that has not asked, nor by one in a new space`, async () => {
+    const w = world(two(), []);
+    w.store.set(KEY, left);
+    const pane = await follower(w, mod, name, start, {});
+    pane.draw();
+    expect(pane.asked).toEqual([]);
+    expect(w.store.get(KEY) ?? null).toBeNull();
+    w.state.spaces.push({ id: "s3", folder: "/projects/three", tabs: [{ id: "t4", active: true }] });
+    w.show("s3");
+    const later = await follower(w, mod, name, start, {});
+    later.draw();
+    expect(later.asked).toEqual([]);
+  });
+
+  test(`${mod}: a plain request written in this run is taken, dated or not, by a pane that was drawn before it`, async () => {
+    const w = world(two(), []);
+    w.store.set(KEY, left);
+    const pane = await follower(w, mod, name, start, {});
+    pane.draw();
+    expect(pane.asked).toEqual([]);
+    w.store.set(KEY, { cwd: "/agent", at: Date.now() });
+    pane.draw();
+    expect(pane.asked).toEqual([{ cwd: "/agent", at: expect.any(Number) }]);
+    const plain = world(two(), []);
+    const other = await follower(plain, mod, name, start, {});
+    other.draw();
+    plain.store.set(KEY, { cwd: "/agent" });
+    other.draw();
+    expect(other.asked).toEqual([{ cwd: "/agent" }]);
+  });
+
+  test(`${mod}: its own space's request survives a restart, and a plain one from the earlier run beside it does not`, async () => {
+    const w = world(two(), []);
+    w.store.set(RUN, EARLIER);
+    w.store.set(KEY, { cwd: "/agent", at: 90 });
+    w.store.set(`${KEY}.s2`, { cwd: "/projects/two", on: null, at: 10 });
+    const pane = await follower(w, mod, name, start, {});
+    pane.draw();
+    expect(pane.asked).toEqual([{ cwd: "/projects/two", on: null, at: 10 }]);
+  });
+}
+
+test("a diff pane is not shown the plain request an earlier run left, kept pane or a new one, and follows one written in this run", async () => {
+  const left = { cwd: "/projects/one", on: null, path: "old-one.txt", mode: "unstaged", at: 20 };
+  const kept = { cwd: "/projects/two", on: null, path: "kept.txt", mode: "unstaged", at: 3 };
+  const w = world(two(), []);
+  w.store.set(RUN, EARLIER);
+  w.store.set("yuzora.git.diff", left);
+  const pane = await diffPane(w, kept);
+  pane.draw();
+  expect(pane.view.spec.path).toBe("kept.txt");
+  const fresh = await diffPane(w, {});
+  fresh.draw();
+  expect(fresh.view.spec).toBeNull();
+  w.store.set("yuzora.git.diff", { ...kept, path: "agent.txt", at: Date.now() });
+  pane.draw();
+  expect(pane.view.spec.path).toBe("agent.txt");
+});
+
+test("the first read of a run retires the plain requests of all three kinds once, and nothing else", async () => {
+  const w = world(two(), []);
+  w.store.set(RUN, EARLIER);
+  for (const k of PLAIN_KEYS) w.store.set(k, { cwd: "/left", at: 1 });
+  w.store.set("yuzora.git.merge.s1", { cwd: "/projects/one", at: 2 });
+  const pane = await diffPane(w, {});
+  pane.draw();
+  for (const k of PLAIN_KEYS) expect(w.store.get(k) ?? null, k).toBeNull();
+  expect(w.store.get("yuzora.git.merge.s1")).toEqual({ cwd: "/projects/one", at: 2 });
+  expect(w.store.get(RUN)).toBe(SESSION);
+  const writes = w.calls.length;
+  pane.draw();
+  expect(w.calls.length).toBe(writes);
+});
+
 // What the openers share is written into each mod that needs it (a mod cannot import another's).
-const HELPERS = ["shownSpace", "findPane", "requestKey", "requested", "openRequested", "findLog", "claimLog"];
+const HELPERS = ["shownSpace", "findPane", "requestKey", "retirePlain", "requested", "openRequested", "findLog", "claimLog"];
 const definition = (src: string, name: string) => src.match(new RegExp(`\\nfunction ${name}\\([\\s\\S]*?\\n}\\n`))?.[0];
 const calls = (src: string, name: string) => new RegExp(`(?<![\\w$.])${name}\\(`).test(src.replace(new RegExp(`\\nfunction ${name}\\(`), ""));
 const gitMods = async () => (await readdir(MODS, { withFileTypes: true })).filter((d) => d.isDirectory() && /^yuzora-(git|sidebar-git)/.test(d.name)).map((d) => d.name);
@@ -535,8 +626,30 @@ const OTHER_READS = [
   "panes().find((p) => p.pane === f.pane)",
   "panes().filter((p) => tabs.has(p.tab) && p.cwd).map((p) => p.cwd)",
 ];
+// A `//` inside a string is not a comment, so strings are walked over rather than matched by a pattern.
+// A quote that opens no string ends at the end of its line.
+function withoutComments(src: string) {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === "/" && src[i + 1] === "/") {
+      while (i < src.length && src[i] !== "\n") i++;
+    } else if (c === "/" && src[i + 1] === "*") {
+      const end = src.indexOf("*/", i + 2);
+      i = end < 0 ? src.length : end + 2;
+    } else if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < src.length && src[j] !== c && (c === "`" || src[j] !== "\n")) j += src[j] === "\\" ? 2 : 1;
+      out += src.slice(i, j + 1);
+      i = j + 1;
+    } else out += src[i++];
+  }
+  return out;
+}
+
 function strayPanes(src: string) {
-  let code = src.replace(/^import [\s\S]*?;\n/gm, "").replace(/\/\/.*$/gm, "");
+  let code = withoutComments(src.replace(/^import [\s\S]*?;\n/gm, ""));
   for (const name of LOOKUPS) code = code.replace(new RegExp(`\\nfunction ${name}\\([\\s\\S]*?\\n}\\n`), "\n");
   for (const read of OTHER_READS) code = code.split(read).join("");
   return [...code.matchAll(/\bpanes\b/g)].length + [...src.matchAll(/import\s*\*\s*as|\bpanes\s+as\b/g)].length;
@@ -552,10 +665,14 @@ test("the guard on panes() catches a lookup however it is written", () => {
     `const pane = panes().findLast((p) => p.mod === "yuzora-git-merge");`,
     `const pane = panes().find((p) => p.mod === "yuzora-git-merge" && focused()?.tab);`,
     `const pane = panes().filter((p) => p.mod === "yuzora-git-merge")[0];`,
+    `const pane = remote.startsWith("https://") && panes().find((p) => p.mod === "yuzora-git-merge");`,
+    `const url = 'http://x'; const pane = panes().find((p) => p.mod === "yuzora-git-merge");`,
+    "const url = `https://${host}/`; const pane = panes().find((p) => p.mod === \"yuzora-git-merge\");",
   ]) expect(strayPanes(body(line)), line).toBeGreaterThan(0);
   expect(strayPanes('import { panes as list } from "herdr";\n')).toBeGreaterThan(0);
   expect(strayPanes('import * as herdr from "herdr";\n')).toBeGreaterThan(0);
   expect(strayPanes(`// panes() lists every space\nfunction findPane(mod, space) {\n  return panes().find((p) => p.mod === mod) ?? null;\n}\n`)).toBe(0);
+  expect(strayPanes(`/* panes() */\nconst a = 1; // panes().find()\nconst b = "// not a comment";\n`)).toBe(0);
 });
 
 test("no Git mod reads panes() outside the functions that check the tab", async () => {
