@@ -408,138 +408,200 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
     }
 }
 
-// yuzora(L2): side by side, each side of the Git diff is as wide as its own longest line. An
-// added file's empty left side stays narrow, so its lines start in view (they used to start past
-// the longest line's width), and a press on a side's numbers picks that side's line where the
-// row really lays it out. The shipped mod with its imports stubbed, in the real layout.
-#[gpui::test]
-fn yuzora_diff_sides_are_as_wide_as_their_own_lines(cx: &mut TestAppContext) {
-    use gpui::{Modifiers, MouseButton, point, px, size};
-    const GUTTER: f64 = 44.;
-    const CHAR: f64 = 7.;
-    const PANE: f64 = 1200.;
-    let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
-    for (from, to) in [
-        (
-            "import { theme, props, shared, settings, run, panes, focused, closeOverlay } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
-            "import { theme, props, shared, settings, run, panes, focused, closeOverlay, t, tokens, open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, gitSettings, note } from \"fixture\";",
-        ),
-        // A list's rows can't report their size, so the list's own first row is built once more
-        // in the same render and laid out as the list lays out its rows: as wide as the list
-        // (absolute in the rows box, below the rows pressed further down).
-        (
-            "import { v_flex, h_flex, v_virtual_list, Scrollbar, VirtualListScrollHandle } from \"gpui-base\";",
-            "import { v_flex, h_flex, v_virtual_list as list, Scrollbar, VirtualListScrollHandle } from \"gpui-base\";\nlet probe = null;\nconst v_virtual_list = (id, n, h, key, items) => { probe = items({ start: 0, end: 1 })[0]; return list(id, n, h, key, items); };",
-        ),
-        (".track_scroll(this.scroll).size_full())", ".track_scroll(this.scroll).size_full()).child(div().absolute().top(300).left(0).w_full().child(probe))"),
-        // Each cell reports its laid-out width: side, whether its row has a hunk (drawn with a
-        // 2px left border), width.
-        ("return h_flex().flex_1()", "return h_flex().id(`c${side}`).on_size_change((s) => note(\"cell\", side, r.h !== undefined, s.width)).flex_1()"),
-        ("toggleLine(h, side, index, cx) {", "toggleLine(h, side, index, cx) { note(\"pick\", side, index);"),
-        // The list's item click (the row's key) never reaches the mod in a test window, so the
-        // rows box's own press, which records where it landed, hands clickRow the row under it.
-        (
-            ".on_mouse_down(\"left\", (e) => { this.downX = e.local_position?.x ?? null; })",
-            ".on_mouse_down(\"left\", (e, cx) => { this.downX = e.local_position?.x ?? null; this.clickRow(Math.floor(e.local_position.y / ROW), cx); })",
-        ),
-    ] {
-        assert_eq!(source.matches(from).count(), 1, "the diff mod no longer has: {from}");
-        source = source.replacen(from, to, 1);
-    }
-    let row = |left: Option<usize>, right: Option<usize>| {
-        let mut r = json!({ "k": "~", "h": 0 });
-        if let Some(n) = left { r["l"] = json!(1); r["li"] = json!(0); r["lt"] = json!("a".repeat(n)); }
-        if let Some(n) = right { r["r"] = json!(1); r["ri"] = json!(0); r["rt"] = json!("b".repeat(n)); }
-        r
-    };
-    // (case, rows, the longest line on the left and on the right)
-    let cases = [
-        // An added file: nothing on the left.
-        ("added", json!([row(None, Some(257)), row(None, Some(5)), row(None, Some(40))]), 0, 257),
-        // The right side needs more than half: it keeps its width, the left takes the rest. An
-        // unchanged row whose sides differ in whitespace shows its `rt` on the right.
-        ("right wider", json!([row(Some(10), Some(80)), {"k": "=", "l": 2, "r": 2, "t": "a".repeat(10), "rt": "b".repeat(90)}]), 10, 90),
-        ("left wider", json!([row(Some(90), Some(10)), row(Some(5), None)]), 90, 10),
-        // Both fit in half: the row splits evenly, as before.
-        ("both fit", json!([row(Some(10), Some(20))]), 10, 20),
-    ];
-    let mut failures = Vec::new();
-    for (case, rows, left_longest, right_longest) in cases {
+// yuzora(v010): the shipped Git diff in a window, its herdr and yuzora:git stubbed. A list's rows
+// hold no handlers and report no sizes, so `Probed` lays the first row out once more below the
+// list: its cells report their widths (`cell`), what the pointer is over (`over`, the first
+// character of that text), and a press picks the row it landed on, as the list's own click would.
+const DIFF_PROBE: &str = r#"
+import { note } from "fixture";
+export default class Probed extends GitDiff {
+  cell(r, side, ...rest) {
+    const el = super.cell(r, side, ...rest);
+    return this.probing ? el.id(`probe-cell-${side}`).on_size_change((s) => note("cell", side, s.width)) : el;
+  }
+  toggleLine(h, side, index, cx) {
+    note("pick", side, index);
+    super.toggleLine(h, side, index, cx);
+  }
+  segments(segs, text, ...rest) {
+    const el = super.segments(segs, text, ...rest);
+    return this.probing ? el.on_mouse_move(() => note("over", text[0])) : el;
+  }
+  render(cx) {
+    const root = super.render(cx);
+    const v = this.view;
+    if (!v || this.layout === "unified" || !v.rows.length) return root;
+    this.probing = true;
+    const row = this.row(v.rows[0], 0, theme(), tokens().diff ?? {}, 0, this.widths?.());
+    this.probing = false;
+    return root
+      .on_mouse_down("left", (e, cx) => { if (e.position.y >= 28) this.clickRow(Math.floor((e.position.y - 28) / 20), cx); })
+      .child(div().absolute().top(300).left(0).w_full().child(row));
+  }
+}
+"#;
+
+struct DiffPane {
+    visual: VisualTestContext,
+    notes: Rc<RefCell<Vec<Value>>>,
+    _fixture: Fixture,
+}
+
+type Shared = Rc<RefCell<std::collections::BTreeMap<String, Value>>>;
+
+impl DiffPane {
+    /// The diff of `rows`, `pane` wide, with `shared` as herdr's shared state.
+    fn mount(cx: &mut TestAppContext, rows: Value, pane: f32, shared: &Shared) -> Self {
+        use gpui::{px, size};
+        let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
+        let class = "export default class GitDiff extends View {";
+        assert_eq!(source.matches(class).count(), 1, "the diff mod no longer has: {class}");
+        source = source.replacen(class, "class GitDiff extends View {", 1) + DIFF_PROBE;
         let fixture = Fixture::new(&source);
         let notes = Rc::new(RefCell::new(Vec::<Value>::new()));
-        let mut module = HostModule::new("fixture");
-        for (name, value) in [
-            ("theme", json!({"background": "#101010", "foreground": "#e0e0e0", "border": "#303030", "raised": "#202020", "dim": "#808080", "muted": "#a0a0a0", "accent": "#4080ff", "selected": "#304050", "hover": "#282828", "ansi1": "#f08a8a", "ansi2": "#86d17a"})),
-            ("props", json!({"cwd": "/r", "on": null, "path": "wide-new.ts", "mode": "unstaged", "at": 1})),
-            ("tokens", json!({"diff": {"added": "#86d17a", "removed": "#f08a8a", "added_bg": "#103010", "removed_bg": "#301010"}})),
-            ("open", json!({"id": "repo"})),
-            ("diffOpen", json!({"id": "d1"})),
-            ("diffView", json!({"id": "d1", "rows": rows, "hunks": [{}], "stageable": true, "add": 3, "del": 0, "leftExists": true, "rightExists": true})),
-            ("settings", json!({})),
-            ("gitSettings", json!({})),
-        ] {
-            module = module.function(name, move |_| Ok(to_host(&value)));
+        let hunks = usize::from(rows.as_array().is_some_and(|r| r.iter().any(|r| r.get("h").is_some())));
+        let theme = json!({"background": "#101010", "foreground": "#e0e0e0", "border": "#303030", "raised": "#202020", "dim": "#808080", "muted": "#a0a0a0", "accent": "#4080ff", "selected": "#304050", "hover": "#282828", "ansi1": "#f08a8a", "ansi2": "#86d17a"});
+        let view = json!({"id": "d1", "rows": rows, "hunks": vec![json!({}); hunks], "stageable": true, "add": 3, "del": 0, "leftExists": true, "rightExists": true});
+        let mut herdr = HostModule::new("herdr");
+        for (name, value) in [("theme", theme), ("props", json!({"cwd": "/r", "on": null, "path": "wide-new.ts", "mode": "unstaged", "at": 1})), ("settings", json!({}))] {
+            herdr = herdr.function(name, move |_| Ok(to_host(&value)));
         }
-        for name in ["shared", "run", "panes", "focused", "closeOverlay", "diffStage", "diffUnstage", "diffDiscard"] {
-            module = module.function(name, |_| Ok(HostValue::Null));
+        for name in ["run", "panes", "focused", "closeOverlay"] {
+            herdr = herdr.function(name, |_| Ok(HostValue::Null));
         }
-        module = module.function("t", |a| Ok(a.string(0)?.into()));
-        module = module.async_function("changes", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
+        let store = shared.clone();
+        herdr = herdr.function("shared", move |a| Ok(store.borrow().get(a.string(0)?).map(to_host).unwrap_or(HostValue::Null)));
+        let store = shared.clone();
+        herdr = herdr.function("setShared", move |a| {
+            store.borrow_mut().insert(a.string(0)?.to_owned(), from_host(a.value(1)?));
+            Ok(HostValue::Null)
+        });
+        let mut git = HostModule::new("yuzora:git");
+        for (name, value) in [("open", json!({"id": "repo"})), ("diffOpen", json!({"id": "d1"})), ("diffView", view), ("settings", json!({}))] {
+            git = git.function(name, move |_| Ok(to_host(&value)));
+        }
+        for name in ["diffStage", "diffUnstage", "diffDiscard"] {
+            git = git.function(name, |_| Ok(HostValue::Null));
+        }
+        git = git.async_function("changes", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
+        let core = HostModule::new("yuzora:core")
+            .function("t", |a| Ok(a.string(0)?.into()))
+            .function("tokens", |_| Ok(to_host(&json!({"diff": {"added": "#86d17a", "removed": "#f08a8a", "added_bg": "#103010", "removed_bg": "#301010"}}))));
         let calls = notes.clone();
-        module = module.function("note", move |a| {
+        let fixture_module = HostModule::new("fixture").function("note", move |a| {
             calls.borrow_mut().push(Value::Array((0..4).filter_map(|i| a.get(i).map(from_host)).collect()));
             Ok(HostValue::Null)
         });
-        gpui_shell::policy::set_default(Policy::new().with_host_module(module).unwrap());
+        let mut policy = Policy::new();
+        for module in [herdr, git, core, fixture_module] {
+            policy = policy.with_host_module(module).unwrap();
+        }
+        gpui_shell::policy::set_default(policy);
         let runtime = ShellRuntime::new_isolated().unwrap();
         let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
-        let mut visual = VisualTestContext::from_window(*window.deref(), cx);
-        visual.simulate_resize(size(px(PANE as f32), px(600.)));
+        let visual = VisualTestContext::from_window(*window.deref(), cx);
+        visual.simulate_resize(size(px(pane), px(600.)));
+        let mut pane = Self { visual, notes, _fixture: fixture };
+        pane.settle();
+        pane
+    }
+
+    fn settle(&mut self) {
         for _ in 0..3 {
-            visual.update(|window, cx| window.draw(cx).clear(cx));
-            visual.run_until_parked();
+            self.visual.update(|window, cx| window.draw(cx).clear(cx));
+            self.visual.run_until_parked();
         }
-        // The first row's cells (the row has a hunk).
-        let width = |side: &str| notes.borrow().iter().rev()
-            .find(|n| n[0] == "cell" && n[1] == side && n[2] == true)
-            .and_then(|n| n[3].as_f64());
-        let (Some(left), Some(right)) = (width("l"), width("r")) else {
-            failures.push(format!("{case}: no cell widths reported: {:?}", notes.borrow()));
-            continue;
-        };
-        let holds = |longest: usize| GUTTER + 6. + longest as f64 * CHAR;
-        // The right side starts after the row's 2px border, the left side and the 1px divider.
-        let right_at = 2. + left + 1.;
-        if left < holds(left_longest) || right < holds(right_longest) {
-            failures.push(format!("{case}: left {left} / right {right} can't hold {left_longest} / {right_longest} characters"));
+    }
+
+    /// The probe row's cell on `side` ("l" or "r"), as wide as it was last laid out.
+    fn width(&self, side: &str) -> f64 {
+        self.notes.borrow().iter().rev().find(|n| n[0] == "cell" && n[1] == side).and_then(|n| n[2].as_f64()).unwrap_or_else(|| panic!("no {side} cell reported: {:?}", self.notes.borrow()))
+    }
+
+    fn at(x: f64, y: f64) -> gpui::Point<gpui::Pixels> {
+        gpui::point(gpui::px(x as f32), gpui::px(y as f32))
+    }
+
+    fn press(&mut self, x: f64, y: f64, clicks: usize) {
+        self.visual.simulate_event(gpui::MouseDownEvent { position: Self::at(x, y), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: clicks, first_mouse: false });
+        self.settle();
+    }
+
+    fn close(mut self) {
+        self.visual.update(|window, _| window.remove_window());
+    }
+}
+
+/// A changed row: `left` characters of `l` on the left, `right` of `r` on the right (none: that side is empty).
+fn diff_row(left: Option<(usize, &str)>, right: Option<(usize, &str)>) -> Value {
+    let mut r = json!({ "k": "~", "h": 0 });
+    if let Some((n, c)) = left { r["l"] = json!(1); r["li"] = json!(0); r["lt"] = json!(c.repeat(n)); }
+    if let Some((n, c)) = right { r["r"] = json!(1); r["ri"] = json!(0); r["rt"] = json!(c.repeat(n)); }
+    r
+}
+
+// yuzora(v010): side by side, the two sides of the Git diff share the width by one ratio (half
+// and half), whatever their lines hold: an added file's empty side, a line longer than the pane,
+// wide characters. They used to be as wide as their own longest line, so a long line took the
+// width from the other side.
+#[gpui::test]
+fn yuzora_diff_sides_share_the_width_evenly_whatever_the_lines(cx: &mut TestAppContext) {
+    // (case, rows)
+    let cases = [
+        ("short", json!([diff_row(Some((10, "a")), Some((20, "b")))])),
+        ("added", json!([diff_row(None, Some((257, "b"))), diff_row(None, Some((5, "b")))])),
+        ("deleted", json!([diff_row(Some((257, "a")), None)])),
+        ("left long", json!([diff_row(Some((300, "a")), Some((5, "b")))])),
+        ("right long", json!([diff_row(Some((5, "a")), Some((300, "b")))])),
+        ("wide characters", json!([diff_row(Some((300, "\u{6F22}")), Some((250, "\u{3042}")))])),
+        ("an unchanged row whose sides differ", json!([{"k": "=", "l": 2, "r": 2, "t": "a".repeat(10), "rt": "b".repeat(400)}, diff_row(Some((3, "a")), Some((3, "b")))])),
+    ];
+    let mut failures = Vec::new();
+    for pane in [1200., 700.] {
+        for (case, rows) in &cases {
+            let pane_view = DiffPane::mount(cx, rows.clone(), pane, &Shared::default());
+            let (left, right) = (pane_view.width("l"), pane_view.width("r"));
+            if (left - right).abs() > 1. {
+                failures.push(format!("{case} in {pane}px: left {left}, right {right}: not half and half"));
+            }
+            if (left + 1. + right - pane as f64).abs() > 1. {
+                failures.push(format!("{case} in {pane}px: left {left}, right {right} and the 1px divider don't fill the {pane}px"));
+            }
+            pane_view.close();
         }
-        if right_at + GUTTER + 6. + 10. * CHAR > PANE {
-            failures.push(format!("{case}: the right side starts at {right_at}, past the {PANE}px pane"));
-        }
-        if case == "both fit" && (left - right).abs() > 1. {
-            failures.push(format!("{case}: the row didn't split evenly: {left} / {right}"));
-        }
-        // Presses on row 0 (y 28–48, under the 28px header): the middle of each side's numbers
-        // picks its line; the text beside them only makes the hunk current.
-        let mut presses = vec![(right_at + GUTTER / 2., Some("r")), (right_at + GUTTER + 20., None), (2. + GUTTER + 12., None)];
-        if left_longest > 0 {
-            presses.push((2. + GUTTER / 2., Some("l")));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010): a press on a side's line numbers picks that side's line, where the row lays it
+// out; the text beside them only makes the hunk current.
+#[gpui::test]
+fn yuzora_diff_a_press_on_a_sides_numbers_picks_that_sides_line(cx: &mut TestAppContext) {
+    const GUTTER: f64 = 44.;
+    // (case, rows, the sides that have a line)
+    let cases = [
+        ("both sides", json!([diff_row(Some((10, "a")), Some((20, "b")))]), "lr"),
+        ("added", json!([diff_row(None, Some((257, "b")))]), "r"),
+        ("long lines", json!([diff_row(Some((300, "a")), Some((300, "b")))]), "lr"),
+    ];
+    let mut failures = Vec::new();
+    for (case, rows, sides) in cases {
+        let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
+        let left = pane.width("l");
+        // Row 0 is 28..48 (under the 28px header). A number's middle, and the text beside it.
+        let mut presses = vec![(left + GUTTER / 2. + 1., Some("r")), (left + 1. + GUTTER + 20., None), (GUTTER + 12., None)];
+        if sides.contains('l') {
+            presses.push((GUTTER / 2. + 1., Some("l")));
         }
         for (x, want) in presses {
-            if x >= PANE {
-                failures.push(format!("{case}: x {x} is past the pane"));
-                continue;
-            }
-            let before = notes.borrow().iter().filter(|n| n[0] == "pick").count();
-            visual.simulate_mouse_down(point(px(x as f32), px(38.)), MouseButton::Left, Modifiers::none());
-            visual.update(|window, cx| window.draw(cx).clear(cx));
-            visual.run_until_parked();
-            let picks: Vec<Value> = notes.borrow().iter().filter(|n| n[0] == "pick").skip(before).cloned().collect();
-            if picks.first().and_then(|p| p[1].as_str()) != want || picks.len() > 1 {
-                failures.push(format!("{case}: a press at x {x} (left {left}, right {right}) picked {picks:?}, wanted {want:?}"));
+            let before = pane.notes.borrow().len();
+            pane.press(x, 38., 1);
+            let picked: Vec<String> = pane.notes.borrow().iter().skip(before).filter(|n| n[0] == "pick").map(|n| n[1].as_str().unwrap_or("").to_owned()).collect();
+            if picked.first().map(String::as_str) != want || picked.len() > 1 {
+                failures.push(format!("{case}: a press at x {x} (left {left}) picked {picked:?}, wanted {want:?}"));
             }
         }
-        visual.update(|window, _| window.remove_window());
+        pane.close();
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
