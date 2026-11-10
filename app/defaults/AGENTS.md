@@ -1239,8 +1239,10 @@ with these differences.
   `grep`, `openDocument` / `documentState` / `saveDocument`, the native
   components `Editor`, `Markdown`, `ImageView`, and more.
 - Files on another machine can be browsed, opened and saved (the file is replaced
-  whole, and a change made there since it was read is a conflict). Creating,
-  renaming and deleting there are not available yet.
+  whole, a change made there since it was read is a conflict, and a save never
+  gives the file wider access than it had). A file that a save could not give
+  the same owner, group and ACL opens read-only. Creating, renaming and
+  deleting there are not available yet.
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->
