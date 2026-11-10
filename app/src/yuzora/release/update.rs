@@ -72,24 +72,27 @@ static SWAP_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(No
 
 /// `swap` (src/update.rs) could not move the folders: keeps what "Restart" will say.
 pub fn note_swap_failure(e: &std::io::Error) {
-    let _ = e;
+    let text = swap_failure_text(cfg!(windows) && busy_code(e.raw_os_error()), &e.to_string());
+    *SWAP_FAILURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(text);
 }
 
 /// What `app.update` says when `apply` returned false: the swap's failure if it had one, else that nothing is waiting.
 pub fn apply_failure() -> String {
-    let _ = &SWAP_FAILURE;
-    "no update is ready yet".into()
+    SWAP_FAILURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().unwrap_or_else(|| "no update is ready yet".into())
 }
 
 /// Windows says "in use" with sharing violation (32), access denied (5) or lock violation (33).
 fn busy_code(code: Option<i32>) -> bool {
-    let _ = code;
-    false
+    matches!(code, Some(5 | 32 | 33))
 }
 
 fn swap_failure_text(busy: bool, error: &str) -> String {
-    let _ = (busy, error);
-    String::new()
+    let installer = format!("download the installer from https://github.com/{REPO}/releases");
+    if busy {
+        format!("Yuzora could not install the update because another program is using its install folder. Close any terminal opened in that folder. If you came from a beta, restart your PC once. Then choose Restart again, or {installer}.")
+    } else {
+        format!("Yuzora could not install the update: {error}. Choose Restart to try again, or {installer}.")
+    }
 }
 
 /// Upstream's `check`, for Yuzora: Ok(Some(version)) once a newer version is

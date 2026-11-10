@@ -23,8 +23,20 @@ pub fn leave_install_dir() {
 
 /// Returns the working directory it left.
 fn leave(exe: &Path, home: &Path) -> Option<PathBuf> {
-    let _ = (exe, home);
-    None
+    // Both sides canonical: `current_dir()` says `C:\…` where a canonical exe path says `\\?\C:\…`.
+    let exe = exe.canonicalize().ok()?;
+    let install = exe.parent()?;
+    let cwd = std::env::current_dir().ok()?.canonicalize().ok()?;
+    if !cwd.starts_with(install) {
+        return None;
+    }
+    match std::env::set_current_dir(home) {
+        Ok(()) => Some(cwd),
+        Err(e) => {
+            tracing::warn!("cannot move out of {} to {}: {e}", cwd.display(), home.display());
+            None
+        }
+    }
 }
 
 #[cfg(test)]
