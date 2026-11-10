@@ -46,8 +46,8 @@ const SPLIT = "yuzora.git.diff.split", SPLIT_MIN = 0.15, SPLIT_MAX = 0.85;
 const GRAB = 5, BAR = 8, REST = 12;
 // How wide a diff's lines are is found out a little at a time, so that nothing a frame or an event does grows with the
 // diff. [`scan`] goes through the rows SLICE units of work at a time (a row costs STEP, and reading a line TOLL besides
-// its length, and SLOW more for each character that is not ASCII): taking the diff in does the first slice, and a frame
-// that finds the rest not done asks, out of sight, for the next. It works out what each line can take at most, in cells
+// its length, and SLOW more for each character that is not ASCII): a frame that finds the rows not all gone through asks,
+// out of sight, for the next slice, the first included. It works out what each line can take at most, in cells
 // ([`bound`], reading LINE characters of a line at most), and puts the lines in the order of that, widest first (once
 // all the rows are ranked, natively, a side at a time, ORDER units a line; a side whose turn comes with the slice used
 // up waits for the next one); a line that three cells a character cannot make as wide as the FEW widest read so far is
@@ -58,7 +58,14 @@ const GRAB = 5, BAR = 8, REST = 12;
 // pieces, past which it is not laid out at all. The range is the widest line laid out, and while lines are left that can
 // be wider, the most the widest of them can take at most. A piece of a line is rounded up to a pixel of the window,
 // which is at most HALF a cell for each piece but the first.
+//
+// The engine cuts off what runs past its time (50 ms in a frame, 500 in an event), and a cut leaves nothing behind but the
+// mark of what was begun: a slice or a batch is marked when it starts and unmarked when it is back, so the one that starts
+// after a mark still there knows the last was cut. A slice is then half what the cut one got done, a batch half its cost,
+// and what is cut by itself, a row or a line, is taken at its upper bound. An event asks for the next frame before it
+// works; a frame cannot ask, so a timer asks, LATE ms after the event that wanted the frame, if nothing came of it.
 const GROW = 4, FRAME = 1 << 15, LAYOUT = 1 << 18, TEXTS = 1 << 12;
+const LATE = 120;
 const SLICE = 2e6, ORDER = 6, STEP = 100, TOLL = 200, SLOW = 25, LINE = 1 << 20, SORT = 1 << 16, FEW = 4, WORST = 3, HALF = 0.5;
 // The width of a run of this over its length is what a cell takes in the font. The layout rounds that width up
 // to a pixel, which on a cell is the less the longer the run.
@@ -152,7 +159,7 @@ export default class GitDiff extends View {
   relayout(cx) {
     if (!this.view) return;
     cx.spawn(async (cx) => {
-      try { this.show(await diffView(this.view.id, { layout: this.layout, context: this.context, whitespace: this.whitespace })); this.sel = {}; }
+      try { this.show(await diffView(this.view.id, { layout: this.layout, context: this.context, whitespace: this.whitespace })); this.sel = {}; this.error = null; }
       catch (e) { this.error = String(e); }
       cx.notify();
     });
@@ -221,20 +228,49 @@ export default class GitDiff extends View {
   }
 
   // A diff's rows come in here: what the pane needs of their lines to draw is worked out from now on, once, not in
-  // each frame, and a slice of it now. A failure in that slice leaves the diff that is on show as it was; one in a
-  // later slice (a row that is not what the rows are) ends the diff as an error.
+  // each frame, a slice at a time ([`ranked`]) from the first frame. None of it is done here: this is a task, and one the
+  // engine cuts off would take the loop that follows the file with it. A row that is not what the rows are ends the diff
+  // as an error.
   show(view) {
-    let fit;
-    if (this.layout === "unified") fit = { longest: Math.min(2000, view.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0)) };
-    else scan(fit = ranking(view.rows), { left: SLICE });
-    this.view = view; this.fit = fit; this.gauge = null;
+    this.view = view; this.gauge = null;
+    this.fit = this.layout === "unified" ? { longest: Math.min(2000, view.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0)) } : ranking(view.rows);
   }
 
-  // The next slice of the rows is ranked, when a frame has asked for it out of sight.
+  // The next slice of the rows is ranked, when a frame has asked for it out of sight. The frame after it is asked for first,
+  // so that a slice the engine cuts off still has one.
   ranked(fit, cx) {
     if (this.fit !== fit || fit.done) return;
-    try { scan(fit, { left: SLICE }); } catch (e) { this.error = String(e); }
+    this.again(cx);
+    if (fit.trying) cutSlice(fit);
+    fit.tries++;
+    const meter = fit.trying = { left: fit.slice, at: fit.at, slice: fit.slice };
+    try { scan(fit, meter); fit.trying = null; } catch (e) { fit.trying = null; this.error = String(e); }
+  }
+
+  // The next frame is asked for, and asked for again if no event has asked since LATE ms: a frame the engine cuts off is not
+  // drawn again by anything, and the events that would ask are in the frame it cut. A frame that is cut again is asked for
+  // again, a smaller one, for as long as it is cut.
+  again(cx) {
     cx.notify();
+    this.late?.cancel();
+    this.late = cx.timer.after(LATE, (cx) => {
+      if (!this.waiting()) return;
+      cx.notify();
+      if (this.cutOff()) this.again(cx);
+    });
+  }
+
+  // Whether the last slice or frame that was begun was not finished.
+  cutOff() {
+    const { fit, gauge: g } = this;
+    return Boolean(fit?.trying || g && (g.l.trying || g.r.trying));
+  }
+
+  // Whether something is left to find out out of sight, which a frame asks for.
+  waiting() {
+    const { fit, gauge: g } = this;
+    if (!fit?.l) return false;
+    return !fit.done || Boolean(g) && (this.unit?.key !== g.key || ["l", "r"].some((name) => g[name].left === undefined || g[name].left >= 0 && !this.settled(name)));
   }
 
   // What measuring the lines has laid out so far, for the zoom and font they are drawn in now. A line is as wide as
@@ -244,7 +280,7 @@ export default class GitDiff extends View {
     if (!this.fit?.l) return null;
     const key = this.gaugeKey();
     if (this.gauge?.key !== key) {
-      const side = () => ({ left: undefined, got: 0, blind: 0, rounds: 0 });
+      const side = () => ({ left: undefined, got: 0, blind: 0, rounds: 0, frame: FRAME, trying: null, cuts: 0 });
       this.gauge = { id: ++gauges, key, l: side(), r: side() };
     }
     const g = this.gauge;
@@ -471,7 +507,7 @@ export default class GitDiff extends View {
   batch(name) {
     const g = this.gauge[name], rank = this.fit[name], { text, pieces } = SIDES[name], lines = [];
     let used = 0;
-    for (let at = g.left; at >= 0 && lines.length < GROW ** g.rounds && used <= FRAME; at--) {
+    for (let at = g.left; at >= 0 && lines.length < GROW ** g.rounds && used <= g.frame; at--) {
       const { cells, r } = entry(rank, at), long = (r[text] ?? r.t).length, cut = r[pieces]?.length || 1, price = cost(long, cut);
       if (long > LAYOUT || cut > TEXTS) {
         if (lines.length) break;
@@ -479,11 +515,21 @@ export default class GitDiff extends View {
         g.left = at - 1;
         continue;
       }
-      if (lines.length && used + price > FRAME) break;
+      if (lines.length && used + price > g.frame) break;
       lines.push(r);
       used += price;
     }
     return { from: g.left, lines, cost: used };
+  }
+
+  // The frame that asked for a batch of a side was cut off: the batch after it is half its cost, and a line that was cut
+  // by itself is passed over, at its upper bound like those that cannot be laid out.
+  cutBatch(name) {
+    const s = this.gauge[name], batch = s.trying;
+    s.trying = null; s.cuts++;
+    if (batch.lines.length > 1) { s.frame = Math.max(1, batch.cost >> 1); return; }
+    s.blind = Math.max(s.blind, entry(this.fit[name], batch.from).cells);
+    s.left = batch.from - 1;
   }
 
   // A batch has been laid out: the widest of its lines is the widest so far if it is, and the next frame asks for the next.
@@ -494,7 +540,7 @@ export default class GitDiff extends View {
     if (width > s.got) s.got = width;
     s.left = batch.from - batch.lines.length;
     s.rounds++;
-    cx.notify();
+    this.again(cx);
   }
 
   // What is done out of sight, in the very box the cells draw lines in ([`line`]), in the font and size of the rows: the
@@ -508,13 +554,15 @@ export default class GitDiff extends View {
     const hidden = () => v_flex().absolute().top(0).left(0).h(0).overflow_hidden();
     const out = [];
     let heavy = false;
-    if (!fit.done) out.push(hidden().id(`rank-${fit.at}`).on_size_change((_size, cx) => this.ranked(fit, cx)).child(div().w(1)));
+    if (!fit.done) out.push(hidden().id(`rank-${fit.at}-${fit.tries}`).on_size_change((_size, cx) => this.ranked(fit, cx)).child(div().w(1)));
     else for (const name of ["l", "r"]) {
+      if (g[name].trying) this.cutBatch(name);
       if (this.settled(name)) continue;
       const batch = this.batch(name);
       if (!batch.lines.length || batch.cost > FRAME && heavy) continue;
       if (batch.cost > FRAME) heavy = true;
-      out.push(hidden().id(`gauge-${g.id}-${name}-${batch.from}`)
+      g[name].trying = batch;
+      out.push(hidden().id(`gauge-${g.id}-${name}-${batch.from}-${g[name].cuts}`)
         .on_size_change((size, cx) => this.measured(g, name, batch, size, cx))
         .children(batch.lines.map((r) => h_flex().child(this.line(r, name, th, d)))));
     }
@@ -537,9 +585,11 @@ export default class GitDiff extends View {
     // What is kept, a wheel's or a thumb's reach past the end included, is brought within the room there is
     // now: a pane made narrower or a divider moved leaves the lines where they are, and does not give them
     // what was asked for beyond the end.
-    // A thumb that is held stays under the pointer when the range changes: the offset follows the thumb.
+    // A thumb that is held stays under the pointer when the range changes: the offset follows the thumb. A diff read again
+    // keeps the offset till its first slice is ranked, when there is a range to bring it within.
     const thumb = Math.max(24, Math.round(width * width / (width + reach))), room = Math.max(1, width - thumb);
-    this.scrollX = this.drag?.kind === "bar" ? reach * Math.min(this.drag.at, room) / room : Math.min(this.scrollX, reach);
+    const known = this.fit.at > 0 || this.fit.done;
+    this.scrollX = this.drag?.kind === "bar" ? reach * Math.min(this.drag.at, room) / room : known ? Math.min(this.scrollX, reach) : this.scrollX;
     this.lay = { ratio, width, reach, thumb, sx: this.scrollX, l: ratio * 100, r: (1 - ratio) * 100 };
     return div().flex_1().min_h(0).relative().overflow_hidden().font_family(mono).text_size(11.5)
       .child(div().id("diff-rows-box").size_full().pb(reach > 0 ? BAR : 0)
@@ -640,12 +690,15 @@ export default class GitDiff extends View {
       .child(this.button("discard-yes", t("discard"), th, true, (cx) => { const a = this.askDiscard; this.askDiscard = null; this.apply(cx, "discard", a.hunks, a.lines); }))
       .child(this.button("discard-no", t("cancel"), th, true, (cx) => { this.askDiscard = null; cx.notify(); }));
 
-    return root.child(header)
+    const out = root.child(header)
       .when(Boolean(ask), (el) => el.child(ask))
       .when(Boolean(this.note), (el) => el.child(div().px(10).py(4).text_size(11.5).text_color(th.ansi1).child(this.note)))
       .when(Boolean(v?.modes) && v.rows.length > 0, (el) => el.child(div().px(10).py(3).text_size(11).text_color(th.muted).child(t("modes", { from: v.modes[0], to: v.modes[1] }))))
       .when(Boolean(v) && !v.stageable && (spec.mode === "unstaged" || spec.mode === "staged") && this.whitespace !== "none", (el) => el.child(div().px(10).py(3).text_size(11).text_color(th.dim).child(t("wsNoStage"))))
       .child(body);
+    // This frame was not cut off: the batches it asked for are not marked any more.
+    if (this.gauge) this.gauge.l.trying = this.gauge.r.trying = null;
+    return out;
   }
 }
 
@@ -706,34 +759,41 @@ function cost(chars, pieces) {
 function ranking(rows) {
   const count = rows.length, base = 2 ** Math.ceil(Math.log2(count + 1));
   const side = () => ({ keys: new Float64Array(count), n: 0, few: [], floor: -1, top: 0, base, rows });
-  return { rows, count, base, at: 0, done: false, l: side(), r: side() };
+  return { rows, count, base, at: 0, done: false, slice: SLICE, trying: null, tries: 0, hurt: -1, l: side(), r: side() };
 }
 
 // Ranks the rows from where `fit` left off until `meter` has nothing left, and puts the lines of a side in order when all
 // the rows have been (a side whose turn comes with the meter used up is left for the next call).
 // A line is read in full if it can beat the FEW widest read so far, else it is taken at three cells a unit.
+// This can be cut off anywhere, and the next call goes on from the last row it finished. The engine looks at the clock where
+// the script calls or branches, so a row is written in places that doing it again writes the same in, and the counts that
+// make it count, `fit.at` last, are set together with nothing in between to call or branch.
 function scan(fit, meter) {
   const { rows, count, base, l, r } = fit;
   while (fit.at < count && meter.left > 0) {
-    const i = fit.at++, row = rows[i], t = row.t, lt = row.lt ?? t, rt = row.rt ?? t;
+    const i = fit.at, row = rows[i], t = row.t, lt = row.lt ?? t, rt = row.rt ?? t, hurt = i === fit.hurt;
     meter.left -= STEP;
-    let same = 0;
+    let same = 0, lc = 0, rc = 0, readL = false, readR = false;
     if (lt) {
       const cut = row.ls?.length;
-      let cells = WORST * lt.length + (cut > 1 ? HALF * (cut - 1) : 0);
-      if (cells > l.floor) cells = read(l, lt, cut, meter);
-      l.keys[l.n++] = cells * 4 * base + i;
-      if (cells > l.top) l.top = cells;
-      if (rt === lt && !row.ls && !row.rs) same = cells;
+      lc = WORST * lt.length + (cut > 1 ? HALF * (cut - 1) : 0);
+      if (!hurt && lc > l.floor) { lc = bound(lt, meter) + (cut > 1 ? HALF * (cut - 1) : 0); readL = true; }
+      if (rt === lt && !row.ls && !row.rs) same = lc;
     }
     if (rt) {
       const cut = row.rs?.length;
-      let cells = same || WORST * rt.length + (cut > 1 ? HALF * (cut - 1) : 0);
-      if (!same) { if (cells > r.floor) cells = read(r, rt, cut, meter); }
-      else if (cells > r.floor) keep(r, cells);
-      r.keys[r.n++] = cells * 4 * base + i;
-      if (cells > r.top) r.top = cells;
+      rc = same || WORST * rt.length + (cut > 1 ? HALF * (cut - 1) : 0);
+      if (same) readR = rc > r.floor;
+      else if (!hurt && rc > r.floor) { rc = bound(rt, meter) + (cut > 1 ? HALF * (cut - 1) : 0); readR = true; }
     }
+    if (readL) keep(l, lc);
+    if (readR) keep(r, rc);
+    const ln = l.n, rn = r.n, dl = lt ? 1 : 0, dr = rt ? 1 : 0;
+    l.keys[ln] = lc * 4 * base + i;
+    r.keys[rn] = rc * 4 * base + i;
+    if (lc > l.top) l.top = lc;
+    if (rc > r.top) r.top = rc;
+    l.n = ln + dl; r.n = rn + dr; fit.at = i + 1;
   }
   if (fit.at === count) {
     for (const side of [l, r]) {
@@ -746,18 +806,20 @@ function scan(fit, meter) {
   }
 }
 
-// A line read in full: its bound.
-function read(side, text, cut, meter) {
-  const cells = bound(text, meter) + (cut > 1 ? HALF * (cut - 1) : 0);
-  keep(side, cells);
-  return cells;
+// The slice before this one was cut off by the engine. If it got any row done, the next is half of what it did, or else the
+// row it began with cannot be read in the time there is, and is taken at its upper bound.
+function cutSlice(fit) {
+  const { left, at, slice } = fit.trying;
+  fit.trying = null;
+  if (fit.at === at) fit.hurt = at;
+  else fit.slice = Math.max(1, Math.min(slice - left, slice) >> 1);
 }
 
 // The few widest bounds a side has read, which a line has to beat to be read.
 function keep(side, cells) {
   side.few.push(cells);
   side.few.sort((a, b) => b - a);
-  if (side.few.length > FEW) side.few.pop();
+  while (side.few.length > FEW) side.few.pop();
   if (side.few.length === FEW) side.floor = side.few[FEW - 1];
 }
 
