@@ -1749,30 +1749,54 @@ impl Scenario {
     }
 
     /// `mount` with the `props()` the mod reads being `props`.
-    fn mount_with_props(cx: &mut TestAppContext, staged: &Staged, source: &str, props: Value, width: f32, height: f32) -> Self {
+    fn mount_with_props(
+        cx: &mut TestAppContext,
+        staged: &Staged,
+        source: &str,
+        props: Value,
+        width: f32,
+        height: f32,
+    ) -> Self {
         use std::ops::Deref;
         let calls = Rc::new(RefCell::new(Calls::default()));
         let notes: Rc<RefCell<Vec<Vec<Value>>>> = Rc::default();
         let sink = notes.clone();
         let policy = Policy::new()
             .with_storage_path(staged.0.join("store-scenario.json"))
-            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
-            .with_host_module(module(fixture(false, props, updates("current", "current")), calls.clone()))
+            .with_capabilities(
+                Capabilities::new()
+                    .storage(true)
+                    .read_roots([staged.0.clone()]),
+            )
+            .with_host_module(module(
+                fixture(false, props, updates("current", "current")),
+                calls.clone(),
+            ))
             .unwrap();
         let policy = crate::yuzora::with_modules(policy, "")
             .with_host_module(HostModule::new("probe").function("note", move |a| {
-                sink.borrow_mut().push((0..8).map_while(|i| a.get(i)).map(from_host).collect());
+                sink.borrow_mut()
+                    .push((0..8).map_while(|i| a.get(i)).map(from_host).collect());
                 Ok(HostValue::Null)
             }))
             .unwrap();
         gpui_shell::policy::set_default(policy);
         std::fs::write(staged.0.join("main.js"), source).unwrap();
         let runtime = ShellRuntime::new_isolated().unwrap();
-        let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&staged.0, window, cx).unwrap()));
-        let root = window.read_with(cx, |mounted, _| mounted.0.clone()).unwrap();
+        let window =
+            cx.add_window(|window, cx| Mounted(runtime.try_load(&staged.0, window, cx).unwrap()));
+        let root = window
+            .read_with(cx, |mounted, _| mounted.0.clone())
+            .unwrap();
         let visual = gpui::VisualTestContext::from_window(*window.deref(), cx);
         visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
-        let mut scenario = Self { visual, notes, calls, runtime, root };
+        let mut scenario = Self {
+            visual,
+            notes,
+            calls,
+            runtime,
+            root,
+        };
         scenario.settle();
         scenario
     }
@@ -1799,7 +1823,9 @@ impl Scenario {
 
     /// The clock moving on: what a mod left for a timer (`cx.timer.after`) runs, then the frames it asked for are drawn.
     fn tick(&mut self, millis: u64) {
-        self.visual.executor().advance_clock(std::time::Duration::from_millis(millis));
+        self.visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(millis));
         self.settle();
     }
 
@@ -2725,7 +2751,11 @@ fn db_pick(key: &str, connection: &str, seq: u64) -> Value {
 /// A pane's own key: the grid and the editors of a pane are kept by it, so no two panes of a test share one.
 fn db_key() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    format!("dbt-reuse-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "dbt-reuse-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn db_pane_props(key: &str) -> Value {
@@ -2734,7 +2764,10 @@ fn db_pane_props(key: &str) -> Value {
 
 /// A result of the pane with one edited cell, the way `db_confirm` makes it.
 fn db_edited_result(owner: &str) -> u64 {
-    use yuzora_db::{model::{Cell, Column}, results};
+    use yuzora_db::{
+        model::{Cell, Column},
+        results,
+    };
     let set = results::create(owner, "select * from first");
     let mut r = results::lock(&set);
     r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
@@ -2747,16 +2780,31 @@ fn db_edited_result(owner: &str) -> u64 {
 /// What the pane showed last: `(connection, "loading" | "settled", error, bar up)`.
 fn db_now(s: &Scenario) -> (String, String, Option<String>, bool) {
     let n = s.last("shown").expect("the pane drew a frame");
-    (n[1].as_str().unwrap().to_owned(), n[2].as_str().unwrap().to_owned(), n[3].as_str().map(str::to_owned), n[4].as_bool().unwrap())
+    (
+        n[1].as_str().unwrap().to_owned(),
+        n[2].as_str().unwrap().to_owned(),
+        n[3].as_str().map(str::to_owned),
+        n[4].as_bool().unwrap(),
+    )
 }
 
 fn db_frame_errors(s: &Scenario) -> Vec<String> {
-    s.notes.borrow().iter().filter(|n| n.first() == Some(&json!("render-error"))).map(|n| n[1].as_str().unwrap().to_owned()).collect()
+    s.notes
+        .borrow()
+        .iter()
+        .filter(|n| n.first() == Some(&json!("render-error")))
+        .map(|n| n[1].as_str().unwrap().to_owned())
+        .collect()
 }
 
 /// The connection of each load the pane made, in order.
 fn db_loads(s: &Scenario) -> Vec<String> {
-    s.notes.borrow().iter().filter(|n| n.first() == Some(&json!("load"))).map(|n| n[1].as_str().unwrap().to_owned()).collect()
+    s.notes
+        .borrow()
+        .iter()
+        .filter(|n| n.first() == Some(&json!("load")))
+        .map(|n| n[1].as_str().unwrap().to_owned())
+        .collect()
 }
 
 /// Waits for the pane to show what reading `connection` ended in: that connection does not exist, so the table is
@@ -2766,7 +2814,10 @@ fn db_settles_on(s: &mut Scenario, connection: &str) -> bool {
     while started.elapsed() < std::time::Duration::from_secs(5) {
         s.settle();
         let (shown, state, error, _) = db_now(s);
-        if shown == connection && state == "settled" && error.is_some_and(|e| e.contains(connection)) {
+        if shown == connection
+            && state == "settled"
+            && error.is_some_and(|e| e.contains(connection))
+        {
             return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -2783,35 +2834,78 @@ fn the_database_table_pane_follows_the_sidebar_to_another_table(cx: &mut TestApp
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let key = db_key();
-    let mut s = Scenario::mount_with_props(cx, &staged, &db_reuse_source(None, false), db_pane_props(&key), 320.0, 400.0);
-    assert!(db_settles_on(&mut s, "gone-a"), "the pane never showed its own table: {:?}", db_now(&s));
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(None, false),
+        db_pane_props(&key),
+        320.0,
+        400.0,
+    );
+    assert!(
+        db_settles_on(&mut s, "gone-a"),
+        "the pane never showed its own table: {:?}",
+        db_now(&s)
+    );
     for (seq, connection) in [(2, "gone-b"), (3, "gone-c")] {
         s.share(DB_OPEN, db_pick(&key, connection, seq));
         s.tick(50);
-        assert_eq!(db_frame_errors(&s), Vec::<String>::new(), "a frame failed when the sidebar picked {connection}");
-        assert!(db_settles_on(&mut s, connection), "the pane never showed {connection}: {:?}", db_now(&s));
+        assert_eq!(
+            db_frame_errors(&s),
+            Vec::<String>::new(),
+            "a frame failed when the sidebar picked {connection}"
+        );
+        assert!(
+            db_settles_on(&mut s, connection),
+            "the pane never showed {connection}: {:?}",
+            db_now(&s)
+        );
     }
     s.tick(50);
-    assert_eq!(db_loads(&s), ["gone-a", "gone-b", "gone-c"], "each pick loads once, and drawing again loads nothing");
+    assert_eq!(
+        db_loads(&s),
+        ["gone-a", "gone-b", "gone-c"],
+        "each pick loads once, and drawing again loads nothing"
+    );
 }
 
 // The second click of a double click: the pane the first one opened is still reading its own table when the pick comes.
 // The pane ends on the pick, and what the table it left was still reading does not reach it.
 #[gpui::test]
-fn the_database_table_pane_follows_a_pick_that_comes_while_it_is_still_loading(cx: &mut TestAppContext) {
+fn the_database_table_pane_follows_a_pick_that_comes_while_it_is_still_loading(
+    cx: &mut TestAppContext,
+) {
     cx.executor().allow_parking();
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let key = db_key();
-    let mut s = Scenario::mount_with_props(cx, &staged, &db_reuse_source(None, false), db_pane_props(&key), 320.0, 400.0);
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(None, false),
+        db_pane_props(&key),
+        320.0,
+        400.0,
+    );
     s.share(DB_OPEN, db_pick(&key, "gone-b", 2));
     s.tick(50);
-    assert_eq!(db_frame_errors(&s), Vec::<String>::new(), "a frame failed when the pick came while the pane was loading");
-    assert!(db_settles_on(&mut s, "gone-b"), "the pane never showed the pick: {:?}", db_now(&s));
+    assert_eq!(
+        db_frame_errors(&s),
+        Vec::<String>::new(),
+        "a frame failed when the pick came while the pane was loading"
+    );
+    assert!(
+        db_settles_on(&mut s, "gone-b"),
+        "the pane never showed the pick: {:?}",
+        db_now(&s)
+    );
     std::thread::sleep(std::time::Duration::from_millis(150));
     s.tick(50);
     let (shown, _, error, _) = db_now(&s);
-    assert!(shown == "gone-b" && error.is_some_and(|e| e.contains("gone-b")), "the first table's read reached the pane after the pick");
+    assert!(
+        shown == "gone-b" && error.is_some_and(|e| e.contains("gone-b")),
+        "the first table's read reached the pane after the pick"
+    );
     assert_eq!(db_loads(&s), ["gone-a", "gone-b"]);
 }
 
@@ -2823,7 +2917,14 @@ fn the_database_table_pane_follows_the_last_of_two_quick_picks(cx: &mut TestAppC
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let key = db_key();
-    let mut s = Scenario::mount_with_props(cx, &staged, &db_reuse_source(None, false), db_pane_props(&key), 320.0, 400.0);
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(None, false),
+        db_pane_props(&key),
+        320.0,
+        400.0,
+    );
     assert!(db_settles_on(&mut s, "gone-a"), "{:?}", db_now(&s));
     s.put(DB_OPEN, db_pick(&key, "gone-b", 2));
     s.frame();
@@ -2831,46 +2932,104 @@ fn the_database_table_pane_follows_the_last_of_two_quick_picks(cx: &mut TestAppC
     s.frame();
     s.tick(50);
     assert_eq!(db_frame_errors(&s), Vec::<String>::new());
-    assert!(db_settles_on(&mut s, "gone-c"), "the pane did not end on the last pick: {:?}", db_now(&s));
-    assert_eq!(db_loads(&s), ["gone-a", "gone-c"], "the first pick was read though the second had come");
+    assert!(
+        db_settles_on(&mut s, "gone-c"),
+        "the pane did not end on the last pick: {:?}",
+        db_now(&s)
+    );
+    assert_eq!(
+        db_loads(&s),
+        ["gone-a", "gone-c"],
+        "the first pick was read though the second had come"
+    );
 }
 
 // A pick over a result with an unwritten edit asks first, in the frame after the pick, and changes nothing until it is
 // answered: Keep editing leaves the table as it was, Discard and go on reads the picked one.
 #[gpui::test]
-fn the_database_table_pane_asks_before_the_sidebar_replaces_unwritten_edits(cx: &mut TestAppContext) {
+fn the_database_table_pane_asks_before_the_sidebar_replaces_unwritten_edits(
+    cx: &mut TestAppContext,
+) {
     cx.executor().allow_parking();
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let width = 228.0_f32;
     let (probe, discard_key, keep_key) = (db_key(), db_key(), db_key());
-    let mut p = Scenario::mount_with_props(cx, &staged, &db_reuse_source(Some(db_edited_result(&probe)), true), json!({"key": probe}), width, 400.0);
+    let mut p = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(Some(db_edited_result(&probe)), true),
+        json!({"key": probe}),
+        width,
+        400.0,
+    );
     p.share(DB_OPEN, db_pick(&probe, "gone-b", 2));
     p.tick(50);
     let at = clickables(&mut p, &["load"], width, 240.0);
     let keep = clickable_only(&mut p, "closed", "load", width, 240.0);
-    let (Some(discard), Some(keep)) = (at[0], keep) else { panic!("{width}px: the bar's answers can't both be pressed: {at:?} {keep:?}") };
+    let (Some(discard), Some(keep)) = (at[0], keep) else {
+        panic!("{width}px: the bar's answers can't both be pressed: {at:?} {keep:?}")
+    };
     drop(p);
 
     let id = db_edited_result(&discard_key);
-    let mut s = Scenario::mount_with_props(cx, &staged, &db_reuse_source(Some(id), false), json!({"key": discard_key}), width, 400.0);
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(Some(id), false),
+        json!({"key": discard_key}),
+        width,
+        400.0,
+    );
     assert_eq!(db_now(&s), ("gone-a".into(), "settled".into(), None, false));
     s.share(DB_OPEN, db_pick(&discard_key, "gone-b", 2));
     s.tick(50);
-    assert_eq!(db_frame_errors(&s), Vec::<String>::new(), "a frame failed when the sidebar picked over an edit");
-    assert_eq!(db_now(&s), ("gone-a".into(), "settled".into(), None, true), "the bar asks and the table stays");
-    assert!(db_loads(&s).is_empty(), "the pick was read before it was answered");
+    assert_eq!(
+        db_frame_errors(&s),
+        Vec::<String>::new(),
+        "a frame failed when the sidebar picked over an edit"
+    );
+    assert_eq!(
+        db_now(&s),
+        ("gone-a".into(), "settled".into(), None, true),
+        "the bar asks and the table stays"
+    );
+    assert!(
+        db_loads(&s).is_empty(),
+        "the pick was read before it was answered"
+    );
     press(&mut s, discard);
-    assert!(db_settles_on(&mut s, "gone-b"), "Discard and go on did not read the picked table: {:?}", db_now(&s));
+    assert!(
+        db_settles_on(&mut s, "gone-b"),
+        "Discard and go on did not read the picked table: {:?}",
+        db_now(&s)
+    );
     assert_eq!(db_loads(&s), ["gone-b"]);
 
     let id = db_edited_result(&keep_key);
-    let mut s = Scenario::mount_with_props(cx, &staged, &db_reuse_source(Some(id), false), json!({"key": keep_key}), width, 400.0);
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(Some(id), false),
+        json!({"key": keep_key}),
+        width,
+        400.0,
+    );
     s.share(DB_OPEN, db_pick(&keep_key, "gone-b", 2));
     s.tick(50);
     press(&mut s, keep);
     s.tick(50);
-    assert_eq!(db_now(&s), ("gone-a".into(), "settled".into(), None, false), "Keep editing leaves the table as it was");
-    assert!(db_loads(&s).is_empty(), "Keep editing read the picked table");
-    assert_eq!(yuzora_db::results::get(id).map(|set| yuzora_db::results::lock(&set).edits.len()), Some(1));
+    assert_eq!(
+        db_now(&s),
+        ("gone-a".into(), "settled".into(), None, false),
+        "Keep editing leaves the table as it was"
+    );
+    assert!(
+        db_loads(&s).is_empty(),
+        "Keep editing read the picked table"
+    );
+    assert_eq!(
+        yuzora_db::results::get(id).map(|set| yuzora_db::results::lock(&set).edits.len()),
+        Some(1)
+    );
 }
