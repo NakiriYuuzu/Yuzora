@@ -394,7 +394,12 @@ fn sqlite_a_write_back_queued_behind_the_connection_shows_it_and_can_be_stopped(
     {
         let r = results::lock(&pane.set);
         assert!(!r.is_writing());
-        assert_eq!(r.write_failure().map(str::to_owned), Some(yuzora_db::i18n::t("edit.stopped", &[])), "{:?}", r.write);
+        assert_eq!(
+            r.write_failure().map(str::to_owned),
+            Some(yuzora_db::i18n::t("edit.stopped", &[])),
+            "{:?}",
+            r.write
+        );
         assert_eq!(r.edits.len(), 1, "the edit stays pending");
     }
     assert_eq!(rows(&id, "select name from people where id = 1"), [["a"]], "nothing was written");
@@ -1090,7 +1095,10 @@ fn postgres_a_write_back_stopped_while_the_server_commits_says_the_database_may_
     });
 
     session::stop_write(pane.id);
-    assert_eq!(within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()), Err(DbError::Cancelled));
+    assert_eq!(
+        within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()),
+        Err(DbError::Cancelled)
+    );
     let words = results::lock(&pane.set).write_failure().map(str::to_owned).unwrap_or_default();
     assert_eq!(words, yuzora_db::i18n::t("edit.stopped_maybe", &[]), "COMMIT was on its way: {words}");
 }

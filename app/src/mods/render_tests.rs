@@ -2546,6 +2546,8 @@ fn reloaded(s: &mut Scenario) -> bool {
 // with the `cx` of the click that raised the bar, and a `cx` only works during the call it was handed to.
 #[gpui::test]
 fn the_database_table_pane_reloads_when_the_bar_is_answered_with_discard_and_go_on(cx: &mut TestAppContext) {
+    // The read runs on the database runtime's threads and wakes the pane from there.
+    cx.executor().allow_parking();
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     let width = 228.0_f32;

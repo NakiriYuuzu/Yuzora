@@ -1049,7 +1049,8 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
             Err(DbError::Cancelled) => {
                 // Only a COMMIT that was sent leaves it to the server whether
                 // the changes stand; a stop before that wrote nothing.
-                let sent = engine_stop.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(Canceller::commit_sent);
+                let sent =
+                    engine_stop.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(Canceller::commit_sent);
                 let words = if sent { "edit.stopped_maybe" } else { "edit.stopped" };
                 r.write = WriteState::failed(crate::i18n::t(words, &[]));
             }
