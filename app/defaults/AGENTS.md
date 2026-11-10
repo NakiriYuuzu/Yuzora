@@ -1241,8 +1241,10 @@ with these differences.
 - Files on another machine can be browsed, opened and saved (the file is replaced
   whole, a change made there since it was read is a conflict, and a save never
   gives the file wider access than it had). A file that a save could not give
-  the same owner, group and ACL opens read-only. Creating, renaming and
-  deleting there are not available yet.
+  the same owner, group and ACL opens read-only. Files and folders can be
+  created and renamed there too (a name that is taken is refused, and what is
+  made gets what the machine's own `touch` and `mkdir` give). Deleting there is
+  not available yet.
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->
