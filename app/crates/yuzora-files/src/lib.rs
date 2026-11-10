@@ -2193,6 +2193,33 @@ return JSON.stringify([a, b, c, d]); }})()"#
     }
 
     #[test]
+    fn a_pane_opened_with_a_line_goes_there_in_the_source_and_one_restored_with_it_does_not() {
+        let seen = in_a_doc_pane(
+            r#"
+            const out = [];
+            docState = { phase: "loading", owner: null, focused: false, pane: null, dirty: false, reveal: null, path: "/r/R.md", name: "R.md" };
+            for (const kind of ["markdown", "editor"]) {
+              for (const opened of [Date.now(), 1]) {
+                propsNow = { path: "/r/R.md", on: null, opened, line: 7, column: 2 };
+                const made = pane(kind);
+                out.push(`${kind} ${opened === 1 ? "restored" : "opened"}: ${JSON.stringify(made.goto)} ${made.view}`);
+              }
+            }
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                r#"markdown opened: {"line":7,"column":2} source"#,
+                "markdown restored: null preview",
+                r#"editor opened: {"line":7,"column":2} source"#,
+                "editor restored: null source",
+            ]
+        );
+    }
+
+    #[test]
     fn an_agent_folder_holds_its_files_with_either_slash_on_windows() {
         let src = include_str!("../../../defaults/mods/yuzora-editor/doc-pane.js");
         // A top-level function of doc-pane.js, as written there.
