@@ -1297,7 +1297,9 @@ with these differences.
   table's connection was lost (a Stop of a write-back, an idle timeout, the
   network) and the SQL tab connected in the meantime. Running the table again
   in that pane keeps failing; close the pane (that releases all of its
-  connections) and open the table in a new one.
+  connections) and open the table in a new one. In the other direction (the
+  SQL tab fails because a table is open) the table's connection is still
+  there: run the table again and it opens and saves.
 - Clearing a cell (Backspace, then Enter) makes it NULL where the column's
   type has no empty value (numbers, dates, times, `uuid`, `bool`, `json`),
   and the cell shows NULL before anything is written; a text column keeps the
