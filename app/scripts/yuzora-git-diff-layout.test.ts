@@ -12,7 +12,7 @@ const fonts = JSON.parse(await readFile(new URL("./fixtures/yuzora-git-diff-font
 
 type Rank = { keys: Float64Array; base: number; rows: object[] };
 type Gauge = { key: string; l: Side; r: Side };
-type Side = { left: number; got: number; spent: number; blind: number; was?: number };
+type Side = { left: number; got: number; spent: number; blind: number; rounds: number };
 type Pane = {
   fit: { l: Rank; r: Rank };
   gauge: Gauge | null;
@@ -174,18 +174,36 @@ test("lines in a script the table does not list are laid out until the widest is
 test("what each frame lays out is a few lines, whatever the diff, and a line too long to lay out is passed over", () => {
   const rows = Array.from({ length: 20000 }, (_, i) => row("a".repeat(30 + (i % 60)), "b"));
   const pane = Object.assign(Object.create(GitDiff.prototype), { fit: ranks(rows), gauge: null, unit: null }) as Pane;
-  pane.gauged();
+  const g = pane.gauged();
+  expect(pane.batch("l").lines).toHaveLength(1);
+  // After a few frames a batch is as many as a frame lays out, and no more.
+  g.l.rounds = 10;
   const batch = pane.batch("l");
   expect(batch.cost).toBeLessThanOrEqual(FRAME);
-  expect(batch.lines.length).toBeLessThan(FRAME / cost(30, 1) + 1);
+  expect(batch.lines.length).toBeGreaterThan(FRAME / 2 / cost(90, 1));
+  expect(batch.lines.length).toBeLessThanOrEqual(FRAME / cost(30, 1) + 1);
   const long = "a".repeat(LAYOUT + 1);
   const over = Object.assign(Object.create(GitDiff.prototype), { fit: ranks([row(long, "b"), row("short", "b")]), gauge: null, unit: null }) as Pane;
-  const g = over.gauged();
+  const gauge = over.gauged();
   expect(over.batch("l").lines).toEqual([row("short", "b")]);
-  expect(g.l.blind).toBe(LAYOUT + 1);
+  expect(gauge.l.blind).toBe(LAYOUT + 1);
   // What it could take at most is still counted in the room, since nothing says how wide it is.
-  over.unit = { key: g.key, w: CELL };
+  over.unit = { key: gauge.key, w: CELL };
   expect(over.span("l")).toBeGreaterThanOrEqual((LAYOUT + 1) * CELL);
+});
+
+test("when what may be laid out runs out, the range is what the lines left could take, never less", () => {
+  // A hundred lines of 6,000 Chinese characters: 1.67 cells each in the font, 2 at most while they are read. Reading
+  // takes 156,000 of the 4,000,000 that may be read, so the first 25 are, and the other 75 are taken at 3 cells a
+  // character without being read, which puts them first in line. Laying a line out takes 6,080 of the 262,144 that
+  // may, so 43 are laid out, and the 57 left may be as wide as any: the widest of them is taken at 18,000 cells.
+  const rows = Array.from({ length: 100 }, () => row("漢".repeat(6000), "b"));
+  const { pane, laid } = measure(rows, 1);
+  expect(laid.l).toBe(Math.ceil(MEASURE / cost(6000, 1)));
+  expect(pane.settled("l")).toBe(false);
+  expect(pane.gauge!.l.left).toBeGreaterThanOrEqual(0);
+  expect(pane.span("l")).toBeGreaterThanOrEqual(widestDrawn(rows as Record<string, unknown>[], "l", 1));
+  expect(pane.span("l")).toBeCloseTo(6 + 18000 * CELL, 6);
 });
 
 // Replaces the methods of strings and of regular expressions that go through a whole string for the length of

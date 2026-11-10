@@ -227,12 +227,12 @@ export default class GitDiff extends View {
 
   // What measuring the lines has laid out so far, for the zoom and font they are drawn in now. A line is as wide as
   // the pane draws it, a piece at a time with each piece rounded up to a pixel of the window, so a new zoom or font
-  // measures them again, from the widths it had until the first of the new ones is in.
+  // measures them again; what is left to lay out bounds the range meanwhile.
   gauged() {
     if (!this.fit?.l) return null;
-    const key = this.gaugeKey(), was = this.gauge;
-    if (was?.key !== key) {
-      const side = (name) => ({ left: this.fit[name].keys.length - 1, got: 0, spent: 0, blind: 0, rounds: 0, was: was ? was[name].got || was[name].was : undefined });
+    const key = this.gaugeKey();
+    if (this.gauge?.key !== key) {
+      const side = (name) => ({ left: this.fit[name].keys.length - 1, got: 0, spent: 0, blind: 0, rounds: 0 });
       this.gauge = { id: ++gauges, key, l: side("l"), r: side("r") };
     }
     return this.gauge;
@@ -273,7 +273,7 @@ export default class GitDiff extends View {
     const g = this.gauge?.[name];
     if (!g) return 0;
     if (this.settled(name)) return g.got;
-    return g.got === 0 && g.was !== undefined ? g.was : Math.max(g.got, this.later(name));
+    return Math.max(g.got, this.later(name));
   }
 
   // How far the lines can scroll sideways: the most the widest line of either side reaches past its

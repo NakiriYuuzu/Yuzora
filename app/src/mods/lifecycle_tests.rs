@@ -672,6 +672,11 @@ impl DiffPane {
         assert!(self.expects_pending || !self.pending(), "the diff still had lines to lay out after {} frames", 3 + self.extra);
     }
 
+    /// How many frames asked for lines to be laid out out of sight, since the diff was opened.
+    fn asked_frames(&self) -> usize {
+        self.notes.borrow().iter().filter(|n| n[0] == "pending" && n[1].as_f64() == Some(1.)).count()
+    }
+
     /// Whether the last frame asked for lines to be laid out out of sight.
     fn pending(&self) -> bool {
         self.notes.borrow().iter().rev().find(|n| n[0] == "pending").is_some_and(|n| n[1].as_f64() == Some(1.))
@@ -1197,6 +1202,7 @@ fn yuzora_diff_an_ordinary_diff_scrolls_to_where_its_longest_line_ends(cx: &mut 
         _ => diff_row(Some((20 + i * 37 % 100, "a")), Some((20 + i * 11 % 100, "b"))),
     }));
     let mut pane = DiffPane::mount(cx, Value::Array(rows), 1200., &Shared::default());
+    assert!(pane.asked_frames() <= 2, "{} frames asked for lines to be laid out: an ordinary diff is measured in the first, the lines that cannot be wider than the widest laid out are not laid out", pane.asked_frames());
     pane.wheel(100., 100., -100000., 0.);
     let end = text_start(&mut pane, "a") + pane.text_width("a");
     let cell = pane.width("l");
@@ -1529,6 +1535,29 @@ fn yuzora_diff_a_zoom_set_while_it_is_open_holds_from_the_next_frame(cx: &mut Te
             }
         }
         pane.close();
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010): a zoom set while the diff is open measures its lines again: each piece of a line is rounded up to a pixel
+// of the window, and what a pixel is, in the unit the pane writes lengths in, is what the zoom makes it. A line of 40
+// pieces measured at zoom 2 is 20px short of what is drawn at zoom 1.
+#[gpui::test]
+fn yuzora_diff_a_zoom_set_while_it_is_open_measures_the_lines_again(cx: &mut TestAppContext) {
+    if !alone("yuzora_diff_a_zoom_set_while_it_is_open_measures_the_lines_again") {
+        return;
+    }
+    let mut failures = Vec::new();
+    for (from, to) in [(2., 1.), (1., 1.5), (1.5, 0.8)] {
+        let mut pane = DiffPane::zoomed(cx, Value::Array(vec![row_in_pieces('a', &pieces_of(&[9], 360))]), from, json!({}));
+        pane.set_zoom(to);
+        pane.settle();
+        let gap = pane.end_gap("a");
+        pane.close();
+        match gap {
+            Some(gap) if (gap - left_after_the_end() * to as f64).abs() <= 1.5 => {}
+            other => failures.push(format!("set from {from} to {to}: {other:?} left after the end, when it is {}", left_after_the_end() * to as f64)),
+        }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
