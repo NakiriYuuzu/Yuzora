@@ -416,8 +416,8 @@ export default class GitDiff extends View {
   // A press in a row's text is a click that may turn into a drag across rows, and `this.sweep` says which it is now:
   //   down  The button is down, and the pointer has not gone SLOP px from where it landed nor left its row. This is a click not
   //         yet let go of: no clock runs, the list does not scroll, nothing is selected. The release is the click the list reports.
-  //   drag  The pointer has gone SLOP px or is over another row. The clock looks at it every TICK ms; at the list's edge the list scrolls;
-  //         the selection runs from the row pressed to the row under the pointer ([`extend`]).
+  //   drag  The pointer has gone SLOP px or is over another row. The clock looks at it every TICK ms; at the list's edge the list scrolls
+  //         then and only then; the selection runs from the row pressed to the row under the pointer ([`extend`]).
   //   over  (`this.sweep` is null) The button is up (a release, or a move that says so), the pointer left the pane, a key reached
   //         the pane, the pane lost the keyboard it had when the drag began, or the diff is read again ([`endSweep`]). The selection stays.
   // No press on a fold (its click opens the file), on the numbers a line is picked by, or on the bar under the lines is any of these.
@@ -447,7 +447,9 @@ export default class GitDiff extends View {
     return Math.min(last, Math.max(0, Math.floor((unzoom(y) + unzoom(this.scroll.offset())) / ROW)));
   }
 
-  // The pointer is at `at` in the window: a press that has not moved is still a click, and one that has begins the drag.
+  // The pointer is at `at` in the window: a press that has not moved is still a click, and one that has begins the drag. A move
+  // selects and never scrolls: a platform may send the last move of a held drag again and again (macOS does, every 16 ms), and the
+  // list's speed at its edge is the clock's, the same everywhere.
   sweepTo(at, cx) {
     const s = this.sweep;
     if (!s) return;
@@ -458,32 +460,32 @@ export default class GitDiff extends View {
       s.keys = this.handle.is_focused();
       this.clock = cx.timer.after(TICK, (cx) => this.beat(cx));
     }
-    this.extend(cx);
+    this.extend(cx, false);
   }
 
   // A drag looks at the pointer again, with no move: a list scrolled under it by the wheel or the bar takes the selection with it,
-  // and a pointer held at the list's edge scrolls the list.
+  // and a pointer held at the list's edge scrolls the list. This is the only place the list is scrolled by a drag.
   beat(cx) {
     if (!this.sweep) return;
     // The pane had the keyboard when the drag began and another has it now (a shortcut of the app showed it or opened it): this one
     // may not be shown, and the button's release will not be seen here.
     if (this.sweep.keys && !this.handle.is_focused()) { this.endSweep(); return; }
-    this.extend(cx);
+    this.extend(cx, true);
     this.clock = cx.timer.after(TICK, (cx) => this.beat(cx));
   }
 
-  // The selection runs from the row pressed to the row under the pointer, and a pointer at the list's edge scrolls the list, by
-  // more the further out it is: the rows that come into view are selected at the next look. It begins when the pointer is first
-  // over a row but the pressed one (from the selection there is, if Shift was down); until then the press is a click, and the
-  // release makes of it what it makes of a click. Nothing here touches the ranking of the rows or asks for a frame but the one that
+  // The selection runs from the row pressed to the row under the pointer, and, when `scroll` is set (the clock's look), a pointer at
+  // the list's edge scrolls the list, by more the further out it is: the rows that come into view are selected at the next look.
+  // It begins when the pointer is first over a row but the pressed one (from the selection there is, if Shift was down); until
+  // then the press is a click, and the release makes of it what it makes of a click. Nothing here touches the ranking of the rows or asks for a frame but the one that
   // shows what changed.
-  extend(cx) {
+  extend(cx, scroll) {
     const s = this.sweep, rows = this.view?.rows;
     if (!s || !rows) return;
     const p = unzoom(s.y - s.top), h = this.listHeight(), off = unzoom(this.scroll.offset());
     const up = p < EDGE, depth = up ? EDGE - p : Math.max(0, p - (h - EDGE));
     let moved = false;
-    if (depth > 0 && (up ? off > 0 : off < rows.length * ROW - h - 0.5)) {
+    if (scroll && depth > 0 && (up ? off > 0 : off < rows.length * ROW - h - 0.5)) {
       const step = Math.min(1 + Math.floor(depth / ROW), MOST);
       // The list brings a row into view and no further: the row `step` rows above the first one in view, or the one that ends `step` rows below the last.
       this.scroll.scroll_to_item(Math.max(0, Math.min(rows.length - 1, up ? Math.ceil(off / ROW) - step : Math.floor((off + h) / ROW) + step - 1)), "top");
