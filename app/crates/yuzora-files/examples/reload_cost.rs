@@ -97,6 +97,26 @@ fn serial(a: &Args) -> (f64, f64) {
     (tree, start.elapsed().as_secs_f64() * 1000.0)
 }
 
+/// Runs `work` on every folder of `folders`, on `workers` threads that each take the next one when
+/// they are free: the listings the mod keeps in flight (`listAll` in `tree-state.js`).
+fn spread<F>(folders: Vec<String>, workers: usize, work: F) -> Vec<thread::JoinHandle<()>>
+where
+    F: Fn(String) + Send + Sync + 'static,
+{
+    let queue = Arc::new(Mutex::new(folders.into_iter().rev().collect::<Vec<_>>()));
+    let work = Arc::new(work);
+    (0..workers)
+        .map(|_| {
+            let (queue, work) = (queue.clone(), work.clone());
+            thread::spawn(move || {
+                while let Some(folder) = queue.lock().unwrap().pop() {
+                    work(folder);
+                }
+            })
+        })
+        .collect()
+}
+
 fn parallel(a: &Args) -> (f64, f64) {
     let start = Instant::now();
     let git_done = {
@@ -105,26 +125,15 @@ fn parallel(a: &Args) -> (f64, f64) {
             let _ = git::status(&root, on.as_deref(), MARKS);
         })
     };
-    let queue: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(
-        std::iter::once(String::new())
-            .chain(a.open.iter().cloned())
-            .rev()
-            .collect(),
-    ));
-    let (tx, rx) = mpsc::channel::<(String, f64)>();
-    let workers: Vec<_> = (0..CAP.min(a.open.len() + 1))
-        .map(|_| {
-            let (queue, tx) = (queue.clone(), tx.clone());
-            let (root, on) = (a.root.clone(), a.on.clone());
-            thread::spawn(move || {
-                while let Some(folder) = queue.lock().unwrap().pop() {
-                    list(&root, &folder, on.as_deref());
-                    let _ = tx.send((folder, start.elapsed().as_secs_f64() * 1000.0));
-                }
-            })
-        })
+    let folders: Vec<String> = std::iter::once(String::new())
+        .chain(a.open.iter().cloned())
         .collect();
-    drop(tx);
+    let (tx, rx) = mpsc::channel::<(String, f64)>();
+    let (root, on) = (a.root.clone(), a.on.clone());
+    let workers = spread(folders, CAP.min(a.open.len() + 1), move |folder| {
+        list(&root, &folder, on.as_deref());
+        let _ = tx.send((folder, start.elapsed().as_secs_f64() * 1000.0));
+    });
     let mut tree = f64::NAN;
     for (folder, at) in rx {
         if folder.is_empty() {
@@ -268,4 +277,43 @@ fn main() {
         a.open.len(),
         parts.join(","),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    #[test]
+    fn the_workers_list_at_once() {
+        // Each of CAP listings waits for the other CAP - 1: they end only if all are under way together.
+        let barrier = Arc::new(Barrier::new(CAP));
+        let folders = (0..CAP).map(|i| i.to_string()).collect();
+        let workers = spread(folders, CAP, move |_| {
+            barrier.wait();
+        });
+        let (done, ended) = mpsc::channel();
+        thread::spawn(move || {
+            workers.into_iter().for_each(|w| w.join().unwrap());
+            let _ = done.send(());
+        });
+        ended
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the workers list one after the other");
+    }
+
+    #[test]
+    fn every_folder_is_listed_once() {
+        let listed = Arc::new(AtomicUsize::new(0));
+        let count = listed.clone();
+        let folders = (0..25).map(|i| i.to_string()).collect();
+        for w in spread(folders, 3, move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+        }) {
+            w.join().unwrap();
+        }
+        assert_eq!(listed.load(Ordering::SeqCst), 25);
+    }
 }
