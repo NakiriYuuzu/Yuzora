@@ -15,6 +15,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
+pub use crate::remote_write::Refusal;
+
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// How much of a file decides "binary".
@@ -145,6 +147,17 @@ pub struct Stamp {
     pub mtime_ms: i64,
 }
 
+/// What a file was when it was read, for a save to hold it to: the stamp
+/// and two digests of the bytes. A save here compares [`content_hash`]; one
+/// on another machine compares [`crate::remote_write::posix_crc`], which that
+/// machine's `cksum` can compute (FNV cannot be done in `sh`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Seen {
+    pub stamp: Stamp,
+    pub hash: u64,
+    pub crc: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Eol {
     Lf,
@@ -162,6 +175,9 @@ pub struct TextFile {
     pub stamp: Stamp,
     /// [`content_hash`] of the raw bytes as read (0 when none were read).
     pub hash: u64,
+    /// [`crate::remote_write::posix_crc`] of the raw bytes as read, from
+    /// another machine only (0 for a file read here, which never needs it).
+    pub crc: u32,
     pub size: u64,
     /// A NUL byte in the first 8 KiB, or a known binary signature.
     pub binary: bool,
@@ -179,6 +195,8 @@ pub enum WriteError {
     Conflict(Option<Stamp>),
     /// Saving to another machine is not supported (for the caller to return).
     Remote,
+    /// Nothing was written, for a reason the person can act on.
+    Refused(Refusal),
     Io(String),
 }
 
@@ -188,6 +206,7 @@ impl std::fmt::Display for WriteError {
             WriteError::Conflict(Some(_)) => f.write_str("the file changed on disk"),
             WriteError::Conflict(None) => f.write_str("the file was removed from disk"),
             WriteError::Remote => f.write_str("saving files on another machine is not supported"),
+            WriteError::Refused(why) => why.fmt(f),
             WriteError::Io(e) => f.write_str(e),
         }
     }
@@ -584,6 +603,7 @@ fn blank(stamp: Stamp, readonly: bool) -> TextFile {
         bom: false,
         stamp,
         hash: 0,
+        crc: 0,
         size: stamp.len,
         binary: false,
         too_large: false,
@@ -772,14 +792,7 @@ pub fn write_text(
     if !still().map_err(io_err)? {
         return Err(conflict());
     }
-    let mut bytes = Vec::with_capacity(text.len() + BOM.len());
-    if bom {
-        bytes.extend_from_slice(BOM);
-    }
-    match eol {
-        Eol::Lf => bytes.extend_from_slice(text.as_bytes()),
-        Eol::Crlf => bytes.extend_from_slice(text.replace('\n', "\r\n").as_bytes()),
-    }
+    let bytes = encode_text(text, eol, bom);
     if !replace_atomically(&target, &bytes, &still).map_err(io_err)? {
         return Err(conflict());
     }
@@ -788,6 +801,46 @@ pub fn write_text(
         None => Err(WriteError::Io(format!(
             "cannot write {path}: the file vanished"
         ))),
+    }
+}
+
+/// The bytes a save puts on disk for `text` (LF): `eol` line ends, a BOM when `bom`.
+pub fn encode_text(text: &str, eol: Eol, bom: bool) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(text.len() + BOM.len());
+    if bom {
+        bytes.extend_from_slice(BOM);
+    }
+    match eol {
+        Eol::Lf => bytes.extend_from_slice(text.as_bytes()),
+        Eol::Crlf => bytes.extend_from_slice(text.replace('\n', "\r\n").as_bytes()),
+    }
+    bytes
+}
+
+/// [`write_text`] here, or on `on`, a machine of herdr-core, with `expected`
+/// as that file was read ([`TextFile`]'s `stamp`, `hash` and `crc`).
+pub fn write_on(
+    path: &str,
+    on: Option<&str>,
+    text: &str,
+    eol: Eol,
+    bom: bool,
+    expected: Option<Seen>,
+) -> Result<Stamp, WriteError> {
+    match machine(on) {
+        Some(m) => crate::remote_write::write_sh(
+            path,
+            &encode_text(text, eol, bom),
+            expected.as_ref(),
+            Some(m),
+        ),
+        None => write_text(
+            path,
+            text,
+            eol,
+            bom,
+            expected.map(|seen| (seen.stamp, seen.hash)),
+        ),
     }
 }
 
