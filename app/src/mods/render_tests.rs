@@ -98,6 +98,7 @@ struct Calls {
 
 fn updates(app: &str, core: &str) -> Value {
     json!({
+        // yuzora(win-update): "stuck" is an update whose swap failed, and "failure" the reason Settings > Updates shows for it.
         "app": {"version":"0.1.0", "updates":app != "source", "ready": matches!(app, "ready" | "stuck").then_some("0.1.1"), "failure": (app == "stuck").then(|| crate::yuzora::release::update::swap_failure_text(true, "(os error 32)"))},
         "core": {"version":"0.1.5", "ready":(core == "ready").then_some("0.1.6"), "managed":(core == "managed").then_some("homebrew"), "error":(core == "error").then_some("offline"), "updating":core == "updating"},
         "checked":1700000000, "checks":app != "source", "checking":false
