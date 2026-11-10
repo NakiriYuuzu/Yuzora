@@ -95,7 +95,12 @@ export default class DbQuery extends View {
         let st;
         try {
           st = await job(id, seen);
-        } catch (_e) {
+        } catch (e) {
+          // The core no longer has the job: say so instead of staying on "loading".
+          if (this.jobId === id) {
+            this.state = { id, running: false, version: seen, elapsedMs: 0, error: String(e?.message ?? e), cancelled: false, results: [] };
+            cx.notify();
+          }
           return;
         }
         if (this.jobId !== id) return;

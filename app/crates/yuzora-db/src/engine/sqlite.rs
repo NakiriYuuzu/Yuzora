@@ -6,21 +6,24 @@
 //! task that called `execute`, and a slow sink holds the reading thread back
 //! instead of piling rows up.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::types::{Value, ValueRef};
-use rusqlite::{Connection, ErrorCode, InterruptHandle, OpenFlags, OptionalExtension, TransactionBehavior};
+use rusqlite::{Connection, ErrorCode, InterruptHandle, OpenFlags, OptionalExtension};
 use tokio::sync::mpsc;
 
-use super::{BATCH, ConnectSpec, RowSink};
+use super::{BATCH, CommitSent, ConnectSpec, RowSink};
 use crate::config::Engine;
 use crate::error::{DbError, DbResult};
 use crate::model::{
     Cell, Column, ColumnInfo, DbObject, ForeignKeyInfo, IndexInfo, ObjectKind, ObjectRef, RowEdit, TableInfo,
 };
 use crate::sql::{self, Statement};
+
+/// How long a statement waits for another connection's lock on the file.
+const LOCK_WAIT: Duration = Duration::from_secs(5);
 
 pub struct LiteConn {
     db: Arc<Mutex<Connection>>,
@@ -35,12 +38,35 @@ pub struct LiteCanceller {
     /// SQLite forgets an interrupt that lands between two statements, so a
     /// script checks this before starting the next one.
     cancelled: Arc<AtomicBool>,
+    /// How many stops there have been. A write-back runs on a thread nobody can
+    /// take it back from, so it asks whether one came after it was asked for
+    /// ([`LiteCanceller::since_now`]) instead of sharing a flag the next piece
+    /// of work would reset.
+    stops: Arc<AtomicU64>,
+    pub(super) commit: CommitSent,
 }
 
 impl LiteCanceller {
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
+        self.stops.fetch_add(1, Ordering::SeqCst);
         self.handle.interrupt();
+    }
+
+    /// A question to ask later: was there a stop since now?
+    fn since_now(&self) -> Stopped {
+        Stopped { stops: self.stops.clone(), seen: self.stops.load(Ordering::SeqCst) }
+    }
+}
+
+struct Stopped {
+    stops: Arc<AtomicU64>,
+    seen: u64,
+}
+
+impl Stopped {
+    fn is_set(&self) -> bool {
+        self.stops.load(Ordering::SeqCst) != self.seen
     }
 }
 
@@ -62,7 +88,7 @@ impl LiteConn {
             let access = if read_only { OpenFlags::SQLITE_OPEN_READ_ONLY } else { OpenFlags::SQLITE_OPEN_READ_WRITE };
             let conn = Connection::open_with_flags(&path, access | OpenFlags::SQLITE_OPEN_NO_MUTEX)
                 .map_err(|e| DbError::Connect(format!("{}: {}", path.display(), message(&e))))?;
-            conn.busy_timeout(Duration::from_secs(5)).map_err(lite_err)?;
+            conn.busy_timeout(LOCK_WAIT).map_err(lite_err)?;
             // Opening is lazy: this reads the header, so a file that is not a
             // database is refused here and not at the first query.
             conn.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get::<_, i64>(0))
@@ -70,6 +96,8 @@ impl LiteConn {
             let canceller = LiteCanceller {
                 handle: Arc::new(conn.get_interrupt_handle()),
                 cancelled: Arc::new(AtomicBool::new(false)),
+                stops: Arc::new(AtomicU64::new(0)),
+                commit: CommitSent::default(),
             };
             Ok(LiteConn {
                 db: Arc::new(Mutex::new(conn)),
@@ -169,7 +197,9 @@ impl LiteConn {
     pub async fn apply_edits(&mut self, table: &ObjectRef, edits: &[RowEdit]) -> DbResult<u64> {
         let (table, edits) = (table.clone(), edits.to_vec());
         self.canceller.cancelled.store(false, Ordering::SeqCst);
-        self.work(move |conn| apply_edits(conn, &table, &edits)).await
+        let stopped = self.canceller.since_now();
+        let commit = self.canceller.commit.clone();
+        self.work(move |conn| apply_edits(conn, &table, &edits, &stopped, &commit)).await
     }
 
     /// Runs `f` on the blocking pool with the connection.
@@ -387,11 +417,17 @@ fn primary_key_of(conn: &Connection, table: &str) -> DbResult<Vec<String>> {
 
 // ---------------------------------------------------------------- edits
 
-fn apply_edits(conn: &mut Connection, table: &ObjectRef, edits: &[RowEdit]) -> DbResult<u64> {
+fn apply_edits(
+    conn: &mut Connection,
+    table: &ObjectRef,
+    edits: &[RowEdit],
+    stopped: &Stopped,
+    commit: &CommitSent,
+) -> DbResult<u64> {
     if !conn.is_autocommit() {
         return Err(sql::open_transaction());
     }
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(lite_err)?;
+    let tx = WriteTransaction::begin(conn, stopped)?;
     let mut written = 0;
     for edit in edits.iter().filter(|e| !e.changes.is_empty()) {
         if edit.key.is_empty() {
@@ -400,17 +436,73 @@ fn apply_edits(conn: &mut Connection, table: &ObjectRef, edits: &[RowEdit]) -> D
         if edit.key.iter().any(|(_, v)| v.is_null()) {
             return Err(DbError::NotEditable(crate::i18n::t("edit.null_key", &[])));
         }
+        if stopped.is_set() {
+            return Err(DbError::Cancelled);
+        }
         let sql = update_sql(table, edit);
         let params = edit.changes.iter().chain(&edit.key).map(|(_, c)| value(c));
-        let changed = tx.execute(&sql, rusqlite::params_from_iter(params)).map_err(lite_err)?;
+        let changed = conn.execute(&sql, rusqlite::params_from_iter(params)).map_err(lite_err)?;
         if changed != 1 {
             // Dropping the transaction rolls it back.
             return Err(DbError::Query(sql::key_mismatch(&edit.key, changed as u64)));
         }
         written += 1;
     }
+    // Marked before the last look for a stop, so a stop that finds the mark
+    // unset is one this thread has not yet looked for, and gives way to.
+    commit.mark();
+    if stopped.is_set() {
+        commit.reset();
+        return Err(DbError::Cancelled);
+    }
     tx.commit().map_err(lite_err)?;
     Ok(written)
+}
+
+/// A write transaction (`BEGIN IMMEDIATE`) that is rolled back unless committed.
+struct WriteTransaction<'c> {
+    conn: &'c Connection,
+    open: bool,
+}
+
+impl<'c> WriteTransaction<'c> {
+    /// SQLite's own wait for the write lock (`busy_timeout`) cannot be
+    /// interrupted, and a write-back stopped in it would write the moment the
+    /// lock is let go. So the wait is ours: a stop is looked for between tries.
+    fn begin(conn: &'c Connection, stopped: &Stopped) -> DbResult<Self> {
+        conn.busy_timeout(Duration::ZERO).map_err(lite_err)?;
+        let waiting = Instant::now();
+        let began = loop {
+            match conn.execute_batch("BEGIN IMMEDIATE") {
+                Ok(()) => break Ok(()),
+                Err(e) if is_busy(&e) && !stopped.is_set() && waiting.elapsed() < LOCK_WAIT => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => break Err(if stopped.is_set() { DbError::Cancelled } else { lite_err(e) }),
+            }
+        };
+        conn.busy_timeout(LOCK_WAIT).map_err(lite_err)?;
+        began.map(|()| Self { conn, open: true })
+    }
+
+    fn commit(mut self) -> rusqlite::Result<()> {
+        self.conn.execute_batch("COMMIT")?;
+        self.open = false;
+        Ok(())
+    }
+}
+
+impl Drop for WriteTransaction<'_> {
+    fn drop(&mut self) {
+        if self.open {
+            // Not open any more when an interrupt already rolled it back.
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+    }
+}
+
+fn is_busy(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if matches!(f.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked))
 }
 
 /// `UPDATE "t" SET "a" = ?1 WHERE "k" = ?2`: changes first, then the key.
