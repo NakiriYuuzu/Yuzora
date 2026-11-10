@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { uploadPlan } from "./release";
 
 // Where the app's own workflows run: main (once integration lands there) and
 // beta2/integration, and who saves the build caches.
@@ -62,5 +63,21 @@ describe("the release workflow's contract is run by the PR that changes the work
     expect(step.if).toBe("matrix.platform == 'linux-x86_64'");
     expect(step.run).toBe("bun test scripts");
     expect(existsSync(join(import.meta.dir, "app-release.test.ts"))).toBe(true);
+  });
+});
+
+describe("the website's download links", () => {
+  const downloads = readFileSync(join(WORKFLOWS, "../../site/downloads.js"), "utf8");
+
+  test("name files a stable release carries: the macOS one by the fixed name, the Windows one by the release", () => {
+    const carried = uploadPlan("0.1.0").map((p) => p.dest);
+    expect(downloads).toContain("releases/latest/download/");
+    expect(downloads).toContain("Yuzora-macos-aarch64.dmg");
+    expect(carried).toContain("Yuzora-macos-aarch64.dmg");
+    const windows = downloads.match(/releases\/download\/v0\.1\.0\/(Yuzora-[\w.-]+)"/)?.[1];
+    expect(windows).toBe("Yuzora-windows-x64-setup.exe");
+    expect(carried).toContain(windows!);
+    // No MSI: 0.1.0 ships an NSIS installer only.
+    expect(downloads).not.toContain(".msi");
   });
 });
