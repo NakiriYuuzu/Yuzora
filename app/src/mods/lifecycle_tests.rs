@@ -532,7 +532,7 @@ export default class Probed extends GitDiff {
     note("range", this.lay?.reach ?? null);
     note("offset", this.lay?.sx ?? null, this.lay?.reach ?? null);
     note("mark", this.mark ? [this.mark.side, this.mark.anchor, this.mark.head] : null);
-    note("now", this.scroll.offset());
+    note("now", this.scroll ? this.scroll.offset() : null);
     root = root.on_mouse_down("left", (e, cx) => {
       if (e.position.y < 28) { if (this.view) this.relayout(cx); }
       else if (!props().real) this.clickRow(Math.floor((e.position.y - 28) / 20), cx);
