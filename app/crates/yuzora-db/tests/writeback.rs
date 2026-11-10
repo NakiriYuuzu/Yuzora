@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use yuzora_db::config::{self, ConnectionConfig};
 use yuzora_db::error::DbError;
-use yuzora_db::model::{Cell, ObjectRef};
+use yuzora_db::model::{Cell, ObjectRef, TableInfo};
 use yuzora_db::session::{self, JobId, JobState};
 use yuzora_db::{results, runtime};
 
@@ -1162,6 +1162,202 @@ fn mssql_tables_with_columns_of_their_own_stay_editable() {
         ],
     );
     views_say_they_have_no_key(&id, "dbo", &["seen"]);
+}
+
+// ---------------------------------------------------------------- a login that may only read and write the table
+
+/// A SQL Server login that reads and writes the tables of a database of its own and has no other
+/// permission: it cannot see the types its columns are made of, nor how a column is computed.
+/// The database goes first, then the login.
+struct ReaderWriterLogin {
+    scratch: ScratchDatabase,
+    login: String,
+}
+
+impl ReaderWriterLogin {
+    fn new(database: &str) -> Self {
+        let scratch = ScratchDatabase::new(database);
+        let login = ReaderWriterLogin { login: format!("{database}_login"), scratch };
+        login.drop_login();
+        let name = &login.login;
+        run(
+            &login.scratch.master,
+            "login",
+            &format!("CREATE LOGIN {name} WITH PASSWORD = N'{LOGIN_PASSWORD}', CHECK_POLICY = OFF"),
+        );
+        run(
+            &login.scratch.connection(),
+            "login",
+            &format!(
+                "CREATE USER {name} FOR LOGIN {name}; ALTER ROLE db_datareader ADD MEMBER {name}; ALTER ROLE db_datawriter ADD MEMBER {name}"
+            ),
+        );
+        login
+    }
+
+    fn connection(&self) -> String {
+        save(
+            json!({"name": format!("ms-login-{}", self.login), "engine": "mssql", "host": "127.0.0.1", "port": 51433,
+                   "user": self.login, "database": self.scratch.name, "ssl": "prefer"}),
+            Some(LOGIN_PASSWORD),
+        )
+    }
+
+    fn drop_login(&self) {
+        let name = &self.login;
+        quietly(
+            &self.scratch.master,
+            &format!(
+                "DECLARE @k nvarchar(max) = N''; \
+                 SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N'; ' FROM sys.dm_exec_sessions WHERE login_name = N'{name}'; \
+                 EXEC (@k); \
+                 IF SUSER_ID(N'{name}') IS NOT NULL DROP LOGIN {name}"
+            ),
+        );
+    }
+}
+
+impl Drop for ReaderWriterLogin {
+    fn drop(&mut self) {
+        self.scratch.drop_it();
+        self.drop_login();
+    }
+}
+
+fn described(connection: &str, t: &ObjectRef) -> TableInfo {
+    runtime::block_on(session::describe(connection, None, t)).expect("the description")
+}
+
+/// What a column is called in the description, in order.
+fn column_names(info: &TableInfo) -> Vec<&str> {
+    info.columns.iter().map(|c| c.name.as_str()).collect()
+}
+
+/// A column of a type the login may not see is a column of the table all the same: the
+/// description lists it, the rows are of that table, and the table is editable and saves.
+#[test]
+fn mssql_a_login_that_cannot_see_the_type_of_a_column_still_edits_and_saves_the_table() {
+    only_with!("mssql");
+    let login = ReaderWriterLogin::new("yz_wb_alias_o3");
+    let full = login.scratch.connection();
+    run(
+        &full,
+        "setup",
+        "CREATE TYPE dbo.Code FROM nvarchar(10) NOT NULL;\nGO\nCREATE TYPE dbo.Amount FROM decimal(9, 2) NULL;\nGO\n\
+         CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, code dbo.Code, amt dbo.Amount, v nvarchar(10) NOT NULL DEFAULT N'x');
+         INSERT INTO dbo.t (id, code, amt, v) VALUES (1, N'c1', 1.5, N'a'), (2, N'c2', 2.5, N'b');",
+    );
+    let limited = login.connection();
+    let t = table("dbo", "t");
+
+    let pane = open(&limited, "alias-pane", &t);
+    let summary = pane.summary();
+    assert!(summary.editable, "not editable: {:?}", summary.not_editable);
+    let row = pane.row_where("id", "1");
+    pane.edit(row, "code", Some("c1-new"));
+    pane.edit(row, "v", Some("v-new"));
+    assert_eq!(runtime::block_on(session::write_back_set(&pane.set)), Ok(1));
+    assert_eq!(rows(&full, "SELECT code, v FROM dbo.t ORDER BY id"), [["c1-new", "v-new"], ["c2", "b"]]);
+
+    let (seen, whole) = (described(&limited, &t), described(&full, &t));
+    assert_eq!(column_names(&seen), ["id", "code", "amt", "v"]);
+    assert_eq!(column_names(&whole), column_names(&seen));
+    for (a, b) in seen.columns.iter().zip(&whole.columns) {
+        assert_eq!((a.nullable, a.primary_key, a.generated), (b.nullable, b.primary_key, b.generated), "{}", a.name);
+    }
+    let types: Vec<_> = seen.columns.iter().map(|c| c.type_name.as_str()).collect();
+    assert_eq!(types, ["int", "nvarchar(10)", "decimal(9,2)", "nvarchar(10)"]);
+    assert_eq!(seen.key_columns(), ["id"]);
+    assert!(seen.ddl.contains("[code] nvarchar(10) NOT NULL"), "{}", seen.ddl);
+    assert!(seen.ddl.contains("[amt] decimal(9,2) NULL"), "{}", seen.ddl);
+}
+
+/// How a column is computed is not something the login may see, that it is computed is: the
+/// grid does not offer the column for editing, as it does not for a login that sees the expression.
+#[test]
+fn mssql_a_login_that_cannot_see_how_a_column_is_computed_still_cannot_edit_it() {
+    only_with!("mssql");
+    let login = ReaderWriterLogin::new("yz_wb_computed_o3");
+    let full = login.scratch.connection();
+    run(
+        &full,
+        "setup",
+        "CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, a int NOT NULL, b AS (a * 2) PERSISTED, v nvarchar(10) NOT NULL);
+         INSERT INTO dbo.t (id, a, v) VALUES (1, 2, N'a');",
+    );
+    let limited = login.connection();
+    let t = table("dbo", "t");
+
+    let pane = open(&limited, "computed-pane", &t);
+    assert!(pane.summary().editable, "not editable: {:?}", pane.summary().not_editable);
+    let (a, b, v) = (pane.column("a"), pane.column("b"), pane.column("v"));
+    {
+        let r = results::lock(&pane.set);
+        assert!(!r.column_editable(b), "the computed column is offered for editing");
+        assert!(r.column_editable(a) && r.column_editable(v));
+    }
+    pane.edit(0, "v", Some("v-new"));
+    assert_eq!(runtime::block_on(session::write_back_set(&pane.set)), Ok(1));
+    assert_eq!(rows(&full, "SELECT a, b, v FROM dbo.t"), [["2", "4", "v-new"]]);
+    for (seen, whole) in described(&limited, &t).columns.iter().zip(&described(&full, &t).columns) {
+        assert_eq!(seen.generated, whole.generated, "{}", seen.name);
+    }
+}
+
+/// A role dropped when the test ends, whatever happened: it goes after the database it was
+/// granted on, which is why it is the second field.
+struct PgRoleOnDatabase {
+    database: PgScratchDatabase,
+    _role: PgRole,
+}
+
+fn plain_role_on(database: &str, role: &'static str) -> PgRoleOnDatabase {
+    let database = PgScratchDatabase::new(database);
+    let maintenance = postgres_in(&format!("pg-maintenance-{role}"), "postgres");
+    run(&maintenance, "role", &format!("DROP ROLE IF EXISTS {role}"));
+    run(&maintenance, "role", &format!("CREATE ROLE {role} LOGIN PASSWORD '{role}-pw'"));
+    PgRoleOnDatabase { database, _role: PgRole { maintenance, name: role } }
+}
+
+/// A role that may only read and update the table sees what its owner sees, whatever the columns
+/// are made of: a domain and an enum the role may not use, a schema it may not look into, an
+/// extension's type.
+#[test]
+fn postgres_a_role_that_can_only_read_and_update_a_table_opens_it_editable_whatever_its_columns_are_made_of() {
+    only_with!("postgres");
+    let guard = plain_role_on("yz_wb_role_o3", "yz_wb_role_o3");
+    let full = guard.database.connection();
+    run(
+        &full,
+        "setup",
+        "CREATE SCHEMA private_types;
+         CREATE TYPE private_types.mood AS ENUM ('sad', 'ok', 'happy');
+         CREATE DOMAIN public.code AS text CHECK (VALUE <> '');
+         REVOKE USAGE ON DOMAIN public.code FROM PUBLIC;
+         CREATE EXTENSION citext;
+         CREATE TABLE public.t(id int PRIMARY KEY, code public.code, mood private_types.mood, moods private_types.mood[], ci citext, v text);
+         INSERT INTO public.t VALUES (1, 'c1', 'ok', '{sad,happy}', 'Ab', 'a'), (2, 'c2', 'sad', '{}', 'Cd', 'b');
+         GRANT SELECT, UPDATE ON public.t TO yz_wb_role_o3;",
+    );
+    let limited = save(
+        json!({"name": "pg-role-o3", "engine": "postgres", "host": "127.0.0.1", "port": 55432,
+               "user": "yz_wb_role_o3", "database": "yz_wb_role_o3", "ssl": "prefer"}),
+        Some("yz_wb_role_o3-pw"),
+    );
+    let t = table("public", "t");
+
+    let pane = open(&limited, "role-pane", &t);
+    let summary = pane.summary();
+    assert!(summary.editable, "not editable: {:?}", summary.not_editable);
+    let row = pane.row_where("id", "1");
+    pane.edit(row, "code", Some("c1-new"));
+    pane.edit(row, "v", Some("v-new"));
+    assert_eq!(runtime::block_on(session::write_back_set(&pane.set)), Ok(1));
+    assert_eq!(rows(&full, "SELECT code, v FROM public.t ORDER BY id"), [["c1-new", "v-new"], ["c2", "b"]]);
+
+    let seen = described(&limited, &t);
+    assert_eq!(column_names(&seen), ["id", "code", "mood", "moods", "ci", "v"]);
+    assert_eq!(seen, described(&full, &t));
 }
 
 // ---------------------------------------------------------------- a SQLite statement names the columns it returns
