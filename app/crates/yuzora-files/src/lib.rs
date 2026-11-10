@@ -1115,6 +1115,8 @@ return JSON.stringify([a, b, c, d]); }})()"#
     /// A mod pane is listed with `started` (a copy of its mod is running); a command that names a pane that is no
     /// longer there does nothing, as the window answers it with an error and goes on. `tab.select` shows a tab
     /// and its Space.
+    /// `pane.split` puts the zoom of its tab away and focuses the new pane there; `pane.swap` and `pane.zoom` take
+    /// the focused pane of the tab shown when they are not told one, as the window does; `commands` lists what ran.
     /// `autoNote = false`: no pane notes itself; the test says which pane took the keys with `notePane`, as an
     /// editor does when it gets them (a pane that only shows "Edit here" never does).
     /// `strip(space)` is the tab strip with the panes in each tab and `*` on the selected tab, `focus()` the
@@ -1129,7 +1131,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
           { id: "s3", machine: null, active: false, selected: "t4", tabs: [
             { id: "t4", name: "", focus: "p4", panes: [{ pane: "p4", mod: null }] } ] },
         ];
-        const given = {}, queue = [], revealed = [], focusedDocs = [], docs = new Map(), opens = {}, started = new Set();
+        const given = {}, queue = [], revealed = [], focusedDocs = [], docs = new Map(), opens = {}, started = new Set(), commands = [];
         let serial = 10, docs_made = 0, snapshot = null, nobody = false, autoNote = true;
         const shown = () => world.find(s => s.active);
         const tabShown = () => shown().tabs.find(t => t.id === shown().selected);
@@ -1142,6 +1144,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
         const keyOf = (path, on) => `${on ?? ""}\0${path}`;
         const DOC_PANES = ["yuzora-editor", "yuzora-markdown"];
         function apply(name, a) {
+          commands.push(a.pane === undefined && (name === "pane.swap" || name === "pane.zoom") ? `${name}(focused)` : name);
           if (name === "tab.new") {
             const s = a.space ? world.find(x => x.id === a.space) : shown(), pane = `p${++serial}`;
             const tab = { id: `t${serial}`, name: a.name ?? "", focus: pane, panes: [{ pane, mod: a.mod ?? null }] };
@@ -1154,16 +1157,28 @@ return JSON.stringify([a, b, c, d]); }})()"#
             tab.panes.splice(tab.panes.findIndex(p => p.pane === target) + 1, 0, { pane, mod: a.mod ?? null });
             given[pane] = a.props;
             tab.focus = pane;
+            tab.zoom = null;
           } else if (name === "pane.close") {
             const tab = tabOf(a.pane);
             if (!tab) return;
             tab.panes = tab.panes.filter(p => p.pane !== a.pane);
             if (tab.focus === a.pane) tab.focus = tab.panes[0].pane;
+            if (tab.zoom === a.pane) tab.zoom = null;
           } else if (name === "pane.focus") {
             const tab = tabOf(a.pane);
             if (!tab) return;
             tab.focus = a.pane;
+            if (tab.zoom) tab.zoom = a.pane;
             select(tab);
+          } else if (name === "pane.swap") {
+            const pane = a.pane ?? tabShown().focus, tab = tabOf(pane);
+            if (!tab || tabOf(a.target) !== tab) return;
+            const i = tab.panes.findIndex(p => p.pane === pane), j = tab.panes.findIndex(p => p.pane === a.target);
+            [tab.panes[i], tab.panes[j]] = [tab.panes[j], tab.panes[i]];
+          } else if (name === "pane.zoom") {
+            const pane = a.pane ?? tabShown().focus, tab = tabOf(pane);
+            if (!tab || tab.panes.length < 2) return;
+            tab.zoom = tab.zoom === pane ? null : pane;
           } else if (name === "tab.select") {
             const tab = world.flatMap(s => s.tabs).find(t => t.id === a.id);
             if (tab) select(tab);
@@ -1183,7 +1198,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
           if (autoNote && opens[here.pane]) opens[here.pane].pane = here.pane;
           snapshot = {
             spaces: world.map(s => ({ id: s.id, machine: s.machine, active: s.active, tabs: s.tabs.map(t => ({ id: t.id, name: t.name, active: s.selected === t.id })) })),
-            panes: world.flatMap(s => s.tabs.flatMap(t => t.panes.map(p => ({ pane: p.pane, mod: p.mod ?? undefined, ...(p.mod ? { props: given[p.pane], started: started.has(p.pane) } : {}), tab: t.id })))),
+            panes: world.flatMap(s => s.tabs.flatMap(t => t.panes.map(p => ({ pane: p.pane, mod: p.mod ?? undefined, ...(p.mod ? { props: given[p.pane], started: started.has(p.pane) } : {}), tab: t.id, zoomed: t.zoom === p.pane })))),
             focused: { space: shown().id, tab: tab.id, pane: nobody ? null : tab.focus },
           };
         }
@@ -1223,6 +1238,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
         const names = id => world.find(x => x.id === id).tabs.map(t => t.name || "-").join(" ");
         const focus = () => { const t = tabShown(); return label(t.panes.find(p => p.pane === t.focus)); };
         const paneOf = path => panes().find(p => given[p.pane]?.path === path).pane;
+        const zoomedPane = () => panes().find(p => p.zoomed)?.pane ?? null;
     "##;
 
     /// Runs `body` against open.js as shipped and `HERDR_WORLD`; `body` returns what it saw.
@@ -2110,6 +2126,91 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "true",
                 "the pane that stayed",
                 "[shell] [shell, editor /r/a.rs]*",
+            ]
+        );
+    }
+
+    // `replace` (open.js) splits a pane and closes it. In the tab shown the pane the split made has the focus, so a swap
+    // of the focused pane with the old one, before the close, puts the new pane in the old one's place with its share.
+    fn an_image_beside_the_shell_is_renamed(before: &str) -> Vec<String> {
+        in_the_open(&format!(
+            r#"
+            {before}
+            commands.length = 0;
+            rename("/r/a.png", "/r/b.png"); moved("/r/a.png", "/r/b.png", null); flush();
+            return [commands.join(" "), strip("s1"), String(zoomedPane() === null ? null : given[zoomedPane()]?.path ?? "the shell")];
+        "#
+        ))
+    }
+
+    #[test]
+    fn in_the_tab_shown_the_new_pane_is_swapped_into_the_place_of_the_old_one_before_it_closes() {
+        assert_eq!(
+            an_image_beside_the_shell_is_renamed(
+                r#"restore("s1", "", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 }, { beside: true });"#
+            ),
+            [
+                "pane.split pane.swap(focused) pane.close pane.focus",
+                "[shell, image /r/b.png]* [shell]",
+                "null"
+            ]
+        );
+    }
+
+    #[test]
+    fn in_a_tab_not_shown_a_pane_is_replaced_without_a_swap() {
+        assert_eq!(
+            an_image_beside_the_shell_is_renamed(
+                r#"restore("s1", "a.png", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 });"#
+            ),
+            [
+                "pane.split pane.close pane.focus",
+                "[shell]* [shell] [image /r/b.png]",
+                "null"
+            ]
+        );
+    }
+
+    #[test]
+    fn with_a_layout_block_in_focus_a_pane_is_replaced_without_a_swap() {
+        assert_eq!(
+            an_image_beside_the_shell_is_renamed(
+                r#"restore("s1", "", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 }, { beside: true }); nobody = true; publish();"#
+            ),
+            [
+                "pane.split pane.close",
+                "[shell, image /r/b.png]* [shell]",
+                "null"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_zoom_of_the_tab_shown_is_put_back_when_a_pane_it_hides_is_replaced() {
+        assert_eq!(
+            an_image_beside_the_shell_is_renamed(
+                r#"restore("s1", "", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 }, { beside: true });
+                run("pane.zoom", { pane: "p1" }); flush();"#
+            ),
+            [
+                "pane.split pane.swap(focused) pane.close pane.zoom pane.focus",
+                "[shell, image /r/b.png]* [shell]",
+                "the shell"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_zoom_of_the_tab_shown_goes_to_the_new_pane_when_the_zoomed_pane_is_replaced() {
+        assert_eq!(
+            an_image_beside_the_shell_is_renamed(
+                r#"const image = restore("s1", "", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 }, { beside: true });
+                run("pane.focus", { pane: image }); flush(); run("pane.zoom", { pane: image }); flush();"#
+            ),
+            [
+                "pane.split pane.swap(focused) pane.close pane.zoom(focused)",
+                "[shell, image /r/b.png]* [shell]",
+                "/r/b.png"
             ]
         );
     }
