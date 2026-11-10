@@ -82,7 +82,6 @@ type Key = (String, Option<String>, String);
 
 struct Live {
     conn: Arc<tokio::sync::Mutex<Option<Conn>>>,
-    canceller: Mutex<Option<Canceller>>,
 }
 
 static POOL: LazyLock<Mutex<HashMap<Key, Arc<Live>>>> = LazyLock::new(Default::default);
@@ -99,7 +98,7 @@ fn live(key: &Key) -> Arc<Live> {
         pool.retain(|(c, d, o), _| !(o == META && c == &key.0 && d != &key.1));
     }
     pool.entry(key.clone())
-        .or_insert_with(|| Arc::new(Live { conn: Default::default(), canceller: Mutex::new(None) }))
+        .or_insert_with(|| Arc::new(Live { conn: Default::default() }))
         .clone()
 }
 
@@ -145,6 +144,13 @@ impl Drop for Lease {
 
 /// The connection for (`connection`, `database`, `owner`), opened when needed.
 pub async fn lease(connection: &str, database: Option<&str>, owner: &str) -> DbResult<Lease> {
+    open_lease(connection, database, owner, true).await
+}
+
+/// [`lease`]. `report`: whether opening the connection is what the sidebar
+/// shows of the saved connection. A connection opened for a side job (a
+/// count) that can't be is that job's loss, not the connection's.
+async fn open_lease(connection: &str, database: Option<&str>, owner: &str, report: bool) -> DbResult<Lease> {
     let key: Key = (connection.to_owned(), database.map(str::to_owned), owner.to_owned());
     let entry = live(&key);
     let mut guard = entry.conn.clone().lock_owned().await;
@@ -157,39 +163,37 @@ pub async fn lease(connection: &str, database: Option<&str>, owner: &str) -> DbR
         let spec = tokio::task::spawn_blocking(move || config::get(&id).and_then(|c| spec_for(c, db.as_deref())))
             .await
             .unwrap_or_else(|e| Err(DbError::Io(e.to_string())));
-        set_status(connection, |s| {
-            if s.state != State::Connected {
-                s.state = State::Connecting;
-            }
-        });
+        if report {
+            set_status(connection, |s| {
+                if s.state != State::Connected {
+                    s.state = State::Connecting;
+                }
+            });
+        }
         match async { Conn::connect(&spec?).await }.await {
             Ok(conn) => {
                 let version = conn.server_version();
-                *entry.canceller.lock().unwrap_or_else(|e| e.into_inner()) = Some(conn.canceller());
                 *guard = Some(conn);
-                set_status(connection, |s| {
-                    s.state = State::Connected;
-                    s.version = version;
-                    s.error = None;
-                });
+                if report {
+                    set_status(connection, |s| {
+                        s.state = State::Connected;
+                        s.version = version;
+                        s.error = None;
+                    });
+                }
             }
             Err(e) => {
-                set_status(connection, |s| {
-                    s.state = State::Error;
-                    s.error = Some(e.to_string());
-                });
+                if report {
+                    set_status(connection, |s| {
+                        s.state = State::Error;
+                        s.error = Some(e.to_string());
+                    });
+                }
                 return Err(e);
             }
         }
     }
     Ok(Lease { guard })
-}
-
-fn canceller(connection: &str, database: Option<&str>, owner: &str) -> Option<Canceller> {
-    let key: Key = (connection.to_owned(), database.map(str::to_owned), owner.to_owned());
-    let entry = pool().get(&key).cloned()?;
-    let c = entry.canceller.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    c
 }
 
 /// Ends everything `owner` (a pane) has: its running work is cancelled, its
@@ -260,6 +264,9 @@ struct Job {
     error: Option<String>,
     elapsed_ms: u64,
     results: Vec<ResultId>,
+    /// Stops the statement the job is running (see [`serving`]); `None` while
+    /// the job waits or does something else.
+    serving: Option<Canceller>,
     version: u64,
     watchers: Vec<async_channel::Sender<()>>,
 }
@@ -288,11 +295,33 @@ fn new_job(connection: &str, database: Option<&str>, owner: &str) -> JobId {
             error: None,
             elapsed_ms: 0,
             results: Vec::new(),
+            serving: None,
             version: 1,
             watchers: Vec::new(),
         },
     );
     id
+}
+
+/// While the guard lives, `job`'s Stop reaches the statement `canceller`
+/// belongs to: the one the job runs on the connection it holds. Take it once
+/// that lease is held and let it go before the lease is: a pane's connection
+/// also carries its write-back, which only its own Stop may end.
+struct Serving(JobId);
+
+fn serving(job: JobId, canceller: Canceller) -> Serving {
+    if let Some(j) = jobs().1.get_mut(&job) {
+        j.serving = Some(canceller);
+    }
+    Serving(job)
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        if let Some(j) = jobs().1.get_mut(&self.0) {
+            j.serving = None;
+        }
+    }
 }
 
 fn update_job(id: JobId, f: impl FnOnce(&mut Job)) {
@@ -353,7 +382,9 @@ pub async fn job_after(id: JobId, seen: u64) -> DbResult<JobState> {
     job_state(id).ok_or_else(|| DbError::NotFound(crate::i18n::t("error.no_job", &[])))
 }
 
-/// Stops a running job: the engine is asked to cancel, the sink stops reading.
+/// Stops a running job: the engine is asked to cancel the statement it is
+/// running, the sink stops reading. Nothing else on the pane's connections is
+/// touched: a write-back is not the job's.
 pub fn cancel(id: JobId) {
     let target = {
         let mut all = jobs();
@@ -362,13 +393,11 @@ pub fn cancel(id: JobId) {
             return;
         }
         job.cancelled = true;
-        (job.connection.clone(), job.database.clone(), job.owner.clone())
+        job.serving.clone()
     };
     update_job(id, |_| {});
-    for owner in [target.2.clone(), count_owner(&target.2)] {
-        if let Some(c) = canceller(&target.0, target.1.as_deref(), &owner) {
-            runtime::spawn(async move { c.cancel().await });
-        }
+    if let Some(c) = target {
+        runtime::spawn(async move { c.cancel().await });
     }
 }
 
@@ -541,7 +570,10 @@ pub fn start_query(connection: &str, database: Option<&str>, owner: &str, sql: &
         let mut sink = JobSink::new(id, &owner, &sql);
         let started = Instant::now();
         let outcome = match lease(&connection, database.as_deref(), &owner).await {
-            Ok(mut l) => l.conn().execute(&sql, &mut sink).await,
+            Ok(mut l) => {
+                let _serving = serving(id, l.conn().canceller());
+                l.conn().execute(&sql, &mut sink).await
+            }
             Err(e) => Err(e),
         };
         // In the history before the job reads as finished.
@@ -586,9 +618,11 @@ pub fn open_table(
         let order = order.as_ref().map(|(c, d)| (c.as_str(), *d));
         let sql = engine::select_sql(engine, home.as_deref(), &table, order, limit);
         let mut sink = JobSink::for_table(id, &owner, &sql);
+        let reading = serving(id, l.conn().canceller());
         let outcome = l.conn().execute(&sql, &mut sink).await;
         // The pane's connection is free from here: the count and any write-back
-        // do not wait for each other.
+        // do not wait for each other, and the job's Stop is no longer for it.
+        drop(reading);
         drop(l);
         // The rows are in, whether or not the engine said so (a read that hit
         // the cap ends mid-stream): the result is complete, and it is now
@@ -650,8 +684,11 @@ pub fn open_table(
     id
 }
 
-/// `count(*)` of `table`, on the connection leased under [`count_owner`]
-/// (closed again right after: only the count needs it).
+/// `count(*)` of `table`. It has a connection of its own (leased under
+/// [`count_owner`], closed again right after), so a slow count holds nothing
+/// up. Where one more connection is not to be had (a limit on the login, a
+/// network blip) the pane's own does it, once it is free: the total is worth
+/// that, and the connection is not failed for it.
 async fn count_rows(
     connection: &str,
     database: Option<&str>,
@@ -661,13 +698,22 @@ async fn count_rows(
     job: JobId,
 ) -> Option<u64> {
     let counting = count_owner(owner);
-    let mut l = lease(connection, database, &counting).await.ok()?;
+    match open_lease(connection, database, &counting, false).await {
+        Ok(l) => {
+            let counted = count_on(l, engine, table, job).await;
+            pool().remove(&(connection.to_owned(), database.map(str::to_owned), counting));
+            counted
+        }
+        Err(_) => count_on(lease(connection, database, owner).await.ok()?, engine, table, job).await,
+    }
+}
+
+/// Counts on the connection `l` holds, which the job's Stop reaches meanwhile.
+async fn count_on(mut l: Lease, engine: config::Engine, table: &ObjectRef, job: JobId) -> Option<u64> {
+    let _serving = serving(job, l.conn().canceller());
     let home = l.conn().database().map(str::to_owned);
     let mut one = FirstCell { job, cell: None };
-    let counted = l.conn().execute(&engine::count_sql(engine, home.as_deref(), table), &mut one).await;
-    drop(l);
-    pool().remove(&(connection.to_owned(), database.map(str::to_owned), counting));
-    counted.ok()?;
+    l.conn().execute(&engine::count_sql(engine, home.as_deref(), table), &mut one).await.ok()?;
     one.cell?.display().trim().parse().ok()
 }
 
@@ -826,11 +872,12 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
     outcome
 }
 
-/// Ends work the person stopped: `signal` tells the engine, and `work` (with
-/// the connection it holds) is let go of around it.
+/// Ends work the person stopped: `signal` tells the engine while `work` still
+/// holds the connection it runs on. Let go of first, whatever queued for that
+/// connection would start on it, and the stop would land on that instead.
 async fn stop_work<W>(work: W, signal: impl std::future::Future<Output = ()>) {
-    drop(work);
     signal.await;
+    drop(work);
 }
 
 #[cfg(test)]
