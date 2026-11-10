@@ -814,7 +814,7 @@ fn yuzora_diff_long_lines_scroll_sideways_to_their_end(cx: &mut TestAppContext) 
     near(start(&mut pane), GUTTER + 6. - 140., "a sideways one with a little up or down in it does");
     pane.wheel(100., 100., -100000., 0.);
     let end = start(&mut pane) + pane.text_width("a");
-    assert!(end <= 599.5 && end >= 599.5 - 30., "scrolled as far as it goes, the widest line ends at {end}, its cell at 599.5");
+    assert!((599.5 - 30. ..=599.5).contains(&end), "scrolled as far as it goes, the widest line ends at {end}, its cell at 599.5");
     // The left side widens: it needs less scrolling, and the lines come back to end where it does.
     pane.wheel(100., 100., -100000., 0.);
     pane.press(600., 100., 1);
