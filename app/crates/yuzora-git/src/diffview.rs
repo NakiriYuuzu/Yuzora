@@ -618,8 +618,7 @@ impl DiffSession {
                 }
             };
             let mut next = from;
-            for h in first..=last {
-                let c = &changes[h];
+            for c in &changes[first..=last] {
                 unchanged(&mut line, next..c.a.start, usize::MAX);
                 was += c.a.len();
                 now += c.b.len();
