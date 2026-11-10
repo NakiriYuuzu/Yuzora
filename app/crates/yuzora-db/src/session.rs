@@ -581,6 +581,8 @@ struct JobSink {
     current: Option<Arc<Mutex<ResultSet>>>,
     /// The newest result this sink made, finished or not.
     last: Option<Arc<Mutex<ResultSet>>>,
+    /// When the statement whose result comes next began, if its engine said so (`RowSink::started`).
+    began: Option<Instant>,
 }
 
 impl JobSink {
@@ -593,6 +595,7 @@ impl JobSink {
             table: false,
             current: None,
             last: None,
+            began: None,
         }
     }
 
@@ -602,6 +605,9 @@ impl JobSink {
 
     fn start(&mut self) -> Arc<Mutex<ResultSet>> {
         let set = results::create(&self.owner, &self.statement);
+        if let Some(at) = self.began.take() {
+            results::lock(&set).started = at;
+        }
         if self.table {
             results::lock(&set).editing = Editing::Loading;
         }
@@ -635,6 +641,10 @@ impl JobSink {
 }
 
 impl RowSink for JobSink {
+    fn started(&mut self, at: Instant) {
+        self.began = Some(at);
+    }
+
     fn columns(&mut self, columns: Vec<Column>) {
         self.finish(None);
         let set = self.start();

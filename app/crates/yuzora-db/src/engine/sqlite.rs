@@ -72,6 +72,8 @@ impl Stopped {
 
 /// What the reading thread sends to the task that feeds the sink.
 enum Msg {
+    /// A statement that returns rows began, at this moment (see [`RowSink::started`]).
+    Began(Instant),
     Columns(Vec<Column>),
     Rows(Vec<Vec<Cell>>),
     Done(Option<u64>),
@@ -179,6 +181,7 @@ impl LiteConn {
         };
         while let Some(msg) = rx.recv().await {
             match msg {
+                Msg::Began(at) => sink.started(at),
                 Msg::Columns(columns) => sink.columns(columns),
                 // The reading thread notices `stop` after its next batch; the
                 // rest of what it sent is dropped here.
@@ -258,6 +261,7 @@ fn run(
         if cancelled.load(Ordering::SeqCst) {
             return Err(DbError::Cancelled);
         }
+        let began = Instant::now();
         let mut stmt = conn.prepare(&statement.text).map_err(lite_err)?;
         if stmt.column_count() == 0 {
             let changed = stmt.execute([]).map_err(lite_err)? as u64;
@@ -265,6 +269,9 @@ fn run(
                 return Ok(());
             }
             continue;
+        }
+        if !send(Msg::Began(began)) {
+            return Ok(());
         }
         let mut rows = stmt.query([]).map_err(lite_err)?;
         let mut batch = Vec::with_capacity(BATCH);
