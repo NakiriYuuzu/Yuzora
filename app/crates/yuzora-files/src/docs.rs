@@ -217,9 +217,11 @@ fn moved(from: &str, to: &str, on: Option<&str>, cx: &mut App) {
 }
 
 /// Whether `\` separates the segments of a path on the file system `on` names
-/// (`None`: this machine, which is Windows when `here_is_windows`).
-fn backslash_separates(_on: Option<&str>, here_is_windows: bool) -> bool {
-    here_is_windows
+/// (`None`: this machine, which is Windows when `here_is_windows`). A machine's
+/// files are changed through `sh` (`remote_entry`), so its paths are Unix paths
+/// whatever this app runs on.
+fn backslash_separates(on: Option<&str>, here_is_windows: bool) -> bool {
+    on.is_none() && here_is_windows
 }
 
 /// `path` after `from` moved to `to`, if it is `from` or inside it. Only where
