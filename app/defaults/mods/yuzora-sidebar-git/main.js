@@ -441,6 +441,16 @@ export default class SidebarGit extends View {
     cx.notify();
   }
 
+  // The one action that deletes works from what git says now, not from what was read before: a repo's first read after the
+  // person left it may be its cache from before (its watcher let go, or it is on a machine), and the list asked about
+  // may be older still. Discards `asked` if git still lists it as the kind of change the question named.
+  async discardAsked(repo, asked) {
+    const now = await status(repo.id, { force: true });
+    const file = [...(now.unstaged ?? []), ...(now.untracked ?? [])].find((f) => f.path === asked.path);
+    if (file?.kind !== asked.kind) return { ok: false, output: t("discard.changed", { path: asked.path }) };
+    return discard(repo.id, [asked.path]);
+  }
+
   openDiff(f, section, repo = this.v.repo) {
     if (!repo) return;
     const mode = section === "staged" ? "staged" : "unstaged";
@@ -758,7 +768,7 @@ export default class SidebarGit extends View {
     const discardAsk = asked && v_flex().mx(8).mb(6).p(8).gap(6).rounded(6).bg(th.raised).border_1().border_color(th.border).text_size(11.5)
       .child(div().child(t("discard.ask", { path: asked.path })))
       .child(h_flex().gap(6)
-        .child(this.button(v, "discard-yes", t("discard"), false, true, th, (cx) => { if (v.confirmDiscard !== asked) return; v.confirmDiscard = null; this.act(cx, "discard", (r) => discard(r.id, [asked.path]), v); }))
+        .child(this.button(v, "discard-yes", t("discard"), false, true, th, (cx) => { if (v.confirmDiscard !== asked) return; v.confirmDiscard = null; this.act(cx, "discard", (r) => this.discardAsked(r, asked), v); }))
         .child(this.button(v, "discard-no", t("cancel"), false, true, th, (cx) => { v.confirmDiscard = null; cx.notify(); }, true)));
 
     const warnings = raised && v_flex().p(8).gap(6).rounded(6).bg((tokens().attention ?? {}).background ?? th.raised).text_size(11)
