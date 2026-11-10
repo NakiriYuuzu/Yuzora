@@ -1609,6 +1609,81 @@ fn mssql_write_back_waits_for_a_transaction_left_open() {
     });
 }
 
+/// The refusal to write back inside a transaction that SQL Server opens by itself.
+fn open_implicit_transaction() -> DbError {
+    DbError::NotEditable(yuzora_db::i18n::t("edit.open_implicit_transaction", &[]))
+}
+
+/// Removes a table of the SQL Server fixture's database when a test ends, however it ends.
+struct DropFixtureTable(String);
+
+impl Drop for DropFixtureTable {
+    fn drop(&mut self) {
+        let sql = format!("IF OBJECT_ID(N'dbo.{0}') IS NOT NULL DROP TABLE dbo.{0}", self.0);
+        run(async {
+            if let Ok(mut conn) = Conn::connect(&ms_spec("sa", SslMode::Prefer, "yuzora_p8")).await {
+                let _ = query(&mut conn, &sql).await;
+            }
+        });
+    }
+}
+
+#[test]
+fn mssql_a_write_back_on_a_connection_that_opens_transactions_by_itself_is_committed_or_refused() {
+    only_with!("mssql");
+    let name = format!("yz_r1_impl_{}", std::process::id());
+    let _cleanup = DropFixtureTable(name.clone());
+    let t = ms_object("dbo", &name);
+    run(async {
+        let mut setup = ms_sa("yuzora_p8").await;
+        query(
+            &mut setup,
+            &format!(
+                "IF OBJECT_ID(N'dbo.{name}') IS NOT NULL DROP TABLE dbo.{name}; \
+                 CREATE TABLE dbo.{name} (id int PRIMARY KEY, v nvarchar(10), d datetime); \
+                 INSERT INTO dbo.{name} VALUES (1, N'a', '20240105')"
+            ),
+        )
+        .await
+        .unwrap();
+        let open = "SELECT @@TRANCOUNT";
+        let implicit = "SELECT @@OPTIONS & 2";
+        let read_v = format!("SELECT v FROM dbo.{name} WHERE id = 1");
+        for setting in ["SET IMPLICIT_TRANSACTIONS ON", "SET ANSI_DEFAULTS ON"] {
+            let mut conn = ms_sa("yuzora_p8").await;
+            query(&mut conn, setting).await.unwrap();
+            assert_eq!(scalar(&mut conn, open).await, "0", "{setting}");
+
+            assert_eq!(conn.apply_edits(&t, &[one_edit("z")]).await, Ok(1), "{setting}");
+            assert_eq!(scalar(&mut conn, open).await, "0", "{setting}: it said it wrote and left its transaction open");
+            let mut other = ms_sa("yuzora_p8").await;
+            assert_eq!(scalar(&mut other, &read_v).await, "z", "{setting}: another connection reads what was written");
+            assert_eq!(scalar(&mut conn, implicit).await, "2", "{setting}: the connection keeps the setting it was given");
+
+            let unreadable =
+                RowEdit { key: vec![("id".into(), Cell::Int(1))], changes: vec![("d".into(), text("2024-01-06 9:5"))] };
+            assert!(conn.apply_edits(&t, &[unreadable]).await.is_err(), "{setting}");
+            assert_eq!(scalar(&mut conn, open).await, "0", "{setting}: a refusal leaves no transaction open");
+            assert_eq!(scalar(&mut conn, implicit).await, "2", "{setting}: nor a changed setting");
+
+            let missing = RowEdit { key: vec![("id".into(), Cell::Int(99))], changes: vec![("v".into(), text("x"))] };
+            assert!(mismatch(&query_error(conn.apply_edits(&t, &[missing]).await.err().unwrap()), 0), "{setting}");
+            assert_eq!(scalar(&mut conn, open).await, "0", "{setting}: a mismatch leaves no transaction open");
+            assert_eq!(scalar(&mut conn, implicit).await, "2", "{setting}: nor a changed setting");
+
+            // Reading a table opens one here, and it is not the write-back's to end.
+            query(&mut conn, &format!("SELECT * FROM dbo.{name}")).await.unwrap();
+            assert_eq!(scalar(&mut conn, open).await, "1", "{setting}");
+            assert_eq!(conn.apply_edits(&t, &[one_edit("y")]).await, Err(open_implicit_transaction()), "{setting}");
+            assert_eq!(scalar(&mut other, &read_v).await, "z", "{setting}: nothing was written");
+            query(&mut conn, "COMMIT").await.unwrap();
+            assert_eq!(conn.apply_edits(&t, &[one_edit("y")]).await, Ok(1), "{setting}: once it is ended, it writes");
+            assert_eq!(scalar(&mut conn, open).await, "0", "{setting}");
+            assert_eq!(scalar(&mut other, &read_v).await, "y", "{setting}");
+        }
+    });
+}
+
 #[test]
 fn mssql_table_sql_stays_in_the_connections_database_after_a_use() {
     only_with!("mssql");
