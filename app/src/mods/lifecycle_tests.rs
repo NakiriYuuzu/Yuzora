@@ -413,7 +413,10 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
 // list: its cells report their widths (`cell`), its texts their width and what the pointer is
 // over (`text` and `over`: the text's first character, and the pointer's distance from where the
 // text starts), and a press picks the row it landed on, as the list's own click would, in the
-// body's text size. A `pane` prop puts the diff in a box that wide, so the pointer can leave it.
+// body's text size (a `real` prop leaves that out: the list's own click picks the row). A press in the
+// header's empty part loads the view again (`relayout`). `rendered` is noted when a frame was
+// drawn whole, and `list` is how tall the rows' list is. A `pane` prop puts the diff in a box that
+// wide, so the pointer can leave it.
 const DIFF_PROBE: &str = r#"
 import { note } from "fixture";
 export default class Probed extends GitDiff {
@@ -426,18 +429,25 @@ export default class Probed extends GitDiff {
     super.toggleLine(h, side, index, cx);
   }
   segments(segs, text, ...rest) {
-    const el = super.segments(segs, text, ...rest);
-    return this.probing ? el.id(`probe-text-${text[0]}`).on_size_change((s) => note("text", text[0], s.width)).on_mouse_move((e) => note("over", text[0], e.local_position.x)) : el;
+    const el = super.segments(segs, text, ...rest), first = String.fromCodePoint(text.codePointAt(0));
+    return this.probing ? el.id(`probe-text-${first}`).on_size_change((s) => note("text", first, s.width)).on_mouse_move((e) => note("over", first, e.local_position.x)) : el;
+  }
+  rowList(...rest) {
+    return div().size_full().on_size_change((s) => note("list", s.height)).child(super.rowList(...rest));
   }
   render(cx) {
-    let root = super.render(cx).on_mouse_down("left", (e, cx) => { if (e.position.y >= 28) this.clickRow(Math.floor((e.position.y - 28) / 20), cx); });
+    let root = super.render(cx).on_mouse_down("left", (e, cx) => {
+      if (e.position.y < 28) { if (this.view) this.relayout(cx); }
+      else if (!props().real) this.clickRow(Math.floor((e.position.y - 28) / 20), cx);
+    });
     const v = this.view, pane = props().pane;
     if (v && v.rows.length && this.layout !== "unified") {
       this.probing = true;
-      const row = this.row(v.rows[0], 0, theme(), tokens().diff ?? {}, 0, this.widths?.());
+      const row = this.row(v.rows[0], 0, theme(), tokens().diff ?? {}, 0);
       this.probing = false;
       root = root.child(div().absolute().top(300).left(0).w_full().text_size(11.5).child(row));
     }
+    note("rendered", v ? v.id : null, this.error);
     return pane ? div().w(pane).h_full().child(root) : root;
   }
 }
@@ -446,6 +456,9 @@ export default class Probed extends GitDiff {
 struct DiffPane {
     visual: VisualTestContext,
     notes: Rc<RefCell<Vec<Value>>>,
+    /// What `diffView` answers next, in order, before the view the diff was opened with.
+    views: Rc<RefCell<std::collections::VecDeque<Value>>>,
+    wide: f32,
     _fixture: Fixture,
 }
 
@@ -489,9 +502,12 @@ impl DiffPane {
             Ok(HostValue::Null)
         });
         let mut git = HostModule::new("yuzora:git");
-        for (name, value) in [("open", json!({"id": "repo"})), ("diffOpen", json!({"id": "d1"})), ("diffView", view), ("settings", json!({}))] {
+        for (name, value) in [("open", json!({"id": "repo"})), ("diffOpen", json!({"id": "d1"})), ("settings", json!({}))] {
             git = git.function(name, move |_| Ok(to_host(&value)));
         }
+        let views = Rc::new(RefCell::new(std::collections::VecDeque::<Value>::new()));
+        let queued = views.clone();
+        git = git.function("diffView", move |_| Ok(to_host(&queued.borrow_mut().pop_front().unwrap_or_else(|| view.clone()))));
         for name in ["diffStage", "diffUnstage", "diffDiscard"] {
             git = git.function(name, |_| Ok(HostValue::Null));
         }
@@ -513,9 +529,39 @@ impl DiffPane {
         let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
         let visual = VisualTestContext::from_window(*window.deref(), cx);
         visual.simulate_resize(size(px(wide), px(600.)));
-        let mut view = Self { visual, notes, _fixture: fixture };
+        let mut view = Self { visual, notes, views, wide, _fixture: fixture };
         view.settle();
         view
+    }
+
+    /// The next `diffView` calls answer with `views`, in turn.
+    fn answer_next(&self, views: Vec<Value>) {
+        self.views.borrow_mut().extend(views);
+    }
+
+    /// The window `width` wide from now on.
+    fn resize(&mut self, width: f32) {
+        use gpui::{px, size};
+        self.wide = width;
+        self.visual.simulate_resize(size(px(width), px(600.)));
+        self.settle();
+    }
+
+    /// Draws the diff again (the window a pixel narrower, then as it was).
+    fn redraw(&mut self) {
+        let wide = self.wide;
+        self.resize(wide - 1.);
+        self.resize(wide);
+    }
+
+    /// The frames drawn whole, in order: the view each showed and its error.
+    fn rendered(&self) -> Vec<(Value, Value)> {
+        self.notes.borrow().iter().filter(|n| n[0] == "rendered").map(|n| (n[1].clone(), n[2].clone())).collect()
+    }
+
+    /// How tall the rows' list was laid out last.
+    fn list_height(&self) -> f64 {
+        self.notes.borrow().iter().rev().find(|n| n[0] == "list").and_then(|n| n[1].as_f64()).expect("no list height reported")
     }
 
     fn settle(&mut self) {
@@ -891,6 +937,276 @@ fn yuzora_diff_unified_has_no_divider_and_picks_by_its_numbers(cx: &mut TestAppC
     pane.press(600., 100., 2);
     assert!(shared.borrow().is_empty(), "nothing to drag or reset: {:?}", shared.borrow());
     pane.close();
+}
+
+/// A changed row of the lines `left` and `right` (none: that side is empty).
+fn text_row(left: Option<&str>, right: Option<&str>) -> Value {
+    let mut r = json!({ "k": "~", "h": 0 });
+    if let Some(t) = left { r["l"] = json!(1); r["li"] = json!(0); r["lt"] = json!(t); }
+    if let Some(t) = right { r["r"] = json!(1); r["ri"] = json!(0); r["rt"] = json!(t); }
+    r
+}
+
+/// The rows of a file that is new: each line on the right.
+fn added_file(text: &str) -> Value {
+    Value::Array(text.split('\n').enumerate().map(|(i, line)| json!({ "k": "~", "h": 0, "r": i + 1, "ri": i, "rt": line })).collect())
+}
+
+/// Where the first row's left text starts, from where the pointer is over it (its first character must be `first`).
+fn text_start(pane: &mut DiffPane, first: &str) -> f64 {
+    let before = pane.over().len();
+    pane.hover(100., 310.);
+    let (found, from) = pane.over().split_off(before).pop().expect("over the left text");
+    assert_eq!(found, first);
+    100. - from
+}
+
+// yuzora(v010): a diff with long lines opens and keeps drawing, wide characters or not. Working out how
+// wide the lines are used to read every character of a line that had a wide one, in the frame, which
+// ran out of its 50 ms past about 400,000 characters; the pane never got past loading, and every frame
+// after the first failed. Cases: single lines of 1,000,000 and 4,000,000 characters, one of them
+// with only wide ones, many lines with wide characters, and the files of this repository that
+// broke it when they were opened as new ones.
+#[gpui::test]
+fn yuzora_diff_long_lines_with_wide_characters_open_and_keep_drawing(cx: &mut TestAppContext) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut cases: Vec<(String, Value)> = vec![
+        ("1,000,000 characters and an \u{e9}".into(), json!([text_row(None, Some(&format!("{}\u{e9}", "a".repeat(1_000_000))))])),
+        ("4,000,000 characters and an \u{e9}".into(), json!([text_row(None, Some(&format!("{}\u{e9}", "a".repeat(4_000_000))))])),
+        ("4,000,000 wide characters".into(), json!([text_row(Some(&"\u{6f22}".repeat(4_000_000)), None)])),
+        ("3,000 lines with wide characters".into(), Value::Array((0..3000).map(|i| text_row(Some(&format!("{} \u{6f22}\u{5b57} {i}", "word ".repeat(8 + i % 24))), Some(&format!("{} \u{1f600}", "word ".repeat(10 + i % 20))))).collect())),
+    ];
+    for file in ["docs/html/v0.0.16-workbench-verification-2026-09-22.html", "patches/@xterm%2Fxterm@6.0.0.patch", "docs/html/assets/herdr-e2e-20260923/native-transcripts.json"] {
+        match std::fs::read_to_string(root.join(file)) {
+            Ok(text) => cases.push((file.into(), added_file(&text))),
+            Err(e) => eprintln!("skipped {file}: {e}"),
+        }
+    }
+    let mut failures = Vec::new();
+    for (case, rows) in cases {
+        let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
+        let shown = |pane: &DiffPane| pane.rendered().iter().filter(|(view, error)| view == "d1" && error.is_null()).count();
+        let first = shown(&pane);
+        if first == 0 {
+            failures.push(format!("{case}: no frame was drawn with the diff in it: {:?}", pane.rendered().last()));
+        }
+        for again in 1..=2 {
+            pane.redraw();
+            if shown(&pane) < first + again {
+                failures.push(format!("{case}: drawing it again ({again}) did not complete: {:?}", pane.rendered().last()));
+            }
+        }
+        pane.close();
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010): an ordinary diff (thousands of lines, a few with wide characters) scrolls sideways
+// to where its longest line ends and not past it: the room that is left for lines that were not
+// laid out is what they could take at most, and for plain text that is what they take.
+#[gpui::test]
+fn yuzora_diff_an_ordinary_diff_scrolls_to_where_its_longest_line_ends(cx: &mut TestAppContext) {
+    let mut rows = vec![diff_row(Some((200, "a")), Some((5, "b")))];
+    rows.extend((0..6000).map(|i| match i % 500 {
+        0 => diff_row(Some((50, "\u{6f22}")), Some((5, "b"))),
+        1 => text_row(Some(&format!("{} \u{1f600}", "w".repeat(40))), Some("b")),
+        _ => diff_row(Some((20 + i * 37 % 100, "a")), Some((20 + i * 11 % 100, "b"))),
+    }));
+    let mut pane = DiffPane::mount(cx, Value::Array(rows), 1200., &Shared::default());
+    pane.wheel(100., 100., -100000., 0.);
+    let end = text_start(&mut pane, "a") + pane.text_width("a");
+    let cell = pane.width("l");
+    assert!((cell - 30. ..=cell).contains(&end), "scrolled as far as it goes, the longest line ends at {end}, its cell at {cell}");
+    pane.close();
+}
+
+// yuzora(v010): a diff whose lines cannot be measured stays as it was, and the next one that can be
+// opens: what it worked out is kept with the diff only once all of it is. (Here the second answer
+// has a line that is not text.)
+#[gpui::test]
+fn yuzora_diff_a_measure_that_fails_leaves_the_diff_on_show_and_the_next_works(cx: &mut TestAppContext) {
+    let view = |id: &str, text: Value| json!({"id": id, "rows": [{"k": "~", "h": 0, "r": 1, "ri": 0, "rt": text}], "hunks": [{}], "stageable": true, "add": 1, "del": 0, "leftExists": true, "rightExists": true});
+    let mut pane = DiffPane::mount(cx, json!([diff_row(None, Some((300, "b")))]), 1200., &Shared::default());
+    let shows = |pane: &DiffPane| pane.rendered().last().cloned().expect("a frame");
+    assert_eq!(shows(&pane), (json!("d1"), Value::Null));
+    pane.answer_next(vec![view("broken", json!(["not text"])), view("fine", json!("b".repeat(300)))]);
+    pane.press(400., 10., 1);
+    let (shown, error) = shows(&pane);
+    assert_eq!(shown, json!("d1"), "a diff that cannot be measured does not replace the one on show");
+    assert!(error.is_string(), "and says so: {error}");
+    pane.redraw();
+    assert_eq!(shows(&pane).0, json!("d1"), "drawing it again works");
+    pane.press(400., 10., 1);
+    assert_eq!(shows(&pane).0, json!("fine"), "the next one opens");
+    pane.close();
+}
+
+// yuzora(v010): the sideways offset that is kept stays within the room to scroll: a wheel over lines
+// that fit keeps nothing, and an offset is brought back when the room for it shrinks. A narrower pane
+// or a moved divider does not move the text with no wheel turned (the room it makes would have been
+// filled by what the wheel only asked for).
+#[gpui::test]
+fn yuzora_diff_the_kept_sideways_offset_stays_within_the_room_to_scroll(cx: &mut TestAppContext) {
+    const GUTTER: f64 = 44.;
+    let home = GUTTER + 6.;
+    // A line of 400px: it fits a side of a 1200px pane, and not one of 700px (112.5px short).
+    let mut pane = DiffPane::mount(cx, json!([diff_row(Some((58, "a")), Some((5, "b")))]), 1200., &Shared::default());
+    pane.wheel(100., 100., -400., 0.);
+    near(left_text_start(&mut pane), home, "lines that fit do not move");
+    pane.resize(700.);
+    near(left_text_start(&mut pane), home, "a narrower pane does not move them");
+    pane.resize(1200.);
+    let at = pane.width("l") + 0.5;
+    pane.press(at, 100., 1);
+    pane.drag(at - 300., 100.);
+    pane.release(at - 300., 100.);
+    near(left_text_start(&mut pane), home, "nor does a divider moved to leave the left side less");
+
+    pane.resize(700.);
+    pane.wheel(100., 100., -100000., 0.);
+    let end = left_text_start(&mut pane);
+    assert!(end < home - 100., "scrolled as far as there is room: {end}");
+    pane.resize(1200.);
+    near(left_text_start(&mut pane), home, "with room for all of it the lines are home");
+    pane.resize(700.);
+    near(left_text_start(&mut pane), home, "and they stay there when the room shrinks again");
+    pane.close();
+}
+
+// yuzora(v010): the bar under the lines has room of its own: the list of lines stops where it starts, so
+// its last row is not under the bar's thumb (which took the clicks of that row's numbers).
+#[gpui::test]
+fn yuzora_diff_the_bar_under_the_lines_has_room_of_its_own(cx: &mut TestAppContext) {
+    let height = |cx: &mut TestAppContext, left: usize| {
+        let pane = DiffPane::mount(cx, json!([diff_row(Some((left, "a")), Some((5, "b")))]), 1200., &Shared::default());
+        let height = pane.list_height();
+        pane.close();
+        height
+    };
+    let (fits, long) = (height(cx, 20), height(cx, 300));
+    near(fits - long, 8., "the list is shorter by the bar when the lines need one");
+}
+
+// yuzora(v010): a click on a line's number picks it through the list's own click (the other tests'
+// harness picks from the window's press): on the left or the right side's, with the bar and the divider
+// over the list; the text beside them does not pick.
+#[gpui::test]
+fn yuzora_diff_a_click_on_a_line_number_picks_it_through_the_list(cx: &mut TestAppContext) {
+    const GUTTER: f64 = 44.;
+    let mut pane = DiffPane::mount_with(cx, json!([diff_row(Some((300, "a")), Some((300, "b")))]), 1200., 1200., &Shared::default(), json!({"real": true}));
+    let right = pane.width("l") + 1.;
+    let mut failures = Vec::new();
+    for (x, want) in [(GUTTER / 2., Some("l")), (right + GUTTER / 2. + 1., Some("r")), (GUTTER + 12., None), (right + GUTTER + 12., None)] {
+        let before = pane.notes.borrow().len();
+        pane.press(x, 38., 1);
+        pane.release(x, 38.);
+        let picked: Vec<String> = pane.notes.borrow().iter().skip(before).filter(|n| n[0] == "pick").map(|n| n[1].as_str().unwrap_or("").to_owned()).collect();
+        if picked.first().map(String::as_str) != want || picked.len() > 1 {
+            failures.push(format!("a click at x {x} picked {picked:?}, wanted {want:?}"));
+        }
+    }
+    pane.close();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A font as it was measured (`scripts/yuzora-git-diff-font-widths.swift`: JetBrains Mono at 11.5px, with
+/// what the system falls back to): a character is as many cells (the width of an ASCII one) as the table
+/// says. The window's own test font gives every character but those past U+FFFF one cell.
+struct MeasuredFont(std::collections::HashMap<char, f32>, gpui::NoopTextSystem);
+
+impl MeasuredFont {
+    fn new() -> Self {
+        let table: Value = serde_json::from_str(include_str!("../../scripts/fixtures/yuzora-git-diff-font-widths.json")).unwrap();
+        let cells = table["samples"].as_array().unwrap().iter().filter_map(|s| {
+            let mut chars = s["text"].as_str()?.chars();
+            let first = chars.next()?;
+            chars.next().is_none().then(|| (first, s["cells"].as_f64().unwrap() as f32))
+        });
+        Self(cells.collect(), gpui::NoopTextSystem::new())
+    }
+}
+
+impl gpui::PlatformTextSystem for MeasuredFont {
+    fn add_fonts(&self, fonts: Vec<std::borrow::Cow<'static, [u8]>>) -> anyhow::Result<()> { self.1.add_fonts(fonts) }
+    fn all_font_names(&self) -> Vec<String> { self.1.all_font_names() }
+    fn font_id(&self, descriptor: &gpui::Font) -> anyhow::Result<gpui::FontId> { self.1.font_id(descriptor) }
+    fn font_metrics(&self, font_id: gpui::FontId) -> gpui::FontMetrics { self.1.font_metrics(font_id) }
+    fn typographic_bounds(&self, font_id: gpui::FontId, glyph_id: gpui::GlyphId) -> anyhow::Result<gpui::Bounds<f32>> { self.1.typographic_bounds(font_id, glyph_id) }
+    fn advance(&self, font_id: gpui::FontId, glyph_id: gpui::GlyphId) -> anyhow::Result<gpui::Size<f32>> { self.1.advance(font_id, glyph_id) }
+    fn glyph_for_char(&self, font_id: gpui::FontId, ch: char) -> Option<gpui::GlyphId> { self.1.glyph_for_char(font_id, ch) }
+    fn glyph_raster_bounds(&self, params: &gpui::RenderGlyphParams) -> anyhow::Result<gpui::Bounds<gpui::DevicePixels>> { self.1.glyph_raster_bounds(params) }
+    fn rasterize_glyph(&self, params: &gpui::RenderGlyphParams, raster_bounds: gpui::Bounds<gpui::DevicePixels>) -> anyhow::Result<(gpui::Size<gpui::DevicePixels>, Vec<u8>)> { self.1.rasterize_glyph(params, raster_bounds) }
+    fn recommended_rendering_mode(&self, font_id: gpui::FontId, font_size: gpui::Pixels) -> gpui::TextRenderingMode { self.1.recommended_rendering_mode(font_id, font_size) }
+
+    fn layout_line(&self, text: &str, font_size: gpui::Pixels, _runs: &[gpui::FontRun]) -> gpui::LineLayout {
+        let metrics = self.1.font_metrics(gpui::FontId(0));
+        let cell = font_size * 0.6;
+        let mut position = gpui::px(0.);
+        let mut glyphs = Vec::new();
+        for (index, c) in text.char_indices() {
+            let cells = self.0.get(&c).copied().unwrap_or_else(|| {
+                assert!(c.is_ascii(), "{c:?} (U+{:04X}) is not in scripts/fixtures/yuzora-git-diff-font-widths.json", c as u32);
+                1.
+            });
+            glyphs.push(gpui::ShapedGlyph { id: gpui::GlyphId(c.len_utf16() as u32), position: gpui::point(position, gpui::px(0.)), index, is_emoji: false });
+            position += cell * cells;
+        }
+        let width = if glyphs.is_empty() { gpui::px(0.) } else { position };
+        gpui::LineLayout {
+            font_size,
+            width,
+            ascent: font_size * (metrics.ascent / metrics.units_per_em as f32),
+            descent: font_size * (metrics.descent / metrics.units_per_em as f32),
+            runs: if glyphs.is_empty() { Vec::new() } else { vec![gpui::ShapedRun { font_id: gpui::FontId(0), glyphs }] },
+            len: text.len(),
+        }
+    }
+}
+
+/// `test` in a window that draws with [`MeasuredFont`].
+fn with_measured_font(name: &'static str, test: impl Fn(&mut TestAppContext) + std::panic::RefUnwindSafe) {
+    gpui::run_test(1, &[0], 0, &mut |dispatcher, _seed| {
+        let mut cx = TestAppContext::build_with_text_system(dispatcher.clone(), Some(name), std::sync::Arc::new(MeasuredFont::new()));
+        let _entity_refcounts = cx.app.borrow().ref_counts_drop_handle();
+        test(&mut cx);
+        cx.run_until_parked();
+        cx.update(|cx| { cx.background_executor().forbid_parking(); cx.quit(); });
+        cx.run_until_parked();
+        drop(cx);
+        dispatcher.drain_tasks();
+        drop(dispatcher);
+    }, None);
+}
+
+// yuzora(v010): the tail of the longest line can be scrolled to in the font that draws the lines, when
+// the lines that look longest in characters are not. From the Git diff review: with four lines of a
+// hundred Chinese characters (11.5px each, 1.67 cells) a line of 180 ASCII ones is the widest;
+// with four of 170 ASCII ones, a line of a hundred and sixty characters with a check mark (2.17 cells) is; and so with Korean (1.44 cells).
+#[test]
+fn yuzora_diff_the_longest_lines_tail_scrolls_into_view_in_the_font_that_draws_it() {
+    with_measured_font("yuzora_diff_the_longest_lines_tail_scrolls_into_view_in_the_font_that_draws_it", |cx| {
+        let cases = [
+            ("180 ASCII beside 4 of 100 Chinese", "a", text_row(Some(&"a".repeat(180)), Some("b")), "\u{6f22}".repeat(100)),
+            ("40 check marks beside 4 of 170 ASCII", "|", text_row(Some(&"| \u{2705} ".repeat(40)), Some("b")), "a".repeat(170)),
+            ("160 ASCII beside 4 of 100 Korean", "a", text_row(Some(&"a".repeat(160)), Some("b")), "\u{d55c}".repeat(100)),
+            ("100 Chinese beside 4 of 150 ASCII", "\u{6f22}", text_row(Some(&"\u{6f22}".repeat(100)), Some("b")), "a".repeat(150)),
+            ("100 emoji beside 4 of 150 ASCII", "\u{1f600}", text_row(Some(&"\u{1f600}".repeat(100)), Some("b")), "a".repeat(150)),
+        ];
+        let mut failures = Vec::new();
+        for (case, first, longest, others) in cases {
+            let mut rows = vec![longest];
+            rows.extend((0..4).map(|_| text_row(Some(&others), Some("b"))));
+            let mut pane = DiffPane::mount(cx, Value::Array(rows), 1200., &Shared::default());
+            pane.wheel(100., 100., -100000., 0.);
+            let end = text_start(&mut pane, first) + pane.text_width(first);
+            let cell = pane.width("l");
+            if !(cell - 30. ..=cell + 1.).contains(&end) {
+                failures.push(format!("{case}: scrolled as far as it goes, the longest line ends at {end}, its cell at {cell}"));
+            }
+            pane.close();
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    });
 }
 
 // yuzora(L2): the Git sidebar's main.js with its herdr, yuzora:core and yuzora:git imports
