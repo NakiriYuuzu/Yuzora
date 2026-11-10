@@ -37,7 +37,8 @@ function imagePane(path, on) {
 
 /**
  * Opens a file: shows the pane (or tab) already showing it, else opens a new tab of the Space shown
- * (`place` "tab", the default) or splits the focused pane to the right ("side"; a tab when no pane has focus).
+ * (`place` "tab", the default). `place` "side" always splits the focused pane to the right, though the file is
+ * open (a tab when no pane has focus).
  * `at`: {line, column}. A line asked of a pane that has not started has no document to go to, and the pane
  * holds nothing, so a pane with the line takes its place: that is what a file that is not open gets.
  */
@@ -45,7 +46,8 @@ export function openFile(path, on, { place = "tab", ...at } = {}) {
   if (!PLACES.includes(place)) throw new Error(`unknown place: ${place}`);
   const kind = kindOf(path);
   const props = { path, on: on ?? null, opened: Date.now(), ...(at.line ? { line: at.line, column: at.column ?? 1 } : {}) };
-  const open = kind === "image" ? imagePane(path, on) : docPane(path, on);
+  // To the side is asked for by name: a pane that already shows the file is no reason not to split.
+  const open = place === "side" ? null : kind === "image" ? imagePane(path, on) : docPane(path, on);
   if (open) {
     const { pane, doc } = open;
     if (!pane.started && at.line) {
