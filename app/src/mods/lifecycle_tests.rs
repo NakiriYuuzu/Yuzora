@@ -410,8 +410,10 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
 
 // yuzora(v010): the shipped Git diff in a window, its herdr and yuzora:git stubbed. A list's rows
 // hold no handlers and report no sizes, so `Probed` lays the first row out once more below the
-// list: its cells report their widths (`cell`), what the pointer is over (`over`, the first
-// character of that text), and a press picks the row it landed on, as the list's own click would.
+// list: its cells report their widths (`cell`), its texts their width and what the pointer is
+// over (`text` and `over`: the text's first character, and the pointer's distance from where the
+// text starts), and a press picks the row it landed on, as the list's own click would. A `pane`
+// prop puts the diff in a box that wide, so the pointer can leave it.
 const DIFF_PROBE: &str = r#"
 import { note } from "fixture";
 export default class Probed extends GitDiff {
@@ -425,18 +427,18 @@ export default class Probed extends GitDiff {
   }
   segments(segs, text, ...rest) {
     const el = super.segments(segs, text, ...rest);
-    return this.probing ? el.on_mouse_move(() => note("over", text[0])) : el;
+    return this.probing ? el.id(`probe-text-${text[0]}`).on_size_change((s) => note("text", text[0], s.width)).on_mouse_move((e) => note("over", text[0], e.local_position.x)) : el;
   }
   render(cx) {
-    const root = super.render(cx);
-    const v = this.view;
-    if (!v || this.layout === "unified" || !v.rows.length) return root;
-    this.probing = true;
-    const row = this.row(v.rows[0], 0, theme(), tokens().diff ?? {}, 0, this.widths?.());
-    this.probing = false;
-    return root
-      .on_mouse_down("left", (e, cx) => { if (e.position.y >= 28) this.clickRow(Math.floor((e.position.y - 28) / 20), cx); })
-      .child(div().absolute().top(300).left(0).w_full().child(row));
+    let root = super.render(cx).on_mouse_down("left", (e, cx) => { if (e.position.y >= 28) this.clickRow(Math.floor((e.position.y - 28) / 20), cx); });
+    const v = this.view, pane = props().pane;
+    if (v && v.rows.length && this.layout !== "unified") {
+      this.probing = true;
+      const row = this.row(v.rows[0], 0, theme(), tokens().diff ?? {}, 0, this.widths?.());
+      this.probing = false;
+      root = root.child(div().absolute().top(300).left(0).w_full().child(row));
+    }
+    return pane ? div().w(pane).h_full().child(root) : root;
   }
 }
 "#;
@@ -452,6 +454,11 @@ type Shared = Rc<RefCell<std::collections::BTreeMap<String, Value>>>;
 impl DiffPane {
     /// The diff of `rows`, `pane` wide, with `shared` as herdr's shared state.
     fn mount(cx: &mut TestAppContext, rows: Value, pane: f32, shared: &Shared) -> Self {
+        Self::mount_with(cx, rows, pane, pane, shared, json!({}))
+    }
+
+    /// The same in a window `wide` wide (more than `pane`: room to leave it), opened with `props` besides.
+    fn mount_with(cx: &mut TestAppContext, rows: Value, pane: f32, wide: f32, shared: &Shared, props: Value) -> Self {
         use gpui::{px, size};
         let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
         let class = "export default class GitDiff extends View {";
@@ -463,7 +470,12 @@ impl DiffPane {
         let theme = json!({"background": "#101010", "foreground": "#e0e0e0", "border": "#303030", "raised": "#202020", "dim": "#808080", "muted": "#a0a0a0", "accent": "#4080ff", "selected": "#304050", "hover": "#282828", "ansi1": "#f08a8a", "ansi2": "#86d17a"});
         let view = json!({"id": "d1", "rows": rows, "hunks": vec![json!({}); hunks], "stageable": true, "add": 3, "del": 0, "leftExists": true, "rightExists": true});
         let mut herdr = HostModule::new("herdr");
-        for (name, value) in [("theme", theme), ("props", json!({"cwd": "/r", "on": null, "path": "wide-new.ts", "mode": "unstaged", "at": 1})), ("settings", json!({}))] {
+        let mut opened = json!({"cwd": "/r", "on": null, "path": "wide-new.ts", "mode": "unstaged", "at": 1});
+        if wide > pane {
+            opened["pane"] = json!(pane);
+        }
+        opened.as_object_mut().unwrap().extend(props.as_object().unwrap().clone());
+        for (name, value) in [("theme", theme), ("props", opened), ("settings", json!({}))] {
             herdr = herdr.function(name, move |_| Ok(to_host(&value)));
         }
         for name in ["run", "panes", "focused", "closeOverlay"] {
@@ -500,10 +512,10 @@ impl DiffPane {
         let runtime = ShellRuntime::new_isolated().unwrap();
         let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
         let visual = VisualTestContext::from_window(*window.deref(), cx);
-        visual.simulate_resize(size(px(pane), px(600.)));
-        let mut pane = Self { visual, notes, _fixture: fixture };
-        pane.settle();
-        pane
+        visual.simulate_resize(size(px(wide), px(600.)));
+        let mut view = Self { visual, notes, _fixture: fixture };
+        view.settle();
+        view
     }
 
     fn settle(&mut self) {
@@ -518,12 +530,49 @@ impl DiffPane {
         self.notes.borrow().iter().rev().find(|n| n[0] == "cell" && n[1] == side).and_then(|n| n[2].as_f64()).unwrap_or_else(|| panic!("no {side} cell reported: {:?}", self.notes.borrow()))
     }
 
+    /// What the pointer was over (the text's first character) and how far from where that text starts, in order.
+    fn over(&self) -> Vec<(String, f64)> {
+        self.notes.borrow().iter().filter(|n| n[0] == "over").map(|n| (n[1].as_str().unwrap_or("").to_owned(), n[2].as_f64().unwrap_or(f64::NAN))).collect()
+    }
+
+    /// How wide the probe row's text starting with `first` is, as it is laid out.
+    fn text_width(&self, first: &str) -> f64 {
+        self.notes.borrow().iter().rev().find(|n| n[0] == "text" && n[1] == first).and_then(|n| n[2].as_f64()).unwrap_or_else(|| panic!("no {first} text reported"))
+    }
+
     fn at(x: f64, y: f64) -> gpui::Point<gpui::Pixels> {
         gpui::point(gpui::px(x as f32), gpui::px(y as f32))
     }
 
     fn press(&mut self, x: f64, y: f64, clicks: usize) {
         self.visual.simulate_event(gpui::MouseDownEvent { position: Self::at(x, y), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: clicks, first_mouse: false });
+        self.settle();
+    }
+
+    fn drag(&mut self, x: f64, y: f64) {
+        self.visual.simulate_mouse_move(Self::at(x, y), gpui::MouseButton::Left, gpui::Modifiers::none());
+        self.settle();
+    }
+
+    fn release(&mut self, x: f64, y: f64) {
+        self.visual.simulate_event(gpui::MouseUpEvent { position: Self::at(x, y), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1 });
+        self.settle();
+    }
+
+    fn hover(&mut self, x: f64, y: f64) {
+        self.visual.simulate_mouse_move(Self::at(x, y), None, gpui::Modifiers::none());
+        self.settle();
+    }
+
+    /// A wheel or swipe of `dx`, `dy` pixels with the pointer at `x`, `y`.
+    fn wheel(&mut self, x: f64, y: f64, dx: f64, dy: f64) {
+        self.hover(x, y);
+        self.visual.simulate_event(gpui::ScrollWheelEvent {
+            position: Self::at(x, y),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(dx as f32), gpui::px(dy as f32))),
+            modifiers: gpui::Modifiers::none(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
         self.settle();
     }
 
@@ -604,6 +653,181 @@ fn yuzora_diff_a_press_on_a_sides_numbers_picks_that_sides_line(cx: &mut TestApp
         pane.close();
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+const DIFF_SPLIT: &str = "yuzora.git.diff.split";
+
+/// Wide lines on both sides: a pane can't show either whole.
+fn long_rows() -> Value {
+    json!([diff_row(Some((300, "\u{6F22}")), Some((300, "b")))])
+}
+
+/// What the diff last kept of its share (null: nothing, so half).
+fn kept(shared: &Shared) -> Value {
+    shared.borrow().get(DIFF_SPLIT).cloned().unwrap_or(Value::Null)
+}
+
+fn near(a: f64, b: f64, what: &str) {
+    assert!((a - b).abs() <= 1., "{what}: {a} is not {b}");
+}
+
+// yuzora(v010): the divider between the sides drags: the left side's share follows the pointer
+// (the sides stay together as wide as the pane), stops at 15% and 85%, and is kept when the
+// button is let go, not before. A double press puts half back.
+#[gpui::test]
+fn yuzora_diff_the_divider_drags_the_share_and_a_double_press_puts_half_back(cx: &mut TestAppContext) {
+    const PANE: f64 = 1200.;
+    let shared = Shared::default();
+    let mut pane = DiffPane::mount(cx, long_rows(), PANE as f32, &shared);
+    let half = (PANE - 1.) / 2.;
+    near(pane.width("l"), half, "untouched");
+    let divider = |pane: &DiffPane| pane.width("l") + 0.5;
+    let at = divider(&pane);
+    pane.press(at, 100., 1);
+    pane.drag(at + 120., 100.);
+    near(pane.width("l"), half + 120., "dragged right by 120");
+    near(pane.width("l") + 1. + pane.width("r"), PANE, "the sides still fill the pane");
+    assert_eq!(kept(&shared), Value::Null, "kept only once let go");
+    pane.release(at + 120., 100.);
+    assert!((kept(&shared).as_f64().unwrap() - (half + 120.) / (PANE - 1.)).abs() < 0.001, "kept: {:?}", kept(&shared));
+    pane.drag(at - 300., 100.);
+    near(pane.width("l"), half + 120., "a move after the release changes nothing");
+
+    for (to, share) in [(PANE - 1., 0.85), (0., 0.15)] {
+        let from = divider(&pane);
+        pane.press(from, 100., 1);
+        pane.drag(to, 100.);
+        near(pane.width("l"), share * (PANE - 1.), "dragged out of range");
+        pane.release(to, 100.);
+        assert!((kept(&shared).as_f64().unwrap() - share).abs() < 0.001, "kept: {:?}", kept(&shared));
+    }
+
+    let from = divider(&pane);
+    pane.press(from, 100., 2);
+    near(pane.width("l"), half, "a double press puts half back");
+    assert_eq!(kept(&shared), Value::Null, "and keeps nothing");
+    pane.close();
+}
+
+// yuzora(v010): leaving the pane with the button down ends the drag where it was (its release
+// would not be seen out there): the share so far is kept, and coming back in changes nothing.
+#[gpui::test]
+fn yuzora_diff_the_drag_ends_where_the_pointer_leaves_the_pane(cx: &mut TestAppContext) {
+    let shared = Shared::default();
+    let mut pane = DiffPane::mount_with(cx, long_rows(), 900., 1200., &shared, json!({}));
+    let half = 899. / 2.;
+    let at = half + 0.5;
+    pane.press(at, 100., 1);
+    pane.drag(at + 100., 100.);
+    near(pane.width("l"), half + 100., "dragged");
+    pane.drag(1100., 100.);
+    assert!((kept(&shared).as_f64().unwrap() - (half + 100.) / 899.).abs() < 0.001, "kept what was dragged: {:?}", kept(&shared));
+    pane.drag(at - 200., 100.);
+    near(pane.width("l"), half + 100., "back in with the button down: not a drag any more");
+    pane.close();
+}
+
+// yuzora(v010): a diff opens with the share last kept (any pane of it, after it was closed), and
+// half where nothing usable is kept.
+#[gpui::test]
+fn yuzora_diff_opens_with_the_share_last_kept(cx: &mut TestAppContext) {
+    const PANE: f64 = 1000.;
+    let span = PANE - 1.;
+    for (stored, share) in [(json!(0.3), 0.3), (json!(0.85), 0.85), (json!(5), 0.85), (json!(-1), 0.15), (json!("wide"), 0.5), (Value::Null, 0.5), (json!([0.3]), 0.5)] {
+        let shared = Shared::default();
+        shared.borrow_mut().insert(DIFF_SPLIT.into(), stored.clone());
+        let pane = DiffPane::mount(cx, long_rows(), PANE as f32, &shared);
+        near(pane.width("l"), share * span, &format!("kept {stored}"));
+        near(pane.width("r"), (1. - share) * span, &format!("kept {stored}"));
+        pane.close();
+    }
+    let shared = Shared::default();
+    let mut first = DiffPane::mount(cx, long_rows(), PANE as f32, &shared);
+    let at = first.width("l") + 0.5;
+    first.press(at, 100., 1);
+    first.drag(at + 100., 100.);
+    first.release(at + 100., 100.);
+    first.close();
+    let second = DiffPane::mount(cx, long_rows(), PANE as f32, &shared);
+    near(second.width("l"), span / 2. + 100., "another diff opened after the first was closed");
+    second.close();
+}
+
+// yuzora(v010): a long line stays on its side: the pointer is over a side's text only where that
+// side's cell is (a line is clipped by its cell, however wide the characters), whether the lines
+// are scrolled or not.
+#[gpui::test]
+fn yuzora_diff_a_long_line_stays_on_its_side(cx: &mut TestAppContext) {
+    let mut pane = DiffPane::mount(cx, long_rows(), 1200., &Shared::default());
+    let half = 599.5;
+    for scrolled in [false, true] {
+        if scrolled {
+            pane.wheel(100., 100., -400., 0.);
+        }
+        let before = pane.over().len();
+        pane.hover(half + 100., 310.);
+        let right: Vec<String> = pane.over().split_off(before).into_iter().map(|(t, _)| t).collect();
+        assert!(!right.is_empty() && right.iter().all(|t| t == "b"), "scrolled={scrolled}: over the right side only its text is hit: {right:?}");
+        let before = pane.over().len();
+        pane.hover(100., 310.);
+        let left: Vec<String> = pane.over().split_off(before).into_iter().map(|(t, _)| t).collect();
+        assert!(left.contains(&"\u{6F22}".to_string()) && !left.contains(&"b".to_string()), "scrolled={scrolled}: over the left side only its text is hit: {left:?}");
+    }
+    pane.close();
+}
+
+// yuzora(v010): lines wider than their side scroll sideways (a wheel or swipe), both sides together,
+// as far as the widest line ends and no further; a line that fits does not, and a vertical wheel is
+// not a sideways one.
+#[gpui::test]
+fn yuzora_diff_long_lines_scroll_sideways_to_their_end(cx: &mut TestAppContext) {
+    const GUTTER: f64 = 44.;
+    let rows = |left: usize| json!([diff_row(Some((left, "a")), Some((5, "b")))]);
+    // Where the left text starts, from where the pointer is over it.
+    let start = |pane: &mut DiffPane| {
+        let before = pane.over().len();
+        pane.hover(100., 310.);
+        let (first, from) = pane.over().split_off(before).pop().expect("over the left text");
+        assert_eq!(first, "a");
+        100. - from
+    };
+    let mut pane = DiffPane::mount(cx, rows(300), 1200., &Shared::default());
+    near(start(&mut pane), GUTTER + 6., "not scrolled: after the numbers and the indent");
+    pane.wheel(100., 100., -200., 0.);
+    near(start(&mut pane), GUTTER + 6. - 200., "a sideways wheel moves the lines");
+    pane.wheel(100., 100., 0., -50.);
+    near(start(&mut pane), GUTTER + 6. - 200., "a vertical one does not");
+    pane.wheel(100., 100., -100000., 0.);
+    let end = start(&mut pane) + pane.text_width("a");
+    assert!(end <= 599.5 && end >= 599.5 - 30., "scrolled as far as it goes, the widest line ends at {end}, its cell at 599.5");
+    pane.wheel(100., 100., 100000., 0.);
+    near(start(&mut pane), GUTTER + 6., "and back");
+    pane.close();
+
+    let mut fits = DiffPane::mount(cx, rows(20), 1200., &Shared::default());
+    fits.wheel(100., 100., -200., 0.);
+    near(start(&mut fits), GUTTER + 6., "lines that fit do not scroll");
+    fits.close();
+}
+
+// yuzora(v010): unified has no divider to grab and its numbers pick lines where they did.
+#[gpui::test]
+fn yuzora_diff_unified_has_no_divider_and_picks_by_its_numbers(cx: &mut TestAppContext) {
+    let rows = json!([{"k": "-", "h": 0, "l": 1, "li": 0, "t": "old"}, {"k": "+", "h": 0, "r": 1, "ri": 0, "t": "new"}]);
+    let shared = Shared::default();
+    let mut pane = DiffPane::mount_with(cx, rows, 1200., 1200., &shared, json!({"layout": "unified"}));
+    for (y, want) in [(38., ("l", 0)), (58., ("r", 0))] {
+        let before = pane.notes.borrow().len();
+        pane.press(10., y, 1);
+        let picked: Vec<(String, i64)> = pane.notes.borrow().iter().skip(before).filter(|n| n[0] == "pick").map(|n| (n[1].as_str().unwrap().to_owned(), n[2].as_i64().unwrap())).collect();
+        assert_eq!(picked, vec![(want.0.to_owned(), want.1)], "a press on the numbers at y {y}");
+    }
+    pane.press(600., 100., 1);
+    pane.drag(700., 100.);
+    pane.release(700., 100.);
+    pane.press(600., 100., 2);
+    assert!(shared.borrow().is_empty(), "nothing to drag or reset: {:?}", shared.borrow());
+    pane.close();
 }
 
 // yuzora(L2): the Git sidebar's main.js with its herdr, yuzora:core and yuzora:git imports
