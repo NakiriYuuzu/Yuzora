@@ -159,7 +159,7 @@ describe("plan, against a fake gh and a throwaway repository", () => {
     process.env.PATH = previousPath;
   });
 
-  const env = (extra: Record<string, string> = {}) => ({ STAGE: "draft", VERSION: "0.1.0", PACKAGE_RUN_ID: "42", GITHUB_REPOSITORY: "NakiriYuuzu/Yuzora", GITHUB_OUTPUT: output, ...extra });
+  const env = (extra: Record<string, string> = {}) => ({ STAGE: "draft", VERSION: "0.1.0", PACKAGE_RUN_ID: "42", GITHUB_REPOSITORY: "NakiriYuuzu/Yuzora", GITHUB_OUTPUT: output, GITHUB_SHA: sha, ...extra });
   const runBody = () => ({ id: 42, repository: { full_name: "NakiriYuuzu/Yuzora" }, head_repository: { full_name: "NakiriYuuzu/Yuzora" }, path: ".github/workflows/app-package.yml", event: "push", status: "completed", conclusion: "success", head_sha: sha });
   const accepted = () => {
     reply("repos/NakiriYuuzu/Yuzora/actions/runs/42", 200, runBody());
@@ -233,6 +233,42 @@ describe("plan, against a fake gh and a throwaway repository", () => {
     accepted();
     expect(() => plan(env({ VERSION: "0.1.1" }))).toThrow("app/Cargo.toml");
     expect(() => plan(env({ PACKAGE_RUN_ID: "43" }))).toThrow("no run 43");
+  });
+
+  describe("a published release the dispatch is not about", () => {
+    // beta.4 is public, with its package run, its tag and a Cargo.toml that all agree. The workflow runs from a ref that is at 0.1.0.
+    const cargo = (version: string) => writeFileSync(join(work, "app/Cargo.toml"), `[package]\nname = "herdr-app"\nversion = "${version}"\n`);
+    let beta4: string;
+    beforeEach(() => {
+      cargo("0.1.0-beta.4");
+      git("commit", "-q", "-am", "beta.4");
+      beta4 = git("rev-parse", "HEAD");
+      cargo("0.1.0");
+      git("commit", "-q", "-am", "release prep");
+      sha = git("rev-parse", "HEAD");
+      git("update-ref", "refs/remotes/origin/main", sha);
+      reply("repos/NakiriYuuzu/Yuzora/actions/runs/42", 200, { ...runBody(), head_sha: beta4 });
+      reply(`repos/NakiriYuuzu/Yuzora/compare/main...${beta4}`, 200, { status: "behind" });
+      reply("repos/NakiriYuuzu/Yuzora/git/ref/tags/v0.1.0-beta.4", 200, { object: { type: "commit", sha: beta4 } });
+    });
+
+    test("no stage but the dry run touches it", () => {
+      for (const STAGE of ["draft", "publish", "manifest", "latest"]) {
+        expect(() => plan(env({ STAGE, VERSION: "0.1.0-beta.4" })), STAGE).toThrow("is not the release this workflow runs from");
+      }
+      expect(plan(env({ STAGE: "dry-run", VERSION: "0.1.0-beta.4" })).stage).toBe("dry-run");
+    });
+
+    test("the release the ref is at goes through, from a later commit than the one released", () => {
+      reply("repos/NakiriYuuzu/Yuzora/actions/runs/42", 200, { ...runBody(), head_sha: sha });
+      reply(`repos/NakiriYuuzu/Yuzora/compare/main...${sha}`, 200, { status: "identical" });
+      reply("repos/NakiriYuuzu/Yuzora/git/ref/tags/v0.1.0", 200, { object: { type: "commit", sha } });
+      expect(plan(env({ STAGE: "manifest" })).version).toBe("0.1.0");
+      writeFileSync(join(work, "later.txt"), "a site change\n");
+      git("add", "later.txt");
+      git("commit", "-q", "-m", "site");
+      expect(plan(env({ STAGE: "latest", GITHUB_SHA: git("rev-parse", "HEAD") })).version).toBe("0.1.0");
+    });
   });
 
   test("a dry run with no run signs for the commit it runs on and needs no tag or main", () => {
