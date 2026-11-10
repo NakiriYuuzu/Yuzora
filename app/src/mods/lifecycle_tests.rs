@@ -629,8 +629,10 @@ fn git_sidebar_module(state: Rc<GitSidebar>, props: Value, fails: &'static [(&'s
             None => Ok(json!({"id": top, "root": top, "machine": null, "gitDir": format!("{top}/.git"), "commonDir": format!("{top}/.git")})),
         }))
     });
+    let s = state.clone();
     module = module.async_function("status", move |a| {
         let root = a.string(0)?.to_owned();
+        s.effects.borrow_mut().push(("status".into(), json!(root)));
         let n = match root.as_str() { "/sp/a" => 1, "/sp/b/c" => 2, "/sp/r" => 3, "/sp/ALIAS" => 4, _ => 0 };
         let unstaged: Vec<Value> = (0..n).map(|i| json!({"path": format!("f{i}"), "kind": "M", "add": 1, "del": 0, "binary": false})).collect();
         Ok(answer(if root == "/sp/vanish" { Err("fatal: cannot change to '/sp/vanish': No such file or directory".into()) } else { Ok(json!({
@@ -786,6 +788,57 @@ fn yuzora_git_sidebar_follows_its_place_in_the_frame_it_changes(cx: &mut TestApp
     *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
     draw_again(&mut visual);
     assert_eq!(opened(&state), ["/sp/a", "/sp/b/c", "/sp/a"], "and back");
+    assert_eq!(
+        state.shared.borrow().get("yuzora.badge.git").cloned(),
+        Some(json!(1))
+    );
+    visual.update(|window, _| window.remove_window());
+}
+
+// yuzora(v0.1.0 E1 r1): an arrival ends at its first wait that finds its place left. The focus goes to another
+// pane and back before the first `open` has answered (two draws, nothing run between): the arrival for the pane
+// left throws and the sidebar catches it, in QuickJS as it does in the bun tests, and only the place the focus
+// ended at is shown and followed.
+#[gpui::test]
+fn yuzora_git_sidebar_arrival_for_a_place_left_ends_quietly(cx: &mut TestAppContext) {
+    let state = Rc::new(GitSidebar::default());
+    *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
+    let module = git_sidebar_module(state.clone(), Value::Null, &[], |_| {
+        Ok(json!({"repos": [], "truncated": false}))
+    });
+    let (_fixture, mut visual, runtime, root) =
+        git_sidebar_mount_live(cx, &git_sidebar_source(&[]), module);
+    for pane in ["p2", "p1"] {
+        *state.focused.borrow_mut() = json!({"space": "s1", "pane": pane});
+        visual.update(|window, cx| {
+            runtime.refresh(&root, cx).unwrap();
+            window.draw(cx).clear(cx);
+        });
+    }
+    git_sidebar_settle(&mut visual);
+    assert_eq!(state.opened.borrow().clone(), ["/sp/a", "/sp/b/c", "/sp/a"]);
+    let badges: Vec<Value> = state
+        .effects
+        .borrow()
+        .iter()
+        .filter(|(name, v)| name == "setShared" && v[0] == "yuzora.badge.git")
+        .map(|(_, v)| v[1].clone())
+        .collect();
+    assert!(
+        !badges.contains(&json!(2)),
+        "the pane that was left was shown: {badges:?}"
+    );
+    let read: Vec<Value> = state
+        .effects
+        .borrow()
+        .iter()
+        .filter(|(name, _)| name == "status")
+        .map(|(_, v)| v.clone())
+        .collect();
+    assert!(
+        !read.contains(&json!("/sp/b/c")),
+        "the pane that was left was followed: {read:?}"
+    );
     assert_eq!(
         state.shared.borrow().get("yuzora.badge.git").cloned(),
         Some(json!(1))
