@@ -16,7 +16,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
 pub use crate::remote_write::Refusal;
-use crate::remote_write::{MAX_BYTES, posix_crc, resolve_links};
+use crate::remote_write::{MAX_BYTES, posix_crc, resolve_links, save_gate};
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -106,23 +106,26 @@ fi
 stat -L -c '%s %Y' -- "$1" 2>/dev/null || stat -L -f '%z %m' -- "$1""#;
 
 /// `$1` file, `$2` max+1, `$3` max. Exit 4 missing, 5 not a regular file.
-/// Prints `size mtime-seconds w|r\n` (`w`: a save can replace it: the file, the
-/// folder of the file a link names, and the owner, are all as a save needs),
-/// then up to `$2` bytes unless it is larger than `$3`.
-const READ_SCRIPT: &str = concat!(
+/// Prints `size mtime-seconds w|r\n` (`w`: a save can replace it, which is what
+/// `crate::remote_write::save_gate!`'s `blocked` says, the very check a save makes: the file
+/// and its folder can be written, the owner and the group can be kept, and an ACL, if the file
+/// has one, can be carried over), then up to `$2` bytes unless it is larger than `$3`.
+pub(crate) const READ_SCRIPT: &str = concat!(
     r#"[ -e "$1" ] || { echo "no such file" >&2; exit 4; }
 [ -f "$1" ] || { echo "not a regular file" >&2; exit 5; }
 s=$(stat -L -c '%s %Y' -- "$1" 2>/dev/null || stat -L -f '%z %m' -- "$1") || exit 6
 "#,
     resolve_links!(),
+    save_gate!(),
     r#"w=r
-if [ -w "$t" ] && [ -w "$d" ] && [ -x "$d" ] && { [ -O "$t" ] || [ "$(id -u)" = 0 ]; }; then w=w; fi
+[ -z "$(blocked)" ] && w=w
 printf '%s %s\n' "$s" "$w"
 [ "${s%% *}" -gt "$3" ] && exit 0
 head -c "$2" -- "$1""#
 );
 
-/// Changes to files on another machine wait for SFTP (lane L4).
+/// Creating, renaming and removing on another machine are not there yet: a file there can be
+/// opened and saved, nothing more.
 const REMOTE_READ_ONLY: &str = "files on another machine are read-only in this version";
 
 /// One directory entry.
@@ -194,7 +197,8 @@ pub struct TextFile {
     pub too_large: bool,
     /// Invalid UTF-8: `text` is a lossy decode and must not be saved back.
     pub not_utf8: bool,
-    /// No write permission here, or the file is on another machine.
+    /// A save could not replace the file: no write permission, an owner or group that cannot be
+    /// kept, or (on another machine) more than `hc exec --stdin` carries.
     pub readonly: bool,
 }
 

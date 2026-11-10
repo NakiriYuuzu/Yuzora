@@ -1742,6 +1742,49 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n");
     }
 
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_folder_that_cannot_be_entered_does_not_make_a_file_deleted(cx: &mut gpui::TestAppContext) {
+        use std::os::unix::fs::PermissionsExt as _;
+        // SAFETY: a plain syscall with no arguments.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        for machine in [None, Some("lab")] {
+            let dir = tempfile::tempdir().unwrap();
+            let sub = dir.path().join("sub");
+            std::fs::create_dir(&sub).unwrap();
+            let path = sub.join("a.txt");
+            std::fs::write(&path, "one\n").unwrap();
+            let (view, window) = match machine {
+                Some(m) => editing_on(m, &path, cx),
+                None => editing(&path, cx),
+            };
+            type_text(&view, window, "mine ", cx);
+            std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+            cx.run_until_parked();
+            let saved = futures::executor::block_on(saved).unwrap();
+            std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                !saved.ok && !saved.conflict && saved.error.is_some(),
+                "{machine:?}: {saved:?}"
+            );
+            cx.update(|cx| assert!(!view.read(cx).deleted && view.read(cx).dirty, "{machine:?}"));
+            // The folder opens again and someone else wrote the file: a save is held to what was read.
+            std::fs::write(&path, "theirs, written after the read\n").unwrap();
+            let again = view.update(cx, |doc, cx| doc.save(false, cx));
+            cx.run_until_parked();
+            let again = futures::executor::block_on(again).unwrap();
+            assert!(again.conflict, "{machine:?}: {again:?}");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "theirs, written after the read\n",
+                "{machine:?}"
+            );
+        }
+    }
+
     #[gpui::test]
     fn a_find_typed_before_the_editor_applies_to_it(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();

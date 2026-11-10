@@ -30,8 +30,13 @@ pub enum Refusal {
     /// The folder cannot hold the scratch file the save swaps in.
     FolderNotWritable,
     FileNotWritable,
-    /// The swap would give the file another owner or group.
+    /// The file is another user's: the swap would give it a new owner.
     OtherOwner,
+    /// The file's group is one this user is not in: the swap could not give the copy that group.
+    OtherGroup,
+    /// The file has an ACL a save cannot copy, or its folder would hand the copy one it cannot
+    /// remove: the swap could change who may read or write the file.
+    AccessRules,
     /// A folder, a pipe, a device.
     NotAFile,
 }
@@ -63,6 +68,12 @@ impl std::fmt::Display for Refusal {
             }
             Refusal::OtherOwner => f.write_str(
                 "this file belongs to another user on that machine: a save would replace it with a copy of yours, so it is refused",
+            ),
+            Refusal::OtherGroup => f.write_str(
+                "this file's group on that machine is one you are not in: a save would give its new copy another group, so it is refused",
+            ),
+            Refusal::AccessRules => f.write_str(
+                "this file, or the folder it is in, has access rules (an ACL) that a save there cannot carry over, and replacing the file could change who may read or write it, so it is refused (copying an ACL needs getfacl and setfacl on that machine)",
             ),
             Refusal::NotAFile => f.write_str(
                 "this is not a regular file on that machine (a folder, a pipe or a device)",
@@ -123,31 +134,115 @@ case $t in */*) d=${t%/*} ;; *) d=. ;; esac
 }
 pub(crate) use resolve_links;
 
+/// `sh` for what the script that opens a file and the one that saves it both have to know, so
+/// that a file opens editable exactly when a save will not refuse it for a reason that was there
+/// at open. Needs `t` and `d` (`resolve_links!`).
+///
+/// `blocked` prints why a save could not replace the file at `t` with a copy made beside it, and
+/// nothing when it could. The copy is a new file: it has to get the owner, the group and the
+/// access rules (an ACL, if the file has one) of the old one, or the save would change who may
+/// read or write the file. `aclof` says whether a file has an ACL: from `getfacl` where there is
+/// one, else from `ls` (a `+` after the mode on Linux, a numbered entry under the line on a Mac).
+/// A group the user is not in is no hindrance on BSD and macOS when it is the folder's, which a
+/// new file takes there. On Linux the copy has the user's own group until it is given another,
+/// and that takes membership. A folder whose ACL cannot be removed (no `setfacl`, and not a Mac)
+/// would hand it to the copy: where a tool can show one, that is `acl` too.
+/// Where no tool can tell, a file counts as having none; the save itself looks again, at the new
+/// file, in a way that needs no tool (see `WRITE_SCRIPT`).
+macro_rules! save_gate {
+    () => {
+        r#"st() { stat -L -c '%s %Y %a %u %g' -- "$1" 2>/dev/null || stat -L -f '%z %m %Mp%Lp %u %g' -- "$1" 2>/dev/null; }
+aclof() {
+  if command -v getfacl >/dev/null 2>&1; then
+    acl_out=$(getfacl -c -- "$1" 2>/dev/null) || return 0
+    case $acl_out in *mask::*) return 0 ;; esac
+    return 1
+  fi
+  acl_ls=$(ls -lde -- "$1" 2>/dev/null) || acl_ls=$(ls -ld -- "$1" 2>/dev/null) || return 1
+  case $acl_ls in *"$nl "[0-9]*": "*) return 0 ;; esac
+  acl_ls=${acl_ls%%"$nl"*}
+  case ${acl_ls%% *} in ??????????+) return 0 ;; esac
+  return 1
+}
+strippable() { command -v setfacl >/dev/null 2>&1 || [ "$(uname -s)" = Darwin ]; }
+blocked() {
+  [ -f "$t" ] || { echo notfile; return; }
+  [ -w "$t" ] || { echo file; return; }
+  [ -d "$d" ] && [ -w "$d" ] && [ -x "$d" ] || { echo folder; return; }
+  if aclof "$t" && ! { command -v getfacl >/dev/null 2>&1 && command -v setfacl >/dev/null 2>&1; }; then echo acl; return; fi
+  if ! strippable && aclof "$d"; then echo acl; return; fi
+  [ "$(id -u)" = 0 ] && return
+  me=$(st "$t") || { echo stat; return; }
+  set -- $me
+  fg=$5
+  [ "$4" = "$(id -u)" ] || { echo owner; return; }
+  case " $(id -G) " in *" $fg "*) return ;; esac
+  if [ "$(uname -s)" != Linux ]; then
+    dm=$(st "$d") || { echo stat; return; }
+    set -- $dm
+    [ "$fg" = "$5" ] && return
+  fi
+  echo group
+}
+"#
+    };
+}
+pub(crate) use save_gate;
+
 /// `$1` path, `$2` `cas` or `overwrite`, `$3 $4 $5` size, mtime (seconds) and
 /// `cksum` CRC the file was read with (`-` when overwriting), `$6` how many
 /// bytes arrive on stdin. Prints one line and exits 0:
 /// `saved SIZE MTIME`, `conflict SIZE MTIME`, `conflict gone`,
-/// `refused file|folder|owner|notfile`, or `refused stdin RECEIVED`. Any other
-/// end (a failed step, a signal) leaves the file as it was.
+/// `refused file|folder|owner|group|acl|notfile`, or `refused stdin RECEIVED`.
+/// Any other end (a failed step, a signal) leaves the file as it was.
 ///
-/// The new bytes go to a scratch file of the shape `fsops::is_scratch_name`
-/// accepts, beside the file and owner-only until it takes the file's mode and
-/// owner. Then, as the last step before the swap, the file is compared with
-/// what was read (stat and checksum) and a single `mv` swaps the scratch file
-/// in: a rename replaces the file whole or not at all.
+/// The new bytes go to a scratch file in a folder of its own, `.yuzora-save-<32 hex>/` beside the
+/// file (`fsops::is_scratch_name` accepts the name). The folder gets mode 700 before anything is
+/// made in it, so nobody but its owner can walk into it, whatever ACL the folder it is in hands
+/// down (a folder with a default ACL ignores the umask, and `mkdir -m` is not the same on every
+/// system, so `chmod` it is).
+/// Then the folder's own ACL is removed (with `setfacl -b`, on a Mac with `chmod -N`) so that the
+/// file made inside gets none. Whether it did is checked: a file made under `umask 077` has mode
+/// 600 unless a default ACL took over (the kernel then ignores the umask), and where a tool can
+/// show an ACL it is asked too. A file that has one and cannot lose it is refused (`refused
+/// acl`): `chmod` would give the names in it the access the mode says. The new file gets the
+/// owner, group, mode and, if the old file has an ACL, that ACL (`getfacl | setfacl`, or the
+/// save is refused). Then, as the last step before the swap, the file is compared with what was
+/// read (stat and checksum), and a single `mv` swaps the scratch file in: a rename replaces the
+/// file whole or not at all.
 const WRITE_SCRIPT: &str = concat!(
     r#"mode=$2 esize=$3 emtime=$4 ecrc=$5 want=$6
 om=$(umask)
 umask 077
 set -C
-tmp=
-trap '[ -z "$tmp" ] || rm -f -- "$tmp"' EXIT
+sd=
+trap '[ -z "$sd" ] || { rm -f -- "$sd/$sn"; rmdir -- "$sd" 2>/dev/null; }' EXIT
 trap 'exit 1' HUP INT TERM
 "#,
     resolve_links!(),
-    r#"st() { stat -L -c '%s %Y %a %u %g' -- "$1" 2>/dev/null || stat -L -f '%z %m %Mp%Lp %u %g' -- "$1" 2>/dev/null; }
+    save_gate!(),
+    r#"strip() { if command -v setfacl >/dev/null 2>&1; then setfacl -b -- "$1" 2>/dev/null; else chmod -N -- "$1" 2>/dev/null; fi; return 0; }
+clean() {
+  if aclof "$1"; then return 1; fi
+  cstat=$(st "$1") || return 1
+  set -- $cstat
+  case $3 in 600|0600) return 0 ;; esac
+  return 1
+}
+gone() {
+  p=$t
+  while up=$(dirname -- "$p") && [ "$up" != "$p" ]; do
+    if [ -e "$up" ]; then
+      if [ -d "$up" ] && [ ! -x "$up" ]; then echo "cannot look inside $up" >&2; exit 1; fi
+      break
+    fi
+    p=$up
+  done
+  echo 'conflict gone'
+  exit 0
+}
 check() {
-  now=$(st "$t") || { if [ -e "$t" ]; then echo "cannot read $t" >&2; exit 1; fi; echo 'conflict gone'; exit 0; }
+  now=$(st "$t") || { if [ -e "$t" ]; then echo "cannot read $t" >&2; exit 1; fi; gone; }
   set -- $now
   cs=$1 cm=$2
   [ "$cs $cm" = "$esize $emtime" ] || { echo "conflict $cs $cm"; exit 0; }
@@ -156,18 +251,25 @@ check() {
   [ "$1 $2" = "$ecrc $esize" ] || { echo "conflict $cs $cm"; exit 0; }
 }
 if [ -e "$t" ]; then
-  [ -f "$t" ] || { echo 'refused notfile'; exit 0; }
-  [ -w "$t" ] || { echo 'refused file'; exit 0; }
+  why=$(blocked)
+  [ "$why" != stat ] || { echo "saving failed: cannot stat $t" >&2; exit 1; }
+  [ -z "$why" ] || { echo "refused $why"; exit 0; }
   have=1
 else
   have=0
   [ "$mode" = cas ] && check
+  [ -d "$d" ] && [ -w "$d" ] && [ -x "$d" ] || { echo 'refused folder'; exit 0; }
 fi
-[ -d "$d" ] && [ -w "$d" ] && [ -x "$d" ] || { echo 'refused folder'; exit 0; }
 id=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 case $id in ''|*[!0-9a-f]*) echo 'saving failed: no name for the scratch file' >&2; exit 1 ;; esac
 [ "${#id}" -eq 32 ] || { echo 'saving failed: no name for the scratch file' >&2; exit 1; }
-case $d in /) tmp=/.yuzora-save-$id ;; *) tmp=$d/.yuzora-save-$id ;; esac
+sn=.yuzora-save-$id
+case $d in /) made=/$sn ;; *) made=$d/$sn ;; esac
+mkdir -- "$made" || exit 1
+sd=$made
+chmod 700 "$sd" || exit 1
+strip "$sd"
+tmp=$sd/$sn
 cat > "$tmp" || exit 1
 got=$(wc -c < "$tmp") || exit 1
 got=$((got))
@@ -181,18 +283,30 @@ if [ "$have" = 1 ]; then
   mine=$(st "$tmp") || exit 1
   set -- $mine
   if [ "$u $g" != "$4 $5" ]; then
-    chown "$u:$g" "$tmp" 2>/dev/null || { echo 'refused owner'; exit 0; }
+    chown "$u:$g" "$tmp" 2>/dev/null || { if [ "$u" = "$4" ]; then echo 'refused group'; else echo 'refused owner'; fi; exit 0; }
   fi
 else
   md=$(printf '%o' $((0666 & ~0$om)))
+fi
+if [ "$have" = 1 ] && aclof "$t"; then
+  command -v getfacl >/dev/null 2>&1 && command -v setfacl >/dev/null 2>&1 || { echo 'refused acl'; exit 0; }
+  acl=$(getfacl -c -- "$t" 2>/dev/null) && printf '%s\n' "$acl" | setfacl --set-file=- -- "$tmp" 2>/dev/null || { echo 'refused acl'; exit 0; }
+elif ! clean "$tmp"; then
+  strip "$tmp"
+  clean "$tmp" || { echo 'refused acl'; exit 0; }
 fi
 chmod "$md" "$tmp" || exit 1
 ts=$(st "$tmp") || exit 1
 set -- $ts
 size=$1 mtime=$2
 if [ "$mode" = cas ]; then check; fi
+[ -d "$t" ] && { echo 'refused notfile'; exit 0; }
 mv -f -- "$tmp" "$t" || exit 1
-tmp=
+if [ -d "$t" ]; then
+  rm -f -- "$t/$sn"
+  echo "cannot replace $t: it became a folder" >&2
+  exit 1
+fi
 echo "saved $size $mtime"
 "#
 );
@@ -264,6 +378,8 @@ fn parse_verdict(stdout: &[u8]) -> Option<Verdict> {
         ["refused", "file"] => Some(Verdict::Refused(Refusal::FileNotWritable)),
         ["refused", "folder"] => Some(Verdict::Refused(Refusal::FolderNotWritable)),
         ["refused", "owner"] => Some(Verdict::Refused(Refusal::OtherOwner)),
+        ["refused", "group"] => Some(Verdict::Refused(Refusal::OtherGroup)),
+        ["refused", "acl"] => Some(Verdict::Refused(Refusal::AccessRules)),
         ["refused", "notfile"] => Some(Verdict::Refused(Refusal::NotAFile)),
         ["refused", "stdin", received] => Some(Verdict::Short(number(received)?)),
         _ => None,
@@ -844,8 +960,7 @@ mod tests {
 
     #[test]
     fn the_scratch_file_is_private_until_it_is_swapped_in_and_is_named_as_the_listing_expects() {
-        let record =
-            "for last; do :; done; ls -la \"$(dirname \"$last\")\" > \"$YZ_LOG\"; mv \"$@\"";
+        let record = "ls -laR \"$(dirname \"$3\")\" > \"$YZ_LOG\"; ls -ld \"$(dirname \"$3\")\" >> \"$YZ_LOG\"; mv \"$@\"";
         let (_shims, path_env) = shimmed(&[("mv", record)]);
         for on in WHERE {
             let dir = tempfile::tempdir().unwrap();
@@ -870,15 +985,23 @@ mod tests {
                 .lines()
                 .filter(|l| l.contains(".yuzora-save-"))
                 .collect();
-            assert_eq!(scratch.len(), 1, "{listing}");
-            let name = scratch[0].rsplit(' ').next().unwrap();
+            let file: Vec<&&str> = scratch.iter().filter(|l| l.starts_with('-')).collect();
+            assert_eq!(file.len(), 1, "{listing}");
+            let name = file[0].rsplit(' ').next().unwrap();
             assert!(is_scratch_name(name), "{name}");
             assert!(
-                scratch[0].starts_with("-rw-r--r--"),
+                file[0].starts_with("-rw-r--r--"),
                 "the file's own mode by the time it is swapped in: {}",
-                scratch[0]
+                file[0]
+            );
+            assert!(
+                scratch
+                    .iter()
+                    .any(|l| l.starts_with("drwx------") && l.ends_with(name)),
+                "what holds it is the owner's alone: {listing}"
             );
             assert_eq!(fs::read(&path).unwrap(), b"new");
+            assert_eq!(names(dir.path()), ["f"], "{on:?}");
         }
     }
 
@@ -886,7 +1009,7 @@ mod tests {
     fn the_scratch_file_is_owner_only_while_it_is_written() {
         let (_shims, path_env) = shimmed(&[(
             "cat",
-            "ls -la \"$(dirname \"$YZ_TARGET\")\" > \"$YZ_LOG\"; cat \"$@\"",
+            "ls -laR \"$(dirname \"$YZ_TARGET\")\" > \"$YZ_LOG\"; cat \"$@\"",
         )]);
         for on in WHERE {
             let dir = tempfile::tempdir().unwrap();
@@ -909,10 +1032,21 @@ mod tests {
             let _ = fs::remove_file(&log);
             let scratch: Vec<&str> = listing
                 .lines()
-                .filter(|l| l.contains(".yuzora-save-"))
+                .filter(|l| l.contains(".yuzora-save-") && !l.ends_with(':'))
                 .collect();
-            assert_eq!(scratch.len(), 1, "{listing}");
-            assert!(scratch[0].starts_with("-rw-------"), "{}", scratch[0]);
+            assert_eq!(
+                scratch.len(),
+                2,
+                "the folder it is in, and the file: {listing}"
+            );
+            assert!(
+                scratch.iter().any(|l| l.starts_with("drwx------")),
+                "{listing}"
+            );
+            assert!(
+                scratch.iter().any(|l| l.starts_with("-rw-------")),
+                "{listing}"
+            );
         }
     }
 
@@ -1147,6 +1281,378 @@ mod tests {
         }
     }
 
+    /// A `stat` stand-in that says the file being saved (a file, not a folder) has another
+    /// `field` (4: owner, 5: group) whenever it is asked for owners and groups.
+    fn stat_claims(field: u32) -> String {
+        format!(
+            "out=$(stat \"$@\") || exit $?\nfor last; do :; done\ncase \"$*\" in\n*.yuzora-save-*) printf '%s\\n' \"$out\" ;;\n*%u*) if [ -d \"$last\" ]; then printf '%s\\n' \"$out\"; else printf '%s\\n' \"$out\" | awk '{{ ${field} = 54321; print }}'; fi ;;\n*) printf '%s\\n' \"$out\" ;;\nesac"
+        )
+    }
+
+    /// What the read script says of `path`: `w` when it can be saved, else `r`.
+    fn opens_as(path: &str, env: &[(&str, &str)]) -> String {
+        let out = std::process::Command::new("sh")
+            .args(["-c", fsops::READ_SCRIPT, "sh", path, "100", "99"])
+            .envs(env.iter().copied())
+            .output()
+            .unwrap();
+        let line = String::from_utf8_lossy(&out.stdout).into_owned();
+        line.lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(2))
+            .unwrap_or("?")
+            .to_owned()
+    }
+
+    #[test]
+    fn a_file_opens_editable_only_when_a_save_will_not_refuse_it_for_what_was_known_at_open() {
+        if is_root() {
+            return;
+        }
+        let (_stat_owner, as_owner) = shimmed(&[("stat", &stat_claims(4))]);
+        let (_stat_group, as_group) = shimmed(&[("stat", &stat_claims(5))]);
+        type Break = fn(&Path, &str);
+        let cases: [(&str, Option<&str>, Break, Option<Refusal>); 5] = [
+            ("my own file", None, |_, _| {}, None),
+            (
+                "a file with no write bit",
+                None,
+                |_, f| fs::set_permissions(f, fs::Permissions::from_mode(0o444)).unwrap(),
+                Some(Refusal::FileNotWritable),
+            ),
+            (
+                "a folder that is shut",
+                None,
+                |d, _| fs::set_permissions(d, fs::Permissions::from_mode(0o555)).unwrap(),
+                Some(Refusal::FolderNotWritable),
+            ),
+            (
+                "another user's file",
+                Some(as_owner.as_str()),
+                |_, _| {},
+                Some(Refusal::OtherOwner),
+            ),
+            (
+                "a group the user is not in",
+                Some(as_group.as_str()),
+                |_, _| {},
+                Some(Refusal::OtherGroup),
+            ),
+        ];
+        for on in WHERE {
+            for (what, path_env, shut, refused) in &cases {
+                let dir = tempfile::tempdir().unwrap();
+                let path = put(dir.path(), "f", b"old");
+                let read = seen(&path);
+                shut(dir.path(), &path);
+                let env: Vec<(&str, &str)> = path_env.iter().map(|p| ("PATH", *p)).collect();
+                let flag = opens_as(&path, &env);
+                let saved = save_with(&env, &path, b"new", Some(&read), on);
+                fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+                match refused {
+                    None => assert!(
+                        flag == "w" && saved.is_ok(),
+                        "{on:?} {what}: {flag} {saved:?}"
+                    ),
+                    Some(why) => {
+                        assert_eq!(flag, "r", "{on:?} {what}: opened as editable");
+                        assert_eq!(
+                            saved,
+                            Err(WriteError::Refused(why.clone())),
+                            "{on:?} {what}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_entered_is_an_error_and_never_a_deleted_file() {
+        if is_root() {
+            return;
+        }
+        fake_hc();
+        for on in WHERE {
+            let dir = tempfile::tempdir().unwrap();
+            let shallow = dir.path().join("a");
+            let deep = shallow.join("b");
+            fs::create_dir_all(&deep).unwrap();
+            let (near, far) = (put(&shallow, "f", b"old"), put(&deep, "f", b"old"));
+            let (read_near, read_far) = (seen(&near), seen(&far));
+            for (shut, path, read) in [(&shallow, &near, &read_near), (&shallow, &far, &read_far)] {
+                fs::set_permissions(shut, fs::Permissions::from_mode(0o000)).unwrap();
+                let held = write_sh(path, b"mine", Some(read), on);
+                let forced = write_sh(path, b"mine", None, on);
+                fs::set_permissions(shut, fs::Permissions::from_mode(0o755)).unwrap();
+                assert!(
+                    matches!(&held, Err(WriteError::Io(e)) if e.contains("cannot look inside")),
+                    "{on:?} {path}: {held:?}"
+                );
+                assert!(
+                    matches!(&forced, Err(WriteError::Refused(_) | WriteError::Io(_))),
+                    "{on:?} {path}: {forced:?}"
+                );
+                assert_eq!(fs::read(path).unwrap(), b"old", "{on:?} {path}");
+            }
+            fs::remove_file(&near).unwrap();
+            assert_eq!(
+                write_sh(&near, b"mine", Some(&read_near), on),
+                Err(WriteError::Conflict(None)),
+                "{on:?}: a file that is gone, in a folder that can be entered"
+            );
+            assert_eq!(
+                write_sh(
+                    &dir.path().join("none/f").to_string_lossy(),
+                    b"x",
+                    Some(&read_far),
+                    on
+                ),
+                Err(WriteError::Conflict(None)),
+                "{on:?}: a folder that is gone too"
+            );
+        }
+    }
+
+    #[test]
+    fn a_target_that_becomes_a_folder_while_the_save_runs_gets_nothing_put_in_it() {
+        // The swap, where it happens, and what the save then says: the last look before the
+        // rename refuses; a swap inside the rename itself is found out after it and undone.
+        #[derive(Clone, Copy)]
+        enum Says {
+            Refused,
+            ChangedUnderIt,
+            BecameAFolder,
+        }
+        let swaps = [
+            (
+                "mv",
+                "for last; do :; done; rm -f -- \"$last\"; mkdir -- \"$last\"; mv \"$@\"",
+                "a folder, during the rename",
+                [Says::BecameAFolder, Says::BecameAFolder],
+            ),
+            (
+                "mv",
+                "for last; do :; done; rm -f -- \"$last\"; mkdir -p -- \"$YZ_ELSEWHERE\"; ln -s \"$YZ_ELSEWHERE\" \"$last\"; mv \"$@\"",
+                "a link to a folder, during the rename",
+                [Says::BecameAFolder, Says::BecameAFolder],
+            ),
+            (
+                "chmod",
+                "rm -f -- \"$YZ_TARGET\"; mkdir -- \"$YZ_TARGET\"; chmod \"$@\"",
+                "a folder, before the last look",
+                [Says::Refused, Says::ChangedUnderIt],
+            ),
+        ];
+        for on in WHERE {
+            for (command, body, what, says) in swaps.iter().copied() {
+                for (held, says) in [false, true].into_iter().zip(says) {
+                    let (_shims, path_env) = shimmed(&[(command, body)]);
+                    let dir = tempfile::tempdir().unwrap();
+                    let elsewhere = tempfile::tempdir().unwrap();
+                    let path = put(dir.path(), "f", b"old");
+                    let read = seen(&path);
+                    let elsewhere_dir = elsewhere.path().join("sub").to_string_lossy().into_owned();
+                    let got = save_with(
+                        &[
+                            ("PATH", &path_env),
+                            ("YZ_TARGET", &path),
+                            ("YZ_ELSEWHERE", &elsewhere_dir),
+                        ],
+                        &path,
+                        b"new",
+                        held.then_some(&read),
+                        on,
+                    );
+                    let said = match (&says, &got) {
+                        (Says::Refused, Err(WriteError::Refused(Refusal::NotAFile))) => true,
+                        (Says::ChangedUnderIt, Err(WriteError::Conflict(Some(_)))) => true,
+                        (Says::BecameAFolder, Err(WriteError::Io(e))) => {
+                            e.contains("became a folder")
+                        }
+                        _ => false,
+                    };
+                    assert!(said, "{on:?} held={held} {what}: {got:?}");
+                    let inside = |d: &Path| fs::read_dir(d).map(|r| r.count()).unwrap_or(0);
+                    assert_eq!(inside(Path::new(&path)), 0, "{on:?} held={held} {what}");
+                    assert_eq!(
+                        inside(Path::new(&elsewhere_dir)),
+                        0,
+                        "{on:?} held={held} {what}"
+                    );
+                    assert_eq!(names(dir.path()), ["f"], "{on:?} held={held} {what}");
+                }
+            }
+        }
+    }
+
+    /// `chmod +a` on macOS: an entry that files and folders made inside the folder inherit.
+    #[cfg(target_os = "macos")]
+    fn inheritable_entry(dir: &Path) {
+        let done = std::process::Command::new("chmod")
+            .args([
+                "+a",
+                "group:everyone allow list,search,add_file,add_subdirectory,readattr,readextattr,readsecurity,read,write,file_inherit,directory_inherit",
+            ])
+            .arg(dir)
+            .status()
+            .unwrap();
+        assert!(done.success());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn entries_of(path: &Path) -> String {
+        let out = std::process::Command::new("ls")
+            .arg("-lde")
+            .arg(path)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn what_a_folder_hands_down_does_not_reach_a_saved_file() {
+        fake_hc();
+        for on in WHERE {
+            let dir = tempfile::tempdir().unwrap();
+            let path = put(dir.path(), "f", b"old");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            inheritable_entry(dir.path());
+            let got = write_sh(&path, b"new", Some(&seen(&path)), on);
+            assert!(got.is_ok(), "{on:?}: {got:?}");
+            assert_eq!(fs::read(&path).unwrap(), b"new");
+            assert_eq!(mode_of(&path), 0o600);
+            let listing = entries_of(Path::new(&path));
+            assert!(
+                !listing.contains("everyone"),
+                "{on:?}: the folder's entry reached the file: {listing}"
+            );
+            assert_eq!(names(dir.path()), ["f"], "{on:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn what_a_folder_hands_down_does_not_reach_the_scratch_file_while_it_is_written() {
+        let (_shims, path_env) = shimmed(&[(
+            "cat",
+            "ls -laeR \"$(dirname \"$YZ_TARGET\")\" > \"$YZ_LOG\"; cat \"$@\"",
+        )]);
+        for on in WHERE {
+            let dir = tempfile::tempdir().unwrap();
+            let path = put(dir.path(), "f", b"secret");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            inheritable_entry(dir.path());
+            let log = dir
+                .path()
+                .join("..")
+                .join(format!("yz-acl-{}", std::process::id()));
+            let log = log.to_string_lossy().into_owned();
+            let got = save_with(
+                &[("PATH", &path_env), ("YZ_LOG", &log), ("YZ_TARGET", &path)],
+                &path,
+                b"new",
+                Some(&seen(&path)),
+                on,
+            );
+            assert!(got.is_ok(), "{on:?}: {got:?}");
+            let listing = fs::read_to_string(&log).unwrap();
+            let _ = fs::remove_file(&log);
+            let lines: Vec<&str> = listing.lines().collect();
+            let mut inside_scratch = false;
+            let mut checked = 0;
+            for (i, line) in lines.iter().enumerate() {
+                if line.ends_with(':') {
+                    inside_scratch = line.contains(".yuzora-save-");
+                    continue;
+                }
+                let scratch =
+                    line.contains(".yuzora-save-") || (inside_scratch && line.ends_with(" ."));
+                if scratch {
+                    checked += 1;
+                    let entry = lines.get(i + 1).is_some_and(|next| {
+                        next.starts_with(' ')
+                            && next.trim_start().starts_with(|c: char| c.is_ascii_digit())
+                    });
+                    assert!(
+                        !entry,
+                        "{on:?}: an entry of the folder's was on what the save was writing: {line}\n{listing}"
+                    );
+                }
+            }
+            assert!(
+                checked >= 3,
+                "the scratch folder (twice) and its file: {listing}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_file_with_an_acl_that_cannot_be_carried_over_is_read_only_and_a_save_is_refused() {
+        fake_hc();
+        for on in WHERE {
+            let dir = tempfile::tempdir().unwrap();
+            let path = put(dir.path(), "f", b"old");
+            let done = std::process::Command::new("chmod")
+                .args(["+a", "group:everyone allow read", &path])
+                .status()
+                .unwrap();
+            assert!(done.success());
+            assert_eq!(opens_as(&path, &[]), "r", "{on:?}");
+            assert_eq!(
+                write_sh(&path, b"new", Some(&seen(&path)), on),
+                Err(WriteError::Refused(Refusal::AccessRules)),
+                "{on:?}"
+            );
+            assert_eq!(fs::read(&path).unwrap(), b"old");
+            assert_eq!(names(dir.path()), ["f"], "{on:?}");
+        }
+    }
+
+    /// On Linux machines, in throwaway containers (`docker info` must work, and the images are
+    /// pulled): the scripts as ordinary users, against folders and files with POSIX ACLs.
+    /// `YZ_DOCKER=1 cargo test --locked -p yuzora-files --lib -- --ignored --exact
+    /// remote_write::tests::linux_acls_on_real_machines --nocapture`.
+    #[test]
+    #[ignore = "needs docker and YZ_DOCKER=1"]
+    fn linux_acls_on_real_machines() {
+        assert!(std::env::var("YZ_DOCKER").is_ok(), "set YZ_DOCKER=1");
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("write.sh"), WRITE_SCRIPT).unwrap();
+        fs::write(dir.path().join("read.sh"), fsops::READ_SCRIPT).unwrap();
+        fs::write(
+            dir.path().join("acl.sh"),
+            include_str!("../tests/docker/remote-acl.sh"),
+        )
+        .unwrap();
+        let mut failures = Vec::new();
+        for (image, shell) in [
+            ("alpine:3", "sh"),
+            ("ubuntu:24.04", "dash"),
+            ("ubuntu:24.04", "bash --posix"),
+            ("ubuntu:25.10", "sh"),
+        ] {
+            let out = std::process::Command::new("docker")
+                .args(["run", "--rm", "-v"])
+                .arg(format!("{}:/w:ro", dir.path().display()))
+                .args([image, "sh", "/w/acl.sh", shell])
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout).into_owned();
+            println!(
+                "{image} ({shell})\n{text}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            if !text.contains("RESULT fails=0") {
+                failures.push(format!("{image} ({shell})"));
+            }
+        }
+        assert!(failures.is_empty(), "failing: {failures:?}");
+    }
+
     #[test]
     fn what_cannot_travel_is_refused_before_anything_is_sent() {
         // "offline" would answer with an error if a request were made.
@@ -1236,6 +1742,8 @@ mod tests {
             ("file", Refusal::FileNotWritable),
             ("folder", Refusal::FolderNotWritable),
             ("owner", Refusal::OtherOwner),
+            ("group", Refusal::OtherGroup),
+            ("acl", Refusal::AccessRules),
             ("notfile", Refusal::NotAFile),
         ] {
             assert_eq!(
@@ -1353,13 +1861,15 @@ mod tests {
         }
     }
 
-    /// Run the script on a real machine or under another shell: `YZ_DUMP_DIR=/tmp/x cargo test -p
-    /// yuzora-files --lib -- --ignored dump_the_write_script`, then `sh -c "$(cat /tmp/x/write.sh)" sh PATH ...`.
+    /// Run the scripts on a real machine or under another shell: `YZ_DUMP_DIR=/tmp/x cargo test -p
+    /// yuzora-files --lib -- --ignored dump_the_write_script`, then `sh -c "$(cat /tmp/x/write.sh)" sh PATH ...`
+    /// (`read.sh` is the script that opens a file).
     #[test]
     #[ignore = "writes the script to $YZ_DUMP_DIR"]
     fn dump_the_write_script() {
         let dir = std::env::var("YZ_DUMP_DIR").unwrap();
         fs::write(format!("{dir}/write.sh"), WRITE_SCRIPT).unwrap();
+        fs::write(format!("{dir}/read.sh"), fsops::READ_SCRIPT).unwrap();
     }
 
     /// Against a real hc, in a session and with a machine of its own (never the user's core):
