@@ -90,6 +90,15 @@ fn rows(connection: &str, sql: &str) -> Vec<Vec<String>> {
     r.rows.iter().map(|row| row.iter().map(|c| c.display().into_owned()).collect()).collect()
 }
 
+/// The first row of `sql` run on the connection `owner` holds.
+fn first_row_on(connection: &str, owner: &str, sql: &str) -> Vec<String> {
+    let state = wait(session::start_query(connection, None, owner, sql));
+    assert_eq!(state.error, None, "{sql}");
+    let set = results::get(state.results.last().expect("a result").id).expect("result");
+    let r = results::lock(&set);
+    r.rows[0].iter().map(|c| c.display().into_owned()).collect()
+}
+
 fn first_row(connection: &str, sql: &str) -> Vec<String> {
     rows(connection, sql).into_iter().next().unwrap_or_default()
 }
@@ -1550,14 +1559,15 @@ fn mssql_a_sql_tab_statement_and_a_waiting_write_back_are_stopped_apart() {
     assert_eq!(first_row(&id, "SELECT name FROM dbo.t WHERE id = 1"), ["a"], "the stopped write-back wrote");
 }
 
-/// What a value is shown and written by is set where a connection is opened,
-/// on every connection of the pane (the SQL tab's, the table's, the count's)
-/// and on the one that takes the place of a connection that was retired,
-/// whatever the database says as its own.
+/// What a value is shown and written by is set where the table's connection is opened, and on
+/// the one that takes the place of it when it is retired, whatever the database says as its own.
+/// The SQL tab and the count keep the database's: a person's script reads dates and floats the
+/// way the server prints them, as `psql` does.
 #[test]
-fn postgres_every_connection_of_a_pane_is_opened_with_the_settings_a_value_is_read_and_written_by() {
+fn postgres_only_the_connection_a_table_is_read_and_written_on_is_opened_with_the_settings_a_value_is_read_and_written_by()
+{
     only_with!("postgres");
-    let scratch = PgScratchDatabase::new("yz_wb_printread");
+    let scratch = PgScratchDatabase::new("yz_r3_printread");
     let db = scratch.name.clone();
     run(
         &scratch.maintenance,
@@ -1567,26 +1577,69 @@ fn postgres_every_connection_of_a_pane_is_opened_with_the_settings_a_value_is_re
     let id = scratch.connection();
     let pane = owner(&id, "print-read");
     let says = |on: &str| -> Vec<String> {
-        let sql = "SELECT current_setting('datestyle'), current_setting('extra_float_digits'), pg_backend_pid()::text";
+        let sql = "SELECT current_setting('datestyle'), current_setting('extra_float_digits'), pg_backend_pid()::text, \
+                   TIMESTAMP '2024-01-06 10:00:00'::text, (0.1::float8 + 0.2::float8)::text";
         let state = wait(session::start_query(&id, None, on, sql));
         assert_eq!(state.error, None);
         let set = results::get(state.results.last().expect("a result").id).expect("result");
         let r = results::lock(&set);
         r.rows[0].iter().map(|c| c.display().into_owned()).collect()
     };
+    let as_psql = ["SQL, DMY", "0", "06/01/2024 10:00:00", "0.3"];
+    let as_read = ["ISO, DMY", "3", "2024-01-06 10:00:00", "0.30000000000000004"];
+    let shown = |a: &[String]| [a[0].as_str(), a[1].as_str(), a[3].as_str(), a[4].as_str()].map(str::to_owned);
+
+    let tab = says(&pane);
+    assert_eq!(shown(&tab), as_psql, "the SQL tab prints what the database says");
+    let count = says(&session::count_owner(&pane));
+    assert_eq!(shown(&count), as_psql, "the count's connection is the database's too");
+
     let table_connection = session::table_owner(&pane);
-    let mut pids = Vec::new();
-    for on in [pane.clone(), table_connection.clone(), session::count_owner(&pane)] {
-        let answer = says(&on);
-        assert_eq!(answer[..2], ["ISO, DMY", "3"], "{on}");
-        pids.push(answer[2].clone());
-    }
+    let table = says(&table_connection);
+    assert_eq!(shown(&table), as_read, "the table's connection");
     let mut lease = runtime::block_on(session::lease(&id, None, &table_connection)).unwrap();
     runtime::block_on(lease.conn().canceller().abandon());
     drop(lease);
     let again = says(&table_connection);
-    assert_eq!(again[..2], ["ISO, DMY", "3"], "the connection that took the place of the retired one");
-    assert_ne!(again[2], pids[1], "the retired connection was used again");
+    assert_eq!(shown(&again), as_read, "the connection that took the place of the retired one");
+    assert_ne!(again[2], table[2], "the retired connection was used again");
+    assert_eq!(shown(&says(&pane)), as_psql, "the SQL tab is untouched by the table's");
+}
+
+/// Closing a pane closes every connection it holds (the SQL tab's, the table's, the count's) and
+/// only those: it is what ends a transaction a SQL tab left open, and frees a login's connections.
+#[test]
+fn postgres_closing_a_pane_closes_the_connections_it_holds_and_no_other() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_r3_closepane");
+    let id = scratch.connection();
+    let (pane, neighbour) = (owner(&id, "closing"), owner(&id, "staying"));
+    let pid_on = |on: &str| -> String { first_row_on(&id, on, "SELECT pg_backend_pid()::text").remove(0) };
+    let watcher = raw_postgres(&scratch.name);
+    let alive = |pid: &str| -> bool {
+        let found = runtime::block_on(watcher.query_one(
+            &format!("SELECT count(*)::int FROM pg_stat_activity WHERE pid = {pid}"),
+            &[],
+        ))
+        .unwrap();
+        found.get::<_, i32>(0) == 1
+    };
+    let held: Vec<(String, String)> = [pane.clone(), session::table_owner(&pane), session::count_owner(&pane)]
+        .into_iter()
+        .map(|on| (pid_on(&on), on))
+        .collect();
+    let kept = pid_on(&neighbour);
+    for (pid, on) in &held {
+        assert!(alive(pid), "{on} should be open before the pane closes");
+    }
+
+    session::release_owner(&pane);
+    for (pid, on) in &held {
+        until(&format!("{on}: its connection stayed open after the pane closed"), || !alive(pid));
+    }
+    assert!(alive(&kept), "another pane's connection was closed with it");
+    session::release_owner(&neighbour);
+    session::disconnect(&id);
 }
 
 /// The query in the SQL tab and the write-back of the table run side by side,
