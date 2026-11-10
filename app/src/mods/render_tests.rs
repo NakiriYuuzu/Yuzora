@@ -2350,3 +2350,75 @@ fn the_database_toolbars_stop_stays_inside_a_narrow_pane(cx: &mut TestAppContext
         assert!(x1 - x0 >= 30.0, "{width}px: only {x0}..{x1} of Stop can be pressed");
     }
 }
+
+/// A result of the Database table pane with one edited cell, and the confirm
+/// bar asking about it, whose buttons `note`. The bar stays up however it is
+/// answered, so the whole of it can be felt for.
+fn db_confirm(writing: bool) -> (u64, String) {
+    use yuzora_db::{model::{Cell, Column}, results::{self, WriteState, WriteStop}};
+    let set = results::create("render-confirm", "select * from customers");
+    let id = {
+        let mut r = results::lock(&set);
+        r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
+        r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+        r.complete = true;
+        r.edits.insert((0, 1), Cell::text("x"));
+        if writing {
+            r.write = WriteState::Writing(WriteStop::new());
+        }
+        r.id
+    };
+    let source = format!(
+        r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import {{ note }} from "probe";
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    super.init(p, cx);
+    this.target = {{ connection: "c", database: null, schema: "public", name: "customers", kind: "table" }};
+    this.state = {{ id: 1, running: false, version: 1, elapsedMs: 0, error: null, cancelled: false,
+      results: [{{ id: {id}, statement: "select * from customers", columns: 2, rows: 1, edits: 1 }}] }};
+    let confirm = {{ count: 1, action: () => note("drop") }};
+    Object.defineProperty(this, "confirm", {{
+      get() {{ return confirm; }},
+      set(v) {{ if (v === null) note("closed"); else confirm = v; }},
+      configurable: true,
+    }});
+    this.stopSaving = () => note("stop");
+  }}
+}}
+"#
+    );
+    (id, source)
+}
+
+// The dock leaves a table pane 110 to 230 px: both answers stay in it, wherever the bar wraps them.
+#[gpui::test]
+fn the_database_table_pane_asks_about_unwritten_edits_in_a_narrow_pane(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let (_, source) = db_confirm(false);
+    for width in [110.0_f32, 150.0, 228.0, 320.0] {
+        let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+        for answer in ["drop", "closed"] {
+            let (x0, _, x1, _) = clickable(&mut s, answer, width, 200.0).unwrap_or_else(|| panic!("{width}px: {answer} can't be clicked anywhere in the pane"));
+            assert!(x1 < width - 2.0 && x1 - x0 >= 24.0, "{width}px: {answer} is only {x0}..{x1} inside the pane");
+        }
+    }
+}
+
+// A save in flight can't be told to forget the edits it carries: the bar offers to wait for it or to stop it, not to discard.
+#[gpui::test]
+fn the_database_table_pane_does_not_offer_to_discard_edits_that_are_being_written(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let (_, source) = db_confirm(true);
+    for width in [110.0_f32, 228.0, 420.0] {
+        let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+        assert!(clickable(&mut s, "drop", width, 200.0).is_none(), "{width}px: the bar offers to discard edits that are being written");
+        for answer in ["stop", "closed"] {
+            let (x0, _, x1, _) = clickable(&mut s, answer, width, 200.0).unwrap_or_else(|| panic!("{width}px: {answer} can't be clicked anywhere in the pane"));
+            assert!(x1 < width - 2.0 && x1 - x0 >= 24.0, "{width}px: {answer} is only {x0}..{x1} inside the pane");
+        }
+    }
+}

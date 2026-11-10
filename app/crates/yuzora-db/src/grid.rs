@@ -1076,6 +1076,95 @@ mod tests {
         assert_eq!(one_line("a\nb"), "a ⏎ b");
     }
 
+    mod composing {
+        //! An input method's composition is not typed text yet.
+        use super::*;
+        use gpui::{EntityInputHandler as _, TestAppContext, VisualTestContext};
+
+        struct Host {
+            id: String,
+            result: u64,
+        }
+
+        impl Render for Host {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(600.0)).h(px(300.0)).child(element(&self.id, &serde_json::json!({ "result": self.result }), window, cx))
+            }
+        }
+
+        fn save_keys() -> &'static str {
+            if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" }
+        }
+
+        fn settle(cx: &mut VisualTestContext) {
+            for _ in 0..3 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                cx.run_until_parked();
+            }
+        }
+
+        /// The first cell of the name column open for editing, with `typed` in the input method's composition.
+        fn composing<'a>(cx: &'a mut TestAppContext, name: &str, typed: &str) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
+            let set = results::create(name, "select * from people");
+            {
+                let mut r = results::lock(&set);
+                r.columns = vec![crate::model::Column::new("id", "int4"), crate::model::Column::new("name", "text")];
+                r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+                r.complete = true;
+                let mut target = target();
+                target.owner = name.to_owned();
+                r.editing = crate::results::Editing::Editable(Box::new(target));
+            }
+            let (id, owner) = (results::lock(&set).id, name.to_owned());
+            cx.update(gpui_base::init);
+            let (_, cx) = cx.add_window_view(move |_, _| Host { id: owner, result: id });
+            settle(cx);
+            let grid = GRIDS.with(|g| g.borrow().get(name).cloned()).expect("the grid");
+            grid.update_in(cx, |g, window, cx| g.start_editing((0, 1), window, cx));
+            settle(cx);
+            let input = grid.read_with(cx, |g, _| g.editing.as_ref().map(|e| e.input.clone())).expect("the editor is open");
+            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, typed, None, window, cx));
+            settle(cx);
+            assert!(input.update_in(cx, |s, window, cx| s.marked_text_range(window, cx)).is_some(), "the composition is marked");
+            (cx, input, set)
+        }
+
+        fn is_editing(cx: &mut VisualTestContext, name: &str) -> bool {
+            let grid = GRIDS.with(|g| g.borrow().get(name).cloned()).expect("the grid");
+            grid.read_with(cx, |g, _| g.editing.is_some())
+        }
+
+        #[gpui::test]
+        fn saving_leaves_a_composition_to_the_input_method(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, _, set) = composing(cx, "composing-save", "ㄓㄨㄥ");
+            cx.simulate_keystrokes(save_keys());
+            settle(cx);
+            let r = results::lock(&set);
+            assert!(r.edits.is_empty(), "the unchosen \"ㄓㄨㄥ\" was taken for the cell: {:?}", r.edits);
+            assert_eq!(r.write, crate::results::WriteState::Idle, "and written");
+            drop(r);
+            assert!(is_editing(cx, "composing-save"), "the editor stays open for the composition");
+        }
+
+        #[gpui::test]
+        fn enter_keeps_the_cell_only_once_the_composition_is_chosen(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = composing(cx, "composing-enter", "ㄓㄨㄥ");
+            cx.simulate_keystrokes("enter");
+            settle(cx);
+            assert!(results::lock(&set).edits.is_empty(), "Enter while composing kept the unchosen text");
+            assert!(is_editing(cx, "composing-enter"));
+
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "中", window, cx));
+            settle(cx);
+            cx.simulate_keystrokes("enter");
+            settle(cx);
+            assert_eq!(results::lock(&set).edits.get(&(0, 1)), Some(&Cell::text("中")));
+            assert!(!is_editing(cx, "composing-enter"));
+        }
+    }
+
     #[test]
     fn colors_fall_back_per_key() {
         let c = Colors::from_props(Some(&serde_json::json!({ "accent": "#ff0000", "muted": "nope" })));

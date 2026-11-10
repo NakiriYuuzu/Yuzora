@@ -261,3 +261,24 @@ fn a_failure_is_readable_in_a_narrow_pane(cx: &mut TestAppContext) {
     assert!(open.size.width >= px(120.0), "the text is wrapped into {:?}", open.size);
     assert!(open.size.height > px(40.0), "the whole message is there, wrapped over lines: {:?}", open.size);
 }
+
+#[gpui::test]
+fn an_open_failure_never_pushes_the_footer_out_of_a_pane_that_is_short_as_well_as_narrow(cx: &mut TestAppContext) {
+    cx.update(gpui_base::init);
+    for width in [110.0, 150.0, 228.0] {
+        let owner = format!("short-measure-{width}");
+        let id = pending(&owner, |r| r.write = WriteState::failed(LONG));
+        let footer = window(cx, &owner, id, width, 600.0).debug_bounds("grid-footer").expect("the footer").size.height;
+        for extra in [20.0, 60.0, 120.0] {
+            let height = f32::from(footer) + extra;
+            let owner = format!("short-{width}-{extra}");
+            let id = pending(&owner, |r| r.write = WriteState::failed(LONG));
+            let cx = window(cx, &owner, id, width, height);
+            let pane = cx.debug_bounds("pane").expect("the pane");
+            for selector in ["grid-discard", "grid-write", "grid-message", "grid-message-open"] {
+                let b = cx.debug_bounds(selector).unwrap_or_else(|| panic!("{width} x {height}: {selector} is not drawn"));
+                assert!(inside(b, pane), "{width} x {height}: {selector} is at {b:?}, outside the pane {pane:?}");
+            }
+        }
+    }
+}

@@ -7,6 +7,8 @@
 //! overrides the fixture's password). Each of those tests makes a schema or a
 //! database of its own and drops it again.
 
+use std::io::{Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::sync::mpsc;
@@ -1152,4 +1154,326 @@ impl Drop for PgRole {
             seen = state.version;
         }
     }
+}
+
+// ---------------------------------------------------------------- a stop reaches nothing but the write-back
+
+/// A TCP relay in front of the PostgreSQL fixture that holds a cancel request
+/// back for `delay`. Cancelling is a message to the server about whatever the
+/// connection runs when it gets there; this makes it as late as it can ever be.
+struct SlowCancels {
+    port: u16,
+}
+
+impl SlowCancels {
+    fn start(delay: Duration) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for client in listener.incoming().flatten() {
+                std::thread::spawn(move || relay(client, delay));
+            }
+        });
+        SlowCancels { port }
+    }
+}
+
+fn relay(mut client: TcpStream, delay: Duration) {
+    let mut first = [0u8; 8];
+    if client.read_exact(&mut first).is_err() {
+        return;
+    }
+    // A cancel request: length 16, then the code 80877102.
+    if first == [0, 0, 0, 16, 4, 210, 22, 46] {
+        std::thread::sleep(delay);
+    }
+    let Ok(mut server) = TcpStream::connect("127.0.0.1:55432") else { return };
+    if server.write_all(&first).is_err() {
+        return;
+    }
+    let (mut from_client, mut to_server) = (client.try_clone().unwrap(), server.try_clone().unwrap());
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut from_client, &mut to_server);
+        let _ = to_server.shutdown(Shutdown::Write);
+    });
+    let _ = std::io::copy(&mut server, &mut client);
+    let _ = client.shutdown(Shutdown::Both);
+}
+
+fn raw_postgres(database: &str) -> tokio_postgres::Client {
+    runtime::block_on(async {
+        let (client, connection) = tokio_postgres::connect(
+            &format!("host=127.0.0.1 port=55432 user=yuzora_full password={} dbname={database}", password()),
+            tokio_postgres::NoTls,
+        )
+        .await
+        .unwrap();
+        tokio::spawn(connection);
+        client
+    })
+}
+
+/// The write-back of `pane` on its way to the server, waiting on a row lock another connection holds.
+fn writing_on_a_row_lock(pane: &Opened, locker: &tokio_postgres::Client, database: &str) -> std::thread::JoinHandle<Result<u64, DbError>> {
+    let writer = {
+        let set = pane.set.clone();
+        std::thread::spawn(move || runtime::block_on(session::write_back_set(&set)))
+    };
+    until("the write-back never reported that it is waiting", || results::lock(&pane.set).is_writing());
+    until("the server never saw the write-back wait for the lock", || {
+        let waiting = runtime::block_on(locker.query_one(
+            &format!("SELECT count(*)::int FROM pg_stat_activity WHERE datname = '{database}' AND wait_event_type = 'Lock'"),
+            &[],
+        ))
+        .unwrap();
+        waiting.get::<_, i32>(0) == 1
+    });
+    writer
+}
+
+/// However late the server hears of a Stop, it is for the write-back: what
+/// the pane runs after it neither fails nor is cut short.
+#[test]
+fn postgres_a_stopped_write_back_cannot_be_felt_by_what_the_pane_runs_next() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_latecancel");
+    let direct = scratch.connection();
+    run(&direct, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');");
+    let relay = SlowCancels::start(Duration::from_millis(900));
+    let through = save(
+        json!({"name": "pg-late-cancel", "engine": "postgres", "host": "127.0.0.1", "port": relay.port,
+               "user": "yuzora_full", "database": "yz_wb_latecancel", "ssl": "disable"}),
+        Some(&password()),
+    );
+    let locker = raw_postgres("yz_wb_latecancel");
+    let pane = open(&through, "late-pane", &table("public", "t"));
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
+    let writer = writing_on_a_row_lock(&pane, &locker, "yz_wb_latecancel");
+
+    let next = session::start_query(&through, None, &pane.owner, "SELECT pg_sleep(2.5)");
+    results::lock(&pane.set).stop_write();
+    runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
+    assert_eq!(within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()), Err(DbError::Cancelled));
+
+    let state = within(Duration::from_secs(20), "the query after the write-back", move || wait(next));
+    assert_eq!(state.error, None, "the Stop reached the query that ran after the write-back: {state:?}");
+    assert!(!state.cancelled);
+    assert!(state.elapsed_ms >= 2400, "the query was cut short: {state:?}");
+    assert_eq!(first_row(&direct, "SELECT name FROM t WHERE id = 1"), ["holder"], "nothing of the stopped write-back is written");
+
+    let again = open(&through, "late-pane", &table("public", "t"));
+    again.edit(again.row_where("id", "1"), "name", Some("mine"));
+    assert_eq!(runtime::block_on(session::write_back_set(&again.set)), Ok(1), "the pane can write again");
+    assert_eq!(first_row(&direct, "SELECT name FROM t WHERE id = 1"), ["mine"]);
+}
+
+/// The same stop, timed against the moment the lock is let go, over and over:
+/// whichever of them comes first, the pane's connection is whole afterwards
+/// and nothing the stopped write-back held is written.
+#[test]
+fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_stop_or_the_lock() {
+    only_with!("postgres");
+    let rounds: usize = std::env::var("YUZORA_STOP_SWEEP_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+    let scratch = PgScratchDatabase::new("yz_wb_sweep");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');");
+    let locker = raw_postgres("yz_wb_sweep");
+    let t = table("public", "t");
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut stop_came_first = 0;
+    for round in 0..rounds {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        // Microseconds from the Stop to the lock being let go; negative: the lock first.
+        let offset = (seed % 2001) as i64 - 1500;
+        let pane = open(&id, "sweep-pane", &t);
+        pane.edit(pane.row_where("id", "1"), "name", Some(&format!("mine-{round}")));
+        runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
+        let writer = writing_on_a_row_lock(&pane, &locker, "yz_wb_sweep");
+        let next = session::start_query(&id, None, &pane.owner, "SELECT pg_sleep(0.08)");
+        std::thread::sleep(Duration::from_millis(10));
+
+        let spin = |micros: i64| {
+            let until = Instant::now() + Duration::from_micros(micros.unsigned_abs());
+            while Instant::now() < until {
+                std::hint::spin_loop();
+            }
+        };
+        let (stopped_at, released_at);
+        if offset >= 0 {
+            released_at = Instant::now();
+            runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
+            spin(offset);
+            stopped_at = Instant::now();
+            results::lock(&pane.set).stop_write();
+        } else {
+            stopped_at = Instant::now();
+            results::lock(&pane.set).stop_write();
+            spin(offset);
+            released_at = Instant::now();
+            runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
+        }
+        let written = writer.join().unwrap();
+        let stop_first = released_at > stopped_at + Duration::from_micros(300);
+
+        let state = wait(next);
+        assert_eq!(state.error, None, "round {round} (offset {offset} µs): the Stop reached what ran after the write-back");
+        let alive = wait(session::start_query(&id, None, &pane.owner, "SELECT 1"));
+        assert_eq!(alive.error, None, "round {round} (offset {offset} µs): the pane's connection is left broken");
+        let name: String = runtime::block_on(locker.query_one("SELECT name FROM t WHERE id = 1", &[])).unwrap().get(0);
+        if stop_first {
+            stop_came_first += 1;
+            assert_eq!(written, Err(DbError::Cancelled), "round {round} (offset {offset} µs)");
+            assert_eq!(name, "holder", "round {round} (offset {offset} µs): a write-back stopped before the lock let go wrote anyway");
+        } else {
+            assert!(name == "holder" || name == format!("mine-{round}"), "round {round} (offset {offset} µs): {name}");
+        }
+        runtime::block_on(locker.batch_execute("UPDATE t SET name = 'a' WHERE id = 1")).unwrap();
+        session::release_owner(&pane.owner);
+    }
+    assert!(stop_came_first >= rounds / 4, "only {stop_came_first} of {rounds} rounds had the Stop first");
+}
+
+/// SQLite waits for another writer's lock inside the file, where an interrupt
+/// does not reach: a stopped write-back must still write nothing once the lock
+/// is let go, and must not keep the pane's connection until then.
+#[test]
+fn sqlite_a_write_back_stopped_while_it_waits_for_the_file_lock_writes_nothing_and_frees_the_connection() {
+    let (id, file) = sqlite_connection("wb-stop-filelock");
+    run(&id, "setup", "create table people(id integer primary key, name text); insert into people values (1, 'a');");
+    let pane = open(&id, "filelock-pane", &table("", "people"));
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    let other = another_writer(&file);
+    let writer = write_back_on_a_lock(&pane.set);
+
+    results::lock(&pane.set).stop_write();
+    assert_eq!(within(Duration::from_secs(5), "the stopped write-back", move || writer.join().unwrap()), Err(DbError::Cancelled));
+    let owner = pane.owner.clone();
+    let connection = id.clone();
+    let state = within(Duration::from_secs(2), "the pane's connection after the stop", move || {
+        wait(session::start_query(&connection, None, &owner, "select name from people"))
+    });
+    assert_eq!(state.error, None);
+    other.execute_batch("ROLLBACK").unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(rows(&id, "select name from people"), [["a"]], "the stopped write-back wrote once the lock was let go");
+}
+
+// ---------------------------------------------------------------- a person's work goes before a count that borrowed the connection
+
+/// A login that may have two connections (the sidebar's and the pane's).
+fn limited_role(role: &'static str) -> PgRole {
+    let maintenance = postgres_in(&format!("pg-maintenance-{role}"), "postgres");
+    run(&maintenance, "role", &format!("DROP ROLE IF EXISTS {role}"));
+    run(&maintenance, "role", &format!("CREATE ROLE {role} LOGIN PASSWORD '{role}-pw' CONNECTION LIMIT 2"));
+    PgRole { maintenance, name: role }
+}
+
+/// A table whose rows read at once and whose count takes about four seconds,
+/// and the saved connection of `role` to it; with the connection of the setup.
+fn slow_count_for(role: &'static str, database: &str) -> (String, String) {
+    let setup = postgres_in(&format!("pg-setup-{role}"), database);
+    run(
+        &setup,
+        "setup",
+        &format!(
+            "CREATE TABLE t(id int PRIMARY KEY, name text);
+             INSERT INTO t SELECT g, 'a' FROM generate_series(1, 101) g;
+             INSERT INTO t SELECT g, 'slow' FROM generate_series(102, 105) g;
+             CREATE FUNCTION gate(i int) RETURNS bool LANGUAGE plpgsql VOLATILE AS $$
+               BEGIN IF i > 101 AND current_query() ILIKE '%count(%' THEN PERFORM pg_sleep(1); END IF; RETURN true; END $$;
+             ALTER TABLE t ENABLE ROW LEVEL SECURITY;
+             CREATE POLICY p ON t USING (gate(id));
+             GRANT SELECT, UPDATE ON t TO {role};"
+        ),
+    );
+    let limited = save(
+        json!({"name": format!("pg-{role}"), "engine": "postgres", "host": "127.0.0.1", "port": 55432,
+               "user": role, "database": database, "ssl": "prefer"}),
+        Some(&format!("{role}-pw")),
+    );
+    (setup, limited)
+}
+
+fn counting_on(setup: &str, role: &str) -> bool {
+    first_row(
+        setup,
+        &format!(
+            "SELECT count(*)::text FROM pg_stat_activity WHERE usename = '{role}' AND state = 'active' \
+             AND query ILIKE '%count(%' AND pid <> pg_backend_pid()"
+        ),
+    ) == ["1"]
+}
+
+/// A save pressed while the count runs on the pane's own connection (the
+/// login has no connection to spare) does not wait for it: the count steps
+/// aside, and runs again once the write-back is done.
+#[test]
+fn postgres_a_write_back_does_not_wait_for_a_count_that_borrowed_the_panes_connection() {
+    only_with!("postgres");
+    let _role = limited_role("yz_wb_borrow");
+    let _scratch = PgScratchDatabase::new("yz_wb_borrow");
+    let (setup, limited) = slow_count_for("yz_wb_borrow", "yz_wb_borrow");
+    let pane_owner = owner(&limited, "borrow-pane");
+    let job = session::open_table(&limited, None, &pane_owner, &table("public", "t"), None);
+    let set = editable_result(job);
+    until("the count never started on the pane's connection", || counting_on(&setup, "yz_wb_borrow"));
+    let row = results::lock(&set).rows.iter().position(|r| r[0].display() == "1").unwrap();
+    results::lock(&set).set_edit(row, 1, Cell::text("mine"));
+
+    let started = Instant::now();
+    let written = {
+        let set = set.clone();
+        within(Duration::from_secs(3), "the write-back, with a count on the pane's connection", move || runtime::block_on(session::write_back_set(&set)))
+    };
+    assert_eq!(written, Ok(1), "{:?}", results::lock(&set).write);
+    assert!(started.elapsed() < Duration::from_secs(3), "the write-back waited for the count");
+    assert_eq!(first_row(&setup, "SELECT name FROM t WHERE id = 1"), ["mine"]);
+
+    let state = within(Duration::from_secs(40), "the count after the write-back", move || wait(job));
+    assert!(!state.cancelled && state.error.is_none(), "{state:?}");
+    assert_eq!(results::lock(&set).total, Some(105), "the count ran again");
+    assert_eq!(session::status(&limited).state, session::State::Connected);
+}
+
+/// Whatever else asks for the pane's connection — the SQL tab, a refresh, a
+/// save — gets it at once when a count has borrowed it.
+#[cfg(unix)]
+#[test]
+fn sqlite_a_count_that_borrowed_the_panes_connection_steps_aside_for_whoever_asks() {
+    let (id, file) = sqlite_connection("wb-count-aside");
+    run(
+        &id,
+        "setup",
+        "create view slow(id) as with recursive c(x) as (select 1 union all select x + 1 from c where x < 400000000) select x from c;",
+    );
+    let pane_owner = owner(&id, "aside-pane");
+    let t = table("", "slow");
+    runtime::block_on(session::describe(&id, None, &t)).unwrap();
+    drop(runtime::block_on(session::lease(&id, None, &pane_owner)).unwrap());
+    let moved = file.with_extension("moved");
+    std::fs::rename(&file, &moved).unwrap();
+    let job = session::open_table(&id, None, &pane_owner, &t, None);
+    until("the rows never arrived", || {
+        session::job_state(job).is_some_and(|s| s.results.first().is_some_and(|r| r.rows > 0 && r.complete))
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(session::job_state(job).unwrap().running, "the count is running");
+
+    let (connection, pane) = (id.clone(), pane_owner.clone());
+    let asked = Instant::now();
+    let lease = within(Duration::from_secs(5), "the pane's connection, while a count has it", move || {
+        runtime::block_on(session::lease(&connection, None, &pane))
+    });
+    assert!(lease.is_ok());
+    assert!(asked.elapsed() < Duration::from_secs(3), "asking for the pane's connection waited for the count");
+    drop(lease);
+    let state = session::job_state(job).unwrap();
+    assert!(state.running && !state.cancelled, "stepping aside is not the Stop: {state:?}");
+
+    std::fs::rename(&moved, &file).unwrap();
+    session::cancel(job);
+    assert!(within(Duration::from_secs(10), "the table's Stop", move || wait(job)).cancelled);
 }
