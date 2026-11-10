@@ -1286,6 +1286,39 @@ fn postgres_a_stopped_write_back_cannot_be_felt_by_what_the_pane_runs_next() {
     assert_eq!(first_row(&direct, "SELECT name FROM t WHERE id = 1"), ["mine"]);
 }
 
+/// A stopped write-back is dropped where it stands, and dropping its
+/// transaction sends ROLLBACK. That must be the first the server hears after
+/// the stop, so the stop cannot land on it: the connection is let go of after
+/// the server has dealt with the stop, not before. The relay holds the stop
+/// back and sees the order the server does.
+#[test]
+fn postgres_a_stopped_write_back_is_rolled_back_only_after_the_server_has_dealt_with_the_stop() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_stoporder");
+    let direct = scratch.connection();
+    run(&direct, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');");
+    let relay = common::LaggingPostgres::start();
+    relay.hold_cancels(Duration::from_millis(600));
+    let through = postgres_behind_slow_cancels("pg-stop-order", "yz_wb_stoporder", &relay);
+    let locker = raw_postgres("yz_wb_stoporder");
+    let pane = open(&through, "order-pane", &table("public", "t"));
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
+    let writer = writing_on_a_row_lock(&pane, &locker, "yz_wb_stoporder");
+
+    results::lock(&pane.set).stop_write();
+    assert_eq!(
+        within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()),
+        Err(DbError::Cancelled)
+    );
+    runtime::block_on(locker.batch_execute("ROLLBACK")).unwrap();
+    assert_eq!(
+        relay.heard(),
+        [common::Heard::StopDealtWith, common::Heard::RollBack],
+        "the write-back was rolled back before the server had dealt with the stop, which could land on the ROLLBACK"
+    );
+}
+
 /// A pane's connection through a relay of its own that is holding cancels back
 /// (`ssl` is off: the relay tells a cancel request by its first bytes).
 fn postgres_behind_slow_cancels(name: &str, database: &str, relay: &common::LaggingPostgres) -> String {

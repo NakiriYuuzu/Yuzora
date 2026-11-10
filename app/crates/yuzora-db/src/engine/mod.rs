@@ -10,6 +10,7 @@ pub mod postgres;
 pub mod sqlite;
 mod tls;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -27,12 +28,22 @@ pub struct ConnectSpec {
     pub database: Option<String>,
     /// Where to connect instead of `config.host:port`: a tunnel's local end.
     pub endpoint: Option<(String, u16)>,
+    /// PostgreSQL: the addresses to try, in this order, in place of looking the
+    /// host up. The host still names the server for TLS.
+    pub addresses: Option<Vec<SocketAddr>>,
     pub connect_timeout: Duration,
 }
 
 impl ConnectSpec {
     pub fn new(config: ConnectionConfig, password: Option<String>) -> Self {
-        Self { config, password, database: None, endpoint: None, connect_timeout: Duration::from_secs(15) }
+        Self {
+            config,
+            password,
+            database: None,
+            endpoint: None,
+            addresses: None,
+            connect_timeout: Duration::from_secs(15),
+        }
     }
 
     pub fn host(&self) -> &str {
