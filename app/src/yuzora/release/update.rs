@@ -89,12 +89,35 @@ pub fn apply_failure() -> String {
         .unwrap_or_else(|| "no update is ready yet".into())
 }
 
+/// The failure of the swap while an update waits (`waiting`).
+fn current(waiting: bool) -> Option<String> {
+    failure_slot().take().filter(|_| waiting)
+}
+
+/// The failure of the swap, while an update waits: what Settings › Updates shows.
+pub fn swap_failure() -> Option<String> {
+    None
+}
+
+/// The overlay id of the toast that says an update did not install: one at a time.
+pub const FAILED_TOAST: &str = "yuzora-update-failed";
+
+/// The notification for a swap that failed: one line each of title and body (mods/toast), a click opens Updates.
+pub(crate) fn toast_of(_busy: bool) -> serde_json::Value {
+    serde_json::json!({})
+}
+
+/// What `command_error` (src/window.rs) opens when `name` failed with `error`, if that is a swap failure.
+pub fn swap_failure_toast(_name: &str, _error: &str) -> Option<serde_json::Value> {
+    None
+}
+
 /// Windows says "in use" with sharing violation (32), access denied (5) or lock violation (33).
 fn busy_code(code: Option<i32>) -> bool {
     matches!(code, Some(5 | 32 | 33))
 }
 
-fn swap_failure_text(busy: bool, error: &str) -> String {
+pub(crate) fn swap_failure_text(busy: bool, error: &str) -> String {
     let installer = format!("download the installer from https://github.com/{REPO}/releases");
     if busy {
         format!(
@@ -324,20 +347,56 @@ mod tests {
             2,
             "both ways a swap fails"
         );
+        assert!(
+            update.contains("\"failure\": crate::yuzora::release::update::swap_failure()"),
+            "Settings › Updates is told why (status changes redraw it)"
+        );
         let window = include_str!("../../window.rs");
         assert!(
             window.contains("self.fail(crate::yuzora::release::update::apply_failure())"),
             "Restart says why"
         );
+        assert!(
+            window.contains("crate::yuzora::release::update::swap_failure_toast(name, error)"),
+            "the toast for it points at Settings › Updates"
+        );
     }
 
     #[test]
-    fn restart_names_the_failure_once_and_then_the_default() {
-        assert_eq!(apply_failure(), "no update is ready yet");
+    fn a_swap_failure_is_kept_for_as_long_as_the_update_waits_and_has_a_toast() {
+        assert_eq!(current(true), None, "nothing failed yet");
         note_swap_failure(&std::io::Error::other("no"));
-        let said = apply_failure();
+        let said = current(true).expect("said while the update waits");
         assert!(said.contains("could not install the update"), "{said}");
-        assert_eq!(apply_failure(), "no update is ready yet");
+        assert_eq!(current(true).as_deref(), Some(said.as_str()), "Restart again, or Settings, say it again");
+        assert_eq!(current(false), None, "an update that is no longer waiting has nothing to explain");
+        assert_eq!(apply_failure(), "no update is ready yet", "nothing is waiting in a test: the default");
+        let toast = swap_failure_toast("app.update", &said).expect("Restart's failure gets the pointing toast");
+        assert_eq!(toast["notification"]["action"]["args"]["section"], "updates");
+        assert_eq!(swap_failure_toast("app.update", "no update is ready yet"), None);
+        assert_eq!(swap_failure_toast("space.close", &said), None, "another command's error is shown as it is");
+    }
+
+    /// About how wide a line is in the toast (mods/toast truncates each of title and body to one line, 340 px).
+    fn width(text: &str) -> usize {
+        text.chars().map(|c| if c as u32 >= 0x2E80 { 2 } else { 1 }).sum()
+    }
+
+    #[test]
+    fn the_toast_for_a_swap_failure_fits_one_line_and_opens_updates() {
+        for busy in [true, false] {
+            let toast = toast_of(busy);
+            assert_eq!(toast["kind"], "toast");
+            let note = &toast["notification"];
+            assert_eq!(note["level"], "error");
+            assert_eq!(note["action"], serde_json::json!({"name": "app.settings", "args": {"section": "updates"}}), "a click opens Updates, which holds the whole reason");
+            assert!(note["timeout"].as_u64().unwrap() >= 15_000, "stays long enough to read and click");
+            for (part, max) in [("title", 42), ("body", 44)] {
+                let text = note[part].as_str().unwrap_or_default();
+                assert!(!text.is_empty() && width(text) <= max, "{part} must fit one line (busy {busy}): {text:?}");
+            }
+        }
+        assert!(toast_of(true)["notification"]["body"].as_str().unwrap().contains("folder"), "the folder in use is named");
     }
 
     #[test]

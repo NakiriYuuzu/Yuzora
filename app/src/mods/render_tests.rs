@@ -98,7 +98,7 @@ struct Calls {
 
 fn updates(app: &str, core: &str) -> Value {
     json!({
-        "app": {"version":"0.1.0", "updates":app != "source", "ready": (app == "ready").then_some("0.1.1")},
+        "app": {"version":"0.1.0", "updates":app != "source", "ready": matches!(app, "ready" | "stuck").then_some("0.1.1"), "failure": (app == "stuck").then(|| crate::yuzora::release::update::swap_failure_text(true, "(os error 32)"))},
         "core": {"version":"0.1.5", "ready":(core == "ready").then_some("0.1.6"), "managed":(core == "managed").then_some("homebrew"), "error":(core == "error").then_some("offline"), "updating":core == "updating"},
         "checked":1700000000, "checks":app != "source", "checking":false
     })
@@ -770,6 +770,61 @@ fn settings_sections_and_updates(cx: &mut TestAppContext) {
         assert!(tree.contains(if checking { "Checking" } else if succeeded { "Up to date" } else { "Check your connection" }), "check status missing: {tree}");
     }
     eprintln!("27 settings cases, each twice: {:?}", start.elapsed());
+}
+
+// yuzora(win-update): the whole reason a swap failed is a paragraph in Settings › Updates; the toast that points there holds a line.
+/// The lines of `tree` above `at` that enclose it, nearest first.
+fn enclosing(tree: &str, at: usize) -> Vec<&str> {
+    let lines: Vec<&str> = tree.lines().collect();
+    let depth = |l: &str| l.len() - l.trim_start().len();
+    let mut out = Vec::new();
+    let mut want = depth(lines[at]);
+    for line in lines[..at].iter().rev() {
+        if depth(line) < want {
+            out.push(*line);
+            want = depth(line);
+        }
+    }
+    out
+}
+
+const CLIPS: [&str; 4] = ["truncate", "whitespace_nowrap", "text_ellipsis", "overflow_hidden"];
+
+#[gpui::test]
+fn a_failed_swap_is_explained_in_full_under_settings_updates(cx: &mut TestAppContext) {
+    shell_init(cx);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("updates");
+    let reason = crate::yuzora::release::update::swap_failure_text(true, "(os error 32)");
+    assert!(reason.len() > 250, "the reason is a paragraph, far past one toast line: {reason}");
+    let tree = describe(cx, &staged, "frame/settings", true, p.clone(), updates("stuck", "current"), None).unwrap();
+    assert!(tree.contains("st-app-update-failure") && tree.contains("st-app-update"), "Restart stays, and the reason sits with it: {tree}");
+    let at = tree.lines().position(|l| l.trim() == format!("text {reason:?}")).unwrap_or_else(|| panic!("the whole reason as one piece of text: {tree}"));
+    let lines: Vec<&str> = tree.lines().collect();
+    for line in std::iter::once(lines[at - 1]).chain(enclosing(&tree, at)) {
+        assert!(CLIPS.iter().all(|clip| !line.contains(clip)), "the reason is cut off by {line}");
+    }
+    assert!(tree.contains("could not be installed"), "{tree}");
+    let none = describe(cx, &staged, "frame/settings", true, p, updates("ready", "current"), None).unwrap();
+    assert!(!none.contains("st-app-update-failure") && !none.contains("another program"), "nothing failed: nothing to explain: {none}");
+}
+
+#[gpui::test]
+fn the_toast_for_a_failed_swap_shows_its_title_and_body_whole(cx: &mut TestAppContext) {
+    shell_init(cx);
+    let staged = Staged::new();
+    for busy in [true, false] {
+        let toast = crate::yuzora::release::update::toast_of(busy);
+        let mut note = toast["notification"].clone();
+        note["overlay"] = json!("o1");
+        let (title, body) = (note["title"].as_str().unwrap().to_owned(), note["body"].as_str().unwrap().to_owned());
+        let tree = describe(cx, &staged, "mods/toast", true, note, updates("stuck", "current"), None).unwrap();
+        for text in [&title, &body] {
+            assert!(tree.contains(&format!("text {text:?}")), "{text}: {tree}");
+        }
+        assert_eq!(tree.matches(".truncate").count(), 2, "the toast truncates one line each, so each line has to fit it (update.rs checks their width): {tree}");
+    }
 }
 
 #[gpui::test]
