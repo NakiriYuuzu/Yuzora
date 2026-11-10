@@ -713,6 +713,14 @@ test("the watcher is set up when a read ends, though another read is already ask
   expect(s.pending("watch").map(c => c.args[0])).toEqual(["/a"]);
 });
 
+test("no watcher is set up by a read whose root could not be listed", async () => {
+  const s = sidebar();
+  await flush();
+  await s.answer(s.pending("git")[0], repo("/a"));
+  await s.fail(s.pending("list")[0], new Error("EACCES /a"));
+  expect(s.pending("watch")).toHaveLength(0);
+});
+
 test("an open search follows the files when a read ends, though another read is already asked for", async () => {
   const s = sidebar();
   await s.settle(A, repo("/a"));
