@@ -418,6 +418,28 @@ enum Stop {
     Count(StandDown),
 }
 
+impl Stop {
+    /// Presses the stop, with the jobs lock held. `Serving` lets go of its
+    /// stop under that lock, and does so before the job lets go of the
+    /// connection, so a stop that was pressed is counted on its way before
+    /// any other work can have the connection and not wait for it.
+    fn press(&self, _jobs: &MutexGuard<'static, (JobId, HashMap<JobId, Job>)>) {
+        #[cfg(test)]
+        PRESSED_WITH_THE_LOCK_HELD
+            .with(|held| held.set(Some(matches!(JOBS.try_lock(), Err(std::sync::TryLockError::WouldBlock)))));
+        match self {
+            Stop::Statement(c) => c.cancel_in_background(),
+            Stop::Count(count) => count.call(),
+        }
+    }
+}
+
+/// Whether the last stop pressed on this thread was pressed with the jobs lock held.
+#[cfg(test)]
+thread_local! {
+    static PRESSED_WITH_THE_LOCK_HELD: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
 /// While the guard lives, `job`'s Stop reaches what `stop` belongs to: the
 /// statement the job runs on the connection it holds. Take it once that lease
 /// is held and let it go before the lease is: a pane's connection also carries
@@ -508,13 +530,8 @@ pub fn cancel(id: JobId) {
             return;
         }
         job.cancelled = true;
-        // Made under the lock `Serving` lets go of itself under, which it does
-        // before the job lets go of the connection: the stop is counted on its
-        // way before any work can have the connection and not wait for it.
-        match &job.serving {
-            Some(Stop::Statement(c)) => c.cancel_in_background(),
-            Some(Stop::Count(count)) => count.call(),
-            None => {}
+        if let Some(stop) = job.serving.clone() {
+            stop.press(&all);
         }
     }
     update_job(id, |_| {});
@@ -1094,6 +1111,24 @@ mod tests {
         query.columns(vec![Column::new("x", "int4")]);
         assert_eq!(results::lock(query.last.as_ref().unwrap()).editing, Editing::ReadOnly(ReadOnly::Query));
         supersede("sink-test");
+    }
+
+    /// The stop is counted on its way under the lock `Serving` lets go of its
+    /// stop under, which the job does before it lets go of the connection. The
+    /// race this closes (the connection handed to the next work between the
+    /// stop being found and being counted) cannot be made to happen on cue, so
+    /// the test looks at what it depends on: the stop is pressed with the lock held.
+    #[test]
+    fn a_stop_is_pressed_with_the_jobs_lock_held() {
+        let id = new_job("stop-under-lock");
+        PRESSED_WITH_THE_LOCK_HELD.with(|held| held.set(None));
+        let count = StandDown::new();
+        let _serving = serving(id, Stop::Count(count.clone()));
+        cancel(id);
+        let held = PRESSED_WITH_THE_LOCK_HELD.with(|held| held.get());
+        supersede("stop-under-lock");
+        assert_eq!(held, Some(true), "the stop was pressed without the jobs lock (None: not pressed at all)");
+        assert!(count.0.subscribe().borrow().to_owned(), "the stop reached the count");
     }
 
     #[test]
