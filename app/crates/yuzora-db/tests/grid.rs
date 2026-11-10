@@ -233,7 +233,7 @@ fn the_footers_buttons_stay_inside_a_pane_of_any_width(cx: &mut TestAppContext) 
     let states: [(&str, State, &[&'static str]); 3] = [
         ("edited", Box::new(|_| {}), &["grid-discard", "grid-write"]),
         ("failed", Box::new(|r| r.write = WriteState::failed(LONG)), &["grid-discard", "grid-write", "grid-message"]),
-        ("writing", Box::new(|r| r.write = WriteState::Writing(WriteStop::new())), &["grid-stop", "grid-discard"]),
+        ("writing", Box::new(|r| r.write = WriteState::Writing(WriteStop::new())), &["grid-stop"]),
     ];
     for width in [120.0, 150.0, 180.0, 240.0, 420.0] {
         for (name, state, buttons) in &states {
@@ -248,6 +248,21 @@ fn the_footers_buttons_stay_inside_a_pane_of_any_width(cx: &mut TestAppContext) 
             }
         }
     }
+}
+
+// Edits on their way to the database can't be taken back from the footer: Discard goes while they are written, and
+// is there again once the write has ended (stopped or failed), the same as the unsaved-edits bar of the table pane.
+#[gpui::test]
+fn the_footer_does_not_offer_to_discard_edits_that_are_being_written(cx: &mut TestAppContext) {
+    cx.update(gpui_base::init);
+    let id = pending("discard-while-writing", |r| r.write = WriteState::Writing(WriteStop::new()));
+    let writing = window(cx, "discard-while-writing", id, 420.0, 300.0);
+    assert!(writing.debug_bounds("grid-stop").is_some(), "the write can be stopped");
+    assert!(writing.debug_bounds("grid-discard").is_none(), "Discard is offered for edits that are being written");
+
+    let id = pending("discard-after-stop", |r| r.write = WriteState::failed("Write-back stopped"));
+    let stopped = window(cx, "discard-after-stop", id, 420.0, 300.0);
+    assert!(stopped.debug_bounds("grid-discard").is_some() && stopped.debug_bounds("grid-write").is_some());
 }
 
 #[gpui::test]

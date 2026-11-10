@@ -339,7 +339,11 @@ fn write_back_waiting_on_a_lock(connection: &str, t: ObjectRef, begin_and_lock: 
     {
         let r = results::lock(&pane.set);
         assert!(!r.is_writing());
-        assert!(r.write_failure().is_some_and(|m| !m.is_empty()), "a stopped write-back says so: {:?}", r.write);
+        assert_eq!(
+            r.write_failure().map(str::to_owned),
+            Some(yuzora_db::i18n::t("edit.stopped", &[])),
+            "stopped on a lock, so nothing was sent to commit"
+        );
         assert_eq!(r.edits.len(), 1, "the edit stays pending");
     }
     assert_eq!(first_row(connection, &format!("SELECT name FROM {} WHERE id = 1", qualified(&t, connection))), ["a"]);
@@ -390,7 +394,7 @@ fn sqlite_a_write_back_queued_behind_the_connection_shows_it_and_can_be_stopped(
     {
         let r = results::lock(&pane.set);
         assert!(!r.is_writing());
-        assert!(r.write_failure().is_some_and(|m| !m.is_empty()), "{:?}", r.write);
+        assert_eq!(r.write_failure().map(str::to_owned), Some(yuzora_db::i18n::t("edit.stopped", &[])), "{:?}", r.write);
         assert_eq!(r.edits.len(), 1, "the edit stays pending");
     }
     assert_eq!(rows(&id, "select name from people where id = 1"), [["a"]], "nothing was written");
@@ -958,7 +962,7 @@ fn sqlite_stopping_a_write_back_leaves_the_count_running() {
     assert!(state.running && !state.cancelled, "the write-back's Stop is not the table's: {state:?}");
     {
         let r = results::lock(&pane.set);
-        assert_eq!(r.write_failure().map(str::to_owned), Some(yuzora_db::i18n::t("edit.stopped_maybe", &[])));
+        assert_eq!(r.write_failure().map(str::to_owned), Some(yuzora_db::i18n::t("edit.stopped", &[])));
     }
     other.execute_batch("ROLLBACK").unwrap();
 
@@ -1043,7 +1047,7 @@ fn postgres_stopping_a_write_back_says_so_in_words_and_leaves_the_count_running(
     let stopped = within(Duration::from_secs(5), "the stopped write-back", move || writer.join().unwrap());
     assert_eq!(stopped, Err(DbError::Cancelled));
     let words = results::lock(&set).write_failure().map(str::to_owned).unwrap_or_default();
-    assert_eq!(words, yuzora_db::i18n::t("edit.stopped_maybe", &[]), "not the server's: {words}");
+    assert_eq!(words, yuzora_db::i18n::t("edit.stopped", &[]), "stopped on a lock, nothing was committed: {words}");
     let state = session::job_state(job).unwrap();
     assert!(state.running && !state.cancelled, "{state:?}");
     run(&id, "locker", "ROLLBACK");
@@ -1052,6 +1056,43 @@ fn postgres_stopping_a_write_back_says_so_in_words_and_leaves_the_count_running(
     assert!(!state.cancelled);
     assert_eq!(results::lock(&set).total, Some(1));
     assert_eq!(first_row(&id, "SELECT name FROM t WHERE id = 1"), ["a"]);
+}
+
+/// Only a Stop that lands once COMMIT has been sent leaves it open whether the
+/// database kept the changes: before that the transaction was never ended, and
+/// the server rolls it back.
+#[test]
+fn postgres_a_write_back_stopped_while_the_server_commits_says_the_database_may_have_saved_it() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_stopcommit");
+    let id = scratch.connection();
+    let admin = raw_postgres("yz_wb_stopcommit");
+    runtime::block_on(admin.batch_execute(
+        "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');
+         CREATE FUNCTION slow_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(3); RETURN NULL; END $$;
+         CREATE CONSTRAINT TRIGGER slow_commit AFTER UPDATE ON t DEFERRABLE INITIALLY DEFERRED
+           FOR EACH ROW EXECUTE FUNCTION slow_commit();",
+    ))
+    .unwrap();
+    let pane = open(&id, "commit-pane", &table("public", "t"));
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    let writer = {
+        let set = pane.set.clone();
+        std::thread::spawn(move || runtime::block_on(session::write_back_set(&set)))
+    };
+    until("the server never started to commit", || {
+        let committing = runtime::block_on(admin.query_one(
+            "SELECT count(*)::int FROM pg_stat_activity WHERE datname = 'yz_wb_stopcommit' AND state = 'active' AND query = 'COMMIT'",
+            &[],
+        ))
+        .unwrap();
+        committing.get::<_, i32>(0) == 1
+    });
+
+    session::stop_write(pane.id);
+    assert_eq!(within(Duration::from_secs(10), "the stopped write-back", move || writer.join().unwrap()), Err(DbError::Cancelled));
+    let words = results::lock(&pane.set).write_failure().map(str::to_owned).unwrap_or_default();
+    assert_eq!(words, yuzora_db::i18n::t("edit.stopped_maybe", &[]), "COMMIT was on its way: {words}");
 }
 
 #[test]

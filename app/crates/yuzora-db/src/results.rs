@@ -118,6 +118,10 @@ impl WriteStop {
         self.0.send_replace(true);
     }
 
+    pub fn is_stopped(&self) -> bool {
+        *self.0.borrow()
+    }
+
     /// Resolves once [`WriteStop::stop`] was called (at once if it already was).
     pub async fn stopped(&self) {
         let _ = self.0.subscribe().wait_for(|stopped| *stopped).await;
@@ -574,6 +578,21 @@ mod tests {
         r.write = WriteState::Idle;
         r.show_failure(&DbError::NotFound(String::new()));
         assert!(r.write_failure().is_some_and(|m| !m.is_empty()), "even an empty error shows words");
+    }
+
+    #[test]
+    fn edits_that_are_being_written_are_not_discarded_until_the_write_ends() {
+        let set = filled("t-discard-writing");
+        let mut r = lock(&set);
+        r.set_edit(0, 1, Cell::text("z"));
+        let stop = WriteStop::new();
+        r.write = WriteState::Writing(stop.clone());
+        r.discard_edits();
+        assert_eq!(r.edits.len(), 1, "a discard can't take back what may reach the database");
+        assert!(r.is_writing() && !stop.is_stopped(), "and it doesn't stop the write either");
+        r.write = WriteState::failed("stopped");
+        r.discard_edits();
+        assert!(r.edits.is_empty(), "once the write is over the edits are the pane's to drop");
     }
 
     #[test]
