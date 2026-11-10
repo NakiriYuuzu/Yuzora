@@ -218,6 +218,11 @@ struct Opened {
 }
 
 impl Opened {
+    /// Connections this open made (the ones already in the pool are not).
+    fn made(&self) -> usize {
+        self.conns.iter().filter(|c| !c.pooled).count()
+    }
+
     /// The connection the table's rows came over: the only one that carries many bytes.
     fn pane(&self) -> &ConnStat {
         self.conns.iter().filter(|c| c.down >= 20_000).max_by_key(|c| c.down).expect("the rows came over a connection")
@@ -285,6 +290,12 @@ fn the_rows_are_asked_for_before_the_description_is_back() {
             kind.name(),
             cold.pane().first_ms
         );
+        assert_eq!(
+            cold.made(),
+            3,
+            "{}: cold, an open makes the sidebar's, the table's and the count's connection and no other",
+            kind.name()
+        );
 
         let warm = open(&line, &id, &owner, &t);
         assert_eq!(warm.error, None, "{}", kind.name());
@@ -301,6 +312,7 @@ fn the_rows_are_asked_for_before_the_description_is_back() {
             kind.name(),
             warm.pane().first_ms
         );
+        assert_eq!(warm.made(), 1, "{}: warm, only the count makes a connection", kind.name());
 
         // connections that were closed meanwhile are still saying goodbye
         std::thread::sleep(Duration::from_millis(300));
