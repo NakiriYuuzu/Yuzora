@@ -1204,8 +1204,9 @@ with these differences.
   of the list (or past it) the list scrolls and the selection goes on with it:
   a row every 50 ms (20 rows a second) at the bottom edge, and from the header
   above the list up to three rows a tick (60 rows a second), faster only under
-  a taller strip (eight a tick at most; those are the 50 ms tick, and the macOS
-  window's repeated moves of a held drag may add scrolls on top). The drag ends, and keeps the
+  a taller strip (eight a tick at most). The list scrolls only on that 50 ms
+  tick, the same on every platform: pointer moves, which macOS repeats every
+  16 ms while the button is held, move the selection and never scroll. The drag ends, and keeps the
   selection, when the button is let go, when a pointer move says the button is
   up (an app-wide shortcut pressed during the drag keeps the release from
   reaching the pane), when the pointer leaves the pane, when the pane loses
