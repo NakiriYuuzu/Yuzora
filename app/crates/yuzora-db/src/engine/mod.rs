@@ -5,6 +5,7 @@
 //! elsewhere while it is busy — stopping a query — goes through its
 //! [`Canceller`].
 
+mod date_text;
 pub mod mssql;
 pub mod postgres;
 pub mod sqlite;

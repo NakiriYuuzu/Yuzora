@@ -21,6 +21,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
+use super::date_text::{self, DateText};
 use super::{BATCH, CommitSent, ConnectSpec, RowSink};
 use crate::config::{Engine, SslMode};
 use crate::error::{DbError, DbResult};
@@ -784,19 +785,18 @@ impl<'a> Param<'a> {
             Cell::Bool(b) => Param::Bool(*b),
             Cell::Int(i) => Param::Int(*i),
             Cell::Float(f) => Param::Float(*f),
-            // Written year first, the server is not asked to read it: either it is
-            // exactly a date and a time that is sent in the one way every session
-            // reads, or it is not saved at all.
-            Cell::Text(s) if dates.contains(column) && starts_with_year(s) => match iso_8601(s) {
-                Some(iso) => Param::Text(Cow::Owned(iso)),
-                None => {
+            // A year-first date is never left for the server to read: it is sent the one
+            // way every session reads, or not at all (see `date_text`).
+            Cell::Text(s) => match dates.contains(column).then(|| date_text::classify(s)) {
+                Some(DateText::Client(iso)) => Param::Text(Cow::Owned(iso)),
+                Some(DateText::Refused) => {
                     return Err(DbError::NotEditable(crate::i18n::t(
                         "edit.bad_date",
                         &[("column", column.to_owned()), ("text", s.to_string())],
                     )));
                 }
+                Some(DateText::Session) | None => Param::Text(Cow::Borrowed(s)),
             },
-            Cell::Text(s) => Param::Text(Cow::Borrowed(s)),
             Cell::Bytes(b) => Param::Bytes(b),
         })
     }
@@ -811,97 +811,6 @@ impl<'a> Param<'a> {
             Param::Null => &NO_TEXT,
         }
     }
-}
-
-/// Whether `text` starts the way a date written year first does: four digits.
-fn starts_with_year(text: &str) -> bool {
-    text.trim_start().as_bytes().get(..4).is_some_and(|year| year.iter().all(u8::is_ascii_digit))
-}
-
-/// A date, or a date and a time, written year first (`2024-01-06 10:00:00.5`,
-/// `2024/1/6 2:30 PM`, `20240106`) as `2024-01-06T10:00:00.5`. `datetime` and
-/// `smalldatetime` read the first by the session's `DATEFORMAT` (a day-first
-/// login stores January 6th as June 1st), the second the same way under every
-/// one. `None` for anything that is not exactly such a date: what a clock
-/// shows only one reading of is converted, the rest is left for the person to
-/// write again.
-fn iso_8601(text: &str) -> Option<String> {
-    let text = text.trim();
-    let (date, rest) = text.split_at(text.find(|c: char| c.is_whitespace() || c == 'T').unwrap_or(text.len()));
-    let (year, month, day) = if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) {
-        (&date[..4], &date[4..6], &date[6..])
-    } else {
-        let separator = date.chars().nth(4).filter(|c| matches!(c, '-' | '/' | '.'))?;
-        let mut parts = date.split(separator);
-        let parts = (parts.next()?, parts.next()?, parts.next()?, parts.next());
-        if parts.3.is_some() {
-            return None;
-        }
-        (parts.0, parts.1, parts.2)
-    };
-    let (year, month, day) = (number(year, 4..=4)?, number(month, 1..=2)?, number(day, 1..=2)?);
-    chrono::NaiveDate::from_ymd_opt(i32::try_from(year).ok()?, month, day)?;
-    let time = match rest {
-        "" => "00:00:00".to_owned(),
-        _ => clock(rest.strip_prefix('T').unwrap_or_else(|| rest.trim_start()))?,
-    };
-    Some(format!("{year:04}-{month:02}-{day:02}T{time}"))
-}
-
-/// `14:30`, `14:30:15.5`, `2:30 PM`, `10AM` as `HH:MM:SS[.f]`. The minutes and
-/// seconds are two digits; a colon before the fraction (SQL Server reads the
-/// digits after it as milliseconds, not as a fraction), a zone and a clock that
-/// is neither 24-hour nor 12-hour with AM or PM are not read.
-fn clock(text: &str) -> Option<String> {
-    let (time, pm) = match text.len().checked_sub(2).and_then(|at| text.get(at..)) {
-        Some(tail) if tail.eq_ignore_ascii_case("am") => (text[..text.len() - 2].trim_end(), Some(false)),
-        Some(tail) if tail.eq_ignore_ascii_case("pm") => (text[..text.len() - 2].trim_end(), Some(true)),
-        _ => (text, None),
-    };
-    let (time, fraction) = match time.split_once('.') {
-        Some((time, fraction)) => (time, Some(fraction)),
-        None => (time, None),
-    };
-    let mut fields = time.split(':');
-    let hour = number(fields.next()?, 1..=2)?;
-    let minute = match fields.next() {
-        Some(m) => Some(number(m, 2..=2)?),
-        None => None,
-    };
-    let second = match fields.next() {
-        Some(s) => Some(number(s, 2..=2)?),
-        None => None,
-    };
-    if fields.next().is_some() || (fraction.is_some() && second.is_none()) {
-        return None;
-    }
-    let fraction = match fraction {
-        Some(f) if number_text(f, 1..=9) => Some(f),
-        Some(_) => return None,
-        None => None,
-    };
-    let hour = match pm {
-        Some(pm) if (1..=12).contains(&hour) => hour % 12 + if pm { 12 } else { 0 },
-        Some(_) => return None,
-        None if hour <= 23 && minute.is_some() => hour,
-        None => return None,
-    };
-    let (minute, second) = (minute.unwrap_or(0), second.unwrap_or(0));
-    if minute > 59 || second > 59 {
-        return None;
-    }
-    Some(match fraction {
-        Some(fraction) => format!("{hour:02}:{minute:02}:{second:02}.{fraction}"),
-        None => format!("{hour:02}:{minute:02}:{second:02}"),
-    })
-}
-
-fn number_text(part: &str, digits: std::ops::RangeInclusive<usize>) -> bool {
-    digits.contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())
-}
-
-fn number(part: &str, digits: std::ops::RangeInclusive<usize>) -> Option<u32> {
-    number_text(part, digits).then(|| part.parse().ok()).flatten()
 }
 
 /// Which of `columns` of `table` are `datetime` or `smalldatetime`: the two
@@ -932,11 +841,11 @@ async fn date_columns(
 }
 
 /// The columns whose text the server could read a day-first date from: the ones
-/// that hold something written year first.
+/// that hold a year-first date.
 fn year_first_columns<'a>(edits: &[&'a RowEdit]) -> Vec<&'a str> {
     let mut columns: Vec<&str> = Vec::new();
     for (column, cell) in edits.iter().flat_map(|e| e.changes.iter().chain(&e.key)) {
-        if matches!(cell, Cell::Text(s) if starts_with_year(s)) && !columns.contains(&column.as_str()) {
+        if matches!(cell, Cell::Text(s) if !matches!(date_text::classify(s), DateText::Session)) && !columns.contains(&column.as_str()) {
             columns.push(column);
         }
     }
@@ -1174,65 +1083,6 @@ mod tests {
             update_sql("app", &t("dbo", "people"), &edit),
             "UPDATE [app].[dbo].[people] SET [name] = @P1, [age] = @P2 WHERE [id] = @P3 AND [a]]b] = @P4; SELECT ROWCOUNT_BIG();"
         );
-    }
-
-    #[test]
-    fn a_year_first_date_is_written_the_one_way_every_dateformat_reads() {
-        for (typed, sent) in [
-            ("2024-01-06 10:00:00", "2024-01-06T10:00:00"),
-            ("2024-01-13 10:00:00.997", "2024-01-13T10:00:00.997"),
-            ("2024-01-06T10:00", "2024-01-06T10:00:00"),
-            ("2024-01-06", "2024-01-06T00:00:00"),
-            ("2024/1/6 9:05", "2024-01-06T09:05:00"),
-            ("  2024.01.06 10:00:00  ", "2024-01-06T10:00:00"),
-            ("20240106", "2024-01-06T00:00:00"),
-            ("20240106 10:00", "2024-01-06T10:00:00"),
-            ("2024-01-06 2:30 PM", "2024-01-06T14:30:00"),
-            ("2024-01-06 2:30PM", "2024-01-06T14:30:00"),
-            ("2024-01-06 02:30 pm", "2024-01-06T14:30:00"),
-            ("2024-01-06 10:00:00 AM", "2024-01-06T10:00:00"),
-            ("2024-01-06 12:00 AM", "2024-01-06T00:00:00"),
-            ("2024-01-06 12:30 AM", "2024-01-06T00:30:00"),
-            ("2024-01-06 12:00 PM", "2024-01-06T12:00:00"),
-            ("2024-01-06 12:30:15.5 PM", "2024-01-06T12:30:15.5"),
-            ("2024-01-06 10AM", "2024-01-06T10:00:00"),
-            ("2024-01-06 11 pm", "2024-01-06T23:00:00"),
-        ] {
-            assert_eq!(iso_8601(typed).as_deref(), Some(sent), "{typed}");
-        }
-        for typed in [
-            "",
-            "13/01/2024",
-            "06/01/24",
-            "6 Jan 2024",
-            "24-01-06",
-            "2024-01",
-            "2024-01-06 10",
-            "2024-01-06 9:5",
-            "2024-01-06 10:00:5",
-            "2024-01-06 1:2:3",
-            "2024-01-06 10:00:00:000",
-            "2024-01-06 10:00:00:5",
-            "2024-01-06 10:00 :00",
-            "2024-01-06 13:00 PM",
-            "2024-01-06 0:30 AM",
-            "2024-01-06 24:00",
-            "2024-01-06 10:60",
-            "2024-01-06 10:00:60",
-            "2024-01-06 10:00:00+08:00",
-            "2024-01-06 10:00:00Z",
-            "2024-01-06 10:00:00.",
-            "2024-01-06 10:00:00.1234567890",
-            "2024-02-30",
-            "2024-13-06",
-            "2024-01-06-07",
-            "2024-01/06",
-            "2024 Jan 6",
-            "10:00:00",
-            "x2024-01-06",
-        ] {
-            assert_eq!(iso_8601(typed), None, "{typed:?} is not a year-first date and time the server reads one way");
-        }
     }
 
     #[test]

@@ -22,7 +22,7 @@
     "open_transaction": "The SQL tab left a transaction open on this connection: COMMIT or ROLLBACK it there, then write back",
     "open_implicit_transaction": "This connection opens a transaction by itself (IMPLICIT_TRANSACTIONS is on), and reading the table left one open. In the SQL tab run COMMIT and SET IMPLICIT_TRANSACTIONS OFF, read the table again, then write back",
     "not_committed": "SQL Server did not commit the write-back (a transaction is still open on the connection); nothing was written",
-    "bad_date": "{column}: \"{text}\" can't be saved as a date and time. Write it year first, as 2024-01-31 14:30:00 (the seconds are optional), or with AM or PM after the time",
+    "bad_date": "{column}: \"{text}\" can't be saved as a date and time. Write it as 2024-01-31 14:30:00 (the seconds are optional), or with AM or PM after the time",
     "no_info": "Read-only: could not read the table's key ({error})",
     "null_key": "A row's primary key is NULL; it can't be found to update"
   },

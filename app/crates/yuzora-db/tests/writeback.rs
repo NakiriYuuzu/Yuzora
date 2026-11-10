@@ -1836,7 +1836,6 @@ fn year_first_inputs() -> Vec<String> {
         " 23:59:59.999",
         " 23:59:30",
         " 10:00:29.999",
-        " 10:00:00Z",
         " 10:00:00+08:00",
         " 10:00:00 +08:00",
         "T10:00",
@@ -1864,12 +1863,14 @@ fn year_first_inputs() -> Vec<String> {
         }
     }
     for date in ["2024-01-06", "2024/1/6", "2024.01.06", "20240106", "2024-02-03"] {
-        for time in ["10:00", "10:00:00", "10:00:00.5", "2:30 PM", "12:00 AM", "10:00:00Z", "9:5", "10:00:00+08:00", "13:00 PM"] {
+        for time in ["10:00", "10:00:00", "10:00:00.5", "2:30 PM", "12:00 AM", "9:5", "10:00:00+08:00", "13:00 PM"] {
             inputs.push(format!("{time} {date}"));
         }
-        for time in ["10:00:00Z", "10:00:00.000Z", "10:00:00.250Z", "10:00Z"] {
-            inputs.push(format!("{date}T{time}"));
-            inputs.push(format!("{date} {time}"));
+        // ISO 8601 as the server itself reads it; the other writings with a Z are in the engine tests.
+        if date.starts_with("2024-") {
+            for time in ["10:00:00Z", "10:00:00.000Z", "10:00:00.250Z"] {
+                inputs.push(format!("{date}T{time}"));
+            }
         }
     }
     inputs.sort();
@@ -1900,7 +1901,6 @@ const YEAR_FIRST_STORED: &[&str] = &[
     "10:00:00 2024.01.06",
     "2024-01-06T10:00:00Z",
     "2024-01-06T10:00:00.000Z",
-    "2024-01-06 10:00:00Z",
 ];
 
 /// The shapes a day-first login used to read as another day, or another time of day.
