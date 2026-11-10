@@ -335,6 +335,23 @@ impl ResultSet {
         self.version += 1;
     }
 
+    /// Keeps what was typed into a cell as a pending edit, if it is one.
+    /// `original` is the cell as shown when the editor opened, `initial` the
+    /// text it opened with, `meant` whether the person typed into it or pressed
+    /// Enter (see [`typed_value`]). `false`: nothing to keep.
+    pub fn type_into(&mut self, row: usize, column: usize, original: &Cell, initial: &str, text: String, meant: bool) -> bool {
+        let Some(value) = typed_value(original, initial, text, meant, self.clears_to_null(column)) else { return false };
+        self.set_edit(row, column, value);
+        true
+    }
+
+    /// Whether a cleared cell of `column` is NULL (see [`clears_to_null`](crate::model::clears_to_null)).
+    pub fn clears_to_null(&self, column: usize) -> bool {
+        self.target()
+            .zip(self.columns.get(column))
+            .is_some_and(|(target, c)| crate::model::clears_to_null(target.config.engine, &c.type_name))
+    }
+
     /// Edits that are being written are not the result's to drop: they may
     /// reach the database whatever is done here. Stop the write first.
     pub fn discard_edits(&mut self) {
@@ -479,9 +496,93 @@ pub fn release_owner(owner: &str) {
     store().entries.retain(|_, e| e.owner != owner);
 }
 
+/// What the inline editor's text makes of a cell, if anything: opened and
+/// left as it was, nothing. A NULL cell opens blank, so blank there means an
+/// empty string only once it was typed into or Enter was pressed (`meant`).
+/// In a column whose type has no empty value (`empty_is_null`) blank is
+/// NULL, shown as NULL before anything is written; a NULL cell left blank
+/// stays the NULL it was.
+fn typed_value(original: &Cell, initial: &str, value: String, meant: bool, empty_is_null: bool) -> Option<Cell> {
+    if empty_is_null && value.trim().is_empty() {
+        return (value != initial && !original.is_null()).then_some(Cell::Null);
+    }
+    (value != initial || (original.is_null() && meant)).then(|| original.edited(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_null_cell_can_become_an_empty_string() {
+        // Typed into (or Enter pressed on) a NULL cell left blank: an empty string.
+        assert_eq!(typed_value(&Cell::Null, "", String::new(), true, false), Some(Cell::text("")));
+        // Opened and left without a key: still NULL.
+        assert_eq!(typed_value(&Cell::Null, "", String::new(), false, false), None);
+        // A value left as it was is no edit, however it was left.
+        assert_eq!(typed_value(&Cell::Int(5), "5", "5".into(), true, false), None);
+        assert_eq!(typed_value(&Cell::text(""), "", String::new(), true, false), None, "an empty string stays one");
+        assert_eq!(typed_value(&Cell::text("a"), "a", "b".into(), false, false), Some(Cell::text("b")));
+        assert_eq!(typed_value(&Cell::Null, "", "x".into(), false, false), Some(Cell::text("x")));
+    }
+
+    #[test]
+    fn a_cleared_cell_of_a_type_without_an_empty_value_is_null() {
+        // Backspace and Enter on a number or a date: the NULL it shows, not an empty string for the server to guess at.
+        assert_eq!(typed_value(&Cell::Int(5), "5", String::new(), false, true), Some(Cell::Null));
+        assert_eq!(typed_value(&Cell::Int(5), "5", String::new(), true, true), Some(Cell::Null));
+        assert_eq!(typed_value(&Cell::text("2024-01-05 10:00:00"), "2024-01-05 10:00:00", "  ".into(), true, true), Some(Cell::Null));
+        // A NULL cell opened and left blank, or entered on, is the NULL it was: nothing to write.
+        assert_eq!(typed_value(&Cell::Null, "", String::new(), true, true), None);
+        assert_eq!(typed_value(&Cell::Null, "", String::new(), false, true), None);
+        // A value typed over still goes by the old rules.
+        assert_eq!(typed_value(&Cell::Int(5), "5", "7".into(), false, true), Some(Cell::Int(7)));
+        assert_eq!(typed_value(&Cell::Null, "", "x".into(), false, true), Some(Cell::text("x")));
+        // The character types keep the empty string they can hold.
+        assert_eq!(typed_value(&Cell::text("a"), "a", String::new(), true, false), Some(Cell::text("")));
+    }
+
+    #[test]
+    fn a_result_knows_from_its_column_and_engine_whether_clearing_means_null() {
+        let set = create("clears-to-null", "select");
+        let mut r = lock(&set);
+        r.columns = vec![Column::new("n", "int"), Column::new("s", "nvarchar"), Column::new("d", "timestamptz")];
+        r.rows = vec![vec![Cell::Int(5), Cell::text("a"), Cell::text("2024-01-05 10:00:00+08")]];
+        let target = |engine: &str| EditTarget {
+            connection: "c".into(),
+            config: serde_json::from_value(serde_json::json!({"name": "c", "engine": engine, "path": "t.sqlite", "host": "h", "user": "u"})).unwrap(),
+            database: None,
+            owner: "clears-to-null".into(),
+            table: ObjectRef { schema: String::new(), name: "t".into() },
+            key: vec![0],
+            read_only: Vec::new(),
+        };
+        r.editing = Editing::Editable(Box::new(target("mssql")));
+        assert_eq!((r.clears_to_null(0), r.clears_to_null(1), r.clears_to_null(2)), (true, false, false));
+        assert!(r.type_into(0, 0, &Cell::Int(5), "5", String::new(), true));
+        assert_eq!(r.cell(0, 0), Some(&Cell::Null));
+        r.editing = Editing::Editable(Box::new(target("postgres")));
+        assert_eq!((r.clears_to_null(0), r.clears_to_null(1), r.clears_to_null(2)), (false, false, true));
+        r.editing = Editing::Editable(Box::new(target("sqlite")));
+        assert_eq!((r.clears_to_null(0), r.clears_to_null(1), r.clears_to_null(2)), (false, false, false));
+        r.editing = Editing::ReadOnly(ReadOnly::Query);
+        assert!(!r.clears_to_null(0), "a result that is not a table's has no engine to ask");
+        drop(r);
+        release_owner("clears-to-null");
+    }
+
+    #[test]
+    fn an_edited_number_stays_a_number() {
+        // SQLite keeps what is bound in a column without affinity: 7 must go as an integer.
+        assert_eq!(typed_value(&Cell::Int(5), "5", "7".into(), false, false), Some(Cell::Int(7)));
+        assert_eq!(typed_value(&Cell::Float(1.5), "1.5", "2".into(), false, false), Some(Cell::Float(2.0)));
+        // Not of the cell's kind: text, for the server to convert or refuse
+        // (SQL Server would cut a float 7.5 to 7 in an int column, silently).
+        assert_eq!(typed_value(&Cell::Int(5), "5", "7.5".into(), false, false), Some(Cell::text("7.5")));
+        assert_eq!(typed_value(&Cell::Int(5), "5", "five".into(), false, false), Some(Cell::text("five")));
+        assert_eq!(typed_value(&Cell::Float(1.5), "1.5", "NaN".into(), false, false), Some(Cell::text("NaN")));
+        assert_eq!(typed_value(&Cell::text("5"), "5", "7".into(), false, false), Some(Cell::text("7")), "text stays text");
+    }
 
     fn filled(owner: &str) -> Arc<Mutex<ResultSet>> {
         let set = create(owner, "select");

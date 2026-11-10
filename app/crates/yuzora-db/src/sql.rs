@@ -203,10 +203,18 @@ pub fn key_mismatch(key: &[(String, Cell)], matched: u64) -> String {
     crate::i18n::t("engine.key_mismatch", &[("key", key.join(", ")), ("count", matched.to_string())])
 }
 
-/// Write-back refused: the connection is inside a transaction the SQL tab
-/// left open, which the write-back's own commit would get tangled in.
+/// Write-back refused: the connection is inside a transaction, which the
+/// write-back's own commit would get tangled in. The connection a table is saved on is the
+/// app's alone, so it is not a person's: a trigger or the server's settings opened it, and the
+/// person can only end it by ending the connection (closing the table).
 pub fn open_transaction() -> crate::error::DbError {
     crate::error::DbError::NotEditable(crate::i18n::t("edit.open_transaction", &[]))
+}
+
+/// [`open_transaction`] on a SQL Server connection that opens one by itself
+/// (`IMPLICIT_TRANSACTIONS`); the open one can hold changes nothing has committed.
+pub fn open_implicit_transaction() -> crate::error::DbError {
+    crate::error::DbError::NotEditable(crate::i18n::t("edit.open_implicit_transaction", &[]))
 }
 
 // ---------------------------------------------------------------- scanning
@@ -415,6 +423,18 @@ mod tests {
 
     fn texts(sql: &str, engine: Engine) -> Vec<String> {
         split(sql, engine).into_iter().map(|s| s.text).collect()
+    }
+
+    #[test]
+    fn a_refusal_for_an_open_transaction_asks_only_what_a_person_can_do_on_the_tables_connection() {
+        for words in ["edit.open_transaction", "edit.open_implicit_transaction"] {
+            let said = crate::i18n::t(words, &[]);
+            assert!(said.contains("nothing was written"), "{said}");
+            assert!(said.contains("Close this table and open it again"), "{words}: closing the table is what ends that connection: {said}");
+            assert!(!said.contains("SQL tab"), "{words}: the table's connection is not the SQL tab's: {said}");
+            assert!(!said.contains("COMMIT"), "{words}: nothing a person runs reaches that connection: {said}");
+        }
+        assert!(crate::i18n::t("edit.open_implicit_transaction", &[]).contains("may hold changes that nobody committed"));
     }
 
     #[test]
