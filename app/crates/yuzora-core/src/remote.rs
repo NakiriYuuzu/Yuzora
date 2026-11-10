@@ -6,7 +6,7 @@
 //!
 //! Blocking: call it from a worker thread (the `yuzora:core` `exec` does).
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +20,8 @@ use serde_json::Value;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Bytes kept per stream; the rest is drained and dropped.
 pub const DEFAULT_MAX_OUTPUT: u64 = 8 << 20;
+/// The most `hc exec --stdin` carries to a machine (8 MiB); it refuses more.
+pub const MAX_STDIN: usize = 8 << 20;
 /// How long past the remote timeout the local `hc` may take to answer.
 const REMOTE_GRACE: Duration = Duration::from_secs(5);
 /// After the program exits, how long its output may take to arrive. Anything
@@ -57,6 +59,9 @@ pub struct ExecRequest {
     /// machine). Keys are `[A-Z0-9_]`, values hold no NUL: [`run`] refuses
     /// anything else.
     pub env: Vec<(String, String)>,
+    /// Bytes for the program's standard input (`hc exec --stdin` on a
+    /// machine, at most [`MAX_STDIN`]); `None`: it reads nothing.
+    pub stdin: Option<Arc<[u8]>>,
 }
 
 impl ExecRequest {
@@ -69,6 +74,7 @@ impl ExecRequest {
             timeout: DEFAULT_TIMEOUT,
             max_output: DEFAULT_MAX_OUTPUT,
             env: Vec::new(),
+            stdin: None,
         }
     }
 
@@ -94,6 +100,11 @@ impl ExecRequest {
 
     pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.push((key.into(), value.into()));
+        self
+    }
+
+    pub fn stdin(mut self, bytes: impl Into<Arc<[u8]>>) -> Self {
+        self.stdin = Some(bytes.into());
         self
     }
 }
@@ -158,6 +169,9 @@ pub fn hc_exec_args(req: &ExecRequest) -> Option<Vec<String>> {
     for (k, v) in &req.env {
         args.extend(["--env".into(), format!("{k}={v}")]);
     }
+    if req.stdin.is_some() {
+        args.push("--stdin".into());
+    }
     args.push("--".into());
     args.push(req.program.clone());
     args.extend(req.args.iter().cloned());
@@ -209,6 +223,7 @@ pub fn run(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
                 timeout: req.timeout + REMOTE_GRACE,
                 max_output: answer,
                 env: Vec::new(),
+                stdin: req.stdin.clone(),
             };
             let out = run_local(&local)?;
             if out.stdout.len() as u64 >= answer {
@@ -223,7 +238,8 @@ pub fn run(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
 /// The program `req` names, set up as [`run_local`] starts it here.
 fn command(req: &ExecRequest) -> Command {
     let mut cmd = Command::new(&req.program);
-    cmd.args(&req.args).envs(req.env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&req.args).envs(req.env.iter().map(|(k, v)| (k, v))).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(if req.stdin.is_some() { Stdio::piped() } else { Stdio::null() });
     cmd.current_dir(req.cwd.as_ref().map(PathBuf::from).unwrap_or_else(crate::paths::home_dir));
     // The app has no console on Windows: without this every call opens a window.
     crate::spawn::no_window(&mut cmd);
@@ -236,6 +252,14 @@ fn command(req: &ExecRequest) -> Command {
 fn run_local(req: &ExecRequest) -> Result<ExecOutput, ExecError> {
     let mut cmd = command(req);
     let mut child = cmd.spawn().map_err(|e| ExecError::Spawn(format!("cannot run {}: {e}", req.program)))?;
+    // Fed from its own thread: a program that reads little, or nothing, must not hold this one up. The
+    // pipe closes when the thread is done, or fails when the program ends (it is not waited for).
+    if let Some(input) = req.stdin.clone() {
+        let mut pipe = child.stdin.take().expect("piped stdin");
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(&input);
+        });
+    }
     let out = Drain::start(child.stdout.take().expect("piped stdout"), req.max_output);
     let err = Drain::start(child.stderr.take().expect("piped stderr"), req.max_output);
     // yuzora(perf): no 10 ms polling: the answer comes the moment it exits. The `Child` stays here
@@ -756,6 +780,40 @@ mod tests {
             refused
         });
         assert!(closed, "the reader still holds the pipe");
+    }
+
+    #[test]
+    fn a_remote_request_with_stdin_asks_hc_to_feed_it() {
+        let plain = ExecRequest::new("sh", ["-c", "cat"]).on(Some("lab")).cwd(Some("/r")).env("A_1", "x");
+        assert!(!hc_exec_args(&plain).unwrap().contains(&"--stdin".to_owned()));
+        let fed = plain.stdin(b"x".to_vec());
+        assert_eq!(
+            hc_exec_args(&fed).unwrap(),
+            ["exec", "--json", "--on", "lab", "--timeout", "30", "--cwd", "/r", "--env", "A_1=x", "--stdin", "--", "sh", "-c", "cat"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_local_run_feeds_its_stdin_byte_for_byte() {
+        let bytes: Vec<u8> = (0..=255u8).chain(*b"\r\n\0 \xff").collect();
+        let out = run(&ExecRequest::new("cat", Vec::<String>::new()).stdin(bytes.clone())).unwrap();
+        assert_eq!((out.code, out.stdout), (0, bytes));
+        let none = run(&ExecRequest::new("cat", Vec::<String>::new())).unwrap();
+        assert!(none.stdout.is_empty(), "a request without stdin reads nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stdin_bigger_than_a_pipe_goes_through_and_a_program_that_ignores_it_is_not_waited_on() {
+        let big = vec![b'z'; MAX_STDIN];
+        let out = run(&ExecRequest::new("cat", Vec::<String>::new()).stdin(big.clone()).max_output(MAX_STDIN as u64 * 2)).unwrap();
+        assert_eq!(out.stdout.len(), big.len());
+        assert!(out.stdout == big);
+        let started = Instant::now();
+        let ignored = run(&ExecRequest::new("true", Vec::<String>::new()).stdin(big)).unwrap();
+        assert_eq!(ignored.code, 0);
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
     }
 
     #[test]

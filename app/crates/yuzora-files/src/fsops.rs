@@ -15,6 +15,9 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
+pub use crate::remote_write::Refusal;
+use crate::remote_write::{MAX_BYTES, posix_crc, resolve_links, save_gate};
+
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// How much of a file decides "binary".
@@ -103,15 +106,26 @@ fi
 stat -L -c '%s %Y' -- "$1" 2>/dev/null || stat -L -f '%z %m' -- "$1""#;
 
 /// `$1` file, `$2` max+1, `$3` max. Exit 4 missing, 5 not a regular file.
-/// Prints `size mtime-seconds\n`, then up to `$2` bytes unless it is larger than `$3`.
-const READ_SCRIPT: &str = r#"[ -e "$1" ] || { echo "no such file" >&2; exit 4; }
+/// Prints `size mtime-seconds w|r\n` (`w`: a save can replace it, which is what
+/// `crate::remote_write::save_gate!`'s `blocked` says, the very check a save makes: the file
+/// and its folder can be written, the owner and the group can be kept, and an ACL, if the file
+/// has one, can be carried over), then up to `$2` bytes unless it is larger than `$3`.
+pub(crate) const READ_SCRIPT: &str = concat!(
+    r#"[ -e "$1" ] || { echo "no such file" >&2; exit 4; }
 [ -f "$1" ] || { echo "not a regular file" >&2; exit 5; }
 s=$(stat -L -c '%s %Y' -- "$1" 2>/dev/null || stat -L -f '%z %m' -- "$1") || exit 6
-printf '%s\n' "$s"
+"#,
+    resolve_links!(),
+    save_gate!(),
+    r#"w=r
+[ -z "$(blocked)" ] && w=w
+printf '%s %s\n' "$s" "$w"
 [ "${s%% *}" -gt "$3" ] && exit 0
-head -c "$2" -- "$1""#;
+head -c "$2" -- "$1""#
+);
 
-/// Changes to files on another machine wait for SFTP (lane L4).
+/// Creating, renaming and removing on another machine are not there yet: a file there can be
+/// opened and saved, nothing more.
 const REMOTE_READ_ONLY: &str = "files on another machine are read-only in this version";
 
 /// One directory entry.
@@ -145,6 +159,17 @@ pub struct Stamp {
     pub mtime_ms: i64,
 }
 
+/// What a file was when it was read, for a save to hold it to: the stamp
+/// and two digests of the bytes. A save here compares [`content_hash`]; one
+/// on another machine compares [`crate::remote_write::posix_crc`], which that
+/// machine's `cksum` can compute (FNV cannot be done in `sh`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Seen {
+    pub stamp: Stamp,
+    pub hash: u64,
+    pub crc: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Eol {
     Lf,
@@ -162,6 +187,9 @@ pub struct TextFile {
     pub stamp: Stamp,
     /// [`content_hash`] of the raw bytes as read (0 when none were read).
     pub hash: u64,
+    /// [`crate::remote_write::posix_crc`] of the raw bytes as read, from
+    /// another machine only (0 for a file read here, which never needs it).
+    pub crc: u32,
     pub size: u64,
     /// A NUL byte in the first 8 KiB, or a known binary signature.
     pub binary: bool,
@@ -169,7 +197,8 @@ pub struct TextFile {
     pub too_large: bool,
     /// Invalid UTF-8: `text` is a lossy decode and must not be saved back.
     pub not_utf8: bool,
-    /// No write permission here, or the file is on another machine.
+    /// A save could not replace the file: no write permission, an owner or group that cannot be
+    /// kept, or (on another machine) more than `hc exec --stdin` carries.
     pub readonly: bool,
 }
 
@@ -177,8 +206,8 @@ pub struct TextFile {
 pub enum WriteError {
     /// The file changed (the current stamp, `None` when it is gone) since `expected`.
     Conflict(Option<Stamp>),
-    /// Saving to another machine is not supported (for the caller to return).
-    Remote,
+    /// Nothing was written, for a reason the person can act on.
+    Refused(Refusal),
     Io(String),
 }
 
@@ -187,7 +216,7 @@ impl std::fmt::Display for WriteError {
         match self {
             WriteError::Conflict(Some(_)) => f.write_str("the file changed on disk"),
             WriteError::Conflict(None) => f.write_str("the file was removed from disk"),
-            WriteError::Remote => f.write_str("saving files on another machine is not supported"),
+            WriteError::Refused(why) => why.fmt(f),
             WriteError::Io(e) => f.write_str(e),
         }
     }
@@ -584,6 +613,7 @@ fn blank(stamp: Stamp, readonly: bool) -> TextFile {
         bom: false,
         stamp,
         hash: 0,
+        crc: 0,
         size: stamp.len,
         binary: false,
         too_large: false,
@@ -724,20 +754,23 @@ fn read_sh(path: &str, on: Option<&str>, max_bytes: u64) -> Result<TextFile, Str
         .iter()
         .position(|b| *b == b'\n')
         .ok_or_else(|| format!("cannot read {path}: no answer"))?;
-    let stamp = parse_stamp(&String::from_utf8_lossy(&out.stdout[..split]))
-        .ok_or_else(|| format!("cannot read the stat of {path}"))?;
+    let head = String::from_utf8_lossy(&out.stdout[..split]);
+    let stamp = parse_stamp(&head).ok_or_else(|| format!("cannot read the stat of {path}"))?;
+    // Read-only unless the script said a save can replace it (and a save fits
+    // what hc carries).
+    let readonly = head.split_whitespace().nth(2) != Some("w") || stamp.len > MAX_BYTES as u64;
     if stamp.len > max_bytes {
         return Ok(TextFile {
             too_large: true,
-            ..blank(stamp, true)
+            ..blank(stamp, readonly)
         });
     }
-    Ok(decode(
-        out.stdout[split + 1..].to_vec(),
-        stamp,
-        true,
-        max_bytes,
-    ))
+    let bytes = out.stdout[split + 1..].to_vec();
+    let crc = posix_crc(&bytes);
+    Ok(TextFile {
+        crc,
+        ..decode(bytes, stamp, readonly, max_bytes)
+    })
 }
 
 // ---- write ----
@@ -753,8 +786,8 @@ fn read_sh(path: &str, on: Option<&str>, max_bytes: u64) -> Result<TextFile, Str
 /// fsynced and renamed over the target, so a failed save leaves the old
 /// content; mode (and owner) are kept. When it cannot be swapped (see
 /// [`write_in_place`]) the old content is kept in a backup until the new one
-/// is complete. A symlink is written through. Another machine is the
-/// caller's to refuse ([`WriteError::Remote`]). Returns the new stamp.
+/// is complete. A symlink is written through. On another machine, see
+/// [`write_on`]. Returns the new stamp.
 pub fn write_text(
     path: &str,
     text: &str,
@@ -772,14 +805,7 @@ pub fn write_text(
     if !still().map_err(io_err)? {
         return Err(conflict());
     }
-    let mut bytes = Vec::with_capacity(text.len() + BOM.len());
-    if bom {
-        bytes.extend_from_slice(BOM);
-    }
-    match eol {
-        Eol::Lf => bytes.extend_from_slice(text.as_bytes()),
-        Eol::Crlf => bytes.extend_from_slice(text.replace('\n', "\r\n").as_bytes()),
-    }
+    let bytes = encode_text(text, eol, bom);
     if !replace_atomically(&target, &bytes, &still).map_err(io_err)? {
         return Err(conflict());
     }
@@ -788,6 +814,46 @@ pub fn write_text(
         None => Err(WriteError::Io(format!(
             "cannot write {path}: the file vanished"
         ))),
+    }
+}
+
+/// The bytes a save puts on disk for `text` (LF): `eol` line ends, a BOM when `bom`.
+pub fn encode_text(text: &str, eol: Eol, bom: bool) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(text.len() + BOM.len());
+    if bom {
+        bytes.extend_from_slice(BOM);
+    }
+    match eol {
+        Eol::Lf => bytes.extend_from_slice(text.as_bytes()),
+        Eol::Crlf => bytes.extend_from_slice(text.replace('\n', "\r\n").as_bytes()),
+    }
+    bytes
+}
+
+/// [`write_text`] here, or on `on`, a machine of herdr-core, with `expected`
+/// as that file was read ([`TextFile`]'s `stamp`, `hash` and `crc`).
+pub fn write_on(
+    path: &str,
+    on: Option<&str>,
+    text: &str,
+    eol: Eol,
+    bom: bool,
+    expected: Option<Seen>,
+) -> Result<Stamp, WriteError> {
+    match machine(on) {
+        Some(m) => crate::remote_write::write_sh(
+            path,
+            &encode_text(text, eol, bom),
+            expected.as_ref(),
+            Some(m),
+        ),
+        None => write_text(
+            path,
+            text,
+            eol,
+            bom,
+            expected.map(|seen| (seen.stamp, seen.hash)),
+        ),
     }
 }
 
@@ -2065,13 +2131,13 @@ mod tests {
             assert_eq!(
                 TextFile {
                     stamp: local.stamp,
-                    readonly: false,
+                    crc: 0,
                     ..remote.clone()
                 },
                 local,
                 "{name}"
             );
-            assert!(remote.readonly);
+            assert_eq!(remote.crc, crate::remote_write::posix_crc(bytes), "{name}");
         }
         let f = put(&d, "big", &[b'x'; 50]);
         let large = read_sh(&f, None, 49).unwrap();

@@ -17,6 +17,7 @@ pub mod git;
 pub mod highlight;
 pub mod image;
 pub mod markdown;
+pub mod remote_write;
 pub mod search;
 pub mod svg;
 

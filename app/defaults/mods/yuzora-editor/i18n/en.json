@@ -17,7 +17,6 @@
     "overwrite": "Overwrite",
     "deleted": "This file was deleted or moved on disk.",
     "restore": "Save it again",
-    "remote": "Files on another machine are read-only in this version.",
     "not_utf8": "Not UTF-8 text: opened read-only.",
     "large": "Large file: syntax highlighting and folding are off."
   },
