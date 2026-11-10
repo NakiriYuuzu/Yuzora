@@ -696,6 +696,102 @@ fn sqlite_a_count_that_was_stopped_never_runs() {
     assert_eq!(results::lock(&results::get(found.unwrap()).unwrap()).total, None, "a stopped job does not count");
 }
 
+// ---------------------------------------------------------------- the rows do not wait for the table's description
+
+/// What the table's description (its key, in particular) is waiting for: the
+/// sidebar's connection, held here by hand. The rows are read on the pane's
+/// own connection and show at once; what they are, editable or not, is
+/// settled when the description is in.
+#[test]
+fn sqlite_the_rows_show_while_the_tables_description_is_still_out_and_are_editable_once_it_is_in() {
+    let (id, _) = sqlite_connection("wb-info-late");
+    run(
+        &id,
+        "setup",
+        "create table people(id integer primary key, name text); insert into people values (1, 'a'), (2, 'b');",
+    );
+    let held = runtime::block_on(session::lease(&id, None, session::META)).unwrap();
+
+    let job = session::open_table(&id, None, &owner(&id, "info-late-pane"), &table("", "people"), None);
+    let mut found = None;
+    until("the rows never showed while the description was out", || {
+        found =
+            session::job_state(job).and_then(|s| s.results.first().filter(|r| r.rows == 2 && r.complete).map(|r| r.id));
+        found.is_some()
+    });
+    let set = results::get(found.unwrap()).unwrap();
+    assert_eq!(results::lock(&set).editing, results::Editing::Loading, "what the rows are is not known yet");
+    assert!(session::job_state(job).unwrap().running, "the job is not over before the description is in");
+
+    drop(held);
+    let state = wait(job);
+    assert_eq!(state.error, None);
+    assert!(results::lock(&set).editable(), "{:?}", results::lock(&set).editing);
+    assert_eq!(results::lock(&set).total, Some(2));
+}
+
+/// A Stop pressed while the description is out ends the job at once: the
+/// sidebar's connection is not the pane's to cancel, so the rows stay, read-only,
+/// and the reason says why.
+#[test]
+fn sqlite_a_stop_while_the_tables_description_is_out_ends_the_job_without_waiting_for_it() {
+    let (id, _) = sqlite_connection("wb-info-stop");
+    run(&id, "setup", "create table people(id integer primary key, name text); insert into people values (1, 'a');");
+    let held = runtime::block_on(session::lease(&id, None, session::META)).unwrap();
+
+    let job = session::open_table(&id, None, &owner(&id, "info-stop-pane"), &table("", "people"), None);
+    let mut found = None;
+    until("the rows never showed while the description was out", || {
+        found =
+            session::job_state(job).and_then(|s| s.results.first().filter(|r| r.rows == 1 && r.complete).map(|r| r.id));
+        found.is_some()
+    });
+    session::cancel(job);
+    let state = within(Duration::from_secs(5), "the Stop ending the job", move || wait(job));
+    assert!(state.cancelled && state.error.is_none(), "{state:?}");
+    let set = results::get(found.unwrap()).unwrap();
+    let reason = results::lock(&set).read_only_reason().expect("read-only, with a reason");
+    assert!(reason.contains("stopped"), "{reason}");
+    drop(held);
+}
+
+// ---------------------------------------------------------------- a refresh reads the key the table has now
+
+/// Nothing about a table is kept from one open to the next: a refresh asks
+/// again, so edits are matched by the key the table has now, not the one it had.
+#[test]
+fn sqlite_a_refresh_after_the_primary_key_moved_writes_by_the_new_key_and_by_none_once_it_is_gone() {
+    let (id, _) = sqlite_connection("wb-key-moved");
+    run(
+        &id,
+        "setup",
+        "create table t(id integer primary key, code text, v text); insert into t values (1, 'x', 'a'), (2, 'x', 'b');",
+    );
+    let key_of = |pane: &Opened| -> Vec<String> {
+        let r = results::lock(&pane.set);
+        r.target().map(|t| t.key.iter().map(|k| r.columns[*k].name.clone()).collect()).unwrap_or_default()
+    };
+
+    let pane = open(&id, "key-moved-pane", &table("", "t"));
+    assert_eq!(key_of(&pane), ["id"]);
+
+    run(
+        &id,
+        "ddl",
+        "drop table t; create table t(id integer, code text, v text primary key); insert into t values (1, 'x', 'a'), (2, 'x', 'b');",
+    );
+    let pane = open(&id, "key-moved-pane", &table("", "t"));
+    assert_eq!(key_of(&pane), ["v"], "the refresh read the key the table has now");
+    pane.edit(pane.row_where("v", "b"), "code", Some("changed"));
+    assert_eq!(runtime::block_on(session::write_back_set(&pane.set)), Ok(1));
+    assert_eq!(rows(&id, "select id, code, v from t order by id"), [["1", "x", "a"], ["2", "changed", "b"]]);
+
+    run(&id, "ddl", "drop table t; create table t(id integer, code text, v text); insert into t values (1, 'x', 'a');");
+    let pane = open(&id, "key-moved-pane", &table("", "t"));
+    assert!(!pane.summary().editable, "a table without a key is not editable");
+    assert!(results::lock(&pane.set).read_only_reason().is_some_and(|r| r.contains("no primary key")));
+}
+
 // ---------------------------------------------------------------- what the server returns around the UPDATE
 
 #[test]
