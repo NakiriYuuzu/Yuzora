@@ -109,7 +109,10 @@ where
         .map(|_| {
             let (queue, work) = (queue.clone(), work.clone());
             thread::spawn(move || {
-                while let Some(folder) = queue.lock().unwrap().pop() {
+                loop {
+                    // The guard is a temporary: it has to be gone before `work`, or the workers take turns.
+                    let next = queue.lock().unwrap().pop();
+                    let Some(folder) = next else { break };
                     work(folder);
                 }
             })
