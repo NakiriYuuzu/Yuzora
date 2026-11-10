@@ -501,21 +501,23 @@ pub async fn job_after(id: JobId, seen: u64) -> DbResult<JobState> {
 /// running, the sink stops reading. Nothing else on the pane's connections is
 /// touched: a write-back is not the job's.
 pub fn cancel(id: JobId) {
-    let target = {
+    {
         let mut all = jobs();
         let Some(job) = all.1.get_mut(&id) else { return };
         if !job.running {
             return;
         }
         job.cancelled = true;
-        job.serving.clone()
-    };
-    update_job(id, |_| {});
-    match target {
-        Some(Stop::Statement(c)) => c.cancel_in_background(),
-        Some(Stop::Count(count)) => count.call(),
-        None => {}
+        // Made under the lock `Serving` lets go of itself under, which it does
+        // before the job lets go of the connection: the stop is counted on its
+        // way before any work can have the connection and not wait for it.
+        match &job.serving {
+            Some(Stop::Statement(c)) => c.cancel_in_background(),
+            Some(Stop::Count(count)) => count.call(),
+            None => {}
+        }
     }
+    update_job(id, |_| {});
 }
 
 /// Cancels `owner`'s running jobs and forgets all of them with their results.
