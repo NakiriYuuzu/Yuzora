@@ -188,6 +188,7 @@ export interface PaneInfo {
    *  pane, mod, props, tab, title, focused and zoomed are set. */
   terminal: string | null;
   mod?: string;
+  // yuzora(v0.1.0 files-open): `props`, so a mod finds the pane of a file before that pane has started.
   /** The props a mod pane was given (`tab.new {mod, props}`, `pane.split {mod, props}`), as the layout keeps
    *  them. Listed for a pane in a tab not shown since the app started too, though its mod has not started. */
   props?: any;

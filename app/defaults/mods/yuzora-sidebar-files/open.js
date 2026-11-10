@@ -61,8 +61,9 @@ export function openFile(path, on, { place = "tab", ...at } = {}) {
 
 /**
  * After `from` was renamed to `to`, the panes showing it (or a file under it). A document follows the rename in
- * the same pane, whose props keep the old name: say whose it is, so the new name finds that pane. An image pane's
- * props can't change, so a new pane takes the old one's place; focus stays put.
+ * the same pane, whose props keep the old name: say whose it is, so the new name finds that pane. A pane's props
+ * can't change, so where nothing follows (an image, a pane that has not started and has no document) a new pane
+ * takes the old one's place; focus stays put.
  */
 export function moved(from, to, on) {
   const before = focused()?.pane;
@@ -72,11 +73,11 @@ export function moved(from, to, on) {
     if (!path || (p.props.on ?? null) !== (on ?? null)) continue;
     const rest = path === from ? "" : path.startsWith(from + "/") ? path.slice(from.length) : null;
     if (rest === null) continue;
-    if (DOC_MODS.includes(p.mod)) {
-      const open = documentFor(to + rest, { on });
-      if (open) notePane(open.doc, p.pane);
-    } else if (p.mod === MOD.image) {
-      run("pane.split", { direction: "right", pane: p.pane, mod: MOD.image, props: { path: to + rest, on: on ?? null, opened: Date.now() } });
+    const open = DOC_MODS.includes(p.mod) ? documentFor(to + rest, { on }) : null;
+    if (open) {
+      notePane(open.doc, p.pane);
+    } else if (p.mod === MOD.image || (DOC_MODS.includes(p.mod) && !paneDocument(p.pane))) {
+      run("pane.split", { direction: "right", pane: p.pane, mod: p.mod, props: { path: to + rest, on: on ?? null, opened: Date.now() } });
       run("pane.close", { pane: p.pane });
       gone.add(p.pane);
     }
