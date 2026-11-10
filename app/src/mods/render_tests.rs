@@ -17,9 +17,12 @@ mod motion_tests;
 // (the status bar asks git about its folder in its first frame) that finish on threads of their own and wake
 // a task of gpui's test scheduler from there. The scheduler calls a wake from another thread nondeterminism,
 // and fails the test at its end, unless the test says it mixes real I/O in. Whether the thread is quicker
-// than the first poll is a race, so no test here may start without this.
+// than the first poll is a race, so no test here may start without this. forbid_parking right after keeps
+// the rest as it was (gpui 0.3.8 remembers the first call for that check only): timers still jump the clock
+// and a wait with nothing left to run still panics, instead of parking in real time.
 fn shell_init(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
+    cx.executor().forbid_parking();
     cx.update(gpui_shell::init);
 }
 
