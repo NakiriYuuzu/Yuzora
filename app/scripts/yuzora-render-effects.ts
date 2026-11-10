@@ -15,15 +15,20 @@
 //
 // Followed: `this.x()`, `this.x?.()`, a getter read as `this.x`, `super.x()`, `f()` and `f?.()` for a function,
 // a closure assigned straight from an arrow, or an import from a `./x.js` of the mod, `ns.f()`, and
-// `{ a: () => …, b: () => … }[key]()`. A call written any other way that this cannot follow is listed in
-// `unsupported` with its place, and the test of the mod tree fails on one it has not been told about:
-// `.bind()`, `.call()`, `.apply()`; `this` used as a value (an alias, destructuring, handed on); a call of a
-// computed callee (`a[k]()`, `(c ? f : g)()`, `f()()`); a call through a variable that is not such a closure;
-// `this.x()` where x is no method of the class; an `await` that may be skipped, because what follows it can
-// then run in the frame.
-// Not seen at all, and not reported: a call through an object a mod keeps in a field (`this.helper.run()`),
-// a setter run by `this.x = v`, `eval` and `import()`, a callback kept in a field and called later, and any
-// mod outside `defaults/mods/yuzora-*` and `defaults/frame/*`.
+// `{ a: () => …, b: () => … }[key]()` when every value is an arrow.
+//
+// Reported in `unsupported`, with its place, and the test of the mod tree fails on one it has not been told
+// about: `.bind()`, `.call()`, `.apply()`; `this` used as a value (an alias, destructuring, handed on); a call
+// of a computed callee (`a[k]()`, `(c ? f : g)()`, `f()()`, an indexed object that holds anything but arrows);
+// a call through a variable that is not such a closure; `this.x()` where x is no method of the class;
+// `new C()` where the mod's class C has a constructor; an `await` that may be skipped, because what follows
+// it can then run in the frame.
+//
+// Neither followed nor reported, so a clean result does not cover them: a method of an object the mod
+// holds (`ui.head(cx)` with `const ui = { head() {…} }`, `this.helper.run()`); a call through a parameter
+// (`list.forEach((f) => f(cx))`; a closure written at the call of a callee that calls it is followed); a
+// setter run by `this.x = v`; `eval` and `import()`; a callback kept in a field and called later; and any mod
+// outside `defaults/mods/yuzora-*` and `defaults/frame/*`.
 //
 //   bun scripts/yuzora-render-effects.ts            every finding, with its chain
 //   bun test scripts/yuzora-render-effects.test.ts  the findings against the reviewed list
@@ -317,6 +322,7 @@ type Scope = { events: Event[]; closures: Map<string, Fn>; unclassified: Set<str
 type Ctx = {
   resolveThis(name: string): { fn: Fn; unit: Unit } | undefined;
   resolveBare(unit: Unit, name: string, closures: Map<string, Fn>, ns?: string): { fn: Fn; unit: Unit } | undefined;
+  hasConstructor(unit: Unit, name: string): boolean;
 };
 
 type Lit = { start: number; end: number; from: number; to: number; async: boolean; params: string[] };
@@ -386,6 +392,27 @@ function argsOf(unit: Unit, open: number): { from: number; to: number; arrow: nu
   return args;
 }
 
+/** The `=>` of each value of the object literal opened at `open`, when every value is an arrow (`key: (…) => …`); otherwise null. */
+function arrowValues(unit: Unit, open: number): number[] | null {
+  const { toks, match } = unit;
+  const arrows: number[] = [];
+  let from = open + 1;
+  for (let j = open + 1; j <= match[open]; j++) {
+    if (j === match[open] || (toks[j].k === "p" && toks[j].v === ",")) {
+      if (j > from) {
+        let k = from + 2;
+        if (!(toks[from + 1]?.v === ":" && toks[from + 1].k === "p")) return null;
+        if (toks[k]?.k === "id" && toks[k].v === "async") k++;
+        const arrow = opens(toks[k]) && toks[k].v === "(" ? match[k] + 1 : toks[k]?.k === "id" ? k + 1 : -1;
+        if (arrow < 0 || toks[arrow]?.v !== "=>" || toks[arrow].k !== "p") return null;
+        arrows.push(arrow);
+      }
+      from = j + 1;
+    } else if (opens(toks[j])) j = match[j];
+  }
+  return arrows.length ? arrows : null;
+}
+
 /** Whether the `await` at `at` (inside the function whose body starts at `start`) may be skipped, so the code after it can run in the frame. */
 function conditionalAwait(unit: Unit, start: number, at: number): boolean {
   const { toks, match } = unit;
@@ -451,18 +478,13 @@ function scopeOf(unit: Unit, fn: Fn, ctx: Ctx, invokes: (target: { fn: Fn; unit:
     if (t.k === "p" && t.v === "{") {
       // `{ a: () => this.a(), b: () => this.b() }[key]()` calls one of them: all are read as called.
       const close = match[i];
-      if (toks[close + 1]?.v === "[" && toks[match[close + 1] + 1]?.v === "(") {
-        for (let k = i + 1; k < close; k++) {
-          if (toks[k].k === "p" && toks[k].v === "=>") now.add(k);
-          else if (opens(toks[k])) k = match[k];
-        }
-      }
+      if (toks[close + 1]?.v === "[" && toks[match[close + 1] + 1]?.v === "(") for (const arrow of arrowValues(unit, i) ?? []) now.add(arrow);
       continue;
     }
     if (t.k === "p" && (t.v === "]" || t.v === ")") && !t.tpl && toks[i + 1]?.v === "(" && toks[i + 1].k === "p" && !toks[i + 1].tpl) {
       const opener = match[i];
       const header = t.v === ")" && toks[opener - 1]?.k === "id" && ["if", "while", "for", "switch", "with"].includes(toks[opener - 1].v);
-      const literal = t.v === "]" && toks[opener - 1]?.v === "}" && toks[opener - 1].k === "p";
+      const literal = t.v === "]" && toks[opener - 1]?.v === "}" && toks[opener - 1].k === "p" && arrowValues(unit, match[opener - 1]) !== null;
       if (!header && !literal) flag("a call of a computed callee", toks[i + 1].at);
       continue;
     }
@@ -519,6 +541,7 @@ function scopeOf(unit: Unit, fn: Fn, ctx: Ctx, invokes: (target: { fn: Fn; unit:
       else if (literal.length && !KEEPS.has(t.v)) scope.unclassified.add(`.${t.v}`);
       continue;
     }
+    if (prev?.v === "new" && ctx.hasConstructor(unit, t.v)) flag(`new ${t.v}()`, t.at);
     if (prev?.v === "new" || KEYWORDS.has(t.v)) continue;
     const imported = unit.imports.get(t.v);
     if (imported?.from === "herdr" && HERDR_CHANGES.has(imported.name)) { call("effect", imported.name === "notify" ? "toast" : imported.name, "changes"); continue; }
@@ -619,7 +642,7 @@ export function scanMod(mod: Mod): Report {
         const fn = target?.fns.get(imp!.name === "default" ? target.defaultName ?? "" : imp!.name);
         return target && fn ? { fn, unit: target } : undefined;
       };
-      const ctx: Ctx = { resolveThis: (name) => methods.get(name), resolveBare };
+      const ctx: Ctx = { resolveThis: (name) => methods.get(name), resolveBare, hasConstructor: (from, name) => classOf(mod, from, name)?.cls.methods.has("constructor") ?? false };
       const scopes = new Map<string, Scope>();
       const flowing = new Set<string>();
       const keyOf = (u: Unit, fn: Fn) => `${u.file}:${fn.owner}:${fn.name}:${fn.from}`;
