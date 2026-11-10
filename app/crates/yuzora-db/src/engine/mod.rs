@@ -96,22 +96,25 @@ pub enum Conn {
 /// commit asks it directly ([`CommitSent::mark`]), so a Stop pressed before
 /// COMMIT is sent is never overtaken by a task that has not looked yet.
 #[derive(Clone, Debug, Default)]
-pub struct CommitSent {
-    sent: Arc<AtomicBool>,
-    stop: Arc<Mutex<Option<WriteStop>>>,
+pub struct CommitSent(Arc<CommitState>);
+
+#[derive(Debug, Default)]
+struct CommitState {
+    sent: AtomicBool,
+    stop: Mutex<Option<WriteStop>>,
 }
 
 impl CommitSent {
     /// A write-back starts: COMMIT has not been sent, and `stop` is the one
     /// that ends it.
     fn arm(&self, stop: &WriteStop) {
-        *self.stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop.clone());
+        *self.0.stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop.clone());
         self.reset();
     }
 
     /// COMMIT has not been sent (a write-back starts, or it took its mark back).
     fn reset(&self) {
-        self.sent.store(false, Ordering::SeqCst);
+        self.0.sent.store(false, Ordering::SeqCst);
     }
 
     /// Called right before the COMMIT is sent, never after: a stop that
@@ -120,8 +123,8 @@ impl CommitSent {
     /// sent. The mark goes up before the Stop is looked for, so a Stop pressed
     /// after the look finds it set.
     fn mark(&self) -> bool {
-        self.sent.store(true, Ordering::SeqCst);
-        let pressed = self.stop.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(WriteStop::is_stopped);
+        self.0.sent.store(true, Ordering::SeqCst);
+        let pressed = self.0.stop.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(WriteStop::is_stopped);
         if pressed {
             self.reset();
         }
@@ -129,7 +132,7 @@ impl CommitSent {
     }
 
     pub fn is_sent(&self) -> bool {
-        self.sent.load(Ordering::SeqCst)
+        self.0.sent.load(Ordering::SeqCst)
     }
 }
 

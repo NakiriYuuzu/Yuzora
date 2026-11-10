@@ -76,14 +76,10 @@ impl Scratch {
             "IF DB_ID(N'{n}') IS NOT NULL BEGIN ALTER DATABASE {n} SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE {n} END"
         );
         runtime::block_on(async {
-            if let Ok(conn) = tokio::time::timeout(Duration::from_secs(30), async {
-                let mut conn = sa("master").await;
-                let _ = conn.execute(&sql, &mut First::default()).await;
+            let _ = tokio::time::timeout(Duration::from_secs(30), async {
+                let _ = sa("master").await.execute(&sql, &mut First::default()).await;
             })
-            .await
-            {
-                drop(conn);
-            }
+            .await;
         });
     }
 }
