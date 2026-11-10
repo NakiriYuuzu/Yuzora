@@ -1166,6 +1166,36 @@ fn postgres_a_stop_the_server_hears_late_still_ends_the_statement_it_was_for() {
     });
 }
 
+/// A host can name several addresses, some of which are other servers or none
+/// at all. The connection is made to one of them, and a stop is for the server
+/// that connection is with: not for the first address the host gives when the
+/// stop is pressed, nor for what the configuration points at.
+#[test]
+fn postgres_a_stop_goes_to_the_address_the_connection_was_made_to() {
+    only_with!("postgres");
+    let relay = common::LaggingPostgres::start();
+    let door = common::ClosedDoor::start();
+    for ssl in [SslMode::Disable, SslMode::Prefer] {
+        run(async {
+            let mut spec = pg_spec("yuzora_full", ssl);
+            spec.config.port = Some(door.addr().port());
+            spec.addresses = Some(vec![door.addr(), relay.addr()]);
+            let mut conn = Conn::connect(&spec).await.expect("connect past the address that closes at once");
+            let taken = door.taken();
+            let canceller = conn.canceller();
+            runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                canceller.cancel().await;
+            });
+            let outcome = conn.execute("SELECT pg_sleep(3)", &mut Collect::default()).await;
+            assert_eq!(outcome, Err(DbError::Cancelled), "{ssl:?}: the statement ran to its end, the stop went astray");
+            assert_eq!(door.taken(), taken, "{ssl:?}: the stop was sent to an address the connection is not with");
+            assert!(!conn.is_closed());
+            assert_eq!(scalar(&mut conn, "SELECT 'again'").await, "again");
+        });
+    }
+}
+
 /// The write-back is a run of statements of its own, each of them a target of
 /// a stop that is late: the UPDATE, and the COMMIT, which a deferred trigger
 /// keeps busy for a while.

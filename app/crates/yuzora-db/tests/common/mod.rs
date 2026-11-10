@@ -3,7 +3,8 @@
 #![allow(dead_code)]
 
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -52,6 +53,10 @@ impl LaggingPostgres {
         self.port
     }
 
+    pub fn addr(&self) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], self.port))
+    }
+
     fn set(&self, hold: Hold) {
         *self.hold.lock().unwrap_or_else(|e| e.into_inner()) = hold;
     }
@@ -96,4 +101,37 @@ fn relay(mut client: TcpStream, hold: Hold) {
     });
     let _ = std::io::copy(&mut server, &mut client);
     let _ = client.shutdown(Shutdown::Both);
+}
+
+/// Something that listens where a PostgreSQL server might, and is not one: it
+/// takes every connection and closes it at once, which is also what a server
+/// does with a cancel request for a backend it does not have.
+pub struct ClosedDoor {
+    addr: SocketAddr,
+    taken: Arc<AtomicUsize>,
+}
+
+impl ClosedDoor {
+    pub fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let taken = Arc::new(AtomicUsize::new(0));
+        let count = taken.clone();
+        std::thread::spawn(move || {
+            for connection in listener.incoming().flatten() {
+                count.fetch_add(1, Ordering::SeqCst);
+                drop(connection);
+            }
+        });
+        ClosedDoor { addr, taken }
+    }
+
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Connections taken so far.
+    pub fn taken(&self) -> usize {
+        self.taken.load(Ordering::SeqCst)
+    }
 }

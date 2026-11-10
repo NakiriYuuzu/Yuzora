@@ -1128,11 +1128,25 @@ mod tests {
             name: &str,
             typed: &str,
         ) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
+            composing_in(cx, name, Cell::text("a"), typed)
+        }
+
+        /// The same, for a name column that holds `original`.
+        fn composing_in<'a>(
+            cx: &'a mut TestAppContext,
+            name: &str,
+            original: Cell,
+            typed: &str,
+        ) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
             let set = results::create(name, "select * from people");
             {
                 let mut r = results::lock(&set);
-                r.columns = vec![crate::model::Column::new("id", "int4"), crate::model::Column::new("name", "text")];
-                r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+                r.columns = vec![
+                    crate::model::Column::new("id", "int4"),
+                    crate::model::Column::new("name", "text"),
+                    crate::model::Column::new("note", "text"),
+                ];
+                r.rows = vec![vec![Cell::text("1"), original, Cell::text("n")]];
                 r.complete = true;
                 let mut target = target();
                 target.owner = name.to_owned();
@@ -1172,6 +1186,74 @@ mod tests {
             assert_eq!(r.write, crate::results::WriteState::Idle, "and written");
             drop(r);
             assert!(is_editing(cx, "composing-save"), "the editor stays open for the composition");
+        }
+
+        /// A pending edit in a cell other than the one being edited, so the footer offers Write back.
+        fn with_another_edit(cx: &mut VisualTestContext, set: &Arc<Mutex<ResultSet>>) {
+            let id = {
+                let mut r = results::lock(set);
+                r.set_edit(0, 2, Cell::text("other cell"));
+                r.id
+            };
+            results::changed(id);
+            settle(cx);
+        }
+
+        fn click(cx: &mut VisualTestContext, selector: &'static str) {
+            let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} is not on screen"));
+            cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+            settle(cx);
+        }
+
+        fn edit_of(set: &Arc<Mutex<ResultSet>>, column: u32) -> Option<Cell> {
+            results::lock(set).edits.get(&(0, column)).cloned()
+        }
+
+        #[gpui::test]
+        fn the_write_back_button_writes_what_was_chosen_and_not_the_composition(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = composing(cx, "composing-button", "ㄓㄨㄥ");
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "𠀀中", window, cx));
+            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, "ㄅ", None, window, cx));
+            with_another_edit(cx, &set);
+            click(cx, "grid-write");
+            assert_eq!(edit_of(&set, 1), Some(Cell::text("𠀀中")), "the cell is what was chosen, without the composition");
+            assert_eq!(edit_of(&set, 2), Some(Cell::text("other cell")));
+            assert!(!is_editing(cx, "composing-button"));
+        }
+
+        #[gpui::test]
+        fn leaving_a_cell_keeps_what_was_chosen_and_not_the_composition(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = composing(cx, "composing-leave", "ㄓㄨㄥ");
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "中", window, cx));
+            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, "ㄅ", None, window, cx));
+            let bounds = cx.debug_bounds("grid-cell-0-0").expect("the id cell");
+            cx.simulate_mouse_down(bounds.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            settle(cx);
+            assert_eq!(edit_of(&set, 1), Some(Cell::text("中")));
+            assert!(!is_editing(cx, "composing-leave"));
+        }
+
+        #[gpui::test]
+        fn the_editor_losing_focus_keeps_what_was_chosen_and_not_the_composition(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = composing(cx, "composing-blur", "ㄓㄨㄥ");
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "中", window, cx));
+            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, "ㄅ", None, window, cx));
+            input.update_in(cx, |_, _, cx| cx.emit(InputEvent::Blur));
+            settle(cx);
+            assert_eq!(edit_of(&set, 1), Some(Cell::text("中")));
+        }
+
+        #[gpui::test]
+        fn a_null_cell_that_was_only_composed_in_stays_null(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, _, set) = composing_in(cx, "composing-null", Cell::Null, "ㄓㄨㄥ");
+            let bounds = cx.debug_bounds("grid-cell-0-0").expect("the id cell");
+            cx.simulate_mouse_down(bounds.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            settle(cx);
+            assert_eq!(edit_of(&set, 1), None, "an unchosen composition made the NULL something");
         }
 
         /// Enter reaching the input (an input method that did not take it for itself).
