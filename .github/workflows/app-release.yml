@@ -18,9 +18,9 @@
 # repository code cannot write. A stage can be run again: a file already on the
 # release with the same content is left alone, with other content it fails.
 #
-# A push to release-dryrun/** runs the dry run alone, which also registers this
-# workflow for dispatching before it is on main (GitHub dispatches a workflow
-# file that has run once, from any branch).
+# Dispatch only. A push never starts it: a push-triggered run uses the workflow
+# file of the pushed commit, so any branch cut from a commit that carried such a
+# trigger could sign with the release key.
 name: App release
 
 on:
@@ -50,8 +50,6 @@ on:
         type: string
         required: false
         default: ''
-  push:
-    branches: ['release-dryrun/**']
 
 permissions:
   contents: read
@@ -101,10 +99,10 @@ jobs:
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-          STAGE: ${{ github.event_name == 'push' && 'dry-run' || inputs.stage }}
-          VERSION: ${{ github.event_name == 'push' && '0.1.0' || inputs.version }}
+          STAGE: ${{ inputs.stage }}
+          VERSION: ${{ inputs.version }}
           PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
-          EXCLUDE_TARGETS: ${{ github.event_name == 'push' && 'windows-x86_64' || inputs.exclude_targets }}
+          EXCLUDE_TARGETS: ${{ inputs.exclude_targets }}
           DOWNLOADS_BASE: ${{ inputs.downloads_base }}
         run: bun app/scripts/yuzora/release.ts plan
       - name: Summary

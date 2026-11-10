@@ -238,20 +238,24 @@ gh run watch <run id>        # 每個階段的 job summary 會列出做了什麼
 - 確認 secrets 存在：dry-run 會替你確認（簽不出來就是缺或密碼錯）。不要讀、不要印它的值。
 - 確認 repo 沒開 immutable releases（開了就不能在發布後補上傳 manifest）：`gh api repos/NakiriYuuzu/Yuzora/immutable-releases` 應回 `"enabled":false`。
 - 可選：在 GitHub Settings › Environments 建立 `yuzora-release` 並加 required reviewer。workflow 的 `sign` 與所有寫 release 的 job 都引用這個 environment；不建立的話 GitHub 會自動建一個沒有保護的同名 environment，行為不變。
-- 確認 `.github/workflows/app-release.yml` 在 `main`（合併後）。**合併進 main 之前**只能用 dry-run 的推送觸發（下一步）。GitHub 文件對 `workflow_dispatch` 的說明是「This event will only trigger a workflow run if the workflow file exists on the default branch」，以及「Once a workflow has run at least once, you can dispatch it against any branch or tag via the GitHub API or GitHub CLI」。所以一個從沒跑過、又不在預設分支的檔案不能 dispatch；跑過一次（這個 workflow 的 `push` 觸發就是為此保留）之後，才能對任何分支 dispatch。本 repo 的紀錄一致（`app-package.yml` 在 `beta2/integration` 上先有多次 push 的 run，2026-11-04 才出現第一個 `workflow_dispatch` 的 run 並成功），但「從沒跑過的檔案 dispatch 會失敗」沒有實測。
+- `App release` 已經登記為 active workflow（`release-dryrun/1` 的兩次 push run，42874436208 與 42874964284，是在拿掉 push 觸發之前跑的）。GitHub 文件對 `workflow_dispatch` 的說明是「This event will only trigger a workflow run if the workflow file exists on the default branch」，以及「Once a workflow has run at least once, you can dispatch it against any branch or tag via the GitHub API or GitHub CLI」。所以合併進 main 之前也能對分支 dispatch（`gh workflow run "App release" --ref <分支>`），合併之後一律 `--ref main`。已確認的是登記狀態；「對分支 dispatch」本身在這個 workflow 上還沒有實測，第 1 步就是第一次。
+- 沒有 push 觸發，這是刻意的：push 的 run 用的是被推送 commit 上的 workflow 檔，任何從還帶著 push 觸發的舊 commit（例如現在遠端的 `release-dryrun/1`）切出的分支，推上去就會用正式金鑰簽章。要啟動這個 workflow，一定得有 Actions 的寫入權限（dispatch）。
 
 **1. 簽章試跑（dry-run）**，在任何單向動作之前；不需要候選版
 
 ```bash
 git switch -c release-dryrun/1 <含 app-release.yml 的 commit>
-git push origin release-dryrun/1          # 推送本身就觸發一次 dry run（合成的 archive，版本 0.1.0）
-gh run list --workflow app-release.yml --limit 3
+git push origin release-dryrun/1          # 只是讓分支存在，不會啟動任何 run
+gh workflow run "App release" --ref release-dryrun/1 -f stage=dry-run -f version=0.1.0
+gh run list --workflow "App release" --limit 3
 gh run watch <run id>
 ```
 
+分支名稱沒有特別意義。沒有 `package_run_id` 時用合成的 archive，版本 0.1.0。
+
 - 成功長這樣：`plan`、`build-manifest`、`sign`、`verify-manifest` 四個 job 綠；`verify-manifest` 的 summary 有一行 `verified yuzora 0.1.0 (stable) targets=linux-aarch64,linux-x86_64,macos-aarch64 …` 與 `tampered copy refused: … signature …`；artifact `manifest-verified` 含 `yuzora-update.json` 與 `yuzora-update.json.sig`。
 - 失敗長這樣：`sign` 紅、訊息 `TAURI_SIGNING_PRIVATE_KEY is empty or missing`（secret 沒有）；或 Tauri CLI 解不開金鑰（密碼錯）；或 `verify-manifest` 紅、`The signature was created with a different key`（secret 裡的不是 `TRUSTED_KEYS` 那把）。這三種都在任何公開動作之前發現。
-- 這次推送讓 workflow 登記過，之後可以對任一分支 dispatch。這一步用合成的 archive，不需要候選版，只回答「簽得出來、驗得過」。
+- 這一步用合成的 archive，不需要候選版，只回答「簽得出來、驗得過」。
 - 單向？否。回復：刪掉 `release-dryrun/*` 分支即可（`git push origin --delete release-dryrun/1`）。第 3 步還要用這個分支，所以留到那時再刪。
 
 **2. release-prep 合併、候選版與驗收**（先有候選，第 3 步才有東西可以檢查）
@@ -265,7 +269,7 @@ gh run watch <run id>
 先用候選 archive 簽一次（dry-run 階段，帶 `package_run_id`）。對 `release-dryrun/1`，或 infra 已合併進的 `beta2/integration`（這時 workflow 檔已在那裡）dispatch：
 
 ```bash
-gh workflow run app-release.yml --ref release-dryrun/1 \
+gh workflow run "App release" --ref release-dryrun/1 \
   -f stage=dry-run -f version=0.1.0 -f package_run_id=<候選 App package run id> \
   -f exclude_targets=windows-x86_64 \
   -f downloads_base=http://127.0.0.1:8765/NakiriYuuzu/Yuzora/releases/download
@@ -403,7 +407,7 @@ env -i HOME=$T/home USER=$USER TMPDIR=$T/tmp TERM=xterm-256color LANG=en_US.UTF-
 
 ### `app-release.yml`
 
-- 只有 `workflow_dispatch`，以及 push 到 `release-dryrun/**`（只會跑 dry run）。階段、權限與檢查見 §6；契約（誰能寫、誰能讀金鑰、哪些 job 執行 repo 的程式）由 `app/scripts/yuzora/app-release.test.ts` 守著，在 App CI 的 Linux job 跑。
+- 只有 `workflow_dispatch`，沒有 push 觸發（push 的 run 用被推送 commit 上的 workflow 檔，見 §6.3 第 0 步）。階段、權限與檢查見 §6；契約（誰能寫、誰能讀金鑰、哪些 job 執行 repo 的程式）由 `app/scripts/yuzora/app-release.test.ts` 守著，在 App CI 的 Linux job 跑。
 - `verify-manifest/` 的測試（它編譯 `manifest.rs`，所以也跑 `manifest.rs` 自己的單元測試）同樣在 App CI 的 Linux job 跑。
 
 ### `app-ci.yml` 的快取與執行時間評估
