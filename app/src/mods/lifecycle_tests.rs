@@ -612,9 +612,73 @@ struct DiffPane {
     /// Whether the diff is meant to have lines to lay out that its frames keep asking for (a `drop` prop loses the
     /// first sizes it is told, so a batch stays in flight).
     expects_pending: bool,
+    /// The clicks this window sent again because the list reported none: see [`Resends`].
+    resent: Resends,
     _fixture: Fixture,
 }
 
+/// How many clicks a window may send again. The press makes the window draw, and the engine gives the list's rows 50 ms of the
+/// machine's own time: on a busy machine (a debug build, 66 rows in a window 1300 px tall) the rows are cut off in that draw, the
+/// list paints none, its rows forget the press, and the release is no click. Measured with `clickRow` not being called: of 1,800
+/// clicks each by the mod before the drag, the mod at the head of the review and this one, taken in turn with 16 busy loops added
+/// to a load of 25, 5, 2 and 2 were lost; each click lost had a draw in the press (or just before it) that built no row,
+/// and none of the draws that built none later lost one. A click sent again is the same click. Counting them, and failing past the
+/// limit, keeps a click that is lost for real from passing as a busy machine.
+#[derive(Default)]
+struct Resends(usize);
+
+impl Resends {
+    const LIMIT: usize = 3;
+
+    fn another(&mut self, x: f64, y: f64) {
+        self.0 += 1;
+        eprintln!(
+            "diff test: the list reported no click at ({x}, {y}); sent again ({} so far in this window)",
+            self.0
+        );
+        assert!(
+            self.0 <= Self::LIMIT,
+            "the list reported no click at ({x}, {y}), the {}th time in this window: a machine this busy cannot run this test, or the click is lost for real",
+            self.0
+        );
+    }
+}
+
+#[test]
+fn yuzora_diff_a_window_may_send_a_few_clicks_again_and_counts_them() {
+    let mut resends = Resends::default();
+    for _ in 0..Resends::LIMIT {
+        resends.another(0., 0.);
+    }
+    assert_eq!(resends.0, Resends::LIMIT);
+}
+
+#[gpui::test]
+fn yuzora_diff_a_click_the_list_never_reports_is_sent_again_a_few_times_and_then_fails(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pane.click_arrives(600., COPY_HEADER / 2., false)
+    }));
+    let message = outcome.expect_err("a click on the header is never reported by the list");
+    let message = message
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(message.contains("the list reported no click"), "{message}");
+    assert_eq!(pane.resent.0, Resends::LIMIT + 1);
+    pane.close();
+}
+
+#[test]
+#[should_panic(expected = "the list reported no click")]
+fn yuzora_diff_a_window_that_sends_clicks_again_more_than_it_may_fails() {
+    let mut resends = Resends::default();
+    for _ in 0..=Resends::LIMIT {
+        resends.another(0., 0.);
+    }
+}
 type Shared = Rc<RefCell<std::collections::BTreeMap<String, Value>>>;
 
 impl DiffPane {
@@ -766,7 +830,7 @@ impl DiffPane {
             })
             .unwrap();
         let visual = VisualTestContext::from_window(*window.deref(), cx);
-        let mut view = Self { visual, notes, views, wide, high, zoom, person, runtime, root: mounted.unwrap(), extra: 0, laid, expects_pending: opened_drops, _fixture: fixture };
+        let mut view = Self { visual, notes, views, wide, high, zoom, person, runtime, root: mounted.unwrap(), extra: 0, laid, expects_pending: opened_drops, resent: Resends::default(), _fixture: fixture };
         view.settle();
         view
     }
@@ -1107,19 +1171,19 @@ impl DiffPane {
         self.settle();
     }
 
-    /// A click the list reports. The pointer is moved there first, as a platform does before a press (at a load of 60, 5 of 40
-    /// runs of the selection-while-ranking test lost a click without that, none of 20 with it). A click the list never says
-    /// it got is made again, up to four times: on a machine busier still one is lost now and then (the zoom test below
-    /// measured it), and clicking again with the same Shift is the same click.
+    /// A click the list reports. The pointer is moved there first, as a platform does before a press. One the list does not report
+    /// is sent again, counted by [`Resends`].
     fn click_arrives(&mut self, x: f64, y: f64, shift: bool) {
-        for _ in 0..4 {
+        for _ in 0..=Resends::LIMIT {
             let seen = self.noted("clickRow").len();
             self.hover(x, y);
             self.click(x, y, shift);
             if self.noted("clickRow").len() > seen {
                 return;
             }
+            self.resent.another(x, y);
         }
+        panic!("the list reported no click at ({x}, {y})");
     }
 
     /// A click, down and up where the list sees it (`shift`: with Shift held).
@@ -2768,22 +2832,8 @@ fn yuzora_diff_dragging_selects_the_rows_under_the_pointer_at_every_zoom_with_th
             if scrolled > 0. {
                 pane.wheel(300. * z, 150. * z, 0., -37. * z);
             }
-            // The pointer is moved there first, as a platform does before a press. A click the list does not report is made again,
-            // up to four times: on a machine busy enough now and then one is lost (measured with `clickRow` not being called: the mod
-            // as it was before the drag lost 3 of 128 at a load of 33 in a window 1300 px tall, this one 19 of 232, and 2 of 130
-            // in the 500 px one used here). Nothing in the mod was found to lose it; the repaint between the press and the release
-            // built 32 rows in 23 ms at a load of 40 (debug build, timed from inside the mod), and the engine cuts a frame at 50 ms, so it
-            // is the rows in view that matter (a reading of those times, not shown to be the cause). What is
-            // checked here is which row the list says a click is on, not that every click arrives.
             let row_at = |pane: &mut DiffPane, down: f64| {
-                for _ in 0..4 {
-                    let seen = pane.noted("clickRow").len();
-                    pane.hover(TEXT_LEFT * z, (COPY_HEADER + down) * z);
-                    pane.click(TEXT_LEFT * z, (COPY_HEADER + down) * z, false);
-                    if pane.noted("clickRow").len() > seen {
-                        break;
-                    }
-                }
+                pane.click_arrives(TEXT_LEFT * z, (COPY_HEADER + down) * z, false);
                 match selected(pane) {
                     Some(runs) => runs[0][1].as_u64().unwrap(),
                     None => u64::MAX,
