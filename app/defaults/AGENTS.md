@@ -1249,6 +1249,27 @@ with these differences.
   Stop: stopping it writes nothing, unless the message says the server had
   already been asked to commit, and the edits stay in the cells. Running the
   table again with edits not yet written asks first.
+- A table is read and written back on a connection of its own, apart from the
+  one its SQL tab runs on. What a SQL tab did (`SET`, `USE`, a temporary
+  table, a transaction left open) never reaches the table, and what the SQL
+  tab has not committed is not in the table either. The table's Stop and the
+  SQL tab's Stop each end only their own statement. A pane that uses both
+  holds one connection more than a pane that only opens a table, so on a
+  login with a very small connection limit the SQL tab can fail to connect
+  (the server's message is shown) while a table is open.
+- Clearing a cell (Backspace, then Enter) makes it NULL where the column's
+  type has no empty value (numbers, dates, times, `uuid`, `bool`, `json`),
+  and the cell shows NULL before anything is written; a text column keeps the
+  empty string, and a NOT NULL column is refused by the server. SQLite keeps
+  the empty string in every column.
+- A date typed into a SQL Server `datetime` or `smalldatetime` cell is saved
+  as the date it says or refused before anything is sent. A year-first date
+  (`2024-01-06`, `2024/1/6`, `2024.01.06`, `20240106`, with a time before or
+  after it, `T` or `Z` included) is read the same under every language and
+  `DATEFORMAT`; a year-first date with anything else the app cannot read for
+  sure (`20240106 9:5`) is refused. A zone offset such as `+08:00` goes to the
+  server, which refuses it for these two types. Any other style (`1/6/2024`)
+  is read by the login's own language, as the server does.
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->
