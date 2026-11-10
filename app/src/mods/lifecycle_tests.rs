@@ -530,6 +530,7 @@ export default class Probed extends GitDiff {
     note("work", (this.touched?.n ?? 0) - before, scanned.n - scan, built.n - made);
     note("range", this.lay?.reach ?? null);
     note("offset", this.lay?.sx ?? null, this.lay?.reach ?? null);
+    note("scrolled", typeof this.scroll.offset === "function" ? this.scroll.offset() : null);
     root = root.on_mouse_down("left", (e, cx) => {
       if (e.position.y < 28) { if (this.view) this.relayout(cx); }
       else if (!props().real) this.clickRow(Math.floor((e.position.y - 28) / 20), cx);
@@ -1025,6 +1026,43 @@ impl DiffPane {
     fn press(&mut self, x: f64, y: f64, clicks: usize) {
         self.visual.simulate_event(gpui::MouseDownEvent { position: Self::at(x, y), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: clicks, first_mouse: false });
         self.settle();
+    }
+
+    /// A press with Shift held (or not), down only: the button stays down till [`Self::release`].
+    fn press_with(&mut self, x: f64, y: f64, shift: bool) {
+        let modifiers = gpui::Modifiers {
+            shift,
+            ..gpui::Modifiers::none()
+        };
+        self.visual.simulate_event(gpui::MouseDownEvent {
+            position: Self::at(x, y),
+            modifiers,
+            button: gpui::MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        self.settle();
+    }
+
+    /// How far the list said it was scrolled in the last frame (window pixels), or none if it cannot say.
+    fn scrolled(&self) -> Option<f64> {
+        self.notes
+            .borrow()
+            .iter()
+            .rev()
+            .find(|n| n[0] == "scrolled")
+            .and_then(|n| n[1].as_f64())
+    }
+
+    /// `ticks` of `ms` milliseconds of the clock, a frame drawn after each: what a held pointer lets happen without moving.
+    fn wait(&mut self, ticks: usize, ms: u64) {
+        for _ in 0..ticks {
+            self.visual
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(ms));
+            self.visual.update(|window, cx| window.draw(cx).clear(cx));
+            self.visual.run_until_parked();
+        }
     }
 
     fn drag(&mut self, x: f64, y: f64) {
@@ -2408,6 +2446,415 @@ fn yuzora_diff_in_unified_a_selection_takes_no_room_from_how_far_the_lines_scrol
     }
     pane.close();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The runs a Cmd+C copies now (none: nothing is selected).
+fn selected(pane: &mut DiffPane) -> Option<Value> {
+    copied(pane)?;
+    Some(asked_for(pane))
+}
+
+// yuzora(v010-git-diff-fu): holding the button down and moving across rows selects them: the selection runs from the row pressed
+// to the row under the pointer, as it does by a click and a Shift-click, on the side that was pressed, and it is there while the
+// button is down as well as after it is let go. Up the list as well as down it; unified copies what it shows; a Shift press
+// reaches from the selection there is; the pointer coming back to the row it left from is that one row.
+#[gpui::test]
+fn yuzora_diff_dragging_across_rows_selects_from_the_row_pressed_to_the_row_under_the_pointer(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, side_diff(), json!({}));
+    pane.press(TEXT_LEFT, row_y(1), 1);
+    pane.drag(TEXT_LEFT, row_y(2));
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 1, 3]])),
+        "the left side's rows 2 and 3, with the button down"
+    );
+    pane.release(TEXT_LEFT, row_y(2));
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 1, 3]])),
+        "and when it is let go"
+    );
+    assert_eq!(
+        pane.clipboard().as_deref(),
+        Some("\tlet a = 1;\n    let b = 2;  ")
+    );
+    // Up, on the right: the row with no line there and the fold add none. The pointer on the left side does not change the side.
+    pane.press(TEXT_RIGHT, row_y(4), 1);
+    pane.drag(TEXT_LEFT, row_y(2));
+    pane.drag(TEXT_LEFT, row_y(1));
+    pane.release(TEXT_LEFT, row_y(1));
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["r", 1, 2], ["r", 5, 6]])),
+        "the right side, from the last row up to the second"
+    );
+    // Back to where it began: that row.
+    pane.press(TEXT_LEFT, row_y(1), 1);
+    pane.drag(TEXT_LEFT, row_y(2));
+    pane.drag(TEXT_LEFT, row_y(1));
+    pane.release(TEXT_LEFT, row_y(1));
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 1, 2]])),
+        "the pointer back on the row it began on: that row"
+    );
+    // Shift reaches from the row the selection began on, and the drag goes on moving the end.
+    pane.click(TEXT_LEFT, row_y(1), false);
+    pane.press_with(TEXT_LEFT, row_y(2), true);
+    pane.drag(TEXT_LEFT, row_y(4));
+    pane.release(TEXT_LEFT, row_y(4));
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 1, 3], ["l", 6, 7]])),
+        "from row 2 to the last, the fold left out"
+    );
+    pane.close();
+
+    let mut pane = copy_pane(cx, unified_diff(), json!({"layout": "unified"}));
+    pane.press(300., row_y(0), 1);
+    pane.drag(300., row_y(3));
+    pane.drag(300., row_y(5));
+    pane.release(300., row_y(5));
+    assert_eq!(pane.noted("text").len(), 0, "nothing was copied yet");
+    assert_eq!(
+        copied(&mut pane).as_deref(),
+        Some("keep\n\told one\nold two\nnew one\ntail"),
+        "unified copies the lines as they are shown"
+    );
+    pane.close();
+}
+
+// yuzora(v010-git-diff-fu): a press that does not move, or moves inside its row, is the click it was: the row, and its hunk made
+// the current one. The numbers of a diff that can stage still pick the line, and a press on them dragged across rows selects
+// nothing and picks nothing; the same for a fold, the divider and the bar under the lines, which have their own drags.
+#[gpui::test]
+fn yuzora_diff_a_press_that_stays_in_its_row_is_a_click_and_the_numbers_the_fold_and_the_divider_start_no_selection(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, side_diff(), json!({}));
+    pane.press(TEXT_LEFT, row_y(1), 1);
+    pane.drag(TEXT_LEFT + 30., row_y(1) + 4.);
+    pane.release(TEXT_LEFT + 30., row_y(1) + 4.);
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 1, 2]])),
+        "moved inside the row: a click on it"
+    );
+    // The numbers: the line is picked by a click (a stageable diff), and a drag from them picks and selects nothing.
+    pane.click(TEXT_LEFT, row_y(0), false);
+    pane.press(10., row_y(1), 1);
+    pane.drag(10., row_y(2));
+    pane.release(10., row_y(2));
+    assert_eq!(
+        pane.noted("pick").len(),
+        0,
+        "a drag across rows picks no line"
+    );
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 0, 1]])),
+        "and leaves the selection there was"
+    );
+    // A fold: its click opens the whole file, a drag from it does nothing.
+    pane.press(TEXT_LEFT, row_y(3), 1);
+    pane.drag(TEXT_LEFT, row_y(4));
+    pane.release(TEXT_LEFT, row_y(4));
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 0, 1]])),
+        "a drag from a fold selects nothing"
+    );
+    // The divider drags the divider.
+    let divider = 599.5 + 0.5;
+    pane.press(divider, row_y(1), 1);
+    pane.drag(divider + 40., row_y(2));
+    pane.drag(divider + 40., row_y(4));
+    pane.release(divider + 40., row_y(4));
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 0, 1]])),
+        "a drag from the divider selects nothing"
+    );
+    pane.close();
+
+    let mut diff = side_diff();
+    diff.stageable = false;
+    let mut pane = copy_pane(cx, diff, json!({}));
+    pane.press(10., row_y(1), 1);
+    pane.drag(10., row_y(2));
+    pane.release(10., row_y(2));
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 1, 3]])),
+        "where nothing can be picked the numbers are text to select from"
+    );
+    pane.close();
+
+    // The bar under long lines drags the lines.
+    let mut pane = copy_pane(cx, long_line_diff("l"), json!({}));
+    let bar = pane.high as f64 - 4.;
+    let (start, long) = pane.thumb().expect("a bar");
+    pane.press(start + long / 2., bar, 1);
+    pane.drag(start + long / 2. + 100., row_y(1));
+    pane.drag(start + long / 2. + 100., row_y(2));
+    pane.release(start + long / 2. + 100., row_y(2));
+    assert_eq!(
+        selected(&mut pane),
+        None,
+        "a drag from the bar's thumb selects nothing"
+    );
+    pane.close();
+}
+
+// yuzora(v010-git-diff-fu): the row under the pointer is the row the list shows there, whatever the zoom and wherever the list is
+// scrolled to, a whole number of rows or not: found out by clicking, which is the list's own answer, and dragging from and to
+// the same places selects the rows between (with 37 script units scrolled off the top, the pointer 55 down the list is over
+// row 4, where counting from the first row drawn, row 1, gives 3).
+#[gpui::test]
+fn yuzora_diff_dragging_selects_the_rows_under_the_pointer_at_every_zoom_with_the_list_scrolled(
+    cx: &mut TestAppContext,
+) {
+    if !alone("yuzora_diff_dragging_selects_the_rows_under_the_pointer_at_every_zoom_with_the_list_scrolled") {
+        return;
+    }
+    let mut failures = Vec::new();
+    for zoom in [0.8_f32, 1., 1.5, 2.] {
+        let z = zoom as f64;
+        gpui_shell::set_pixel_scale(zoom);
+        let mut pane = DiffPane::mount_at(
+            cx,
+            numbered_diff(200, "line"),
+            1200.,
+            (1200., 1300.),
+            zoom,
+            &Shared::default(),
+            json!({"real": true}),
+        );
+        for scrolled in [0_f64, 37.] {
+            if scrolled > 0. {
+                pane.wheel(300. * z, 300. * z, 0., -37. * z);
+            }
+            let row_at = |pane: &mut DiffPane, down: f64| {
+                pane.click(TEXT_LEFT * z, (COPY_HEADER + down) * z, false);
+                match selected(pane) {
+                    Some(runs) => runs[0][1].as_u64().unwrap(),
+                    None => u64::MAX,
+                }
+            };
+            let (from, to) = (row_at(&mut pane, 55.), row_at(&mut pane, 150.));
+            pane.press(TEXT_LEFT * z, (COPY_HEADER + 55.) * z, 1);
+            pane.drag(TEXT_LEFT * z, (COPY_HEADER + 100.) * z);
+            pane.drag(TEXT_LEFT * z, (COPY_HEADER + 150.) * z);
+            pane.release(TEXT_LEFT * z, (COPY_HEADER + 150.) * z);
+            let got = selected(&mut pane);
+            let wanted = json!([["l", from, to + 1]]);
+            if got.as_ref() != Some(&wanted) {
+                failures.push(format!("zoom {zoom}, {scrolled} scrolled: dragged from the row {from} to the row {to} and selected {got:?}"));
+            }
+            let first = ((scrolled + 55.) / 20.).floor() as u64;
+            if from != first {
+                failures.push(format!("zoom {zoom}, {scrolled} scrolled: the list says row {from} is 55 down, and 55 + {scrolled} over 20 is {first}"));
+            }
+        }
+        pane.close();
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010-git-diff-fu): the list reports how far it is scrolled in window pixels: 0 at the top, the wheel's distance
+// down it, at any zoom (a length the pane writes at zoom 1.5 is 1.5 times as many pixels, and the wheel is in pixels).
+#[gpui::test]
+fn yuzora_diff_the_list_says_how_far_it_is_scrolled_in_window_pixels(cx: &mut TestAppContext) {
+    if !alone("yuzora_diff_the_list_says_how_far_it_is_scrolled_in_window_pixels") {
+        return;
+    }
+    for zoom in [1_f32, 1.5] {
+        let z = zoom as f64;
+        gpui_shell::set_pixel_scale(zoom);
+        let mut pane = DiffPane::mount_at(
+            cx,
+            numbered_diff(200, "line"),
+            1200.,
+            (1200., 1300.),
+            zoom,
+            &Shared::default(),
+            json!({"real": true}),
+        );
+        let says = |pane: &DiffPane| {
+            pane.scrolled().unwrap_or_else(|| {
+                panic!("zoom {zoom}: the list cannot say how far it is scrolled")
+            })
+        };
+        near(says(&pane), 0., "at the top");
+        pane.wheel(300. * z, 300. * z, 0., -37.);
+        near(says(&pane), 37., &format!("zoom {zoom}: 37 pixels down"));
+        pane.wheel(300. * z, 300. * z, 0., 10.);
+        near(says(&pane), 27., &format!("zoom {zoom}: 10 back up"));
+        pane.wheel(300. * z, 300. * z, 0., 1e6);
+        near(says(&pane), 0., &format!("zoom {zoom}: past the top"));
+        pane.wheel(300. * z, 300. * z, 0., -1e6);
+        let end = says(&pane);
+        assert!(
+            end > 100. && end < 200. * 20. * z,
+            "zoom {zoom}: past the end it stops, at {end}"
+        );
+        pane.close();
+    }
+}
+
+// yuzora(v010-git-diff-fu): a pointer held at the list's edge scrolls it, and the selection goes on: down the rows the list
+// brings in, to the last, and back up. Above the list (the header) scrolls up. The pointer is not moved, so it is the clock
+// that does it, and it stops with the button: no frame is built once it is let go.
+#[gpui::test]
+fn yuzora_diff_a_pointer_held_at_the_edge_scrolls_the_list_and_the_selection_goes_on(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
+    let (bottom, top) = (pane.high as f64 - 8., COPY_HEADER + 6.);
+    pane.press(TEXT_LEFT, row_y(5), 1);
+    pane.drag(TEXT_LEFT, row_y(8));
+    near(
+        pane.scrolled().unwrap(),
+        0.,
+        "not at an edge: the list stays",
+    );
+    pane.drag(TEXT_LEFT, bottom);
+    pane.wait(10, 50);
+    let (down, ranges) = (pane.scrolled().unwrap(), selected(&mut pane));
+    assert!(
+        down >= 100.,
+        "10 ticks at the bottom edge scroll the list by rows: {down}"
+    );
+    let end = ranges
+        .as_ref()
+        .map(|r| r[0][2].as_u64().unwrap())
+        .unwrap_or(0);
+    assert!(
+        end > 30,
+        "the selection reaches rows that were not on screen: {ranges:?}"
+    );
+    pane.wait(300, 50);
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 5, 200]])),
+        "held at the bottom: to the last row, and the list stops at its end"
+    );
+    let end_of_list = pane.scrolled().unwrap();
+    pane.drag(TEXT_LEFT, top);
+    pane.wait(300, 50);
+    assert!(
+        pane.scrolled().unwrap() < end_of_list - 100.,
+        "held at the top edge: the list goes back up"
+    );
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 0, 6]])),
+        "to the first row, from the row pressed"
+    );
+    pane.drag(TEXT_LEFT, 10.);
+    pane.wait(5, 50);
+    pane.release(TEXT_LEFT, 10.);
+    let after = pane.script_renders();
+    pane.wait(40, 50);
+    assert_eq!(
+        pane.script_renders(),
+        after,
+        "the clock builds nothing once the button is up"
+    );
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 0, 6]])),
+        "and the selection stays"
+    );
+    pane.close();
+}
+
+// yuzora(v010-git-diff-fu): a drag while the rows are being ranked is not cut short by it, and does not stop it: the selection made
+// is there when the ranking is done, and the ranking goes on to its end whether the button is up or down (a `hold` prop stops
+// it after its first slice till F12).
+#[gpui::test]
+fn yuzora_diff_a_drag_while_the_rows_are_ranked_neither_ends_nor_stops_the_ranking(
+    cx: &mut TestAppContext,
+) {
+    const ROWS: usize = 20_000;
+    let mut pane = DiffPane::mount_diff(
+        cx,
+        numbered_diff(ROWS, "line"),
+        1200.,
+        1200.,
+        &Shared::default(),
+        json!({"real": true, "hold": true}),
+    );
+    let held = pane.rows_ranked_in_all();
+    assert!(
+        pane.pending() && held > 0. && held < ROWS as f64,
+        "{held} of {ROWS} rows are ranked, and the ranking is held"
+    );
+    pane.press(TEXT_LEFT, row_y(3), 1);
+    pane.drag(TEXT_LEFT, row_y(6));
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 3, 7]])),
+        "selected while the ranking is held"
+    );
+    // The ranking goes on with the button down, and the drag with it.
+    pane.keys("f12");
+    pane.drag(TEXT_LEFT, row_y(9));
+    for _ in 0..30 {
+        if !pane.pending() {
+            break;
+        }
+        pane.settle();
+    }
+    assert!(
+        !pane.pending(),
+        "the ranking and the laying out were finished with the button down"
+    );
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 3, 10]])),
+        "the drag went on to the row under the pointer"
+    );
+    pane.release(TEXT_LEFT, row_y(9));
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 3, 10]])),
+        "and it is there when the button is up"
+    );
+    pane.close();
+}
+
+// yuzora(v010-git-diff-fu): the diff read again while the button is down (a file saved) ends the drag with the selection: the rows
+// are others now, and the pointer moving on selects none of them.
+#[gpui::test]
+fn yuzora_diff_a_diff_read_again_during_a_drag_ends_it(cx: &mut TestAppContext) {
+    let mut pane = DiffPane::mount_diff(
+        cx,
+        numbered_diff(200, "line"),
+        1200.,
+        1200.,
+        &Shared::default(),
+        json!({"real": true}),
+    );
+    pane.press(TEXT_LEFT, row_y(3), 1);
+    pane.drag(TEXT_LEFT, row_y(5));
+    assert_eq!(selected(&mut pane), Some(json!([["l", 3, 6]])));
+    pane.keys("f11");
+    assert_eq!(
+        selected(&mut pane),
+        None,
+        "the rows are others: nothing is selected"
+    );
+    pane.drag(TEXT_LEFT, row_y(9));
+    pane.release(TEXT_LEFT, row_y(9));
+    assert_eq!(
+        selected(&mut pane),
+        None,
+        "and the pointer moving on selects nothing"
+    );
+    pane.close();
 }
 
 // yuzora(v010): an ordinary diff (thousands of lines, a few with wide characters) scrolls sideways
