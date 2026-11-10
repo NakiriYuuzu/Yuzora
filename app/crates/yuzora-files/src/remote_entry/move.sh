@@ -10,11 +10,17 @@ idof() { stat -c '%d:%i' -- "$1" 2>/dev/null || stat -f '%d:%i' -- "$1" 2>/dev/n
 dev() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null; }
 held= heldid=
 giveback() {
-  if [ -n "$held" ] && [ "$(idof "$held")" = "$heldid" ]; then rm -f -- "$held"; fi
+  if [ -n "$held" ]; then
+    if [ -n "$heldid" ]; then
+      [ "$(idof "$held")" = "$heldid" ] && rm -f -- "$held"
+    elif [ -f "$held" ] && [ ! -L "$held" ] && [ ! -s "$held" ]; then
+      rm -f -- "$held"
+    fi
+  fi
   held=
 }
 trap giveback EXIT
-trap 'exit 1' HUP INT TERM
+trap 'echo "stopped before it was done: it may or may not have been" >&2; exit 1' HUP INT TERM
 there "$from" || { echo gone; exit 0; }
 if there "$to"; then
   if [ "$fold" = 1 ]; then
@@ -36,8 +42,8 @@ if [ -d "$from" ] && [ ! -L "$from" ]; then
   if mv --version >/dev/null 2>&1; then flag=-nT; else flag=-n; fi
   msg=$(mv $flag -- "$from" "$to" 2>&1)
 else
-  if ! msg=$( (set -C; : > "$to") 2>&1 ); then blame "$to"; fail "$msg"; fi
-  held=$to heldid=$(idof "$to")
+  if msg=$( (set -C; : > "$to") 2>&1 ); then held=$to; else blame "$to"; fail "$msg"; fi
+  heldid=$(idof "$to")
   msg=$(mv -f -- "$from" "$to" 2>&1)
 fi
 if there "$from"; then
