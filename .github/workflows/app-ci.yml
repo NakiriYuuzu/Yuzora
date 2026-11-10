@@ -220,6 +220,11 @@ jobs:
     name: App database (Linux x86-64, PostgreSQL and SQL Server)
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    # On the job, not on the test step: a step split off it keeps both, so
+    # the engines cannot go unselected and unrequired together.
+    env:
+      YUZORA_DATABASE_TEST_ENGINES: sqlite,postgres,mssql
+      YUZORA_DATABASE_REQUIRE_ENGINES: postgres,mssql
     defaults:
       run:
         shell: bash
@@ -267,8 +272,6 @@ jobs:
           # Fixture-only credential shared with tests/database/docker-compose.yml.
           # It is not a production secret.
           YUZORA_P8_DATABASE_PASSWORD: "Yuzora-P8-Only-2026!"
-          YUZORA_DATABASE_TEST_ENGINES: sqlite,postgres,mssql
-          YUZORA_DATABASE_REQUIRE_ENGINES: postgres,mssql
         run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' -p yuzora-db --no-fail-fast
       - name: Dump database fixture logs on failure
         if: failure()
