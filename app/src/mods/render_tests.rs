@@ -1779,10 +1779,22 @@ impl Scenario {
 
     /// What another mod copy does with `setShared`, then the window drawing every mod again, as it does for a change of shared state.
     fn share(&mut self, key: &str, value: Value) {
-        self.calls.borrow_mut().shared.insert(key.into(), value);
-        let (runtime, root) = (self.runtime.clone(), self.root.clone());
-        self.visual.update(|_, cx| runtime.refresh(&root, cx).unwrap());
+        self.put(key, value);
+        self.frame();
         self.settle();
+    }
+
+    fn put(&self, key: &str, value: Value) {
+        self.calls.borrow_mut().shared.insert(key.into(), value);
+    }
+
+    /// One frame of every mod, and nothing run that the frame left behind (a timer, a task).
+    fn frame(&mut self) {
+        let (runtime, root) = (self.runtime.clone(), self.root.clone());
+        self.visual.update(|window, cx| {
+            runtime.refresh(&root, cx).unwrap();
+            window.draw(cx).clear(cx);
+        });
     }
 
     /// The clock moving on: what a mod left for a timer (`cx.timer.after`) runs, then the frames it asked for are drawn.
@@ -2783,7 +2795,8 @@ fn the_database_table_pane_follows_the_sidebar_to_another_table(cx: &mut TestApp
     assert_eq!(db_loads(&s), ["gone-a", "gone-b", "gone-c"], "each pick loads once, and drawing again loads nothing");
 }
 
-// Two picks before the pane gets to the first: the pane goes to the second, and the first is never read.
+// Two picks, each seen by a frame, before the pane gets to the first: the pane goes to the second, and the first is
+// never read.
 #[gpui::test]
 fn the_database_table_pane_follows_the_last_of_two_quick_picks(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
@@ -2792,8 +2805,10 @@ fn the_database_table_pane_follows_the_last_of_two_quick_picks(cx: &mut TestAppC
     let key = db_key();
     let mut s = Scenario::mount_with_props(cx, &staged, &db_reuse_source(None, false), db_pane_props(&key), 320.0, 400.0);
     assert!(db_settles_on(&mut s, "gone-a"), "{:?}", db_now(&s));
-    s.share(DB_OPEN, db_pick(&key, "gone-b", 2));
-    s.share(DB_OPEN, db_pick(&key, "gone-c", 3));
+    s.put(DB_OPEN, db_pick(&key, "gone-b", 2));
+    s.frame();
+    s.put(DB_OPEN, db_pick(&key, "gone-c", 3));
+    s.frame();
     s.tick(50);
     assert_eq!(db_frame_errors(&s), Vec::<String>::new());
     assert!(db_settles_on(&mut s, "gone-c"), "the pane did not end on the last pick: {:?}", db_now(&s));

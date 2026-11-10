@@ -164,7 +164,16 @@ export default class DbTable extends View {
     if (this.jobId) cancel(this.jobId);
   }
 
-  /** The sidebar picked another table for this pane. */
+  /**
+   * The sidebar picked another table for this pane. A pick is a value in shared state, which a mod can only see
+   * from a frame, and a frame may only look: the pane goes to it from a timer, in the frame's wake.
+   */
+  picked(cx) {
+    const o = shared(OPEN);
+    if (o && o.key === this.key && o.seq !== this.seq) cx.timer.after(0, (cx) => this.retarget(cx));
+  }
+
+  /** Goes to the newest pick, so two before the timer ran are one and the first is never read. A frame drawn before the timer ran asks again, to no effect. */
   retarget(cx) {
     const o = shared(OPEN);
     if (!o || o.key !== this.key || o.seq === this.seq) return;
@@ -175,6 +184,7 @@ export default class DbTable extends View {
       this.tab = "data";
       this.load(cx);
     });
+    cx.notify();
   }
 
   stopSaving(id) {
@@ -310,7 +320,7 @@ export default class DbTable extends View {
   }
 
   render(cx) {
-    this.retarget(cx);
+    this.picked(cx);
     const th = theme();
     const root = v_flex().id("root").track_focus(this.handle).size_full().bg(th.background).text_color(th.foreground).text_size(12.5)
       .on_key_down((e, cx) => {
