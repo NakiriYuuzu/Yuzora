@@ -440,14 +440,14 @@ fn poll_until_done(job: JobId, started: Instant) -> Sample {
     }
 }
 
-/// What the table pane does on opening: the table, and (from its own script) a `describe` beside it.
+/// What the table pane does on opening: the table, and (from its own script) a request for its description
+/// beside it: the job's own (`tableInfo`), which sends nothing of its own.
 fn open_table(line: &DelayLine, connection: &str, owner: &str, table: &ObjectRef, with_pane_describe: bool) -> Sample {
     let started = Instant::now();
     let job = session::open_table(connection, None, owner, table, None);
     if with_pane_describe {
-        let (connection, table) = (connection.to_owned(), table.clone());
         runtime::spawn(async move {
-            let _ = session::describe(&connection, None, &table).await;
+            let _ = session::table_info(job).await;
         });
     }
     let mut s = poll_until_done(job, started);
@@ -735,7 +735,8 @@ fn perf_open_table() {
     let tables = env_list("YUZORA_PERF_TABLES", "small,100k,1m,widecols,widetext");
     let (cold_n, warm_n) = (env_n("YUZORA_PERF_COLD", 5), env_n("YUZORA_PERF_WARM", 7));
     let delays = delays();
-    // `*-alone`: without the `describe` the pane's own script asks for beside the table.
+    // `*-alone`: without the pane's own request for the description beside the table (since the job carries the
+    // description it makes no difference to the traffic; before that, the pane sent a second `describe`).
     let modes = env_list("YUZORA_PERF_MODES", "cold,warm");
     for kind in kinds() {
         fixture(kind);

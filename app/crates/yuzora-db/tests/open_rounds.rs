@@ -20,6 +20,7 @@ use common::{ConnStat, DelayLine, ms};
 use serde_json::json;
 use yuzora_db::config::{self, ConnectionConfig};
 use yuzora_db::model::ObjectRef;
+use yuzora_db::runtime;
 use yuzora_db::session::{self, JobId, JobState};
 
 /// Rows a table read keeps (`db.maxRows`). `t_over` holds more, `t_small` fewer.
@@ -209,6 +210,7 @@ impl Drop for Fixture {
 
 /// One open of a table, from the moment the job started.
 struct Opened {
+    job: JobId,
     first_rows_ms: f64,
     done_ms: f64,
     rows: usize,
@@ -230,6 +232,7 @@ fn open(line: &DelayLine, connection: &str, owner: &str, table: &ObjectRef) -> O
     let started = Instant::now();
     let job = session::open_table(connection, None, owner, table, None);
     let mut opened = Opened {
+        job,
         first_rows_ms: f64::NAN,
         done_ms: f64::NAN,
         rows: 0,
@@ -301,6 +304,19 @@ fn the_rows_are_asked_for_before_the_description_is_back() {
             "{}: warm, the rows' connection was first used at {:.0} ms; it waited for the description",
             kind.name(),
             warm.pane().first_ms
+        );
+
+        // connections that were closed meanwhile are still saying goodbye
+        std::thread::sleep(Duration::from_millis(300));
+        let asked = Instant::now();
+        let described = runtime::block_on(session::table_info(warm.job)).expect("the open's description");
+        assert_eq!(described.key_columns(), ["id"], "{}", kind.name());
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(
+            line.window(asked).is_empty(),
+            "{}: asking the job for the description went to the server: {:?}",
+            kind.name(),
+            line.window(asked)
         );
         session::release_owner(&owner);
         session::disconnect(&id);

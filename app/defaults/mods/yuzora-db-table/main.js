@@ -9,7 +9,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, props, nextCommand, shared, setShared, focused } from "herdr";
 import { t } from "yuzora:core";
-import { connections, openTable, query, job, cancel, stopWrite, release, result, describe, DataGrid, SqlEditor, editorText, setEditorText, editorAction } from "yuzora:db";
+import { connections, openTable, query, job, cancel, stopWrite, release, result, tableInfo, DataGrid, SqlEditor, editorText, setEditorText, editorAction } from "yuzora:db";
 import { gridColors, highlight } from "./ui.js";
 
 const OPEN = "yuzora.db.open";
@@ -28,6 +28,7 @@ export default class DbTable extends View {
     this.shown = 0; // index into state.results
     this.info = null;
     this.infoError = null;
+    this.infoJob = null;
     this.sql = "";
     this.confirm = null; // {count, action}: unsaved edits stand in the way of action
     this.handle = cx.focus_handle();
@@ -87,16 +88,19 @@ export default class DbTable extends View {
     this.info = null;
     this.infoError = null;
     this.shown = 0;
-    this.watch(cx, openTable(tg.connection, tg.database, this.key, { schema: tg.schema, name: tg.name }, order ?? null));
+    const id = openTable(tg.connection, tg.database, this.key, { schema: tg.schema, name: tg.name }, order ?? null);
+    this.watch(cx, id);
+    // The Structure tab shows what the open itself reads of the table, beside the rows: the newest open's is the one that counts.
+    this.infoJob = id;
     cx.spawn(async (cx) => {
       try {
-        const info = await describe(tg.connection, tg.database, { schema: tg.schema, name: tg.name });
-        if (this.target === tg) {
+        const info = await tableInfo(id);
+        if (this.infoJob === id) {
           this.info = info;
           setEditorText(`${this.key}:ddl`, info.ddl ?? "");
         }
       } catch (e) {
-        if (this.target === tg) this.infoError = String(e?.message ?? e);
+        if (this.infoJob === id) this.infoError = String(e?.message ?? e);
       }
       cx.notify();
     });

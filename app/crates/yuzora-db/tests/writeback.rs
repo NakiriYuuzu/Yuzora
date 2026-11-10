@@ -565,44 +565,26 @@ fn every_result_that_cannot_be_edited_says_why() {
 
 // ---------------------------------------------------------------- editing before the count
 
-/// When a table's rows were all in (the cap was hit), when it became
-/// editable, and when its `count(*)` came in.
-struct Timeline {
-    editable: Option<Duration>,
-    total: Option<Duration>,
-    rows: usize,
-    truncated: bool,
-}
-
-fn observe(job: JobId) -> Timeline {
-    let started = Instant::now();
-    let mut line = Timeline { editable: None, total: None, rows: 0, truncated: false };
-    loop {
-        std::thread::sleep(Duration::from_millis(1));
-        let at = started.elapsed();
-        let state = session::job_state(job).expect("job");
-        if let Some(first) = state.results.first() {
-            let summary = results::lock(&results::get(first.id).expect("result")).summary();
-            (line.rows, line.truncated) = (summary.rows, summary.truncated);
-            if summary.editable && line.editable.is_none() {
-                line.editable = Some(at);
-            }
-            if summary.total.is_some() && line.total.is_none() {
-                line.total = Some(at);
-            }
-        }
-        if !state.running {
-            return line;
-        }
-        assert!(at < Duration::from_secs(120), "table still loading after 120 s");
-    }
-}
-
+/// The count has its connection held by hand, so it cannot have started: what
+/// the rows are does not wait for it, however long it takes. (Which comes
+/// first when nothing holds the count back depends on whether the count or
+/// the table's description is quicker.)
 fn editable_before_the_count(connection: &str, t: ObjectRef) {
-    let line = observe(session::open_table(connection, None, &owner(connection, "big-pane"), &t, None));
-    assert_eq!((line.rows, line.truncated), (CAP, true), "the table is bigger than the cap");
-    let (editable, total) = (line.editable.expect("editable at the end"), line.total.expect("a count"));
-    assert!(editable < total, "editable only at {editable:?}, when the count was already in at {total:?}");
+    let pane_owner = owner(connection, "big-pane");
+    let held = runtime::block_on(session::lease(connection, None, &session::count_owner(&pane_owner))).unwrap();
+    let job = session::open_table(connection, None, &pane_owner, &t, None);
+    let set = editable_result(job);
+    let (rows, truncated, total) = {
+        let r = results::lock(&set);
+        (r.rows.len(), r.truncated, r.total)
+    };
+    assert_eq!((rows, truncated), (CAP, true), "the table is bigger than the cap");
+    assert_eq!(total, None, "the count is still out");
+    assert!(session::job_state(job).unwrap().running, "the job is still counting");
+    drop(held);
+    let state = within(Duration::from_secs(120), "the count after it was let go", move || wait(job));
+    assert_eq!(state.error, None);
+    assert!(results::lock(&set).total.is_some_and(|n| n > CAP as u64), "the count came");
 }
 
 #[test]
@@ -753,6 +735,37 @@ fn sqlite_a_stop_while_the_tables_description_is_out_ends_the_job_without_waitin
     let reason = results::lock(&set).read_only_reason().expect("read-only, with a reason");
     assert!(reason.contains("stopped"), "{reason}");
     drop(held);
+}
+
+/// The pane's Structure tab asks the job that reads the rows, not the sidebar's
+/// connection a second time.
+#[test]
+fn sqlite_the_description_is_the_one_the_job_that_reads_the_rows_got() {
+    let (id, _) = sqlite_connection("wb-info-api");
+    run(
+        &id,
+        "setup",
+        "create table people(id integer primary key, name text not null); insert into people values (1, 'a');",
+    );
+    let pane_owner = owner(&id, "info-api-pane");
+    let job = session::open_table(&id, None, &pane_owner, &table("", "people"), None);
+    let info = runtime::block_on(session::table_info(job)).unwrap();
+    assert_eq!(info.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "name"]);
+    assert_eq!(info.key_columns(), ["id"]);
+    assert!(info.ddl.contains("people"), "{}", info.ddl);
+    wait(job);
+    assert_eq!(runtime::block_on(session::table_info(job)).unwrap(), info, "asked again once the job is over");
+
+    let missing = session::open_table(&id, None, &pane_owner, &table("", "nobody"), None);
+    assert!(runtime::block_on(session::table_info(missing)).is_err(), "a table that is not there has no description");
+    wait(missing);
+
+    session::open_table(&id, None, &pane_owner, &table("", "people"), None);
+    assert!(
+        matches!(runtime::block_on(session::table_info(missing)), Err(DbError::NotFound(_))),
+        "a job the pane moved on from is gone"
+    );
+    assert!(matches!(runtime::block_on(session::table_info(u64::MAX)), Err(DbError::NotFound(_))));
 }
 
 // ---------------------------------------------------------------- a refresh reads the key the table has now
