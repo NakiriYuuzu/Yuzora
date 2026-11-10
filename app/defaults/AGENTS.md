@@ -1181,6 +1181,12 @@ with these differences.
   `yuzora.git.merge.<space id>`, `yuzora.git.rebase.<space id>`). A request written
   to the plain key, `setShared("yuzora.git.diff", {cwd, path, mode, at})`, names no
   space: the pane of every space follows it, the newer of it and its space's own.
+  A plain request is an order for this run, not state kept across runs: shared is
+  kept in a file, and the first time a pane reads in a run (any of the three kinds)
+  it drops the plain requests an earlier run left, so none is shown in a space that
+  never asked. What you write after that is followed, with or without `at`; what you
+  wrote before any of these panes drew in this run is dropped too. A request
+  to keep across restarts goes in the `<space id>` key.
 - A space can hold several repositories. The picker at the top of the Git
   sidebar follows the focused pane's repository (the default) or keeps one
   pinned for the space: `setShared("yuzora.git.repo.<space id>", {root, on})`

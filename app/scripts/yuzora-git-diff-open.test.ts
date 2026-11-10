@@ -96,7 +96,9 @@ function diffView(p: object, shared: object | null, settings: object = {}) {
   const stubs = {
     View: class {},
     props: () => p,
-    shared: () => shared,
+    shared: (k: string) => (k === "yuzora.git.run" ? "this-run" : shared),
+    setShared() {},
+    session: () => "this-run",
     run: (name: string, args: unknown) => calls.push(["run", name, args]),
     focused: () => ({ pane: "p1" }),
     closeOverlay: (id: string) => calls.push(["closeOverlay", id]),

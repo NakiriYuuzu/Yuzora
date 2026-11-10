@@ -10,7 +10,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, InputState, Input } from "gpui-base";
 import { spaces, panes, focused, props, shared, setShared, run, theme, settings } from "herdr";
-import { t, tokens } from "yuzora:core";
+import { t, tokens, session } from "yuzora:core";
 import { open, status, changed, rebaseTodo, rebaseInteractive, rewordInMemory, sequencer } from "yuzora:git";
 
 // Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
@@ -33,9 +33,20 @@ function requestKey(key, space) {
   return `${key}.${space}`;
 }
 
+// shared is kept in a file across runs, and a request to the plain `<key>` is an order given during
+// one run. The first read of a run drops what an earlier run left there (beta.4 wrote every request
+// to it), once for the three kinds, so no pane is shown it. One written after that is followed.
+function retirePlain() {
+  const run = session();
+  if (shared("yuzora.git.run") === run) return;
+  setShared("yuzora.git.run", run);
+  for (const key of ["yuzora.git.diff", "yuzora.git.merge", "yuzora.git.rebase"]) if (shared(key) != null) setShared(key, null);
+}
+
 // What the shown space's pane is asked: its space's request, or the plain `<key>`, which names no
-// space (an agent's) and is for every pane. The newer one wins.
+// space (an agent's, written during this run) and is for every pane. The newer one wins.
 function requested(key) {
+  retirePlain();
   const space = focused()?.space, mine = space ? shared(requestKey(key, space)) : null, any = shared(key);
   return (mine?.at ?? 0) >= (any?.at ?? 0) ? mine ?? any : any;
 }
