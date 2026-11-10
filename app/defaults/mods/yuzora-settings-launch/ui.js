@@ -4,6 +4,7 @@
 
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, Input } from "gpui-base";
+import { motion } from "yuzora:core";
 
 const CLEAR = "#00000000";
 
@@ -71,16 +72,25 @@ export function button(th, id, label, onClick, kind = "plain", disabled = false)
 export function toggle(th, id, on, onClick) {
   return div()
     .id(id)
+    .relative()
     .w(36)
     .h(20)
     .rounded(10)
-    .p(2)
     .cursor_pointer()
     .bg(on ? th.accent : th.hover)
-    .flex()
-    .when(on, (el) => el.justify_end())
     .on_click(onClick)
-    .child(div().w(16).h(16).rounded(8).bg(on ? th.accent_foreground : th.muted));
+    .child(
+      div()
+        .id(`${id}-knob`)
+        .absolute()
+        .top(2)
+        .left(on ? 18 : 2)
+        .w(16)
+        .h(16)
+        .rounded(8)
+        .bg(on ? th.accent_foreground : th.muted)
+        .transition("left", motion("fast")),
+    );
 }
 
 /** One of a few choices: [[value, label], …]. */
