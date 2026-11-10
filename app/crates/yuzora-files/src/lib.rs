@@ -1112,6 +1112,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
     /// that has the keys notes itself on its document, as `doc-pane.js` does, and no other does.
     /// `restore(...)` puts a pane there that the layout had before this run: in a tab of its own that has not
     /// been shown, or with `beside` in the tab shown. `rename(from, to)` follows a file renamed, as `docs.rs` does.
+    /// A mod pane is listed with `started` (a copy of its mod is running).
     /// `strip(space)` is the tab strip with the panes in each tab and `*` on the selected tab, `focus()` the
     /// pane that has the keys.
     const HERDR_WORLD: &str = r##"
@@ -1170,7 +1171,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
           if (opens[here.pane]) opens[here.pane].pane = here.pane;
           snapshot = {
             spaces: world.map(s => ({ id: s.id, machine: s.machine, active: s.active, tabs: s.tabs.map(t => ({ id: t.id, name: t.name, active: s.selected === t.id })) })),
-            panes: world.flatMap(s => s.tabs.flatMap(t => t.panes.map(p => ({ pane: p.pane, mod: p.mod ?? undefined, ...(p.mod ? { props: given[p.pane] } : {}), tab: t.id })))),
+            panes: world.flatMap(s => s.tabs.flatMap(t => t.panes.map(p => ({ pane: p.pane, mod: p.mod ?? undefined, ...(p.mod ? { props: given[p.pane], started: started.has(p.pane) } : {}), tab: t.id })))),
             focused: { space: shown().id, tab: tab.id, pane: nobody ? null : tab.focus },
           };
         }
@@ -1691,6 +1692,81 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "[shell, editor /r/a.rs, editor /r/a.rs]* [shell]"
             ]
         );
+    }
+
+    // Two panes on one file: the one beside the shell started with the app, the other waits in a tab not shown yet.
+    // `dormant_first` puts the waiting pane ahead of the started one in the list of panes.
+    const TWO_PANES_ON_A_FILE: &str = r#"
+        const two = (dormantFirst, at) => {
+          if (!dormantFirst) {
+            const running = restore("s1", "", "yuzora-editor", at, { beside: true });
+            return { running, waiting: restore("s1", "a.rs", "yuzora-editor", at) };
+          }
+          const waiting = restore("s1", "a.rs", "yuzora-editor", at);
+          restore("s1", "x.rs", "yuzora-editor", { path: "/r/x.rs", on: null, opened: 1 });
+          select(world[0].tabs[3]); publish();
+          return { running: restore("s1", "", "yuzora-editor", at, { beside: true }), waiting };
+        };
+    "#;
+
+    #[test]
+    fn a_pane_not_started_is_replaced_when_its_file_is_renamed_though_another_pane_holds_the_document() {
+        for (dormant_first, strip) in [
+            (false, "[shell, editor /r/a.rs]* [shell] [editor /r/b.rs]"),
+            (true, "[shell] [shell] [editor /r/b.rs] [editor /r/x.rs, editor /r/a.rs]*"),
+        ] {
+            let seen = in_the_open(&[
+                TWO_PANES_ON_A_FILE,
+                &format!(
+                    r#"
+                const {{ running }} = two({dormant_first}, {{ path: "/r/a.rs", on: null, opened: 1 }});
+                rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+                const renamed = strip("s1");
+                openFile("/r/b.rs", null); flush();
+                return [renamed, focused().pane === running ? "the started pane" : "the other"];
+            "#
+                ),
+            ]
+            .join("\n"));
+            assert_eq!(seen, [strip, "the started pane"], "the waiting pane first: {dormant_first}");
+        }
+    }
+
+    #[test]
+    fn a_pane_whose_document_was_renamed_is_not_given_the_document_of_another_file_at_its_old_name() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            openFile("/r/a.rs", null); flush();
+            const stale = focused().pane;
+            run("pane.focus", { pane: "p1" }); flush();
+            rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+            // A file made under the old name is a new one, in a tab ahead of the pane that holds the renamed.
+            openFile("/r/a.rs", null); flush();
+            const made = focused().pane;
+            run("pane.focus", { pane: "p1" }); flush();
+            rename("/r/a.rs", "/r/c.rs"); moved("/r/a.rs", "/r/c.rs", null); flush();
+            openFile("/r/c.rs", null); flush();
+            out.push(focused().pane === made ? "the pane of the new file" : focused().pane === stale ? "the pane of the renamed" : focused().pane);
+            openFile("/r/b.rs", null); flush();
+            out.push(focused().pane === stale ? "the pane of the renamed" : focused().pane);
+            return out;
+        "#,
+        );
+        assert_eq!(seen, ["the pane of the new file", "the pane of the renamed"]);
+    }
+
+    #[test]
+    fn a_pane_of_another_mod_holding_the_renamed_path_is_left_alone() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "", "yuzora-git-diff", { path: "/r/a.rs", on: null, cwd: "/r" }, { beside: true });
+            restore("s1", "a.rs", "yuzora-git-diff", { path: "/r/a.rs", on: null, cwd: "/r" });
+            moved("/r/a.rs", "/r/b.rs", null); moved("/r", "/x", null); flush();
+            return [strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["[shell, git-diff /r/a.rs]* [shell] [git-diff /r/a.rs]"]);
     }
 
     #[test]
