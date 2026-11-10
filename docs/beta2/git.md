@@ -29,7 +29,7 @@ yuzora-git-settings ┘
 | `yuzora-sidebar-git` | 右側模式 | 分支按鈕（↑↓，開分支 popup）、操作中橫幅（繼續／中止／略過）、衝突／已暫存／變更三段清單（數量、全部暫存／取消、列尾 +／−／↺）、右鍵選單、commit 訊息（歷史、範本、amend、sign-off、略過 hooks、作者）、Commit／Commit 並 Push／Push ↑N、「分支圖」；頂端的 repo 選擇器（跟隨焦點，或替這個 Space 釘選一個 repo，見〈同一個 Space 的多個 repo〉）。寫 `yuzora.badge.git`、`yuzora.status.git` |
 | `yuzora-git-branches` | popup | 搜尋、更新專案、Fetch、Push…、新分支、checkout revision、stash；最近／本地／遠端／tags；每個 ref 的動作（checkout、smart／強制 checkout、從此建分支、比較、merge／rebase 進目前分支、改名、upstream、刪除、tag push／刪除） |
 | `yuzora-git-push` | 對話框 | 目標 remote／分支、要送出的 commits、force（lease／force，受保護分支禁止）、tags（none／follow／all）、略過 hooks、新分支自動 set-upstream、被拒時依設定自動更新 |
-| `yuzora-git-diff` | modal 或 tool pane | 預設開成 modal（dialog overlay），「保留」把它移到 pane（預設分割在目前 pane 右側，可改成新分頁）；並排／合併、字詞高亮、空白（精確／忽略頭尾／全部忽略）、context（3 行／整檔）、hunk 導覽、暫存／取消暫存／捨棄 hunk 或選取的行、Annotate、歷史；即時更新 |
+| `yuzora-git-diff` | modal 或 tool pane | 預設開成 modal（dialog overlay），「保留」把它移到 pane（預設分割在目前 pane 右側，可改成新分頁）；並排（左右各半，中間分隔線可拖，長行橫向捲動）／合併、字詞高亮、空白（精確／忽略頭尾／全部忽略）、context（3 行／整檔）、hunk 導覽、暫存／取消暫存／捨棄 hunk 或選取的行、Annotate、歷史；即時更新 |
 | `yuzora-git-log` | tool pane | 提交紀錄＋分支圖（`GraphCell`）、篩選、詳情、右鍵選單、分支比較、檔案歷史 |
 | `yuzora-git-merge` | tool pane | 衝突檔案清單、整檔接受 yours／theirs、三方合併（套用非衝突、自動解決簡單衝突、逐塊選擇或手動編輯） |
 | `yuzora-git-rebase` | tool pane | 互動式 rebase 編輯器（pick／reword／edit／squash／fixup／drop、拖曳排序、update-ref）、記憶體內改寫訊息 |
@@ -484,3 +484,16 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - 未改：compare 畫面（`renderCompare`）的 `cmp-files` 仍是 `h(150)`。
 - 測試（`app/src/mods/render_tests.rs`，真的把 mod 放進視窗排版、送滑鼠與滾輪事件）：`sidebar_git_row_keeps_counts_and_buttons_clear_of_the_name`、`git_log_commit_message_scrolls_and_the_files_stay`、`git_log_detail_divider_drags_and_keeps_minimums`、`git_log_commit_message_is_shown_whole_up_to_a_cap`、`git_log_commit_message_paragraphs_lay_out_like_a_div_per_line`。
 - beta.4 評估：gpui-base 其實有 `v_resizable`／`resizable_panel`（`size_range`、`on_resize`），拖曳由 gpui 處理；之後可評估是否取代自製的分隔線。
+
+## 並排 diff 的左右比例與橫向捲動（v0.1.0）
+
+- **原本為什麼不是各半**：兩側各有一個最小寬度（號碼 44 ＋ 該側最長一行的字元數 × 7 ＋ 24，`sides()`），只要某一側有長行，那一側就撐到那個寬度，另一側被擠成一小條（新增檔案的空側 68px、一側長行時另一側 103px）；全形字被當成一格，中文行超過估值就畫過分隔線。目前的 hunk 另外有 2px 左邊框，那一列的分隔線比其他列偏 2px。`sides()` 與這條路徑已刪除。
+- **比例**：左側佔寬度的比例 `ratio`，預設 0.5，限制在 0.15–0.85。兩側都是同一列裡的 flex 份額（`w(0).flex_grow(ratio × 100)`、`flex_grow((1 − ratio) × 100)`，中間 1px 分隔線不算），所以 pane 或對話框變寬變窄時兩側立刻等比例變，不經過量測再重畫；新增、刪除整檔（一側全空）也各半。不另存像素寬度。
+- **持久化**：存在共用狀態 `yuzora.git.diff.split`（數字，寫進 `shared.json`，重啟後還在；所有 diff 共用同一個比例）。不用 `localStorage`：它依「mod 名稱＋props 的 hash」分檔，而 diff 每次開啟的 props 都不同（路徑、`at`），每次都會從頭開始。拖曳中的比例只在 pane 的狀態裡（`drag.ratio`），放開（或指標離開 pane）才寫入，不在每次滑鼠移動時 `setShared`（會讓所有 mod 重繪、寫檔）。不是數字、超出範圍的值：非數字當 0.5，超出範圍夾到 0.15／0.85。
+- **分隔線**：疊在列表上的一條 5px 抓取區，用同樣的 flex 份額排版，所以在每一幀都剛好在各列分隔線的位置（resize 時也不落後一幀）。按下記起點，pane 根節點接手 `on_mouse_move`／`on_mouse_up`（同 Git Log 詳情的分隔線）；指標離開 pane 時拖曳結束並保留目前的比例。雙擊回到預設（寫入 `null`）。抓取區只有 5px 寬，不蓋住行號與文字。
+- **長行**：每一側的文字區是 `overflow_hidden` 的 flex row，文字是 `flex_none`，所以長行不會畫到另一側，捲動時也不會蓋到自己的行號。兩側共用一個橫向位移（`scrollX`，作用在文字的 `ml(-scrollX)`），用橫向滾輪／觸控板滑動（橫向分量大於縱向才算；縱向滑動帶一點橫向不會讓行漂移）或列表下方的橫向捲軸（thumb 可拖；只在需要捲動時出現）。
+- **能捲多遠**：不由「字元數 × 7」決定。每一側取「佔格數最多」的 4 行（`widest()`：全形字、CJK、emoji 算 2 格，其餘 1 格；tab 在 Rust 端已換成空格），在 body 裡看不見的地方（`h(0)`、`overflow_hidden`）排版並用 `on_size_change` 量實際寬度；能捲的距離＝兩側最寬那行的實際寬度 ＋ 18px，減去該側可用的寬度。取 4 行是因為不是每種字型都讓全形字剛好兩格，估計只用來挑哪幾行要量，不用來排版。列表的列不能掛事件也不回報大小，所以不能直接量可見的列。這是猜測的上限：真的比 4 行都寬、但格數估計比它們少的行，捲不到底（例如整行都是估計偏低的 fallback 字型字元）。
+- **目前 hunk 的標記**：原本是列的 2px 左邊框（會讓那一列的內容整個右移 2px），改成蓋在列左緣的 2px 色條（絕對定位）。並排才這樣改，合併（unified）維持邊框。
+- **合併（unified）沒有動**：仍是 `overflow_x_scrollbar` ＋ 以最長行字元數估的最小寬度；同樣有「全形字估成一格」的問題，沒有一起改（brief 明說 unified 行為不變）。
+- **鍵盤與滑鼠**：行號點擊（挑行）、點列選 hunk、hunk 導覽鍵不變；`clickRow` 的命中座標改用最後一幀實際的比例（`lay.ratio`）。
+- 測試（`app/src/mods/lifecycle_tests.rs`，真的把 mod 放進視窗排版、送滑鼠與滾輪事件；列表的列不回報大小，所以把第一列在列表下面再排一次來量）：`yuzora_diff_sides_share_the_width_evenly_whatever_the_lines`（各半，含新增／刪除／長行／全形字／左右不同的未變更列，1200 與 700px）、`yuzora_diff_a_press_on_a_sides_numbers_picks_that_sides_line`、`yuzora_diff_the_divider_drags_the_share_and_a_double_press_puts_half_back`、`yuzora_diff_the_drag_ends_where_the_pointer_leaves_the_pane`、`yuzora_diff_opens_with_the_share_last_kept`、`yuzora_diff_a_long_line_stays_on_its_side`、`yuzora_diff_long_lines_scroll_sideways_to_their_end`、`yuzora_diff_the_bar_under_the_lines_drags_them`、`yuzora_diff_unified_has_no_divider_and_picks_by_its_numbers`；`app/scripts/yuzora-git-diff-layout.test.ts` 測不需要視窗的部分（比例範圍、格數、挑哪幾行量）。gpui 測試用等寬假字型（每字元 6.9px，不分全形），所以「全形字佔兩格」只在 bun 測 `cells()`／`widest()`，實際字型下的寬度要實機看。
