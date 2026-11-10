@@ -1,9 +1,10 @@
 // yuzora(v0.1.0 files-open): included into `window::tests`. Files replaces a pane with `pane.split` and `pane.close`
-// (open.js `replace`), and these commands keep less of the old pane than an in-place replacement would. What follows
-// pins what they keep, so that docs/beta2/files.md ("換 pane 不是原地替換") is checked against the host.
+// (open.js `replace`). A mod is not told the id of the pane the split made, so this pins what the commands keep: in the
+// tab shown, where the new pane is the focused one and `pane.swap` and `pane.zoom` default to the focused pane, all of
+// it; in a tab not shown, only the pane's place. docs/beta2/files.md ("換 pane 不是原地替換") is checked against it.
 
 #[test]
-fn a_pane_replaced_by_split_and_close_keeps_its_place_but_not_its_share_zoom_or_focus() {
+fn what_a_pane_replaced_by_split_and_close_keeps_in_the_tab_shown_and_in_one_not_shown() {
     in_own_process("pane_replace_limits");
 }
 
@@ -42,7 +43,7 @@ fn pane_replace_limits(cx: &mut gpui::TestAppContext) {
     cx.update(|window, cx| {
         view.update(cx, |this, cx| {
             this.model.add_space("sp1", "", "/tmp", crate::model::Tab::new("tb1", "", "p1", "t1"));
-            for (tab, pane) in [("size", "a1"), ("first", "b1"), ("swap", "c1"), ("zoom", "d1"), ("away", "e1")] {
+            for (tab, pane) in [("size", "a1"), ("first", "b1"), ("swap", "c1"), ("zoom", "d1"), ("away", "e1"), ("shown", "f1"), ("hides", "g1"), ("zoomed", "h1")] {
                 this.model.add_tab("sp1", crate::model::Tab::with_pane(tab, tab, mk(pane)));
             }
             this.model.select_tab("tb1");
@@ -84,7 +85,7 @@ fn pane_replace_limits(cx: &mut gpui::TestAppContext) {
             assert_eq!(
                 weights(this, "swap"),
                 [0.5, 0.25, 0.25],
-                "with the new pane's id, a swap before the close keeps the share: a mod is not told that id"
+                "with the new pane's id, a swap before the close keeps the share: a mod is not told that id of a pane in a tab not shown"
             );
         })
     });
@@ -133,6 +134,50 @@ fn pane_replace_limits(cx: &mut gpui::TestAppContext) {
             assert!(swapped["error"].as_str().is_some_and(|e| e.contains("in the shown tab")), "swap by direction needs the tab shown: {swapped}");
             this.run("pane.focus", json!({ "pane": "e1" }), window, cx);
             assert_eq!(this.model.active_tab().map(|t| t.id.clone()).as_deref(), Some("away"), "the focus command shows the tab");
+        })
+    });
+    settle(cx);
+    // The tab shown: the pane the split makes has the focus, so the default pane of `pane.swap` and `pane.zoom` is it.
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.model.select_tab("shown");
+            let ids = three(this, "shown", "f1", window, cx);
+            this.run("pane.split", json!({ "direction": "right", "pane": ids[1], "mod": "pane-probe", "props": props(9) }), window, cx);
+            this.run("pane.swap", json!({ "target": ids[1] }), window, cx);
+            this.run("pane.close", json!({ "pane": ids[1] }), window, cx);
+            assert_eq!(weights(this, "shown"), [0.5, 0.25, 0.25], "swapping the focused pane with the old one keeps the share");
+            let new = panes(this, "shown")[1].clone();
+            assert!(!ids.contains(&new), "the new pane is in the old one's place");
+            assert_eq!(this.model.tab("shown").unwrap().focused.as_deref(), Some(new.as_str()));
+
+            this.model.select_tab("hides");
+            this.run("pane.split", json!({ "direction": "right", "pane": "g1", "mod": "pane-probe", "props": props(2) }), window, cx);
+            let hidden = panes(this, "hides")[1].clone();
+            this.run("pane.focus", json!({ "pane": "g1" }), window, cx);
+            this.run("pane.zoom", json!({ "pane": "g1" }), window, cx);
+            this.run("pane.split", json!({ "direction": "right", "pane": hidden, "mod": "pane-probe", "props": props(9) }), window, cx);
+            this.run("pane.swap", json!({ "target": hidden }), window, cx);
+            this.run("pane.close", json!({ "pane": hidden }), window, cx);
+            this.run("pane.zoom", json!({ "pane": "g1" }), window, cx);
+            this.run("pane.focus", json!({ "pane": "g1" }), window, cx);
+            let tab = this.model.tab("hides").unwrap();
+            assert_eq!((tab.zoomed.as_deref(), tab.focused.as_deref()), (Some("g1"), Some("g1")), "the zoom is back, with the focus on the zoomed pane");
+            assert_eq!(weights(this, "hides"), [0.5, 0.5]);
+
+            this.model.select_tab("zoomed");
+            this.run("pane.split", json!({ "direction": "right", "pane": "h1", "mod": "pane-probe", "props": props(2) }), window, cx);
+            this.run("pane.focus", json!({ "pane": "h1" }), window, cx);
+            this.run("pane.zoom", json!({ "pane": "h1" }), window, cx);
+            this.run("pane.split", json!({ "direction": "right", "pane": "h1", "mod": "pane-probe", "props": props(9) }), window, cx);
+            this.run("pane.swap", json!({ "target": "h1" }), window, cx);
+            this.run("pane.close", json!({ "pane": "h1" }), window, cx);
+            this.run("pane.zoom", json!({}), window, cx);
+            let new = panes(this, "zoomed")[0].clone();
+            let tab = this.model.tab("zoomed").unwrap();
+            assert_ne!(new, "h1");
+            assert_eq!((tab.zoomed.as_deref(), tab.focused.as_deref()), (Some(new.as_str()), Some(new.as_str())), "the zoom is on the pane that took the zoomed one's place");
+            assert_eq!(weights(this, "zoomed"), [0.5, 0.5]);
+            this.model.select_tab("tb1");
         })
     });
     settle(cx);
