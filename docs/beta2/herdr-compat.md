@@ -78,6 +78,7 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
   - setup 畫面或設定頁按「Update herdr-core」（`app.update_core`，`app/src/update.rs:244` `update_core`、`app/src/core_bin.rs:202` `update_to`）。
   - Yuzora 自我更新後第一次啟動，自動執行 `hc update --version <目標>`（`update.rs:600` `after_update`）。目標是最新的同代 release，取不到時改用 `core-version`。`--version` 是「至少這版」，不會降版。
   - 這些都和 Herdr.app 的行為相同。core 由 Homebrew、Nix、mise 管理時都不會更新（`installed_by`）。
+  - 例外（beta.4 起）：上游 0.1.14 在 macOS 的 `update_to` 之後多了 `core_bin::ensure_core_bundle`：core 是 home 底下、Apple 簽章的單獨執行檔時，下載 `releases.herdr.dev/core/install.sh` 並直接 pipe 給 `sh`（只檢查內容含 `HC_BUNDLE_ONLY`），把舊 updater 留下的單一執行檔補成完整 bundle。Yuzora 以 `yuzora::CORE_BUNDLE_SCRIPT_OFF` 關掉這一步（`core_bin.rs` 開頭 `yuzora(L7)` 註記）：不在背景自行執行下載來的腳本；`hc update` 照常執行，core 維持 0.1.14 之前的樣子。想要完整 bundle 的人可自行執行官方安裝指令。
 - 兩個 app 要求的 core 版本不同時：
   - 同一代：較新的 core 只會增加功能。哪一邊把 core 升上去，另一邊都能用。現在兩邊的下限都是 0.1.11。
   - 不同代：沒有辦法同時滿足兩邊，只能讓落後的 app 跟上。
@@ -177,14 +178,24 @@ L9 另開同步 PR（`beta2/l9-upstream-sync`，**必須 merge commit 合併**�
 - 只有 `app/src/window.rs` 的 `frame_pane` 衝突。上游把邊框判斷搬進 `pane_size::frame_border`，L1 的 blocked 邊框改成包住它。
 - 上游兩個新測試只用 `HERDR_APP_HOME` 隔離，Yuzora 不讀這個變數，結果在真實的 `~/.config/yuzora` 建立了 app home。已修正並把那個目錄移走備份。sync-check 之後會先擋下這類測試。
 
+### C1b. 同步到 v0.1.14（beta.4）
+
+上游從 `f6fe216e` 同步到正式 tag v0.1.14（`2405bf38`，71 個 commit；squash `f33087e0`、merge `15b4426d`）。core 需求不變（0.1.11，generation 1），ghostty pin 不變。
+
+- 7 個衝突：`Cargo.toml`（版本維持 `version.workspace = true`）、`CHANGELOG.md`（Yuzora 的 beta.3 在最上面，上游 0.1.14／0.1.13 接在 beta.2 之後）、`Cargo.lock`（取上游，再補回 Yuzora 的 rustls 0.23.46／rustls-webpki 0.103.16 釘版，見 `0507f018`）、`THIRD-PARTY-NOTICES`（重產）、`worktree/main.js`（保留 `untrusted()` 閘門，接上游的 `timeout` 參數）、`keys.rs`（L1 的 `retired_default()` 套在新的 `Binding::String` 上，listing 與 parse 兩處）、`setup.rs`（保留 `setup_words`）。
+- 上游新增 `Need::Connect`（core 連線錯誤顯示原文、按 Retry）：`herdr_compat::setup_words` 補上對應文案（`setup.connect.*`，只有英文）。
+- 守衛跟著調整：`tests/commands.rs` 新測試補 `YUZORA_APP_HOME`；`spawn::ALLOWED` 加上 macOS 專用的 `macos_check.rs`（`launchctl`，mod check 的 job）與 `core_bin::bundle_completion_writable`，`links::open` 改名 `open_system`。
+- 上游 v0.1.14 新增的 `window::tests::hidden_tabs_follow` 載入出貨版 `main.json`，mod 的 `init` 會呼叫真的 `hc machine ls --json`；`in_own_process` 原本沒隔離 `HC_SESSION`／`XDG_STATE_HOME`，測試會碰到使用者真實的 herdr-core 狀態目錄（沒有 server 時還會用 launchd 啟動它）。修法（`window.rs`，`yuzora(L9)` 註記）：子行程帶 `HC_SESSION=test-window-<name>-<pid>`、暫存的 `XDG_STATE_HOME`／`XDG_RUNTIME_DIR`，並移除 `HC_TERMINAL_SOCKET`／`HC_TERMINAL_ID`／`HC_SCOPE`；`open_window` 另有守衛，`HC_SESSION` 不是 `test-*` 就 panic，之後上游新增的 window 測試漏掉隔離會直接紅。再加一層：`in_own_process` 在暫存 home 建 `bin/hc` 假程式（`exit 1`，僅 unix）並放在子行程 `PATH` 最前面，window 測試不會執行真的 `hc`，因此不會用 launchd 留下孤兒 herdr-core。
+- 新外連：沒有新端點。`core_bin::ensure_core_bundle` 在 core 更新時補裝 macOS bundle，包含 Yuzora 自我更新後第一次啟動的自動 core 更新（`update.rs` `after_update` → `core_bin::update_to` → `ensure_core_bundle`）。做法是下載 `releases.herdr.dev/core/install.sh` 後用 `sh` 執行，仍是 D3 允許的 herdr-core 安裝與更新通道。
+
 ### C2. 同步流程與 `app/scripts/yuzora/sync-check`
 
 ```bash
 git subtree pull --prefix=app https://github.com/herdrdev/herdr-app.git master --squash
 git submodule update --init app/vendor/ghostty
 # 解衝突、commit 之後（建置環境照 lanes.md）
-app/scripts/yuzora/sync-check            # 5 項檢查，含 cargo test 與 check-mods
-app/scripts/yuzora/sync-check --quick    # 只跑 1–4 與掃描
+app/scripts/yuzora/sync-check            # 5 項檢查，含 cargo test、bun test scripts 與 check-mods
+app/scripts/yuzora/sync-check --quick    # 只跑 1–4、掃描與 bun test scripts（不跑 cargo test、check-mods）
 ```
 
 腳本比對三個 tree，都已經在 repo 裡（squash commit 本身就是上游的 tree），不需要網路：

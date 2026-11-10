@@ -4,7 +4,7 @@
 # after the subtree merge is committed:
 #
 #   app/scripts/yuzora/sync-check            # all five, tests included
-#   app/scripts/yuzora/sync-check --quick    # 1–4 and the URL scan, no cargo
+#   app/scripts/yuzora/sync-check --quick    # 1–4, the URL scan and bun tests, no cargo
 #
 # It compares three trees, all already in the repo (no network):
 #   OLD   the upstream tree of the previous squash commit (git-subtree-split)
@@ -128,11 +128,13 @@ leaks=$(git grep -n -E '\.env\("HERDR_APP_HOME"' HEAD -- app/src app/tests | whi
 done)
 for l in $leaks; do fail "$l sets HERDR_APP_HOME without YUZORA_APP_HOME: the test would write the real ~/.config/yuzora"; done
 if [[ $quick == 1 ]]; then
-  echo "  (--quick: cargo test and check-mods skipped)"
+  echo "  (--quick: cargo test and check-mods skipped, bun tests still run)"
+  (cd app && bun test scripts) || fail "bun test scripts"
 elif [[ -n $leaks ]]; then
   echo "  (cargo test skipped until those tests set YUZORA_APP_HOME)"
 else
   (cd app && cargo test --locked) || fail "cargo test --locked"
+  (cd app && bun test scripts) || fail "bun test scripts"
   app/scripts/yuzora/check-mods || fail "scripts/yuzora/check-mods"
 fi
 
