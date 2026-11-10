@@ -167,6 +167,7 @@ export function plan(env: Record<string, string | undefined>) {
     version,
     tag,
     sha,
+    run_id: inputs.runId,
     prerelease: String(isPrerelease(version)),
     cargo_version: cargo,
     exclude: inputs.exclude.join(","),

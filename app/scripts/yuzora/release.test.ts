@@ -171,13 +171,23 @@ describe("plan, against a fake gh and a throwaway repository", () => {
   test("draft: a run on a commit already on main, no tag yet", () => {
     accepted();
     const out = plan(env());
-    expect(out).toMatchObject({ stage: "draft", version: "0.1.0", tag: "v0.1.0", sha, prerelease: "false", exclude: "", cargo_version: "0.1.0", downloads: GITHUB_DOWNLOADS });
+    expect(out).toMatchObject({ stage: "draft", version: "0.1.0", tag: "v0.1.0", sha, run_id: "42", prerelease: "false", exclude: "", cargo_version: "0.1.0", downloads: GITHUB_DOWNLOADS });
     expect(out.notes).toBe("> 繁體中文在前，English below.\n\n中文。\n\n---\n\n## English\n\nEnglish.\n");
     expect(out.upload_plan.split("\n")).toHaveLength(10);
     expect(out.upload_plan).toContain("Yuzora-macos-aarch64.dmg\tYuzora_0.1.0_aarch64.dmg");
     const written = readFileSync(output, "utf8");
     expect(written).toContain(`sha=${sha}\n`);
+    expect(written).toContain("run_id=42\n");
     expect(written).toContain("notes<<yuzora_eof\n> 繁體中文在前");
+  });
+
+  test("every output the workflow reads from the plan step is one the plan writes", () => {
+    accepted();
+    const written = Object.keys(plan(env()));
+    const workflow = readFileSync(join(import.meta.dir, "../../../.github/workflows/app-release.yml"), "utf8");
+    const read = [...new Set([...workflow.matchAll(/\bplan\.outputs\.([a-z_]+)/g)].map((m) => m[1]))];
+    expect(read.length).toBeGreaterThan(5);
+    expect(read.filter((name) => !written.includes(name))).toEqual([]);
   });
 
   test("a tag of the same commit lets the draft stage run again; another commit stops it", () => {
@@ -211,7 +221,8 @@ describe("plan, against a fake gh and a throwaway repository", () => {
 
   test("a dry run with no run signs for the commit it runs on and needs no tag or main", () => {
     const out = plan(env({ STAGE: "dry-run", PACKAGE_RUN_ID: "", VERSION: "0.2.0", GITHUB_SHA: sha }));
-    expect(out).toMatchObject({ stage: "dry-run", version: "0.2.0", sha, cargo_version: "0.1.0", downloads: DEFAULT_LOCAL_DOWNLOADS });
+    expect(out).toMatchObject({ stage: "dry-run", version: "0.2.0", sha, run_id: "", cargo_version: "0.1.0", downloads: DEFAULT_LOCAL_DOWNLOADS });
+    expect(readFileSync(output, "utf8")).toContain("run_id=\n");
     expect(out.notes).toBeUndefined();
   });
 
