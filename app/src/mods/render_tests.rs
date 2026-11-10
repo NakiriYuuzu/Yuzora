@@ -2057,6 +2057,7 @@ export default class Scenario extends Real {{
     super.init(p, cx);
     this.v.st = {{ conflicts: [], staged: [], unstaged: [], untracked: [], counts: {{ total: 1 }} }};
     this.v.st["{section}" === "unstaged" ? "unstaged" : "{section}"].push(file);
+    this.v.confirmed = true;
   }}
   act() {{ this.acted = true; }}
   openDiff() {{ this.diffed = true; }}
