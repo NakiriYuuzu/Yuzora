@@ -917,6 +917,128 @@ exec mv "$@""#,
         }
     }
 
+    /// Stand-ins for the programs that do the rename (`mv`, and `perl` where `mv` cannot), each
+    /// running `before` just ahead of the real one. `before` sees the two names as `$from` and `$to`.
+    fn before_the_rename(before: &str) -> (tempfile::TempDir, String) {
+        let hook = format!("for a in \"$@\"; do from=$to; to=$a; done\n{before}");
+        shimmed(&[
+            (
+                "mv",
+                &format!("case $1 in -f|-n|-T|-fT|-nT) {hook} ;; esac\nexec mv \"$@\""),
+            ),
+            (
+                "perl",
+                &format!("case $1 in -e) {hook} ;; esac\nexec perl \"$@\""),
+            ),
+        ])
+    }
+
+    /// An entry named `entry` of the kind `kind` in `dir`.
+    fn entry_of_kind(dir: &Path, kind: &str) -> String {
+        let path = at(dir, "entry");
+        match kind {
+            "file" => fs::write(&path, "mine").unwrap(),
+            "link" => symlink("somewhere", &path).unwrap(),
+            _ => {
+                fs::create_dir(&path).unwrap();
+                fs::write(dir.join("entry/x"), "x").unwrap();
+            }
+        }
+        path
+    }
+
+    /// Whether `path` is still the entry `entry_of_kind` made.
+    fn is_the_entry_of_kind(path: &str, kind: &str) -> bool {
+        let Ok(meta) = fs::symlink_metadata(path) else {
+            return false;
+        };
+        match kind {
+            "file" => meta.is_file() && fs::read_to_string(path).unwrap() == "mine",
+            "link" => meta.is_symlink() && fs::read_link(path).unwrap() == Path::new("somewhere"),
+            _ => meta.is_dir() && fs::read_to_string(format!("{path}/x")).unwrap() == "x",
+        }
+    }
+
+    #[test]
+    fn a_rename_never_follows_a_name_that_is_swapped_for_a_link_to_a_folder() {
+        // Someone who can write the folder takes away whatever holds the new name and puts a link
+        // to a folder of the user's there, just before the rename. Nothing may end up in that folder.
+        let (_shims, path) = before_the_rename(
+            "rm -f -- \"$to\"; rmdir -- \"$to\" 2>/dev/null; ln -s \"$YZ_VICTIM\" \"$to\"",
+        );
+        for shell in shells() {
+            for kind in ["file", "link", "folder"] {
+                let d = tempfile::tempdir().unwrap();
+                let victim = tempfile::tempdir().unwrap();
+                let from = entry_of_kind(d.path(), kind);
+                let to = at(d.path(), "renamed");
+                let held_in_victim = at(victim.path(), "entry");
+                if kind != "folder" {
+                    fs::write(&held_in_victim, "precious").unwrap();
+                }
+                let env = [
+                    ("PATH", path.as_str()),
+                    ("YZ_VICTIM", victim.path().to_str().unwrap()),
+                ];
+                let got = run_under(&shell, None, &env, &Act::Move(&from, &to));
+                let label = format!("{shell:?} {kind}: {got:?}");
+                if kind == "folder" {
+                    assert!(names(victim.path()).is_empty(), "{label}");
+                } else {
+                    assert_eq!(names(victim.path()), ["entry"], "{label}");
+                    assert_eq!(
+                        fs::read_to_string(&held_in_victim).unwrap(),
+                        "precious",
+                        "{label}"
+                    );
+                }
+                match got {
+                    Ok(()) => {
+                        assert!(is_the_entry_of_kind(&to, kind), "{label}");
+                        assert!(!Path::new(&from).exists(), "{label}");
+                    }
+                    Err(Problem::Exists) => assert!(is_the_entry_of_kind(&from, kind), "{label}"),
+                    Err(_) => panic!("{label}"),
+                }
+                assert!(
+                    !names(d.path()).iter().any(|n| n.starts_with('.')),
+                    "{label}: {:?}",
+                    names(d.path())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_rename_whose_source_vanishes_meanwhile_gives_back_the_name_it_took_and_says_so() {
+        for (what, vanish) in [
+            ("moved away", "mv -- \"$from\" \"$YZ_ELSEWHERE\""),
+            ("removed", "rm -r -- \"$from\""),
+        ] {
+            let (_shims, path) = before_the_rename(vanish);
+            for shell in shells() {
+                for kind in ["file", "link", "folder"] {
+                    let d = tempfile::tempdir().unwrap();
+                    let elsewhere = tempfile::tempdir().unwrap();
+                    let from = entry_of_kind(d.path(), kind);
+                    let to = at(d.path(), "renamed");
+                    let env = [
+                        ("PATH", path.as_str()),
+                        ("YZ_ELSEWHERE", elsewhere.path().to_str().unwrap()),
+                    ];
+                    let got = run_under(&shell, None, &env, &Act::Move(&from, &to));
+                    let label = format!("{shell:?} {kind} {what}: {got:?}");
+                    assert_eq!(got, Err(Problem::Gone), "{label}");
+                    assert!(
+                        names(d.path()).is_empty(),
+                        "{label}: left {:?}",
+                        names(d.path())
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_move_that_fails_leaves_the_entry_where_it_was_and_no_empty_file_in_its_name() {
         let (_shims, path) =

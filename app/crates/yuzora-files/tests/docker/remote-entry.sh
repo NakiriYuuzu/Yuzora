@@ -238,4 +238,82 @@ expect "12 a file needs none" "done" "$(verdict make bob 022 /tmp/u12/f file)"
 unhide
 expect "12 nothing changed" "f from" "$(ls /tmp/u12 | tr '\n' ' ' | sed 's/ $//')"
 
+echo "-- 13. the new name is swapped for a link to a folder just before the rename: nothing reaches that folder"
+# A stand-in for mv and perl that does YZ_WHAT just before the real one. YZ_MVLOOKS makes mv answer
+# --version and --help like another mv would, so that the script takes the way it takes there.
+cat > /tmp/shim/hook <<'SHIM'
+#!/bin/sh
+tool=${0##*/}
+PATH=/usr/local/bin:/usr/bin:/bin
+case $tool:$1 in
+  mv:--version|mv:--help)
+    case $YZ_MVLOOKS in
+      bsd) echo "usage: mv [-f | -i | -n] [-hv] source target" >&2; exit 64 ;;
+      uutils) if [ "$1" = --version ]; then echo "mv (uutils coreutils) 0.2.2"; else echo "  -T, --no-target-directory  treat DEST as a normal file"; fi; exit 0 ;;
+    esac ;;
+esac
+case $1 in -f|-n|-T|-fT|-nT|-e)
+  for a in "$@"; do from=$to; to=$a; done
+  case $YZ_WHAT in
+    vanish) mv -- "$from" /tmp/elsewhere/ ;;
+    swap) rm -f -- "$to"; rmdir -- "$to" 2>/dev/null; ln -s /tmp/victim "$to" ;;
+  esac
+esac
+exec "${YZ_REALMV:-$tool}" "$@"
+SHIM
+chmod 755 /tmp/shim/hook
+ln -sf hook /tmp/shim/mv
+ln -sf hook /tmp/shim/perl
+# how the machine's mv looks to the script: itself, another mv that has no -T (so the script uses perl, where there is one), one that has it but is not GNU's
+looks() {
+  case $1 in
+    native) echo "" ;;
+    bsd) command -v perl >/dev/null 2>&1 && echo "YZ_MVLOOKS=bsd" || echo "SKIP" ;;
+    uutils) echo "YZ_MVLOOKS=uutils" ;;
+  esac
+}
+for variant in native bsd uutils; do
+  how=$(looks $variant)
+  [ "$how" != SKIP ] || { echo "note 13: no perl here, so no run that needs it"; continue; }
+  for k in file link folder; do
+    reset /tmp/u13
+    rm -rf /tmp/victim; mkdir /tmp/victim; chown bob:bob /tmp/victim
+    case $k in
+      folder) as bob 'mkdir /tmp/u13/entry; echo x > /tmp/u13/entry/x' ;;
+      link) as bob 'ln -s somewhere /tmp/u13/entry; echo precious > /tmp/victim/entry' ;;
+      file) as bob 'echo mine > /tmp/u13/entry; echo precious > /tmp/victim/entry' ;;
+    esac
+    r=$(verdict move bob /tmp/u13/entry /tmp/u13/renamed 0 "PATH=/tmp/shim:\$PATH YZ_WHAT=swap $how")
+    if [ "$k" = folder ]; then
+      expect "13 $variant $k: nothing went into the folder" "" "$(ls -A /tmp/victim)"
+    else
+      expect "13 $variant $k: the folder's entry is as it was" "precious" "$(cat /tmp/victim/entry)"
+      expect "13 $variant $k: nothing else went in" "entry" "$(ls -A /tmp/victim)"
+    fi
+    case $r in
+      done) if [ "$k" = link ]; then expect "13 $variant $k: it is the link that was renamed" "somewhere" "$(readlink /tmp/u13/renamed)"; else ok "13 $variant $k: renamed, and the link that took the name is gone"; fi ;;
+      exists) if [ -e /tmp/u13/entry ] || [ -L /tmp/u13/entry ]; then ok "13 $variant $k: refused, and the entry is where it was"; else bad "13 $variant $k: refused but the entry is gone"; fi ;;
+      *) bad "13 $variant $k: [$r] $(cat /tmp/stderr.txt)" ;;
+    esac
+  done
+done
+
+echo "-- 14. the source vanishes after the new name was taken: the name is given back, and it is said that the source is gone"
+for variant in native bsd uutils; do
+  how=$(looks $variant)
+  [ "$how" != SKIP ] || continue
+  for k in file link folder; do
+    reset /tmp/u14
+    rm -rf /tmp/elsewhere; mkdir /tmp/elsewhere; chown bob:bob /tmp/elsewhere
+    case $k in
+      folder) as bob 'mkdir /tmp/u14/entry; echo x > /tmp/u14/entry/x' ;;
+      link) as bob 'ln -s somewhere /tmp/u14/entry' ;;
+      file) as bob 'echo mine > /tmp/u14/entry' ;;
+    esac
+    expect "14 $variant $k: said gone" "gone" "$(verdict move bob /tmp/u14/entry /tmp/u14/renamed 0 "PATH=/tmp/shim:\$PATH YZ_WHAT=vanish $how")"
+    expect "14 $variant $k: nothing of ours left" "" "$(ls -A /tmp/u14)"
+  done
+done
+rm -f /tmp/shim/mv /tmp/shim/perl /tmp/shim/hook
+
 echo "RESULT fails=$fails"
