@@ -413,8 +413,8 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
 // list: its cells report their widths (`cell`), its texts their width and what the pointer is
 // over (`text` and `over`: the text's first character, and the pointer's distance from where the
 // text starts), and a press picks the row it landed on, as the list's own click would, in the
-// body's text size (a `real` prop leaves the clicks to the list). A `pane` prop puts the diff in a
-// box that wide, so the pointer can leave it.
+// body's text size (a `real` prop leaves the clicks to the list, and reports the keys that get past
+// the diff to what holds it). A `pane` prop puts the diff in a box that wide, so the pointer can leave it.
 const DIFF_PROBE: &str = r#"
 import { note } from "fixture";
 export default class Probed extends GitDiff {
@@ -449,6 +449,7 @@ export default class Probed extends GitDiff {
       root = root.child(div().id("t-other").absolute().top(520).left(70).w(60).h(20).on_click((_e, cx) => { setShared("yuzora.git.diff", { cwd: "/r", on: null, path: "other.ts", mode: "unstaged", at: 99 }); cx.notify(); }));
       root = root.child(div().id("t-reload").absolute().top(520).left(140).w(60).h(20).on_click((_e, cx) => { cx.spawn((cx) => this.load(cx)); }));
     }
+    if (props().real) return div().size_full().on_key_down((e) => note("ancestor", e.keystroke)).child(root);
     return pane ? div().w(pane).h_full().child(root) : root;
   }
 }
@@ -1141,12 +1142,21 @@ fn yuzora_diff_the_selected_rows_are_marked_on_their_side(cx: &mut TestAppContex
 #[gpui::test]
 fn yuzora_diff_cmd_c_with_nothing_selected_copies_nothing(cx: &mut TestAppContext) {
     let mut pane = copy_pane(cx, side_diff(), json!({}));
+    // A click below the rows gives the pane the keys without selecting anything.
+    pane.click(TEXT_LEFT, 400., false);
     pane.keys("cmd-c");
     assert_eq!(pane.clipboard(), None, "the key does nothing here");
     assert!(pane.noted("toast").is_empty(), "and says nothing");
+    assert_eq!(pane.noted("ancestor").len(), 1, "and is left to whatever else wants it");
     pane.click(TEXT_LEFT, row_y(1), false);
     pane.keys("cmd-c");
     assert_eq!(pane.clipboard().as_deref(), Some("\tlet a = 1;"), "with a row selected it copies");
+    assert_eq!(pane.noted("ancestor").len(), 1, "and keeps the key to itself");
+    pane.set_clipboard("untouched");
+    pane.keys("cmd-shift-c");
+    pane.keys("cmd-alt-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("untouched"), "Cmd+Shift+C and Cmd+Alt+C are other keys");
+    assert_eq!(pane.noted("ancestor").len(), 3);
     pane.close();
 }
 
@@ -1253,6 +1263,12 @@ fn yuzora_diff_a_right_click_keeps_the_selection_it_is_in_and_replaces_the_one_i
     menu.click(100., menu_y(2), false);
     assert_eq!((menu.clipboard(), menu.noted("toast").len()), (before, toasts), "no hunk on that row: Copy hunk and Copy as patch do nothing");
     assert!(menu.noted("patch").is_empty());
+    pane.close();
+    menu.close();
+
+    let (pane, mut menu) = menu_pane(cx, side_diff(), &[(TEXT_RIGHT, 1, false)]);
+    menu.click(100., menu_y(0), false);
+    assert_eq!(menu.clipboard().as_deref(), Some("\tlet a = 10; // \u{6F22}\u{5B57}"), "a right-click on the right side selects on the right side");
     pane.close();
     menu.close();
 }

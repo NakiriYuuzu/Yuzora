@@ -1319,6 +1319,20 @@ exec 'REAL' "$@"
     }
 
     #[test]
+    fn hunks_with_a_hunk_between_them_keep_their_contexts_apart() {
+        let s = scratch();
+        // Changes at lines 3, 5 and 7, one line apart.
+        let old: String = (1..=12).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l3\n", "L3\n").replace("l5\n", "L5\n").replace("l7\n", "L7\n");
+        let (one, two) = two_texts(&s, "f.txt", &old, &new);
+        let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Commit(two)).unwrap();
+        let patch = d.patch(Whitespace::Exact, &[0, 2]);
+        assert!(patch.contains("\n@@ -1,4 +1,4 @@\n l1\n l2\n-l3\n+L3\n l4\n@@ -6,5 +6,5 @@\n l6\n-l7\n+L7\n l8\n l9\n l10\n"), "the first stops at the line before the hunk left out, the second starts after it: {patch}");
+        applied(&s, &one, &patch);
+        assert_eq!(s.read("f.txt"), old.replace("l3\n", "L3\n").replace("l7\n", "L7\n"));
+    }
+
+    #[test]
     fn a_patch_names_a_new_file_a_deleted_one_a_renamed_one_and_a_name_with_spaces() {
         let s = scratch();
         let head = |s: &crate::repo::testing::Scratch| s.git(&["rev-parse", "HEAD"]).trim().to_owned();

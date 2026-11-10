@@ -54,7 +54,7 @@ export default class GitDiff extends View {
     this.spec = spec;
     this.loop = (this.loop ?? 0) + 1;
     const loop = this.loop;
-    this.view = null; this.error = null; this.sel = {}; this.mark = null; this.hunk = 0; this.note = null; this.scrollX = 0;
+    this.view = null; this.error = null; this.sel = {}; this.hunk = 0; this.note = null; this.scrollX = 0;
     // Called from render too: the state above is what this frame draws, so no notify here.
     if (!spec) return;
     cx.spawn(async (cx) => {
@@ -586,9 +586,9 @@ function copyRuns(rows, m) {
   return runs;
 }
 
-// The hunks that have a selected line, once each, in order.
+// The hunks that have a selected line, once each (hunks run in the order of the rows).
 function touchedHunks(rows, m) {
-  return [...new Set(lineOfRows(rows, m).map(({ r }) => r.h).filter((h) => h !== undefined))].sort((a, b) => a - b);
+  return [...new Set(lineOfRows(rows, m).map(({ r }) => r.h).filter((h) => h !== undefined))];
 }
 
 // A hunk's lines as they are after the change (the right side's range); none for a hunk that only deletes.
