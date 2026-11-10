@@ -335,7 +335,12 @@ impl ResultSet {
         self.version += 1;
     }
 
+    /// Edits that are being written are not the result's to drop: they may
+    /// reach the database whatever is done here. Stop the write first.
     pub fn discard_edits(&mut self) {
+        if self.is_writing() {
+            return;
+        }
         self.edits.clear();
         self.clear_failure();
         self.version += 1;

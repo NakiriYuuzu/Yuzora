@@ -448,8 +448,6 @@ impl Grid {
         let Some(set) = self.set.clone() else { return };
         let id = {
             let mut r = results::lock(&set);
-            // A write-back still waiting is stopped with the edits it was for.
-            r.stop_write();
             r.discard_edits();
             r.id
         };
@@ -771,10 +769,6 @@ impl Grid {
                     .child(
                         button("stop", t("grid.stop", &[]), false)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop_write(cx))),
-                    )
-                    .child(
-                        button("discard", t("grid.discard", &[]), false)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.discard(cx))),
                     )
             })
             .when(edits > 0 && !writing, |d| {
