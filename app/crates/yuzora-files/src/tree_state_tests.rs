@@ -522,8 +522,11 @@ fn one_reload_runs_at_a_time_per_folder_and_a_shared_folder_is_one_tree() {
     let got = run(r#"
 const h = host(), store = createStore(h.io);
 const a = store.enter(loc("/a", "s1"));
+let firstDone = false;
 const first = store.reload(a, () => {});
-const second = await store.reload(a, () => {});
+first.then(() => { firstDone = true; });
+await store.reload(a, () => {});
+const answeredAtOnce = !firstDone;
 await flush();
 const asked = [h.pending("git").length, h.pending("list").length];
 for (let turn = 0, done = false; !done; turn++) {
@@ -536,9 +539,9 @@ for (let turn = 0, done = false; !done; turn++) {
 await first;
 const twin = store.enter(loc("/a", "s2"));
 store.forget(new Set(["s2"]));
-return JSON.stringify({ second, asked, twin: twin === a, kept: store.enter(loc("/a", "s2")) === a });
+return JSON.stringify({ answeredAtOnce, asked, twin: twin === a, kept: store.enter(loc("/a", "s2")) === a });
 "#);
-    assert_eq!(got["second"], serde_json::Value::Null);
+    assert_eq!(got["answeredAtOnce"], true);
     assert_eq!(got["asked"], serde_json::json!([1, 1]));
     assert_eq!(got["twin"], true);
     assert_eq!(got["kept"], true);
@@ -555,7 +558,8 @@ let done = false;
 const first = store.reload(a, () => {});
 first.then(() => { done = true; });
 await flush();
-const merged = await Promise.all([store.reload(a, () => {}), store.reload(a, () => {}), store.reload(a, () => {})]);
+await Promise.all([store.reload(a, () => {}), store.reload(a, () => {}), store.reload(a, () => {})]);
+const answeredAtOnce = !done;
 h.answer(h.pending("git")[0], repo("/a"));
 h.answer(h.pending("list")[0], listing("x.txt"));
 await flush();
@@ -564,9 +568,9 @@ for (const c of h.pending("git")) h.answer(c, repo("/a"));
 for (const c of h.pending("list")) h.answer(c, listing("x.txt", "y.txt"));
 await first;
 await flush();
-return JSON.stringify({ merged, second, rows: names(a), asked: { git: h.calls.git.length - base.git, list: h.calls.list.length - base.list }, still: [h.pending("git").length, h.pending("list").length], reloading: a.reloading });
+return JSON.stringify({ answeredAtOnce, second, rows: names(a), asked: { git: h.calls.git.length - base.git, list: h.calls.list.length - base.list }, still: [h.pending("git").length, h.pending("list").length], reloading: a.reloading });
 "#);
-    assert_eq!(got["merged"], serde_json::json!([null, null, null]));
+    assert_eq!(got["answeredAtOnce"], true);
     assert_eq!(
         got["second"],
         serde_json::json!({ "git": 1, "list": 1, "done": false })
