@@ -128,3 +128,35 @@ test("yuzora-db-table's SQL tab says what Run does, or why it waits", async () =
   idle.pane.state = { ...idle.pane.state, running: false };
   expect(idle.pane.sqlHint()).toBe("sql_hint");
 });
+
+test("yuzora-db-table's toolbar has Stop for whatever is going, and Run where Run goes ahead of it", async () => {
+  const offers = async (jobKind: "table" | "sql", tab: string, running = true) => {
+    const { pane } = await busyPane(jobKind, 0);
+    pane.tab = tab;
+    pane.state = { ...pane.state, running };
+    return [pane.showsStop(), pane.showsRun()];
+  };
+  expect(await offers("table", "sql")).toEqual([true, true]);
+  expect(await offers("table", "data")).toEqual([true, false]);
+  expect(await offers("table", "structure")).toEqual([true, false]);
+  expect(await offers("sql", "sql")).toEqual([true, false]);
+  expect(await offers("sql", "data")).toEqual([true, false]);
+  expect(await offers("table", "sql", false)).toEqual([false, true]);
+});
+
+test("yuzora-db-table's Run with nothing typed leaves the read of the table going", async () => {
+  const { pane, calls } = await busyPane("table");
+  const empty = await load("yuzora-db-table", "DbTable", never, {
+    t: (key: string) => key,
+    editorText: () => ({ text: "  \n", selection: "" }),
+    query: (...args: unknown[]) => calls.query.push(args),
+    cancel: (id: number) => calls.cancel.push(id),
+    result: () => ({ edits: 0 }),
+  });
+  const quiet = new empty();
+  Object.assign(quiet, { key: "k", target: pane.target, tab: "sql", jobId: 41, jobKind: "table", state: pane.state, shown: 0 });
+  quiet.run(cx);
+  expect(calls.query).toEqual([]);
+  expect(calls.cancel).toEqual([]);
+  expect(quiet).toMatchObject({ jobId: 41, jobKind: "table", tab: "sql" });
+});

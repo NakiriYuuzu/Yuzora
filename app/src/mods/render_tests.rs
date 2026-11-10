@@ -3263,3 +3263,49 @@ fn the_database_table_pane_does_not_run_the_sql_tab_over_a_save_in_flight(cx: &m
         Some(1)
     );
 }
+
+/// `db_busy_source` with nothing typed in the SQL editor.
+fn db_empty_sql_source(running: &str, finder: bool) -> String {
+    let source = db_busy_source(running, None, finder);
+    let typed = r#"this.sql = "COMMIT";"#;
+    assert!(source.contains(typed));
+    source.replace(typed, r#"this.sql = "";"#)
+}
+
+// The editor is empty while the table is read: Run has nothing to run and does nothing, so Stop is what lets the
+// person out of the read. The toolbar can't tell what is typed (typing does not redraw it), so Stop stays beside Run.
+#[gpui::test]
+fn the_database_table_pane_offers_stop_on_the_sql_tab_while_the_table_is_read(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let mut finder = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_empty_sql_source("table", true),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    let stop = clickable(&mut finder, "stop", width, 100.0)
+        .expect("Stop can't be pressed on the SQL tab while the table is read");
+    let run = clickable(&mut finder, "run", width, 100.0).expect("Run can't be pressed");
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_empty_sql_source("table", false),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    press(&mut s, run);
+    s.tick(50);
+    assert!(db_watched(&s).is_empty(), "Run started something");
+    assert!(s.last("stop").is_none());
+    assert_eq!(db_busy_now(&s).1, "running", "Run ended the read");
+    press(&mut s, stop);
+    assert!(s.last("stop").is_some(), "Stop did not stop the read");
+}
