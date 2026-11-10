@@ -1111,7 +1111,12 @@ fn postgres_tables_with_columns_of_their_own_stay_editable() {
          CREATE TABLE ident(id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, v text); INSERT INTO ident (v) VALUES ('a');
          CREATE TABLE \"Mixed Case\"(\"Id\" int PRIMARY KEY, \"Some Col\" text, \"ünï\" text); INSERT INTO \"Mixed Case\" VALUES (1, 'a', 'b');
          CREATE TABLE plain(a int, v text, b int, PRIMARY KEY (b, a)); INSERT INTO plain VALUES (1, 'a', 2);
-         CREATE VIEW seen AS SELECT id, v || '!' AS w FROM dropped;",
+         CREATE VIEW seen AS SELECT id, v || '!' AS w FROM dropped;
+         CREATE TABLE part(id int, v text, PRIMARY KEY (id)) PARTITION BY RANGE (id);
+         CREATE TABLE part_1 PARTITION OF part FOR VALUES FROM (0) TO (100); INSERT INTO part VALUES (1, 'a');
+         CREATE TABLE base(id int PRIMARY KEY, v text); CREATE TABLE kid(extra int) INHERITS (base);
+         INSERT INTO base VALUES (1, 'a'); INSERT INTO kid VALUES (2, 'b', 3);
+         CREATE MATERIALIZED VIEW mat AS SELECT id, v FROM base;",
     );
     tables_with_columns_of_their_own_stay_editable(
         &id,
@@ -1123,9 +1128,11 @@ fn postgres_tables_with_columns_of_their_own_stay_editable() {
             ("Mixed Case", "Some Col"),
             ("Mixed Case", "ünï"),
             ("plain", "v"),
+            ("part", "v"),
+            ("base", "v"),
         ],
     );
-    views_say_they_have_no_key(&id, "public", &["seen"]);
+    views_say_they_have_no_key(&id, "public", &["seen", "mat"]);
 }
 
 #[test]
@@ -1145,7 +1152,10 @@ fn mssql_tables_with_columns_of_their_own_stay_editable() {
              PERIOD FOR SYSTEM_TIME (ValidFrom, ValidTo)) WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = dbo.temporal_history));
          INSERT INTO dbo.temporal (id, v) VALUES (1, N'a');
          CREATE TABLE dbo.sparse(id int PRIMARY KEY, s1 int SPARSE NULL, s2 nvarchar(10) SPARSE NULL, cs xml COLUMN_SET FOR ALL_SPARSE_COLUMNS, v nvarchar(10));
-         INSERT INTO dbo.sparse (id, v) VALUES (1, N'a');\nGO\n\
+         INSERT INTO dbo.sparse (id, v) VALUES (1, N'a');
+         CREATE TABLE dbo.ledger(id int NOT NULL PRIMARY KEY CLUSTERED, v nvarchar(10)) WITH (SYSTEM_VERSIONING = ON, LEDGER = ON);
+         INSERT INTO dbo.ledger VALUES (1, N'a');
+         CREATE TABLE dbo.versioned(id int PRIMARY KEY, v nvarchar(10), rv rowversion); INSERT INTO dbo.versioned (id, v) VALUES (1, N'a');\nGO\n\
          CREATE VIEW dbo.seen AS SELECT id, v + N'!' AS w FROM dbo.ident",
     );
     tables_with_columns_of_their_own_stay_editable(
@@ -1159,6 +1169,8 @@ fn mssql_tables_with_columns_of_their_own_stay_editable() {
             ("plain", "v"),
             ("temporal", "v"),
             ("sparse", "v"),
+            ("ledger", "v"),
+            ("versioned", "v"),
         ],
     );
     views_say_they_have_no_key(&id, "dbo", &["seen"]);
