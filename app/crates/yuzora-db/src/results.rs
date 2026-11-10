@@ -554,6 +554,44 @@ mod tests {
     }
 
     #[test]
+    fn a_failure_shows_unless_one_is_already_there_or_a_write_is_running() {
+        use crate::error::DbError;
+        let set = filled("t-failure");
+        let mut r = lock(&set);
+        r.show_failure(&DbError::Query("first".into()));
+        assert_eq!(r.write_failure(), Some("first"));
+        r.show_failure(&DbError::Query("second".into()));
+        assert_eq!(r.write_failure(), Some("first"), "the reason the write-back stopped with stays");
+        r.set_edit(0, 1, Cell::text("z"));
+        assert_eq!(r.write, WriteState::Idle, "an edit answers the failure");
+        r.write = WriteState::Writing(WriteStop::new());
+        r.show_failure(&DbError::NotEditable("pressed twice".into()));
+        assert!(r.is_writing(), "a write in flight is not replaced");
+        r.show_failure(&DbError::NotFound(String::new()));
+        r.write = WriteState::Idle;
+        r.show_failure(&DbError::NotFound(String::new()));
+        assert!(r.write_failure().is_some_and(|m| !m.is_empty()), "even an empty error shows words");
+    }
+
+    #[test]
+    fn a_stop_ends_the_wait_it_belongs_to_and_only_that() {
+        let set = filled("t-stop");
+        let stop = WriteStop::new();
+        lock(&set).write = WriteState::Writing(stop.clone());
+        let other = WriteStop::new();
+        let waiting = std::thread::spawn({
+            let stop = stop.clone();
+            move || crate::runtime::block_on(stop.stopped())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!waiting.is_finished(), "nothing stopped it yet");
+        lock(&set).stop_write();
+        waiting.join().unwrap();
+        assert!(crate::runtime::block_on(async { tokio::time::timeout(std::time::Duration::from_millis(50), other.stopped()).await }).is_err());
+        crate::runtime::block_on(stop.stopped());
+    }
+
+    #[test]
     fn watchers_are_woken_once_per_burst_and_released_with_their_owner() {
         let set = filled("t-watch");
         let id = lock(&set).id;

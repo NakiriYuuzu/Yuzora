@@ -829,6 +829,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_tables_rows_are_loading_until_known_and_a_querys_are_read_only() {
+        let id = new_job("c", None, "sink-test");
+        let mut table = JobSink::for_table(id, "sink-test", "select * from t");
+        table.columns(vec![Column::new("id", "int4")]);
+        assert_eq!(results::lock(table.last.as_ref().unwrap()).editing, Editing::Loading);
+        let mut query = JobSink::new(id, "sink-test", "select 1");
+        query.columns(vec![Column::new("x", "int4")]);
+        assert_eq!(results::lock(query.last.as_ref().unwrap()).editing, Editing::ReadOnly(ReadOnly::Query));
+        supersede("sink-test");
+    }
+
+    #[test]
     fn a_job_whose_work_panics_ends_with_an_error() {
         let id = new_job("c", None, "panic-test");
         let (tx, rx) = std::sync::mpsc::channel::<()>();
