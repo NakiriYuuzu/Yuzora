@@ -468,14 +468,24 @@ impl Grid {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let m = &event.keystroke.modifiers;
         if self.editing.is_some() {
-            if event.keystroke.key == "escape" {
-                self.cancel_editing(window, cx);
-                cx.stop_propagation();
+            match event.keystroke.key.as_str() {
+                "escape" => {
+                    self.cancel_editing(window, cx);
+                    cx.stop_propagation();
+                }
+                // Saving with the editor still open keeps the cell first: the
+                // same as Enter, then Write back.
+                "s" if m.secondary() => {
+                    self.write_back(cx);
+                    self.focus.focus(window, cx);
+                    cx.stop_propagation();
+                }
+                _ => {}
             }
             return;
         }
-        let m = &event.keystroke.modifiers;
         let Some(set) = self.set.clone() else { return };
         let (rows, cols) = {
             let r = results::lock(&set);
@@ -687,51 +697,59 @@ impl Grid {
                 .h(px(20.0))
                 .px(px(8.0))
                 .flex()
+                .flex_none()
+                .max_w_full()
                 .items_center()
                 .rounded(px(4.0))
                 .cursor_pointer()
                 .when(primary, |d| d.bg(c.button).text_color(c.button_text).font_weight(gpui::FontWeight::SEMIBOLD))
                 .when(!primary, |d| d.border_1().border_color(c.button_border).text_color(c.foreground))
                 .hover(|s| s.opacity(0.88))
-                .child(label)
+                .child(div().truncate().child(label))
         };
-        div()
-            .id("footer")
-            .debug_selector(|| "grid-footer".into())
+        // Each piece of status is a line of its own once the pane is too narrow
+        // for it beside the others, and is cut at the pane's edge when even
+        // that is too wide.
+        let text = |color: Hsla, text: String| div().max_w_full().truncate().text_color(color).child(text);
+        let status = div()
             .flex()
             .flex_row()
-            .flex_none()
-            .h(px(BAR_H))
+            .flex_wrap()
+            .flex_auto()
+            .min_w_0()
             .items_center()
-            .gap(px(12.0))
-            .px(px(12.0))
-            .text_size(px(11.5))
-            .text_color(c.muted)
-            .border_t_1()
-            .border_color(c.divider)
-            .child(div().flex_none().child(parts.join(" · ")))
-            .when(edits > 0, |d| d.child(div().flex_none().text_color(c.warning).child(t("grid.modified", &[("count", edits.to_string())]))))
-            .when_some(long_message(r), |d, (text, error)| {
+            .gap_x(px(12.0))
+            .child(text(c.muted, parts.join(" · ")))
+            .when(edits > 0, |d| d.child(text(c.warning, t("grid.modified", &[("count", edits.to_string())]))))
+            .when_some(long_message(r), |d, (message, error)| {
                 let (open, color) = (self.message_open, if error { c.error } else { c.dim });
                 d.child(
-                    div()
+                    text(color, format!("{} {}", if open { "▾" } else { "▸" }, one_line(&message)))
                         .id("message")
                         .debug_selector(|| "grid-message".into())
-                        .min_w_0()
-                        .truncate()
                         .cursor_pointer()
-                        .text_color(color)
-                        .child(format!("{} {}", if open { "▾" } else { "▸" }, one_line(&text)))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.message_open = !this.message_open;
                             cx.notify();
                         })),
                 )
             })
-            .when_some(self.notice.clone(), |d, why| d.child(div().min_w_0().truncate().text_color(c.dim).child(why)))
-            .child(div().flex_1())
-            .when(r.is_writing(), |d| {
-                d.child(div().text_color(c.dim).child(t("grid.writing", &[])))
+            .when_some(self.notice.clone(), |d, why| d.child(text(c.dim, why)));
+        // The buttons wrap rather than leave the pane: a footer that can't be
+        // pressed is no way to write back or to stop.
+        let writing = r.is_writing();
+        let actions = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .flex_none()
+            .max_w_full()
+            .ml_auto()
+            .items_center()
+            .justify_end()
+            .gap(px(6.0))
+            .when(writing, |d| {
+                d.child(div().flex_none().text_color(c.dim).child(t("grid.writing", &[])))
                     .child(
                         button("stop", t("grid.stop", &[]), false)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop_write(cx))),
@@ -741,7 +759,7 @@ impl Grid {
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.discard(cx))),
                     )
             })
-            .when(edits > 0 && !r.is_writing(), |d| {
+            .when(edits > 0 && !writing, |d| {
                 d.child(
                     button("discard", t("grid.discard", &[]), false)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.discard(cx))),
@@ -750,7 +768,26 @@ impl Grid {
                     button("write", t("grid.write", &[]), true)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.write_back(cx))),
                 )
-            })
+            });
+        div()
+            .id("footer")
+            .debug_selector(|| "grid-footer".into())
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .flex_none()
+            .min_h(px(BAR_H))
+            .items_center()
+            .gap_x(px(12.0))
+            .gap_y(px(2.0))
+            .px(px(12.0))
+            .py(px(4.0))
+            .text_size(px(11.5))
+            .text_color(c.muted)
+            .border_t_1()
+            .border_color(c.divider)
+            .child(status)
+            .when(writing || edits > 0, |d| d.child(actions))
     }
 
     /// The first and last rows on screen (1-based).
