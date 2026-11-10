@@ -434,9 +434,9 @@ impl Stop {
     }
 }
 
-/// Whether the last stop pressed on this thread was pressed with the jobs lock held.
 #[cfg(test)]
 thread_local! {
+    /// Whether the last stop pressed on this thread was pressed with the jobs lock held.
     static PRESSED_WITH_THE_LOCK_HELD: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
