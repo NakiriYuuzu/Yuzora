@@ -14,10 +14,11 @@ const SPLIT = "yuzora.git.diff.split", SPLIT_MIN = 0.15, SPLIT_MAX = 0.85;
 // The grab area over the divider, the bar below the lines when they scroll sideways, and the room left
 // after the widest line: the indent (6) and some more.
 const GRAB = 5, BAR = 8, REST = 18;
-// How [`widest`] finds how wide the lines are, without laying them all out: the lines of each side laid
-// out out of sight (and the longest it lays out), the characters it reads in all, in one line, each line's toll
-// in them, what each character that is not ASCII costs more, how many of those a line may have to be told
-// apart by kind, and the most cells a UTF-16 unit takes.
+// How [`widest`] finds the widest lines without laying all of them out: the lines laid out out of sight
+// per side (WIDEST) and the longest worth laying out (LAYOUT); the characters it reads in a diff (LOOK)
+// and in one line (LINE), what a line costs in them besides its length (TOLL) and a character that is not
+// ASCII besides that (SLOW); how many of those a line may have to be sorted by kind (SORT); and the most
+// cells a UTF-16 unit takes (WORST).
 const WIDEST = 4, LAYOUT = 1 << 18, LOOK = 4e6, LINE = 1 << 20, TOLL = 200, SLOW = 25, SORT = 1 << 16, WORST = 3;
 // The width of a run of this over its length is what a cell takes in the font.
 const RULER = "W".repeat(32);
