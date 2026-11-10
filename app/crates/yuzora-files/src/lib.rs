@@ -17,6 +17,7 @@ pub mod git;
 pub mod highlight;
 pub mod image;
 pub mod markdown;
+mod remote_entry;
 pub mod remote_write;
 pub mod search;
 pub mod svg;
@@ -85,7 +86,7 @@ export function listDir(path: string, options?: On & { limit?: number }): Promis
 /** git status for the repo `cwd` is in; null outside a repo. Writes nothing under .git. */
 export function gitStatus(cwd: string, options?: On): Promise<GitMarks | null>;
 export function stat(path: string, options?: On): Promise<{ len: number; mtime_ms: number } | null>;
-/** New file, new folder, rename: this machine only for now (a machine in `on` is refused). */
+/** New file, new folder, rename: here, or on the machine in `on`. Nothing already at the name is replaced. */
 export function createFile(path: string, options?: On): Promise<null>;
 export function createFolder(path: string, options?: On): Promise<null>;
 /** Renaming also moves the documents open at that path (or under that folder) to the new one. */

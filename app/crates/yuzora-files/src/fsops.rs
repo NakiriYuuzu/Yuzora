@@ -16,6 +16,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
 pub use crate::remote_write::Refusal;
+use crate::remote_entry::{self, Act, Kind};
 use crate::remote_write::{MAX_BYTES, posix_crc, resolve_links, save_gate};
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -123,10 +124,6 @@ printf '%s %s\n' "$s" "$w"
 [ "${s%% *}" -gt "$3" ] && exit 0
 head -c "$2" -- "$1""#
 );
-
-/// Creating, renaming and removing on another machine are not there yet: a file there can be
-/// opened and saved, nothing more.
-const REMOTE_READ_ONLY: &str = "files on another machine are read-only in this version";
 
 /// One directory entry.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -1209,10 +1206,11 @@ fn keep_extended(_file: &std::fs::File, _original: &Path) -> bool {
 
 // ---- create, rename, remove ----
 
-/// A new empty file; an error when the path exists. This machine only.
+/// A new empty file; an error when the path exists. On another machine it gets what that
+/// machine gives a file its own `touch` makes ([`crate::remote_entry`]).
 pub fn create_file(path: &str, on: Option<&str>) -> Result<(), String> {
-    if machine(on).is_some() {
-        return Err(REMOTE_READ_ONLY.into());
+    if let Some(m) = machine(on) {
+        return remote_entry::on_machine(Act::Make(path, Kind::File), m);
     }
     std::fs::OpenOptions::new()
         .write(true)
@@ -1222,20 +1220,19 @@ pub fn create_file(path: &str, on: Option<&str>) -> Result<(), String> {
         .map_err(|e| format!("cannot create {path}: {e}"))
 }
 
-/// A new folder; an error when the path exists or its parent does not. This
-/// machine only.
+/// A new folder; an error when the path exists or its parent does not.
 pub fn create_dir(path: &str, on: Option<&str>) -> Result<(), String> {
-    if machine(on).is_some() {
-        return Err(REMOTE_READ_ONLY.into());
+    if let Some(m) = machine(on) {
+        return remote_entry::on_machine(Act::Make(path, Kind::Folder), m);
     }
     std::fs::create_dir(path).map_err(|e| format!("cannot create {path}: {e}"))
 }
 
 /// Moves `from` to `to`; an error when `to` exists (a change of case only is
-/// fine). This machine only.
+/// fine).
 pub fn rename(from: &str, to: &str, on: Option<&str>) -> Result<(), String> {
-    if machine(on).is_some() {
-        return Err(REMOTE_READ_ONLY.into());
+    if let Some(m) = machine(on) {
+        return remote_entry::on_machine(Act::Move(from, to), m);
     }
     let moved = if same_entry_other_case(from, to) {
         std::fs::rename(from, to)
@@ -2879,15 +2876,9 @@ mod tests {
     }
 
     #[test]
-    fn files_on_another_machine_are_not_changed() {
+    fn an_empty_machine_name_is_this_machine() {
         let d = tempfile::tempdir().unwrap();
         let f = p(&d, "a b.txt");
-        let refused = Err(REMOTE_READ_ONLY.to_owned());
-        assert_eq!(create_file(&f, Some("box")), refused);
-        assert_eq!(create_dir(&f, Some("box")), refused);
-        assert_eq!(rename(&f, &p(&d, "c.txt"), Some("box")), refused);
-        assert!(!Path::new(&f).exists());
-        // An empty machine name is this machine.
         create_file(&f, Some("")).unwrap();
         assert_eq!(
             create_file(&f, Some("")),
