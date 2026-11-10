@@ -1401,14 +1401,18 @@ fn postgres_a_login_limited_to_two_connections_keeps_the_table_editable_when_the
     for round in 0..60 {
         // The count borrowed the table's connection, so its last statement is the count's: the other
         // backend of this login is the sidebar's.
-        run(
+        let killed = rows(
             &setup,
-            "kill",
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'yz_wb_order' AND query NOT ILIKE '%count(%'",
+            "SELECT pid::text, pg_terminate_backend(pid)::text FROM pg_stat_activity WHERE usename = 'yz_wb_order' AND query NOT ILIKE '%count(%'",
         );
-        // The client sees the connection closed; an open that reached it first would be the drop itself
-        // (a dead connection handed out), not the order of the connections.
-        std::thread::sleep(Duration::from_millis(100));
+        // The server is done with them when they are gone from its list; an open that reached the
+        // client before it saw the connection closed would be the drop itself (a dead connection handed
+        // out), not the order of the connections.
+        let pids: Vec<_> = killed.iter().map(|row| row[0].as_str()).collect();
+        if !pids.is_empty() {
+            let count_left = format!("SELECT count(*)::text FROM pg_stat_activity WHERE pid IN ({})", pids.join(", "));
+            until("the server still lists the backends it was told to end", || first_row(&setup, &count_left) == ["0"]);
+        }
         let state = wait(session::open_table(&limited, None, &pane, &table("public", "t"), None));
         let summary = &state.results[0];
         if !summary.editable || state.error.is_some() {
