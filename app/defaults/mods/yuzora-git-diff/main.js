@@ -3,11 +3,17 @@
 // Follows shared "yuzora.git.diff" ({cwd, on, path, orig, mode, rev?, to?, at}).
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, Scrollbar, VirtualListScrollHandle } from "gpui-base";
-import { theme, props, shared, settings, run, panes, focused, closeOverlay } from "herdr";
+import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay } from "herdr";
 import { t, tokens } from "yuzora:core";
 import { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from "yuzora:git";
 
 const ROW = 20, CHAR = 7, GUTTER = 44;
+// Side by side, the left side's share of the width: kept in shared state (a diff opens with new props every
+// time, so a localStorage keyed by them would start over), dragged between these, 0.5 by default.
+const SPLIT = "yuzora.git.diff.split", SPLIT_MIN = 0.15, SPLIT_MAX = 0.85;
+// The grab area over the divider, the bar below the lines when they scroll sideways, and the room left
+// after the widest line: the indent (6) and some more.
+const GRAB = 5, BAR = 8, REST = 18;
 
 export default class GitDiff extends View {
   init(_props, cx) {
@@ -18,6 +24,7 @@ export default class GitDiff extends View {
     this.context = Number(p.context ?? s.diffContext ?? 3);
     this.view = null; this.error = null; this.busy = false; this.note = null;
     this.sel = {}; this.hunk = 0; this.askDiscard = null;
+    this.scrollX = 0; this.textW = { l: 0, r: 0 }; this.drag = null;
     this.scroll = VirtualListScrollHandle.new();
     this.handle = cx.focus_handle();
     // Props without `at` (an agent's tab.new) date from now, not from 1970.
@@ -38,7 +45,7 @@ export default class GitDiff extends View {
     this.spec = spec;
     this.loop = (this.loop ?? 0) + 1;
     const loop = this.loop;
-    this.view = null; this.error = null; this.sel = {}; this.hunk = 0; this.note = null;
+    this.view = null; this.error = null; this.sel = {}; this.hunk = 0; this.note = null; this.scrollX = 0;
     // Called from render too: the state above is what this frame draws, so no notify here.
     if (!spec) return;
     cx.spawn(async (cx) => {
@@ -136,22 +143,72 @@ export default class GitDiff extends View {
       if (this.layout === "unified") {
         if (x >= 0 && x < GUTTER * 2) return this.toggleLine(r.h, r.k === "-" ? "l" : "r", r.k === "-" ? r.li : r.ri, cx);
       } else {
-        // Where the left side ends, as the row lays it out: half the row, but never less than
-        // its own lines need, nor so much that the right side gets less than its own.
-        const c = this.widths(), w = this.rowsWidth ?? 0;
-        const half = Math.min(Math.max((w - 1) / 2, c.l), w - 1 - c.r);
+        // Where the left side ends, as the last frame laid it out: its share of the row, less the divider.
+        const left = ((this.rowsWidth ?? 0) - 1) * (this.lay?.ratio ?? 0.5);
         if (x >= 0 && x < GUTTER && r.l !== undefined) return this.toggleLine(r.h, "l", r.li, cx);
-        if (x > half && x < half + 1 + GUTTER && r.r !== undefined) return this.toggleLine(r.h, "r", r.ri, cx);
+        if (x > left && x < left + 1 + GUTTER && r.r !== undefined) return this.toggleLine(r.h, "r", r.ri, cx);
       }
     }
     this.hunk = r.h; cx.notify();
   }
 
-  // Each side's width ([`sides`]), worked out once per view: every frame and
-  // every click need it.
-  widths() {
-    if (this.widthsOf !== this.view) { this.widthsOf = this.view; this.widthsWere = sides(this.view.rows); }
-    return this.widthsWere;
+  // The left side's share of the width: the one kept, or the one being dragged.
+  ratio() {
+    return this.drag?.kind === "split" ? this.drag.ratio : ratioOf(shared(SPLIT));
+  }
+
+  // The widest lines of each side ([`widest`]), worked out once per view.
+  candidates() {
+    if (this.candidatesOf !== this.view) { this.candidatesOf = this.view; this.candidatesWere = widest(this.view.rows); }
+    return this.candidatesWere;
+  }
+
+  // How far the lines can scroll sideways: the most the widest line of either side reaches past its
+  // side's room (its cell less the numbers).
+  reach(ratio) {
+    const w = this.rowsWidth ?? 0, left = (w - 1) * ratio;
+    if (!w) return 0;
+    return Math.max(0, this.textW.l + REST - (left - GUTTER), this.textW.r + REST - (w - 1 - left - GUTTER));
+  }
+
+  // A sideways swipe or wheel moves every line the same distance (a vertical one is the list's).
+  wheel(e, cx) {
+    const lay = this.lay;
+    if (!lay || !e.delta.x) return;
+    const at = Math.min(Math.max(lay.sx - e.delta.x, 0), lay.reach);
+    if (at !== this.scrollX) { this.scrollX = at; cx.notify(); }
+  }
+
+  // The drag in progress follows the pointer: the divider by the share of the width it moved, the bar
+  // by what its thumb's travel stands for.
+  dragTo(x, cx) {
+    const d = this.drag, lay = this.lay;
+    if (!d || !lay) return;
+    if (d.kind === "split") {
+      const ratio = ratioOf(d.from + (x - d.x) / Math.max(1, lay.width - 1));
+      if (ratio !== d.ratio) { d.ratio = ratio; cx.notify(); }
+    } else {
+      const at = Math.min(Math.max(d.from + (x - d.x) * d.per, 0), lay.reach);
+      if (at !== this.scrollX) { this.scrollX = at; cx.notify(); }
+    }
+  }
+
+  // The drag is over, wherever it ended: the divider's share is kept.
+  drop(cx) {
+    const d = this.drag;
+    this.drag = null;
+    if (d?.kind === "split" && d.ratio !== this.ratio()) setShared(SPLIT, Math.round(d.ratio * 1000) / 1000);
+    cx.notify();
+  }
+
+  // While a drag is on, the pane's root sees every move and the release, wherever the pointer is
+  // inside the pane. Leaving the pane ends the drag: the release would not be seen out there.
+  dragging(el) {
+    return el.when(Boolean(this.drag), (root) => root
+      .on_mouse_move((e, cx) => this.dragTo(e.position.x, cx))
+      .on_mouse_up("left", (_e, cx) => this.drop(cx))
+      .on_mouse_down("left", (_e, cx) => this.drop(cx))
+      .on_hover((hovered, cx) => { if (!hovered) this.drop(cx); }));
   }
 
   // The row each hunk starts on, for ↑ ↓.
@@ -183,8 +240,9 @@ export default class GitDiff extends View {
       .children(segs.map((s, i) => div().id(`s${i}`).when(s.h, (el) => el.bg(strong).rounded(2)).child(s.t || "")));
   }
 
-  // One side's cell: number (click picks the line), then the text; at least `min` wide.
-  cell(r, side, th, d, min) {
+  // One side's cell: number (click picks the line), then the text, which `sx` moves under the cell's
+  // edge. `grow` is its share of the row, the same for every row.
+  cell(r, side, th, d, grow, sx) {
     const n = r[side], text = side === "l" ? r.lt ?? r.t : r.rt ?? r.t;
     const changedRow = r.k === "~" || r.k === "-" || r.k === "+";
     const present = n !== undefined;
@@ -194,21 +252,22 @@ export default class GitDiff extends View {
     const index = del ? r.li : r.ri;
     const picked = changedRow && present && this.sel[r.h]?.[del ? "del" : "add"]?.has(index);
     const canPick = changedRow && present && this.view.stageable;
-    return h_flex().flex_1().min_w(min).h_full().when(Boolean(bg), (el) => el.bg(bg)).when(changedRow && !present, (el) => el.bg(th.raised))
+    return h_flex().w(0).flex_grow(grow).min_w(0).h_full().overflow_hidden().when(Boolean(bg), (el) => el.bg(bg)).when(changedRow && !present, (el) => el.bg(th.raised))
       .child(div().w(GUTTER).flex_none().h_full().pr(6).text_right().text_color(picked ? th.foreground : th.dim)
         .when(picked, (el) => el.bg(del ? d.removed ?? th.ansi1 : d.added ?? th.ansi2).text_color(th.background))
         .when(canPick, (el) => el.cursor_pointer().hover((s) => s.text_color(th.foreground)))
         .child(present ? String(n) : ""))
-      .child(div().pl(6).flex_1().child(present ? this.segments(r[`${side}s`], text, th.foreground, strong) : ""));
+      .child(div().flex_1().min_w(0).h_full().overflow_hidden()
+        .child(div().flex_none().pl(6).ml(-sx).child(present ? this.segments(r[`${side}s`], text, th.foreground, strong) : "")));
   }
 
-  row(r, i, th, d, width, cols) {
+  row(r, i, th, d, width) {
     if (r.k === "fold") {
       return h_flex().id(`r${i}`).h(ROW).px(10).items_center().bg(th.raised).text_color(th.dim).cursor_pointer()
         .hover((s) => s.text_color(th.foreground)).child(t("fold", { count: r.n }));
     }
     const current = r.h !== undefined && r.h === this.hunk;
-    const base = h_flex().id(`r${i}`).h(ROW).w_full().when(current, (el) => el.border_l(2).border_color(th.accent));
+    const base = h_flex().id(`r${i}`).h(ROW).w_full();
     if (this.layout === "unified") {
       const del = r.k === "-", add = r.k === "+";
       const bg = del ? d.removed_bg : add ? d.added_bg : null;
@@ -216,7 +275,7 @@ export default class GitDiff extends View {
       const side = del ? "del" : "add";
       const picked = (del || add) && this.sel[r.h]?.[side]?.has(index);
       const canPick = (del || add) && this.view.stageable;
-      return base.when(Boolean(bg), (el) => el.bg(bg))
+      return base.when(current, (el) => el.border_l(2).border_color(th.accent)).when(Boolean(bg), (el) => el.bg(bg))
         .child(div().w(GUTTER * 2).flex_none().h_full().flex().text_color(picked ? th.background : th.dim)
           .when(picked, (el) => el.bg(del ? d.removed ?? th.ansi1 : d.added ?? th.ansi2))
           .when(canPick, (el) => el.cursor_pointer())
@@ -225,7 +284,76 @@ export default class GitDiff extends View {
         .child(div().w(14).flex_none().text_color(del ? d.removed : add ? d.added : th.dim).child(del ? "−" : add ? "+" : ""))
         .child(div().flex_1().min_w(width).child(this.segments(r.s, r.t, th.foreground, del ? `${d.removed}55` : `${d.added}55`)));
     }
-    return base.child(this.cell(r, "l", th, d, cols.l)).child(div().w(1).h_full().bg(th.border)).child(this.cell(r, "r", th, d, cols.r));
+    // The current hunk's mark sits over the row's edge: a border would move this row's divider off the others'.
+    const lay = this.lay;
+    return base.relative().child(this.cell(r, "l", th, d, lay.l, lay.sx)).child(div().w(1).flex_none().h_full().bg(th.border)).child(this.cell(r, "r", th, d, lay.r, lay.sx))
+      .when(current, (el) => el.child(div().absolute().top(0).left(0).w(2).h_full().bg(th.accent)));
+  }
+
+  // The bar over the divider to grab: laid out with the same shares as the rows, so it is where
+  // their divider is. A press starts a drag (a double press puts the default back); the pane's
+  // root follows the pointer and ends it (see dragging()).
+  splitter(th) {
+    const lay = this.lay;
+    return h_flex().absolute().inset_0()
+      .child(div().w(0).flex_grow(lay.l).min_w(0))
+      .child(div().w(1).flex_none().h_full().relative()
+        .child(div().id("diff-split").absolute().top(0).left(-(GRAB - 1) / 2).w(GRAB).h_full().cursor_col_resize()
+          .when(this.drag?.kind === "split", (el) => el.bg(th.accent).opacity(0.5)).hover((s) => s.bg(th.hover))
+          .on_mouse_down("left", (e, cx) => {
+            cx.stop_propagation();
+            if (e.click_count >= 2) { this.drag = null; setShared(SPLIT, null); }
+            else this.drag = { kind: "split", x: e.position.x, from: lay.ratio, ratio: lay.ratio };
+            cx.notify();
+          })))
+      .child(div().w(0).flex_grow(lay.r).min_w(0));
+  }
+
+  // The bar under the lines when they scroll sideways; its thumb drags.
+  hbar(th) {
+    const lay = this.lay, thumb = Math.max(24, Math.round(lay.width * lay.width / (lay.width + lay.reach)));
+    return div().absolute().left(0).bottom(0).w_full().h(BAR)
+      .child(div().id("diff-thumb").absolute().top(2).left(Math.round((lay.width - thumb) * lay.sx / lay.reach)).w(thumb).h(BAR - 4).rounded(3).bg(th.dim)
+        .opacity(this.drag?.kind === "bar" ? 0.9 : 0.5).cursor_pointer().hover((s) => s.opacity(0.9))
+        .on_mouse_down("left", (e, cx) => {
+          cx.stop_propagation();
+          this.drag = { kind: "bar", x: e.position.x, from: lay.sx, per: lay.reach / Math.max(1, lay.width - thumb) };
+          cx.notify();
+        }));
+  }
+
+  // The widest line of each side, laid out out of sight: how wide the font that draws it makes it
+  // is how far the sides scroll. Only the widest few by [`cells`] are laid out, not every line.
+  probes() {
+    const c = this.candidates();
+    const side = (name) => v_flex().absolute().top(0).left(0).h(0).overflow_hidden()
+      .on_size_change((size, cx) => { if (Math.abs(size.width - this.textW[name]) > 0.5) { this.textW[name] = size.width; cx.notify(); } })
+      .children(c[name].map((text) => div().whitespace_nowrap().child(text)));
+    return div().child(side("l")).child(side("r"));
+  }
+
+  // Side by side: the sides share the width by one ratio whatever their lines hold, each clipping its
+  // own, and the lines scroll sideways together.
+  sideBody(v, th, d, mono) {
+    const ratio = this.ratio(), width = this.rowsWidth ?? 0, reach = this.reach(ratio);
+    this.lay = { ratio, width, reach, sx: Math.min(this.scrollX, reach), l: ratio * 100, r: (1 - ratio) * 100 };
+    return div().flex_1().min_h(0).relative().overflow_hidden().font_family(mono).text_size(11.5)
+      .child(div().id("diff-rows-box").size_full()
+        .on_size_change((size, cx) => { if (Math.abs(size.width - (this.rowsWidth ?? -1)) > 0.5) { this.rowsWidth = size.width; cx.notify(); } })
+        .on_mouse_down("left", (e) => { this.downX = e.local_position?.x ?? null; })
+        .on_scroll_wheel((e, cx) => this.wheel(e, cx))
+        .child(this.rowList(v, th, d, 0)))
+      .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().inset_0())
+      .child(this.splitter(th))
+      .when(reach > 0, (el) => el.child(this.hbar(th)))
+      .child(this.probes());
+  }
+
+  rowList(v, th, d, width) {
+    return v_virtual_list("diff-rows", v.rows.length, ROW, (i) => String(i),
+      (range) => v.rows.slice(range.start, range.end).map((r, k) => this.row(r, range.start + k, th, d, width)))
+      .on_item_click((key, cx) => this.clickRow(Number(key), cx))
+      .track_scroll(this.scroll).size_full();
   }
 
   pill(id, label, on, th, action) {
@@ -246,8 +374,8 @@ export default class GitDiff extends View {
     if (JSON.stringify(want ?? null) !== JSON.stringify(this.spec ?? null)) this.follow(cx);
     const spec = this.spec, v = this.view;
     const mono = settings().font_family ?? "JetBrains Mono", overlay = props()?.overlay;
-    const root = v_flex().id("git-diff").size_full().min_h(0).bg(th.background).text_color(th.foreground).text_size(12)
-      .track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx)).on_mouse_down("left", () => this.handle.focus());
+    const root = this.dragging(v_flex().id("git-diff").size_full().min_h(0).bg(th.background).text_color(th.foreground).text_size(12)
+      .track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx)).on_mouse_down("left", () => this.handle.focus()));
     if (!spec) return root.child(div().p(16).text_color(th.dim).child(t("empty")));
 
     const modeLabel = spec.mode === "staged" ? t("mode.staged") : spec.mode === "commit" ? t("mode.commit", { rev: (spec.rev ?? "").slice(0, 8) })
@@ -292,22 +420,17 @@ export default class GitDiff extends View {
     else if (v.tooLarge) body = div().p(16).text_color(th.dim).child(t("tooLarge"));
     else if (v.binary) body = div().p(16).text_color(th.dim).child(t("binary"));
     else if (v.identical || !v.rows.length) body = div().p(16).text_color(th.dim).child(!v.leftExists && !v.rightExists ? t("missing") : v.modes ? t("modes", { from: v.modes[0], to: v.modes[1] }) : t("identical"));
-    else {
+    else if (this.layout === "unified") {
       const longest = Math.min(2000, v.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0));
       const width = longest * CHAR + 24;
-      const cols = this.layout === "unified" ? null : this.widths();
-      const total = cols ? cols.l + 1 + cols.r : GUTTER * 2 + 14 + width;
       body = div().flex_1().min_h(0).relative().font_family(mono).text_size(11.5)
         .child(div().id("diff-x").size_full().overflow_x_scrollbar()
-          .child(div().id("diff-rows-box").w_full().min_w(total).h_full()
+          .child(div().id("diff-rows-box").w_full().min_w(GUTTER * 2 + 14 + width).h_full()
             .on_size_change((size) => { this.rowsWidth = size.width; })
             .on_mouse_down("left", (e) => { this.downX = e.local_position?.x ?? null; })
-            .child(v_virtual_list("diff-rows", v.rows.length, ROW, (i) => String(i),
-              (range) => v.rows.slice(range.start, range.end).map((r, k) => this.row(r, range.start + k, th, d, width, cols)))
-              .on_item_click((key, cx) => this.clickRow(Number(key), cx))
-              .track_scroll(this.scroll).size_full())))
+            .child(this.rowList(v, th, d, width))))
         .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().inset_0());
-    }
+    } else body = this.sideBody(v, th, d, mono);
 
     const ask = this.askDiscard && h_flex().px(10).py(6).gap(8).items_center().bg((tokens().attention ?? {}).background ?? th.raised).text_size(11.5)
       .child(div().flex_1().child(t("discard.ask")))
@@ -323,11 +446,44 @@ export default class GitDiff extends View {
   }
 }
 
-// Side by side, how wide each side's cells are at least: its numbers and its own longest line,
-// so an added file's empty left side doesn't push the new lines out of view.
-function sides(rows) {
-  const longest = (text) => Math.min(2000, rows.reduce((m, r) => Math.max(m, (text(r) ?? "").length), 0));
-  return { l: GUTTER + longest((r) => r.lt ?? r.t) * CHAR + 24, r: GUTTER + longest((r) => r.rt ?? r.t) * CHAR + 24 };
+// A kept or dragged share of the width, in range; anything else (nothing kept, a damaged file) is half.
+function ratioOf(v) {
+  return typeof v === "number" && Number.isFinite(v) ? Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, v)) : 0.5;
+}
+
+// What a character takes in a monospace font, in cells: a wide one (CJK, full width, emoji) takes two.
+function wide(c) {
+  return c >= 0x1100 && (c <= 0x115f || c >= 0x2e80 && c <= 0xa4cf && c !== 0x303f || c >= 0xac00 && c <= 0xd7a3 || c >= 0xf900 && c <= 0xfaff
+    || c >= 0xfe30 && c <= 0xfe6f || c >= 0xff00 && c <= 0xff60 || c >= 0xffe0 && c <= 0xffe6 || c >= 0x1f300 && c <= 0x1faff || c >= 0x20000 && c <= 0x3fffd);
+}
+
+function cells(text) {
+  let n = 0;
+  for (const ch of text) n += wide(ch.codePointAt(0)) ? 2 : 1;
+  return n;
+}
+
+// The few lines of each side that take the most cells, widest first. Only a guess at which is
+// widest in the font that draws them (not every font gives a wide character two cells), so the
+// few are laid out and measured ([`GitDiff.probes`]); tabs are spaces by now.
+const WIDEST = 4;
+function widest(rows) {
+  const pick = (text) => {
+    const best = [];
+    for (const r of rows) {
+      const s = text(r);
+      // No more than two cells a character: a line this short cannot beat the last of the few.
+      if (!s || best.length === WIDEST && s.length * 2 <= best[WIDEST - 1][0]) continue;
+      const n = /[^\0-\x7f]/.test(s) ? cells(s) : s.length;
+      if (best.length < WIDEST || n > best[WIDEST - 1][0]) {
+        best.push([n, s]);
+        best.sort((a, b) => b[0] - a[0]);
+        best.length = Math.min(best.length, WIDEST);
+      }
+    }
+    return best.map((b) => b[1]);
+  };
+  return { l: pick((r) => r.lt ?? r.t), r: pick((r) => r.rt ?? r.t) };
 }
 
 // Whether changed paths may touch the diff's file: the file, the one it was renamed from, a
