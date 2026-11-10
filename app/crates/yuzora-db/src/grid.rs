@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle, Focusable, Hsla, InteractiveElement,
+    AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EntityInputHandler as _, FocusHandle, Focusable, Hsla, InteractiveElement,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Render,
     ScrollWheelEvent,
     ScrollHandle, ScrollStrategy, StatefulInteractiveElement, Styled, Subscription, Task,
@@ -361,6 +361,10 @@ impl Grid {
         });
         let events = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| match event {
             InputEvent::PressEnter { .. } => {
+                // Enter while an input method composes chooses its candidate; it is not the cell being kept.
+                if this.composing(window, cx) {
+                    return;
+                }
                 if let Some(e) = this.editing.as_mut() {
                     // Enter on a blank NULL cell asks for an empty string.
                     e.typed = true;
@@ -378,6 +382,14 @@ impl Grid {
         });
         self.editing = Some(Editing { row, column: pos.1, initial: value, original, typed: false, input, _events: events });
         cx.notify();
+    }
+
+    /// Whether an input method is composing in the editor (marked text it has
+    /// not been told to keep yet: bopomofo or pinyin waiting for a candidate).
+    /// That text is not typed yet, and what Enter and the save key mean while it
+    /// is there is the input method's to say.
+    fn composing(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.editing.as_ref().is_some_and(|e| e.input.update(cx, |input, cx| input.marked_text_range(window, cx)).is_some())
     }
 
     /// Keeps what the inline editor holds as a pending edit.
@@ -476,10 +488,13 @@ impl Grid {
                     cx.stop_propagation();
                 }
                 // Saving with the editor still open keeps the cell first: the
-                // same as Enter, then Write back.
+                // same as Enter, then Write back. Not while an input method is
+                // composing: the unchosen text would be written as the cell.
                 "s" if m.secondary() => {
-                    self.write_back(cx);
-                    self.focus.focus(window, cx);
+                    if !self.composing(window, cx) {
+                        self.write_back(cx);
+                        self.focus.focus(window, cx);
+                    }
                     cx.stop_propagation();
                 }
                 _ => {}
@@ -895,7 +910,9 @@ impl Render for Grid {
             div()
                 .id("message-open")
                 .debug_selector(|| "grid-message-open".into())
-                .flex_none()
+                // Gives way before the footer does: the buttons below it are the way out.
+                .flex_shrink_1()
+                .min_h_0()
                 .max_h(px(140.0))
                 .overflow_y_scroll()
                 .px(px(12.0))
@@ -1147,19 +1164,23 @@ mod tests {
             assert!(is_editing(cx, "composing-save"), "the editor stays open for the composition");
         }
 
+        /// Enter reaching the input (an input method that did not take it for itself).
+        fn press_enter(cx: &mut VisualTestContext, input: &Entity<InputState>) {
+            input.update_in(cx, |_, _, cx| cx.emit(InputEvent::PressEnter { secondary: false, shift: false }));
+            settle(cx);
+        }
+
         #[gpui::test]
         fn enter_keeps_the_cell_only_once_the_composition_is_chosen(cx: &mut TestAppContext) {
             cx.executor().allow_parking();
             let (cx, input, set) = composing(cx, "composing-enter", "ㄓㄨㄥ");
-            cx.simulate_keystrokes("enter");
-            settle(cx);
+            press_enter(cx, &input);
             assert!(results::lock(&set).edits.is_empty(), "Enter while composing kept the unchosen text");
             assert!(is_editing(cx, "composing-enter"));
 
             input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "中", window, cx));
             settle(cx);
-            cx.simulate_keystrokes("enter");
-            settle(cx);
+            press_enter(cx, &input);
             assert_eq!(results::lock(&set).edits.get(&(0, 1)), Some(&Cell::text("中")));
             assert!(!is_editing(cx, "composing-enter"));
         }
