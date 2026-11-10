@@ -48,7 +48,7 @@
 評估過兩條路：
 
 1. **沿用上游**：PowerShell 安裝腳本（`irm … | iex`）把資料夾放進 `%LOCALAPPDATA%\Programs`。問題是 Yuzora 沒有自己的下載伺服器，`curl | iex` 指令也不適合放在 README 當主要安裝方式。
-2. **NSIS（採用）**：`app/distribution/yuzora/windows/yuzora.nsi`。仍裝到上游更新機制預期的 per-user 資料夾，所以 app 內更新（整個資料夾交換）照常運作；另外提供開始功能表、使用者 PATH（`path.ps1`）、「設定 › 應用程式」的解除安裝項目。不需要系統管理員權限。
+2. **NSIS（採用）**：`app/distribution/yuzora/windows/yuzora.nsi`。仍裝到上游更新機制預期的 per-user 資料夾，app 內更新（整個資料夾交換）才做得到，前提是沒有任何行程以該資料夾為工作目錄（見下一節）；另外提供開始功能表、使用者 PATH（`path.ps1`）、「設定 › 應用程式」的解除安裝項目。不需要系統管理員權限。
 
 與 beta.1 的關係：
 
@@ -57,6 +57,34 @@
 - 旗標：`/S` 靜默、`/D=<資料夾>` 改位置（只收空資料夾，或解除安裝項目 `InstallLocation` 記錄的那個資料夾；其他非空資料夾一律拒絕，exit 2，因為更新與解除安裝都會處理整個資料夾；不帶 `/D=` 重跑會裝回 `InstallLocation`）；`/P`（只顯示進度）、`/R`（裝完開啟 Yuzora）、`/UPDATE`、`/ARGS` 是 Tauri updater 呼叫 NSIS 的方式（§5）。
 - 已知限制：app 自我更新後，「設定 › 應用程式」顯示的版本仍是安裝時的版本；開始功能表捷徑沒有設定 AppUserModelID（工作列分組依 exe）。列入待辦。
 - Windows 沒有 Authenticode 簽章，SmartScreen 會警告（與 beta.1 相同）。
+
+### Windows：自我更新與「工作目錄」（2026-11-10 實測）
+
+更新的交換是 `rename(Yuzora → Yuzora.old)`，再 `rename(Yuzora.new → Yuzora)`（`app/src/update.rs` 的 `swap`），由執行中的 `yuzora.exe` 自己做。上游與 NSIS 腳本的註解說「Windows 可以改名執行中程式的資料夾」。這句只對一半：**執行中的 exe 不擋改名，但資料夾只要是任何行程的工作目錄（cwd）就不能改名（os error 32）**。以前沒有實測；2026-11-10 在 CI 的 windows-2022 量過（探針分支 `spike/v010-win-update-probe`）：
+
+- 程式在 `X\`、cwd 在別處：`X → X.old`、`X.new → X`、PowerShell 重開連三輪都成功。只要有任何一個活著的行程以 `X` 為 cwd（自己或別的行程）就失敗。
+- 開始功能表捷徑的 Start in 是安裝資料夾（NSIS 在 `CreateShortcut` 前 `SetOutPath "$INSTDIR"`），`/R` 的 `Exec` 也是。所以一般使用者的 app，cwd 就在要被改名的資料夾裡。出貨的 release build 用 `/S` 安裝、cwd 在安裝資料夾時，交換失敗（`update: cannot move … aside: … (os error 32)`），資料夾仍是舊版。
+- app 啟動的 `herdr-core.exe connect`（app 的子行程）與它再啟動的長壽 `herdr-core.exe serve` 都繼承 app 的 cwd，所以只把 app 自己的 cwd 移走不夠，也要在啟動任何子行程之前移走。
+
+**所以 beta.2–4 在 Windows 上的自我更新一定失敗**；Stable 帶著這個出貨就沒辦法靠更新修好。0.1.0 的修正（`app/src/yuzora/release/cwd.rs`）：
+
+- `main()` 在 bare launch 時、啟動任何子行程之前（也在 `apply_on_startup()` 的交換之前），如果 cwd 是執行檔所在的資料夾或其底下，就把 cwd 移到家目錄（`mods::home()`）。之後的子行程（`hc connect`、herdr-core、PowerShell 重開）都繼承新的 cwd。比對時兩邊都先 `canonicalize`（`current_dir()` 是 `C:\…`，`current_exe().canonicalize()` 是 `\\?\C:\…`）。命令列（`yuzora do …`、`shot` 等）不動 cwd：它們可能收相對路徑。
+- 這個改動在 Windows 才執行（POSIX 本來就可以改名有行程在裡面的資料夾）。
+- 新增的終端機本來就不從安裝資料夾開始：本機的 terminal 一律帶明確的 cwd（space 的資料夾，沒有就是家目錄；`window.rs` 的 `folder_for`、`new_space`），所以這個改動不改變終端機的起始目錄。程式碼裡沒有依賴 cwd 的相對路徑。
+- 常駐的檢查：`app-package.yml` 的 Windows job 在安裝程式檢查之後跑 `app/scripts/yuzora/check-win-update.py`：靜默安裝出貨檔，以安裝資料夾為 cwd 啟動（和捷徑一樣），預先放好暫存的更新（`Yuzora.new` 與收據），斷言資料夾換成新版、`Yuzora.old` 是舊版、PowerShell 重開的行程活著且安裝資料夾在它執行時還能改名，再做一次第二次更新。結束碼 1＝更新沒成功，2＝檢查本身跑不起來（視窗開不起來，不是更新結果）。修正前這個檢查必定紅（探針 run1 的 `R1-install.swap_1`、`D1-install.swap_1`）。
+- 交換失敗時，「重新啟動」現在會說原因（見〈交換失敗〉）。
+
+**仍然會失敗的情況**：使用者自己的行程把安裝資料夾當 cwd（例如在終端機裡 `cd` 進去）、防毒軟體握著檔案，以及**beta 啟動、現在還活著的 herdr-core**。NSIS 安裝程式覆蓋安裝時不會停掉 core（`yuzora.nsi` 只處理安裝資料夾裡的 `yuzora.exe`），beta.2–4 的 app 是從開始功能表捷徑啟動的，它啟動的 core（長壽，終端機活著就一直在）cwd 還在安裝資料夾裡，重新開機或 `hc server stop`（會結束終端機）才會消失。所以從 beta 手動裝上 0.1.0 的人，**第一次**自動更新（0.1.0 → 0.1.1）可能因此失敗；失敗時他們會看到下面的說明，重新開機一次就好。0.1.0 全新安裝、或 core 是 0.1.0 啟動的人不受影響。
+
+**交換失敗**（`update::swap` 回傳 false）：
+
+- 資料夾沒有被動過（`rename(root → .old)` 沒成功就什麼都沒搬；第二步失敗會 rollback）。暫存的 `Yuzora.new` 與收據留著。
+- 按右下角更新提示的「Restart」（`app.update`）：顯示錯誤通知 `app.update failed`，內文：`Yuzora could not install the update because another program is using its install folder. Close any terminal opened in that folder. If you came from a beta, restart your PC once. Then choose Restart again, or download the installer from https://github.com/NakiriYuuzu/Yuzora/releases.`（其他錯誤：`Yuzora could not install the update: <系統訊息>. Choose Restart to try again, or download the installer from …`）。
+- 關閉視窗時（`on_app_quit`）與啟動時（`apply_on_startup`）失敗只記 log（`update: cannot move … aside: …`）；視窗不在，沒有地方顯示。下次啟動 10 秒後的檢查會再看到暫存的版本，右下角照樣顯示「Yuzora x.y.z is ready」，按「Restart」就看到上面的說明。
+- 不會重複下載：`stage` 看到收據的版本相同就直接回傳（`staged_version`），所以每小時的檢查只有 release 列表與 manifest 這幾個小請求。
+- 更新被停用時（安裝資料夾裡有 `yuzora.package` 沒列的檔案，`is_install` 的刻意設計：交換會把整個資料夾換掉，使用者放的東西會跟著被搬進 `.old`）會記一行 `update: <資料夾> has files that are not in yuzora.package (…), so this install does not update itself`。
+
+**beta.2–4 的 Windows 使用者升到 0.1.0**：這些版本的更新程式在交換時一定失敗，要手動下載安裝程式（`Yuzora-windows-x64-setup.exe`，覆蓋安裝）。如果 0.1.0 的 release 附了 `yuzora-update.json`（Windows 的 target 也在裡面），他們的 app 會（beta build 一律走 Stable 通道）下載並暫存，右下角顯示「Yuzora 0.1.0 is ready」，按「Restart」只會看到 `app.update failed: no update is ready yet`（beta 的 `apply()` 沒有說原因）；每次關閉與啟動都再試一次並失敗，不會重複下載（見上），資料夾不變。讀碼推導，沒有實機驗證。release notes 要明講「Windows 的 beta 使用者請手動下載安裝程式」。若不想讓他們看到永遠卡住的提示，0.1.0 的 manifest 可以不列 `windows-x86_64`（0.1.0 自己不讀自己的 manifest；0.1.1 的 manifest 照常列）。
 
 ### Linux
 
@@ -87,7 +115,7 @@
 - **通道**：`stable` 只收非 pre-release、版本不帶 `-` 的 release；`beta` 兩者都收。**beta build（版本帶 `-`）一律走 stable，不管設定寫什麼**：beta 之間不自動更新（2026-11-04 使用者決定，一律手動下載），0.1.0 Stable 發布後，裝著 beta 的人會自動升上去。stable build 預設 stable，Yuzora `settings.json` 的 `update` section（`{"channel": "stable" | "beta"}`）可以改成 beta。這個 section 屬 L7；設定 UI 由 L6 接（見 §10）。已經下載好、等著重啟套用的版本若不在目前通道內（beta build 上的 beta、或 stable build 改成 stable 後的 beta），會在下一次檢查、結束或啟動時丟掉，不會套用（`staged_version` 的 L7 接點，`update::keeps`）。
 - **只有安裝好的 release build 會檢查**（`HERDR_APP_RELEASE`＋安裝形狀：macOS 是 `.app`；其他平台是有 `yuzora.package` 的資料夾，而且資料夾裡只有這份清單列出的東西，避免把解壓到使用者資料夾上的封包當成安裝、更新時整個資料夾被換掉）。從原始碼建置的不會連網。
 - **版本比較**：上游 `newer()` 把 pre-release 當字串比，`beta.10` 會排在 `beta.9` 前面。已修正為 semver 規則（`release::prerelease_cmp`，`update.rs` 一行改動）。
-- **錯誤處理**：任何一步失敗都只記 log、30 分鐘後重試（上游 RETRY）；GitHub API 403（每小時 60 次的未驗證上限）也是。一個 IP 後面很多台 app 時可能偶爾撞到上限，之後再評估改走 `releases/latest/download`。
+- **錯誤處理**：任何一步失敗都只記 log、30 分鐘後重試（上游 RETRY）；交換失敗見〈Windows：自我更新與「工作目錄」〉；GitHub API 403（每小時 60 次的未驗證上限）也是。一個 IP 後面很多台 app 時可能偶爾撞到上限，之後再評估改走 `releases/latest/download`。
 - **測試伺服器**：`YUZORA_UPDATE_URL=<base>` 讓任何 build（包括 release build）改向一個仿 GitHub 路徑的伺服器檢查（`<base>/repos/NakiriYuuzu/Yuzora/releases`、`<base>/NakiriYuuzu/Yuzora/releases/download/v<version>/…`）。簽章照樣必須由信任的金鑰簽。
 - **網路連線**：release build 每小時連 `api.github.com` 與 `github.com`（Yuzora 更新），以及 `releases.herdr.dev`（herdr-core 的版本，D3 保留上游 core 通道）。從原始碼建置的 app 兩者都不連。
 
