@@ -10,6 +10,7 @@ import { openFile, moved, join, parent, base, rel } from "./open.js";
 import { fileIcon } from "./icons.js";
 import { heading } from "./paths.js";
 import { readGit } from "./git-state.js";
+import { reason } from "./failure.js";
 import { createStore, panel, info } from "./tree-state.js";
 
 const ME = "yuzora-sidebar-files";
@@ -143,7 +144,7 @@ export default class FilesSidebar extends View {
       const failed = await this.store.expand(here, root, folder, () => { this.version++; cx.notify(); });
       if (!failed || this.loc !== loc) return;
       if (failed.gone) notify({ title: t("error.gone", { name: row.name }), level: "warning" });
-      else notify({ title: t("error.list"), body: String(failed.error?.message ?? failed.error), level: "error" });
+      else notify({ title: t("error.list"), body: reason(failed.error, { name: row.name, machine: here.on, kind: "list" }), level: "error" });
     });
     cx.notify();
   }
@@ -270,7 +271,7 @@ export default class FilesSidebar extends View {
         const r = rel(here.root, edit.dir);
         if (r) here.open.add(r);
         here.selected = rel(here.root, target);
-      } catch (e) { notify({ title: t(`error.${edit.kind}`), body: String(e?.message ?? e), level: "error" }); }
+      } catch (e) { notify({ title: t(`error.${edit.kind}`), body: reason(e, { name, machine: on, kind: edit.kind }), level: "error" }); }
       finally { this.reload(cx, false, here); cx.notify(); }
     });
     cx.notify();
@@ -510,11 +511,11 @@ function menuItems(m) {
     { label: t("menu.rename"), run: () => request("rename", m, { path: m.abs }) },
     { label: t("menu.trash"), enabled: local, danger: true, run: () => {
       trash(m.abs).then(() => { setShared(REFRESH, Date.now()); notify({ title: t("toast.trashed", { name: base(m.abs) }), level: "success", timeout: 3000 }); })
-        .catch(e => notify({ title: t("error.trash"), body: String(e?.message ?? e), level: "error" }));
+        .catch(e => notify({ title: t("error.trash"), body: reason(e, { name: base(m.abs), kind: "trash" }), level: "error" }));
     } },
     null,
     { label: t("menu.copy_path"), run: () => copyText(m.abs) },
     { label: t("menu.copy_relative"), run: () => copyText(relPath) },
-    { label: revealLabel(), enabled: local, run: () => { try { reveal(m.abs); } catch (e) { notify({ title: t("error.reveal"), body: String(e?.message ?? e), level: "error" }); } } },
+    { label: revealLabel(), enabled: local, run: () => { try { reveal(m.abs); } catch (e) { notify({ title: t("error.reveal"), body: reason(e, { name: base(m.abs), kind: "reveal" }), level: "error" }); } } },
   ].filter((it, i, all) => it || (i > 0 && all[i - 1]));
 }

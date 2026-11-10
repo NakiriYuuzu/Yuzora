@@ -722,6 +722,184 @@ return JSON.stringify([a, b, c, d]); }})()"#
         );
     }
 
+    /// `failure.js` reads the sentences made here (fsops.rs, remote_entry.rs), so it is run on what they make:
+    /// a sentence changed on this side without it changes what the toast says first.
+    #[test]
+    fn sidebar_failures_are_told_by_their_cause_from_the_messages_made_here() {
+        use crate::remote_entry::{Act, Kind, Problem, interpret};
+        use yuzora_core::remote::ExecError;
+        let dir = tempfile::tempdir().unwrap();
+        let at = |name: &str| format!("{}/{name}", dir.path().display());
+        std::fs::write(at("taken.txt"), "").unwrap();
+        std::fs::write(at("a.txt"), "").unwrap();
+        let failed = |r: Result<(), String>| r.unwrap_err();
+        let mut cases: Vec<(String, &str, &str, &str)> = vec![
+            (
+                failed(fsops::create_file(&at("taken.txt"), None)),
+                "taken.txt",
+                "new-file",
+                "taken.txt already exists",
+            ),
+            (
+                failed(fsops::create_dir(&at("taken.txt"), None)),
+                "taken.txt",
+                "new-folder",
+                "taken.txt already exists",
+            ),
+            (
+                failed(fsops::create_file(&at("gone/n.txt"), None)),
+                "n.txt",
+                "new-file",
+                "The folder no longer exists",
+            ),
+            (
+                failed(fsops::rename(&at("a.txt"), &at("taken.txt"), None)),
+                "taken.txt",
+                "rename",
+                "taken.txt already exists",
+            ),
+            (
+                failed(fsops::rename(&at("none.txt"), &at("b.txt"), None)),
+                "b.txt",
+                "rename",
+                "That item is no longer there",
+            ),
+        ];
+        #[cfg(unix)]
+        // SAFETY: a plain syscall with no arguments.
+        if unsafe { libc::geteuid() } != 0 {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::create_dir(at("ro")).unwrap();
+            std::fs::set_permissions(at("ro"), std::fs::Permissions::from_mode(0o555)).unwrap();
+            cases.push((
+                failed(fsops::create_file(&at("ro/n.txt"), None)),
+                "n.txt",
+                "new-file",
+                "The folder is not writable",
+            ));
+            std::fs::set_permissions(at("ro"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let timed = interpret(Err(ExecError::TimedOut {
+            seconds: 30.0,
+            machine: Some("lab".into()),
+        }))
+        .unwrap_err();
+        let offline = interpret(Err(ExecError::Remote(
+            "machine lab is not connected".into(),
+        )))
+        .unwrap_err();
+        let make = Act::Make("/srv/n.txt", Kind::File);
+        let rename = Act::Move("/srv/a.txt", "/srv/b.txt");
+        for (act, problem, name, kind, want) in [
+            (
+                &make,
+                Problem::Exists,
+                "n.txt",
+                "new-file",
+                "n.txt already exists",
+            ),
+            (
+                &rename,
+                Problem::Gone,
+                "b.txt",
+                "rename",
+                "That item is no longer there",
+            ),
+            (
+                &make,
+                Problem::NoFolder,
+                "n.txt",
+                "new-file",
+                "The folder no longer exists",
+            ),
+            (
+                &make,
+                Problem::FolderNotWritable,
+                "n.txt",
+                "new-file",
+                "The folder is not writable",
+            ),
+            (
+                &rename,
+                Problem::OtherDevice,
+                "b.txt",
+                "rename",
+                "A rename can't copy to another disk",
+            ),
+            (
+                &rename,
+                Problem::NoTool("mv"),
+                "b.txt",
+                "rename",
+                "lab has no mv",
+            ),
+            (
+                &make,
+                Problem::NoShell,
+                "n.txt",
+                "new-file",
+                "Windows machines can't be changed here",
+            ),
+            (
+                &make,
+                Problem::BadPath,
+                "n.txt",
+                "new-file",
+                "A machine can't use that path",
+            ),
+            (&make, offline, "n.txt", "new-file", "Can't reach lab"),
+            (
+                &rename,
+                timed,
+                "b.txt",
+                "rename",
+                "lab took too long: check again",
+            ),
+            (
+                &make,
+                Problem::Failed(
+                    "the answer could not be read; it may or may not have been done".into(),
+                ),
+                "n.txt",
+                "new-file",
+                "Not sure it was done: check again",
+            ),
+        ] {
+            cases.push((act.describe(&problem, "lab"), name, kind, want));
+        }
+        let input: Vec<serde_json::Value> = cases
+            .iter()
+            .map(|(message, name, kind, _)| {
+                serde_json::json!([format!("`yuzora:files.call`: {message}"), name, kind])
+            })
+            .collect();
+        let src = include_str!("../../../defaults/mods/yuzora-sidebar-files/failure.js")
+            .replace("export const", "const")
+            .replace("export function", "function")
+            .replace(r#"import { t } from "yuzora:core";"#, "");
+        let script = format!(
+            r#"(() => {{
+    const en = {strings};
+    const t = (key, vars = {{}}) => key.split(".").reduce((o, k) => o?.[k], en).replace(/\{{(\w+)\}}/g, (_, k) => vars[k]);
+    {src}
+    return JSON.stringify({input}.map(([message, name, kind]) => reason(new Error(message), {{ name, machine: "lab", kind }})));
+    }})()"#,
+            strings = include_str!("../../../defaults/mods/yuzora-sidebar-files/i18n/en.json"),
+            input = serde_json::Value::Array(input),
+        );
+        let runtime = quickjs::Runtime::new().unwrap();
+        let context = quickjs::Context::full(&runtime).unwrap();
+        let got: String = context.with(|ctx| ctx.eval(script).unwrap());
+        let got: Vec<String> = serde_json::from_str(&got).unwrap();
+        let want: Vec<&str> = cases.iter().map(|c| c.3).collect();
+        assert_eq!(
+            got,
+            want,
+            "{:#?}",
+            cases.iter().map(|c| &c.0).collect::<Vec<_>>()
+        );
+    }
+
     /// What a unit test of `readGit` cannot see: the sidebar uses it, shows
     /// its failure and the too-long query note, and does not swallow errors.
     #[test]

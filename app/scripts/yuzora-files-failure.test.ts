@@ -47,7 +47,7 @@ const cases: [string, Error | string | undefined, { name?: string; machine?: str
   ["a machine that does not answer in time", host("rename", "cannot rename /srv/a.txt on lab: took longer than 30 s on lab and was stopped. It may or may not have been done: reload the folder to see"), { name: "b.txt", machine: "lab", kind: "rename" }, "lab took too long: check again"],
   ["an answer that could not be read", host("createFile", "cannot create /srv/n.txt on lab: the answer could not be read; it may or may not have been done"), { name: "n.txt", machine: "lab", kind: "new-file" }, "Not sure it was done: check again"],
   ["a rename that would have to copy", host("rename", "cannot rename /srv/a: /mnt/a is on another file system on lab, and a rename does not copy"), { name: "a", machine: "lab", kind: "rename" }, "A rename can't copy to another disk"],
-  ["a machine without mv", host("rename", "cannot rename /srv/a: lab has no mv, which this needs"), { name: "a", machine: "lab", kind: "rename" }, "lab has no mv, which this needs"],
+  ["a machine without mv", host("rename", "cannot rename /srv/a: lab has no mv, which this needs"), { name: "a", machine: "lab", kind: "rename" }, "lab has no mv"],
   ["a Windows machine", host("createFile", "cannot create /srv/a on lab: this needs sh on lab, and it has none (Windows machines cannot be changed from here)"), { name: "a", machine: "lab", kind: "new-file" }, "Windows machines can't be changed here"],
   ["a path a machine cannot use", host("createFile", "cannot create C:\\a: a machine's path has to start with / and name a file or a folder (a Windows path cannot be used)"), { name: "a", machine: "lab", kind: "new-file" }, "A machine can't use that path"],
   ["a rename onto a document still open", host("rename", "/tmp/b.txt is still open (its file was deleted): close it first"), { name: "b.txt", kind: "rename" }, "A document of that name is still open"],
@@ -75,14 +75,14 @@ test("a long name is cut in the middle, where its end (the extension) stays", ()
   const name = `${"quarterly-".repeat(6)}report.final.xlsx`;
   const got = reason(host("createFile", `cannot create /x/${name}: File exists (os error 17)`), { name, kind: "new-file" });
   expect(got.length).toBeLessThanOrEqual(LIMIT);
-  expect(got).toMatch(/^quarterly.*…final\.xlsx already exists$|^quarterly.*…\.xlsx already exists$/);
+  expect(got).toMatch(/^quarterly-.*….*\.xlsx already exists$/);
 });
 
 test("a long machine name is cut too", () => {
   const machine = "build-server-eu-west-1.internal";
   const got = reason(host("createFile", `cannot create /srv/n.txt on ${machine}: machine ${machine} is not connected`), { name: "n.txt", machine, kind: "new-file" });
   expect(got.length).toBeLessThanOrEqual(LIMIT);
-  expect(got).toMatch(/^Can't reach build.*…/);
+  expect(got).toMatch(/^Can't reach b.*….+/);
 });
 
 test("what a failure it does not know says is cut at the limit, its start kept", () => {

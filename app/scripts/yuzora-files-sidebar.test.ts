@@ -5,11 +5,11 @@ import { test, expect } from "bun:test";
 import { readFile } from "node:fs/promises";
 
 const dir = new URL("../defaults/mods/yuzora-sidebar-files/", import.meta.url);
-const [main, tree, gitState, paths, open] = await Promise.all(["main.js", "tree-state.js", "git-state.js", "paths.js", "open.js"].map(f => readFile(new URL(f, dir), "utf8")));
+const [main, tree, gitState, paths, open, failure] = await Promise.all(["main.js", "tree-state.js", "git-state.js", "paths.js", "open.js", "failure.js"].map(f => readFile(new URL(f, dir), "utf8")));
 const code = (s: string) => s.replace(/^import [\s\S]*?;\n/gm, "").replace(/^export \{[^}]*\} from [^;]*;\n/gm, "").replace(/^export default class/m, "class").replace(/^export (?=async function|function|const|class)/gm, "");
-const source = [paths, gitState, tree, main].map(code).join("\n");
+const source = [paths, gitState, tree, failure, main].map(code).join("\n");
 // The sidebar with open.js as shipped, over a stub Herdr that records the commands it is told to run.
-const sourceWithOpen = [paths, gitState, tree, open, main].map(code).join("\n");
+const sourceWithOpen = [paths, gitState, tree, open, failure, main].map(code).join("\n");
 
 type Call = { args: any[]; resolve: (v: any) => void; reject: (e: any) => void; answered: boolean };
 const waiting = (): [Call, Promise<any>] => {
@@ -799,6 +799,7 @@ test("a file that cannot be moved to the trash, and a folder that cannot be open
   s.press(s.frame(), SRC_ROW);
   await flush();
   await s.fail(s.pending("list").find(c => c.args[0] === "/srv/src")!, hostError("listDir", "cannot read /srv/src: Permission denied (os error 13)"));
+  await s.answer(s.pending("stat")[0], { len: 0, mtime_ms: 0 });
   expect(toasts(s).at(-1)).toEqual(["error.list", "reason.denied", "error"]);
 });
 
