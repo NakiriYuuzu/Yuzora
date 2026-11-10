@@ -1124,6 +1124,8 @@ return JSON.stringify([a, b, c, d]); }})()"#
             { id: "t2", name: "build", focus: "p2", panes: [{ pane: "p2", mod: null }] } ] },
           { id: "s2", machine: "lab", active: false, selected: "t3", tabs: [
             { id: "t3", name: "", focus: "p3", panes: [{ pane: "p3", mod: null }] } ] },
+          { id: "s3", machine: null, active: false, selected: "t4", tabs: [
+            { id: "t4", name: "", focus: "p4", panes: [{ pane: "p4", mod: null }] } ] },
         ];
         const given = {}, queue = [], revealed = [], docs = new Map(), opens = {}, started = new Set();
         let serial = 10, docs_made = 0, snapshot = null, nobody = false;
@@ -1427,6 +1429,63 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "s2"
             ]
         );
+    }
+
+    #[test]
+    fn a_file_open_in_another_space_is_opened_again_in_the_space_shown() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            for (const path of ["/r/a.rs", "/r/README.md", "/r/a.png"]) { openFile(path, null); flush(); }
+            restore("s1", "b.rs", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1 });
+            const before = strip("s1");
+            show("s3");
+            for (const path of ["/r/a.rs", "/r/README.md", "/r/a.png", "/r/b.rs"]) { openFile(path, null); flush(); out.push(shown().id + " " + focus()); }
+            out.push(strip("s3"), strip("s1") === before ? "s1 as it was" : strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "s3 editor /r/a.rs",
+                "s3 markdown /r/README.md",
+                "s3 image /r/a.png",
+                "s3 editor /r/b.rs",
+                "[shell] [editor /r/a.rs] [markdown /r/README.md] [image /r/a.png] [editor /r/b.rs]*",
+                "s1 as it was",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pane_of_the_space_shown_is_used_though_the_document_was_last_seen_in_another() {
+        let seen = in_the_open(
+            r#"
+            const at = { path: "/r/a.rs", on: null, opened: 1 };
+            const other = restore("s1", "", "yuzora-editor", at, { beside: true });
+            const waiting = restore("s3", "a.rs", "yuzora-editor", at);
+            run("pane.focus", { pane: other }); flush();
+            show("s3");
+            openFile("/r/a.rs", null, { line: 5 }); flush();
+            return [String(panes().some(p => p.pane === waiting)), String(panes().some(p => p.pane === other)), JSON.stringify(revealed), strip("s3"), given[focused().pane].line + ""];
+        "#,
+        );
+        assert_eq!(seen, ["false", "true", "[]", "[shell] [editor /r/a.rs]*", "5"]);
+    }
+
+    #[test]
+    fn a_rename_reaches_the_panes_of_every_space() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "a.rs", "yuzora-editor", { path: "/r/a.rs", on: null, opened: 1 });
+            restore("s3", "a.png", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 });
+            show("s3");
+            moved("/r", "/x", null); flush();
+            return [strip("s1"), strip("s3")];
+        "#,
+        );
+        assert_eq!(seen, ["[shell]* [shell] [editor /x/a.rs]", "[shell]* [image /x/a.png]"]);
     }
 
     #[test]

@@ -109,6 +109,7 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
   };
   if (real) {
     delete stubs.openFile; delete stubs.moved;
+    for (const space of world.spaces) space.tabs = space.id === "s1" ? [{ id: "t1" }, { id: "t7" }, { id: "t9" }] : [{ id: "t2" }];
     world.paneList = [{ pane: "p1", tab: "t1" }];
     world.focus = { space: active(), tab: "t1", pane: "p1" };
   }
@@ -1137,6 +1138,17 @@ for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null
     expect(opens(s)).toEqual([tabFor("s1", "/srv/a.txt", machine)]);
     items.find((i: any) => i?.label === "menu.open_side").run();
     expect(opens(s).slice(1)).toEqual([["pane.split", { direction: "right", pane: "p1", mod: "yuzora-editor", props: props("/srv/a.txt", machine) }]]);
+  });
+
+  test(`${where}: a file a pane of another Space shows is opened in a tab of the Space clicked in`, async () => {
+    const s = await realSidebarAt(machine);
+    for (const kind of [{ mod: "yuzora-editor", name: "a.txt" }, { mod: "yuzora-files-image", name: "pic.png" }]) {
+      s.world.paneList.push({ pane: "px", tab: "t2", mod: kind.mod, started: true, props: { path: `/srv/${kind.name}`, on: machine, opened: 1 } });
+      s.press(s.frame(), kind.name === "a.txt" ? A_ROW : 2);
+      expect(s.world.runs.map(([name]) => name)).toEqual(["tab.new"]);
+      s.world.runs.length = 0;
+      s.world.paneList.pop();
+    }
   });
 
   test(`${where}: the menu opens a file to the side though a pane shows it already, and a click shows that pane`, async () => {
