@@ -255,8 +255,6 @@ pub struct JobState {
 }
 
 struct Job {
-    connection: String,
-    database: Option<String>,
     owner: String,
     started: Instant,
     running: bool,
@@ -277,7 +275,7 @@ fn jobs() -> MutexGuard<'static, (JobId, HashMap<JobId, Job>)> {
     JOBS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn new_job(connection: &str, database: Option<&str>, owner: &str) -> JobId {
+fn new_job(owner: &str) -> JobId {
     // A pane shows its newest job only: the ones before it stop and go.
     supersede(owner);
     let mut all = jobs();
@@ -286,8 +284,6 @@ fn new_job(connection: &str, database: Option<&str>, owner: &str) -> JobId {
     all.1.insert(
         id,
         Job {
-            connection: connection.to_owned(),
-            database: database.map(str::to_owned),
             owner: owner.to_owned(),
             started: Instant::now(),
             running: true,
@@ -563,7 +559,7 @@ fn finish_job(id: JobId, outcome: DbResult<()>, sink: &mut JobSink) {
 
 /// Starts running `sql` (one statement or a script) for `owner`.
 pub fn start_query(connection: &str, database: Option<&str>, owner: &str, sql: &str) -> JobId {
-    let id = new_job(connection, database, owner);
+    let id = new_job(owner);
     let (connection, database, owner, sql) =
         (connection.to_owned(), database.map(str::to_owned), owner.to_owned(), sql.to_owned());
     spawn_job(id, async move {
@@ -592,7 +588,7 @@ pub fn open_table(
     table: &ObjectRef,
     order: Option<(String, bool)>,
 ) -> JobId {
-    let id = new_job(connection, database, owner);
+    let id = new_job(owner);
     let (connection, database, owner, table) =
         (connection.to_owned(), database.map(str::to_owned), owner.to_owned(), table.clone());
     spawn_job(id, async move {
@@ -886,7 +882,7 @@ mod tests {
 
     #[test]
     fn a_tables_rows_are_loading_until_known_and_a_querys_are_read_only() {
-        let id = new_job("c", None, "sink-test");
+        let id = new_job("sink-test");
         let mut table = JobSink::for_table(id, "sink-test", "select * from t");
         table.columns(vec![Column::new("id", "int4")]);
         assert_eq!(results::lock(table.last.as_ref().unwrap()).editing, Editing::Loading);
@@ -915,7 +911,7 @@ mod tests {
 
     #[test]
     fn a_job_whose_work_panics_ends_with_an_error() {
-        let id = new_job("c", None, "panic-test");
+        let id = new_job("panic-test");
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         spawn_job(id, async move {
             let _tx = tx;
