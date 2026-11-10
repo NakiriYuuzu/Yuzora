@@ -68,7 +68,7 @@ impl ReadOnly {
 pub enum Editing {
     /// A table's rows are still being read; what they are is not settled.
     Loading,
-    Editable(EditTarget),
+    Editable(Box<EditTarget>),
     ReadOnly(ReadOnly),
 }
 
@@ -519,7 +519,7 @@ mod tests {
     fn computed_columns_take_no_edits() {
         let set = filled("t-read-only");
         let mut r = lock(&set);
-        r.editing = Editing::Editable(EditTarget {
+        r.editing = Editing::Editable(Box::new(EditTarget {
             connection: "c".into(),
             config: serde_json::from_value(serde_json::json!({"name": "c", "engine": "sqlite", "path": "t.sqlite"})).unwrap(),
             database: None,
@@ -527,7 +527,7 @@ mod tests {
             table: ObjectRef { schema: String::new(), name: "t".into() },
             key: vec![0],
             read_only: vec![1],
-        });
+        }));
         r.set_edit(0, 1, Cell::text("z"));
         assert!(r.edits.is_empty(), "{:?}", r.edits);
         assert!(!r.column_editable(1) && r.column_editable(0));

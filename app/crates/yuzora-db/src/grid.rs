@@ -132,6 +132,10 @@ pub struct Grid {
     colors: Colors,
     /// Why the last cell asked for couldn't be edited here.
     notice: Option<String>,
+    /// The footer's message is open in full (it is one truncated line otherwise).
+    message_open: bool,
+    /// The write failure already shown: a new one opens the message by itself.
+    failure_seen: Option<String>,
     /// Frames drawn before the list had a size (the footer's range waits for one).
     unsized_frames: u8,
     _watch: Option<Task<()>>,
@@ -189,6 +193,8 @@ impl Grid {
             focus: cx.focus_handle(),
             colors: Colors::from_props(None),
             notice: None,
+            message_open: false,
+            failure_seen: None,
             unsized_frames: 0,
             _watch: None,
         }
@@ -207,6 +213,8 @@ impl Grid {
         self.head = None;
         self.editing = None;
         self.notice = None;
+        self.message_open = false;
+        self.failure_seen = None;
         self.unsized_frames = 0;
         self.resizing = None;
         self.list = UniformListScrollHandle::new();
@@ -313,7 +321,12 @@ impl Grid {
         let Some(set) = self.set.clone() else { return };
         let outcome = {
             let r = results::lock(&set);
-            if !r.editable() || r.is_writing() || pos.0 >= r.len() || pos.1 >= r.columns.len() {
+            if pos.0 >= r.len() || pos.1 >= r.columns.len() {
+                return;
+            }
+            if let Some(why) = edit_blocked(&r) {
+                self.notice = Some(why);
+                cx.notify();
                 return;
             }
             let row = r.row_index(pos.0);
@@ -395,7 +408,9 @@ impl Grid {
         let (Some(set), Some((rows, cols))) = (self.set.clone(), self.selection()) else { return };
         let id = {
             let mut r = results::lock(&set);
-            if !r.editable() || r.is_writing() {
+            if let Some(why) = edit_blocked(&r) {
+                self.notice = Some(why);
+                cx.notify();
                 return;
             }
             for view_row in rows {
@@ -418,6 +433,8 @@ impl Grid {
         let Some(set) = self.set.clone() else { return };
         let id = {
             let mut r = results::lock(&set);
+            // A write-back still waiting is stopped with the edits it was for.
+            r.stop_write();
             r.discard_edits();
             r.id
         };
@@ -427,11 +444,27 @@ impl Grid {
 
     fn write_back(&mut self, cx: &mut Context<Self>) {
         self.commit_editing(cx);
-        let Some(id) = self.result else { return };
+        let Some(set) = self.set.clone() else { return };
+        if results::lock(&set).edits.is_empty() {
+            return;
+        }
         crate::runtime::spawn(async move {
-            // Errors land on the result (`write`), which the footer shows.
-            let _ = crate::session::write_back(id).await;
+            if let Err(error) = crate::session::write_back_set(&set).await {
+                // `write_back_set` records it itself; this only makes sure the footer has it.
+                let id = {
+                    let mut r = results::lock(&set);
+                    r.show_failure(&error);
+                    r.id
+                };
+                results::changed(id);
+            }
         });
+    }
+
+    fn stop_write(&mut self, cx: &mut Context<Self>) {
+        let Some(set) = self.set.clone() else { return };
+        results::lock(&set).stop_write();
+        cx.notify();
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -472,6 +505,7 @@ impl Grid {
         }
         match event.keystroke.key.as_str() {
             "c" if m.secondary() => self.copy(cx),
+            "s" if m.secondary() => self.write_back(cx),
             "a" if m.secondary() => {
                 self.anchor = Some((0, 0));
                 self.head = Some((rows - 1, cols - 1));
@@ -673,16 +707,35 @@ impl Grid {
             .border_color(c.divider)
             .child(div().flex_none().child(parts.join(" · ")))
             .when(edits > 0, |d| d.child(div().flex_none().text_color(c.warning).child(t("grid.modified", &[("count", edits.to_string())]))))
-            .when_some(r.write_failure().map(str::to_owned), |d, e| d.child(div().min_w_0().truncate().text_color(c.error).child(e)))
-            .when(edits == 0 && r.write_failure().is_none(), |d| {
-                d.when_some(r.read_only_reason(), |d, why| d.child(div().min_w_0().truncate().text_color(c.dim).child(why)))
+            .when_some(long_message(r), |d, (text, error)| {
+                let (open, color) = (self.message_open, if error { c.error } else { c.dim });
+                d.child(
+                    div()
+                        .id("message")
+                        .min_w_0()
+                        .truncate()
+                        .cursor_pointer()
+                        .text_color(color)
+                        .child(format!("{} {}", if open { "▾" } else { "▸" }, one_line(&text)))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.message_open = !this.message_open;
+                            cx.notify();
+                        })),
+                )
             })
             .when_some(self.notice.clone(), |d, why| d.child(div().min_w_0().truncate().text_color(c.dim).child(why)))
-            .when_some(r.error.clone().filter(|_| r.columns.is_empty()), |d, e| {
-                d.child(div().min_w_0().truncate().text_color(c.error).child(e))
-            })
             .child(div().flex_1())
-            .when(r.is_writing(), |d| d.child(div().text_color(c.dim).child(t("grid.writing", &[]))))
+            .when(r.is_writing(), |d| {
+                d.child(div().text_color(c.dim).child(t("grid.writing", &[])))
+                    .child(
+                        button("stop", t("grid.stop", &[]), false)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop_write(cx))),
+                    )
+                    .child(
+                        button("discard", t("grid.discard", &[]), false)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.discard(cx))),
+                    )
+            })
             .when(edits > 0 && !r.is_writing(), |d| {
                 d.child(
                     button("discard", t("grid.discard", &[]), false)
@@ -740,12 +793,28 @@ impl Render for Grid {
         let Some(set) = self.set.clone() else {
             return root;
         };
-        let (count, width, header, footer, empty) = {
+        let (count, width, header, footer, empty, message) = {
             let r = results::lock(&set);
             self.size_columns(&r);
+            match r.write_failure() {
+                // A new failure opens by itself: it is what the person is waiting for.
+                Some(failure) if self.failure_seen.as_deref() != Some(failure) => {
+                    self.failure_seen = Some(failure.to_owned());
+                    self.message_open = true;
+                }
+                Some(_) => {}
+                None => self.failure_seen = None,
+            }
             let width: f32 = self.widths.iter().sum();
             let empty = r.columns.is_empty();
-            (r.len(), width, self.header(&r, cx).into_any_element(), self.footer(&r, cx).into_any_element(), empty)
+            (
+                r.len(),
+                width,
+                self.header(&r, cx).into_any_element(),
+                self.footer(&r, cx).into_any_element(),
+                empty,
+                long_message(&r).filter(|_| self.message_open),
+            )
         };
         let body = if empty {
             div().flex_1().into_any_element()
@@ -780,7 +849,22 @@ impl Render for Grid {
             self.unsized_frames += 1;
             cx.on_next_frame(window, |_, _, cx| cx.notify());
         }
-        root.child(body).child(footer)
+        let open_message = message.map(|(text, error)| {
+            div()
+                .id("message-open")
+                .flex_none()
+                .max_h(px(140.0))
+                .overflow_y_scroll()
+                .px(px(12.0))
+                .py(px(6.0))
+                .text_size(px(11.5))
+                .text_color(if error { c.error } else { c.dim })
+                .bg(c.header)
+                .border_t_1()
+                .border_color(c.divider)
+                .child(text)
+        });
+        root.child(body).when_some(open_message, |d, panel| d.child(panel)).child(footer)
     }
 }
 
@@ -813,6 +897,24 @@ pub fn thousands(n: u64) -> String {
         out.push(ch);
     }
     out
+}
+
+/// The one message the footer carries, in full (the footer shows its first
+/// line, a click opens the rest above it): the write failure, else why the
+/// result is read-only, else what stopped the read. `true`: an error.
+fn long_message(r: &ResultSet) -> Option<(String, bool)> {
+    if let Some(failure) = r.write_failure() {
+        return Some((failure.to_owned(), true));
+    }
+    if let Some(why) = r.read_only_reason().filter(|_| r.edits.is_empty()) {
+        return Some((why, false));
+    }
+    r.error.clone().filter(|_| r.columns.is_empty()).map(|e| (e, true))
+}
+
+/// Why an edit can't start now (`None`: it can).
+fn edit_blocked(r: &ResultSet) -> Option<String> {
+    if r.is_writing() { Some(t("edit.writing", &[])) } else { r.editing.blocked() }
 }
 
 /// What the inline editor's text makes of a cell, if anything: opened and
@@ -850,6 +952,69 @@ mod tests {
         assert_eq!(typed_value(&Cell::Int(5), "5", "five".into(), false), Some(Cell::text("five")));
         assert_eq!(typed_value(&Cell::Float(1.5), "1.5", "NaN".into(), false), Some(Cell::text("NaN")));
         assert_eq!(typed_value(&Cell::text("5"), "5", "7".into(), false), Some(Cell::text("7")), "text stays text");
+    }
+
+    fn result(editing: crate::results::Editing) -> std::sync::Arc<std::sync::Mutex<ResultSet>> {
+        let set = results::create("grid-tests", "select");
+        {
+            let mut r = results::lock(&set);
+            r.columns = vec![crate::model::Column::new("id", "int4")];
+            r.rows = vec![vec![Cell::text("1")]];
+            r.complete = true;
+            r.editing = editing;
+        }
+        set
+    }
+
+    fn target() -> crate::results::EditTarget {
+        crate::results::EditTarget {
+            connection: "c".into(),
+            config: serde_json::from_value(serde_json::json!({"name": "c", "engine": "sqlite", "path": "t.sqlite"})).unwrap(),
+            database: None,
+            owner: "grid-tests".into(),
+            table: crate::model::ObjectRef { schema: String::new(), name: "t".into() },
+            key: vec![0],
+            read_only: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_cell_that_cannot_be_edited_has_a_reason_to_show() {
+        use crate::results::{Editing, ReadOnly, WriteState, WriteStop};
+        let set = result(Editing::Loading);
+        assert_eq!(edit_blocked(&results::lock(&set)), Some(t("edit.loading", &[])));
+        for why in [ReadOnly::Query, ReadOnly::Connection, ReadOnly::NoKey, ReadOnly::NoInfo("denied".into()), ReadOnly::ReadFailed] {
+            let set = result(Editing::ReadOnly(why.clone()));
+            assert_eq!(edit_blocked(&results::lock(&set)), Some(why.reason()));
+            assert!(!why.reason().is_empty());
+        }
+        let set = result(Editing::Editable(Box::new(target())));
+        assert_eq!(edit_blocked(&results::lock(&set)), None);
+        results::lock(&set).write = WriteState::Writing(WriteStop::new());
+        assert_eq!(edit_blocked(&results::lock(&set)), Some(t("edit.writing", &[])));
+    }
+
+    #[test]
+    fn the_footer_carries_a_write_failure_in_full_before_anything_else() {
+        use crate::results::{Editing, ReadOnly, WriteState};
+        let long = "new row violates check constraint \"c\" (23514)\nDETAIL: Failing row contains (1, x).";
+        let set = result(Editing::Editable(Box::new(target())));
+        assert_eq!(long_message(&results::lock(&set)), None);
+        results::lock(&set).write = WriteState::failed(long);
+        assert_eq!(long_message(&results::lock(&set)), Some((long.to_owned(), true)), "the whole text, DETAIL line included");
+        assert_eq!(WriteState::failed("  "), WriteState::Failed(t("edit.failed", &[])), "a failure is never blank");
+
+        let set = result(Editing::ReadOnly(ReadOnly::NoKey));
+        assert_eq!(long_message(&results::lock(&set)), Some((ReadOnly::NoKey.reason(), false)));
+        results::lock(&set).edits.insert((0, 0), Cell::text("x"));
+        assert_eq!(long_message(&results::lock(&set)), None, "pending edits take the footer's room");
+        let set = result(Editing::ReadOnly(ReadOnly::ReadFailed));
+        {
+            let mut r = results::lock(&set);
+            r.columns.clear();
+            r.error = Some("connection reset".into());
+        }
+        assert_eq!(long_message(&results::lock(&set)).map(|m| m.1), Some(false));
     }
 
     #[test]

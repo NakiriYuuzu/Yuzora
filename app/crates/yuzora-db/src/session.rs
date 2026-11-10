@@ -595,7 +595,7 @@ pub fn open_table(
                 _ if read_failed.is_some() => Editing::ReadOnly(ReadOnly::ReadFailed),
                 _ if read_only => Editing::ReadOnly(ReadOnly::Connection),
                 (Err(e), _) => Editing::ReadOnly(ReadOnly::NoInfo(e.to_string())),
-                (Ok(_), Some(key)) if !key.is_empty() => Editing::Editable(EditTarget {
+                (Ok(_), Some(key)) if !key.is_empty() => Editing::Editable(Box::new(EditTarget {
                     connection: connection.clone(),
                     config: opened_with.clone(),
                     database: database.clone(),
@@ -608,7 +608,7 @@ pub fn open_table(
                         .filter(|c| c.generated)
                         .filter_map(|c| r.columns.iter().position(|rc| rc.name == c.name))
                         .collect(),
-                }),
+                })),
                 _ => Editing::ReadOnly(ReadOnly::NoKey),
             };
             r.version += 1;
@@ -732,22 +732,9 @@ pub async fn write_back(result: ResultId) -> DbResult<u64> {
 }
 
 /// [`write_back`] for a result its grid holds, whether or not the store still
-/// has it. A failure always ends up on the result (`write`), where the grid
-/// shows it.
+/// has it. Every failure after the first press is recorded on the result
+/// (`write`), where the grid shows it.
 pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
-    let outcome = write_back_inner(set).await;
-    if let Err(error) = &outcome {
-        let id = {
-            let mut r = results::lock(set);
-            r.show_failure(error);
-            r.id
-        };
-        results::changed(id);
-    }
-    outcome
-}
-
-async fn write_back_inner(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
     let result = results::lock(set).id;
     let stop = WriteStop::new();
     let prepared = {
