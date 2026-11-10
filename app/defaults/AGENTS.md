@@ -1195,21 +1195,44 @@ with these differences.
   side is cut there; a sideways swipe, or the bar under the lines when they
   need one, scrolls both sides together.
 - In a diff, click a row's text to select the row and Shift-click another to
-  extend the selection to it. The click that begins a selection decides the
-  side: side by side, only that side's lines are copied; unified copies the lines
-  as shown (a deleted line from the left, an added one from the right). A line
-  number picks the line for staging where the diff can stage, and selects the
-  row where it cannot. Cmd+C (Ctrl+C on Windows and Linux) copies the selected
-  rows' lines as the file has them (tabs, trailing spaces and wide characters
-  kept; no line numbers, no `+` or `-`) and says so in a toast; with nothing
-  selected the key is left alone. Right-click a row (it joins the selection, or
-  replaces it when it is not in it) for three items: Copy (the selected lines),
-  Copy hunk (the hunk under the pointer as it is after the change; none for a
-  hunk that only deletes) and Copy as patch (a unified patch `git apply` takes,
-  of every hunk the selection touches). The selection is by row, not by
-  character, and is not made by dragging; it goes when the diff is read again or
-  its layout, whitespace or context changes. Scrolling, dragging the divider
-  and the bar under the lines leave it as it is.
+  extend the selection to it, or press in a row's text and drag: the selection
+  runs from the row pressed to the row under the pointer, up or down, and is
+  still there when the button is let go. A press is a click until the pointer
+  has gone 4 px from where it landed or is over another row: a button held
+  still, at the edge of the list too, scrolls nothing and selects nothing but
+  the row clicked. From then on, with the pointer in the top or bottom 20 px
+  of the list (or past it) the list scrolls and the selection goes on with it:
+  a row every 50 ms (20 rows a second) at the bottom edge, and from the header
+  above the list up to three rows a tick (60 rows a second), faster only under
+  a taller strip (eight a tick at most). The list scrolls only on that 50 ms
+  tick, the same on every platform: pointer moves, which macOS repeats every
+  16 ms while the button is held, move the selection and never scroll. The drag ends, and keeps the
+  selection, when the button is let go, when a pointer move says the button is
+  up (an app-wide shortcut pressed during the drag keeps the release from
+  reaching the pane), when the pointer leaves the pane, when the pane loses
+  the keyboard it had when the drag began, or at a key that reaches the pane (Cmd+C copies what is
+  selected so far). A pointer left still at the edge after a release the pane
+  never saw goes on scrolling the list until it moves or the pane loses the
+  keyboard. The press that begins a selection decides the side: side by side,
+  only that side's lines are copied; unified copies the lines as shown (a
+  deleted line from the left, an added one from the right). A line number
+  picks the line for staging where the diff can stage (a drag from it picks
+  and selects nothing), and selects the row where it cannot; a fold opens the
+  whole file when clicked and starts no selection; the divider and the thumb
+  of the bar under the lines drag themselves, and a press on that bar's track
+  starts nothing (the bar under unified's lines is the window's own, and what a
+  press on it does was not checked in the app). Cmd+C (Ctrl+C on Windows and Linux) copies
+  the selected rows' lines as the file has them (tabs, trailing spaces and
+  wide characters kept; no line numbers, no `+` or `-`) and says so in a
+  toast; with nothing selected the key is left alone. Right-click a row (it
+  joins the selection, or replaces it when it is not in it) for three items:
+  Copy (the selected lines), Copy hunk (the hunk under the pointer as it is
+  after the change; none for a hunk that only deletes) and Copy as patch (a
+  unified patch `git apply` takes, of every hunk the selection touches). The
+  selection is by row, not by character; it goes when the diff is read again
+  (a drag in progress ends with it) or its layout, whitespace or context
+  changes. Scrolling, dragging the divider and the bar under the lines leave
+  it as it is.
 - A diff, merge or rebase pane follows what its own space asks for, never another
   space's, and an opener (the sidebar, the log, Annotate, the repository pane) looks
   for the pane among the tabs of the space shown, so a space's pane is never
