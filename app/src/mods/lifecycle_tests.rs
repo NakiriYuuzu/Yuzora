@@ -1061,8 +1061,9 @@ fn yuzora_diff_the_kept_sideways_offset_stays_within_the_room_to_scroll(cx: &mut
     pane.drag(at - 300., 100.);
     pane.release(at - 300., 100.);
     near(left_text_start(&mut pane), home, "nor does a divider moved to leave the left side less");
+    pane.close();
 
-    pane.resize(700.);
+    let mut pane = DiffPane::mount(cx, json!([diff_row(Some((58, "a")), Some((5, "b")))]), 700., &Shared::default());
     pane.wheel(100., 100., -100000., 0.);
     let end = left_text_start(&mut pane);
     assert!(end < home - 100., "scrolled as far as there is room: {end}");

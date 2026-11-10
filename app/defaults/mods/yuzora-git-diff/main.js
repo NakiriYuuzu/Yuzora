@@ -194,7 +194,7 @@ export default class GitDiff extends View {
   wheel(e, cx) {
     const lay = this.lay;
     if (!lay || Math.abs(e.delta.x) <= Math.abs(e.delta.y)) return;
-    const at = Math.max(lay.sx - e.delta.x, 0);
+    const at = Math.min(Math.max(lay.sx - e.delta.x, 0), lay.reach);
     if (at !== this.scrollX) { this.scrollX = at; cx.notify(); }
   }
 
@@ -207,7 +207,7 @@ export default class GitDiff extends View {
       const ratio = ratioOf(d.from + (x - d.x) / Math.max(1, lay.width - 1));
       if (ratio !== d.ratio) { d.ratio = ratio; cx.notify(); }
     } else {
-      const at = Math.max(d.from + (x - d.x) * d.per, 0);
+      const at = Math.min(Math.max(d.from + (x - d.x) * d.per, 0), lay.reach);
       if (at !== this.scrollX) { this.scrollX = at; cx.notify(); }
     }
   }
@@ -360,7 +360,10 @@ export default class GitDiff extends View {
   // own, and the lines scroll sideways together.
   sideBody(v, th, d, mono) {
     const ratio = this.ratio(), width = this.rowsWidth ?? 0, reach = this.reach(ratio);
-    this.lay = { ratio, width, reach, sx: Math.min(this.scrollX, reach), l: ratio * 100, r: (1 - ratio) * 100 };
+    // What is kept is within the room there is now: a pane made narrower or a divider moved leaves the lines
+    // where they are, and does not give them what an earlier wheel asked for beyond the end.
+    this.scrollX = Math.min(this.scrollX, reach);
+    this.lay = { ratio, width, reach, sx: this.scrollX, l: ratio * 100, r: (1 - ratio) * 100 };
     return div().flex_1().min_h(0).relative().overflow_hidden().font_family(mono).text_size(11.5)
       .child(div().id("diff-rows-box").size_full().pb(reach > 0 ? BAR : 0)
         .on_size_change((size, cx) => { if (Math.abs(size.width - (this.rowsWidth ?? -1)) > 0.5) { this.rowsWidth = size.width; cx.notify(); } })
