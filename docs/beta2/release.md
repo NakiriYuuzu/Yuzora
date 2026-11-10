@@ -238,9 +238,9 @@ gh run watch <run id>        # 每個階段的 job summary 會列出做了什麼
 - 確認 secrets 存在：dry-run 會替你確認（簽不出來就是缺或密碼錯）。不要讀、不要印它的值。
 - 確認 repo 沒開 immutable releases（開了就不能在發布後補上傳 manifest）：`gh api repos/NakiriYuuzu/Yuzora/immutable-releases` 應回 `"enabled":false`。
 - 可選：在 GitHub Settings › Environments 建立 `yuzora-release` 並加 required reviewer。workflow 的 `sign` 與所有寫 release 的 job 都引用這個 environment；不建立的話 GitHub 會自動建一個沒有保護的同名 environment，行為不變。
-- 確認 `.github/workflows/app-release.yml` 在 `main`（合併後）。**合併進 main 之前**只能用 dry-run 的推送觸發（下一步）。GitHub 文件對 `workflow_dispatch` 的說明是「This event will only trigger a workflow run if the workflow file exists on the default branch」，以及「Once a workflow has run at least once, you can dispatch it against any branch or tag via the GitHub API or GitHub CLI」。所以一個從沒跑過、又不在預設分支的檔案不能 dispatch；跑過一次（這個 workflow 的 `push` 觸發就是為此保留）之後，才能對任何分支 dispatch。本 repo 的紀錄一致（`app-package.yml` 先由 push 跑過，beta.3 才從 integration dispatch 成功），但「從沒跑過的檔案 dispatch 會失敗」沒有實測。
+- 確認 `.github/workflows/app-release.yml` 在 `main`（合併後）。**合併進 main 之前**只能用 dry-run 的推送觸發（下一步）。GitHub 文件對 `workflow_dispatch` 的說明是「This event will only trigger a workflow run if the workflow file exists on the default branch」，以及「Once a workflow has run at least once, you can dispatch it against any branch or tag via the GitHub API or GitHub CLI」。所以一個從沒跑過、又不在預設分支的檔案不能 dispatch；跑過一次（這個 workflow 的 `push` 觸發就是為此保留）之後，才能對任何分支 dispatch。本 repo 的紀錄一致（`app-package.yml` 在 `beta2/integration` 上先有多次 push 的 run，2026-11-04 才出現第一個 `workflow_dispatch` 的 run 並成功），但「從沒跑過的檔案 dispatch 會失敗」沒有實測。
 
-**1. 簽章試跑（dry-run）**，在任何單向動作之前
+**1. 簽章試跑（dry-run）**，在任何單向動作之前；不需要候選版
 
 ```bash
 git switch -c release-dryrun/1 <含 app-release.yml 的 commit>
@@ -251,7 +251,18 @@ gh run watch <run id>
 
 - 成功長這樣：`plan`、`build-manifest`、`sign`、`verify-manifest` 四個 job 綠；`verify-manifest` 的 summary 有一行 `verified yuzora 0.1.0 (stable) targets=linux-aarch64,linux-x86_64,macos-aarch64 …` 與 `tampered copy refused: … signature …`；artifact `manifest-verified` 含 `yuzora-update.json` 與 `yuzora-update.json.sig`。
 - 失敗長這樣：`sign` 紅、訊息 `TAURI_SIGNING_PRIVATE_KEY is empty or missing`（secret 沒有）；或 Tauri CLI 解不開金鑰（密碼錯）；或 `verify-manifest` 紅、`The signature was created with a different key`（secret 裡的不是 `TRUSTED_KEYS` 那把）。這三種都在任何公開動作之前發現。
-- 這次推送讓 workflow 登記過，之後可以對任一分支 dispatch。要用真正的候選 archive 簽（給第 2 步），帶輸入再跑一次：
+- 這次推送讓 workflow 登記過，之後可以對任一分支 dispatch。這一步用合成的 archive，不需要候選版，只回答「簽得出來、驗得過」。
+- 單向？否。回復：刪掉 `release-dryrun/*` 分支即可（`git push origin --delete release-dryrun/1`）。第 3 步還要用這個分支，所以留到那時再刪。
+
+**2. release-prep 合併、候選版與驗收**（先有候選，第 3 步才有東西可以檢查）
+
+- release-prep（版本、CHANGELOG、README、NOTICES）合併進 `beta2/integration`，`App package` 在那個 commit 上的 `push` run 成功，就是候選版。記下 run id 與 commit sha（`gh run view <id> --json headSha,conclusion,event`）。
+- 對那個 run 的 artifacts 做 macOS 隔離實機驗收（Windows、Linux 沒有真機驗收，release notes 要明講）。驗收過的位元組就是之後出貨的，不要再重跑 `App package` 產生另一份。
+- 單向？否。
+
+**3. 打 tag 前的隔離更新檢查**（需要第 2 步的候選 `App package` run；已發布的 beta.4 吃正式金鑰簽的候選 manifest，走完驗簽→暫存→交換）
+
+先用候選 archive 簽一次（dry-run 階段，帶 `package_run_id`）。對 `release-dryrun/1`，或 infra 已合併進的 `beta2/integration`（這時 workflow 檔已在那裡）dispatch：
 
 ```bash
 gh workflow run app-release.yml --ref release-dryrun/1 \
@@ -261,11 +272,9 @@ gh workflow run app-release.yml --ref release-dryrun/1 \
 ```
 
   `downloads_base` 只接受本機（`http://127.0.0.1` 或 `localhost`），所以這份用正式金鑰簽過、網址指向本機的 manifest，任何已安裝的 App 在正式環境都不會接受。artifact 只留 3 天；公開 repo 的 artifact 任何登入的 GitHub 使用者都能下載，不要拿這份當別的用途。
-- 單向？否。回復：刪掉 `release-dryrun/*` 分支即可（`git push origin --delete release-dryrun/1`）。
+- dry run 的 id：`gh run list --workflow app-release.yml --limit 3`（下面的 `<dry-run id>`）。
 
-**2. 打 tag 前的隔離更新檢查**（已發布的 beta.4 吃正式金鑰簽的候選 manifest，走完驗簽→暫存→交換）
-
-這一步會開出 App 視窗；依使用者全域規則，開之前先取得同意。
+接著做隔離檢查。這一步會開出 App 視窗；依使用者全域規則，開之前先取得同意。
 
 ```bash
 T=/tmp/yz-update-check; mkdir -p $T/serve $T/pkg $T/app $T/home $T/tmp $T/xdg/{config,data,state}
@@ -291,12 +300,7 @@ env -i HOME=$T/home USER=$USER TMPDIR=$T/tmp TERM=xterm-256color LANG=en_US.UTF-
 - 失敗長這樣：log 出現 `update check: …yuzora-update.json.sig: …`（簽章不被接受）、`checksum mismatch`（archive 與 manifest 的 sha256 不同，通常是 dry run 用了別的 run id）、`not in this release`（`downloads_base` 與伺服器網址不一致）。伺服器若根本沒收到請求，是 App 沒走 `YUZORA_UPDATE_URL`（確認環境變數、App 是 `.app` 形狀）。
 - 收尾：結束 App、`kill` 伺服器的行程（只殺你記下的 pid）、`HC_SESSION=yuzora-update-check <hc> server stop`、`rm -rf $T`。
 - 先確認 beta.4 與現在的更新程式碼沒有變：`git diff --stat v0.1.0-beta.4 <release-prep commit> -- app/src/yuzora/release app/src/update.rs app/src/update_notes.rs` 要是空的（#261 之類的修正會動到它；有動就要重看這一步與 A1 的結論）。
-
-**3. release-prep 合併、候選版與驗收**
-
-- release-prep（版本、CHANGELOG、README、NOTICES）合併進 `beta2/integration`，`App package` 在那個 commit 上的 `push` run 成功，就是候選版。記下 run id 與 commit sha（`gh run view <id> --json headSha,conclusion,event`）。
-- 對那個 run 的 artifacts 做 macOS 隔離實機驗收（Windows、Linux 沒有真機驗收，release notes 要明講）。驗收過的位元組就是之後出貨的，不要再重跑 `App package` 產生另一份。
-- 單向？否。
+- 做完刪掉試跑分支：`git push origin --delete release-dryrun/1`。單向？否。
 
 **4. integration → main**
 
@@ -322,13 +326,13 @@ env -i HOME=$T/home USER=$USER TMPDIR=$T/tmp TERM=xterm-256color LANG=en_US.UTF-
 **7. 官網下載連結（`site/downloads.js`）**
 
 - 這個變更（`fix(site): the Windows download is v0.1.0's setup.exe`）把 Windows 連結釘在 `releases/download/v0.1.0/Yuzora-windows-x64-setup.exe`，因為 `releases/latest/download/Yuzora-windows-x64.msi` 在 Latest 切到 v0.1.0 之後會 404（0.1.0 沒有 MSI）。釘死的連結在 v0.1.0 公開之後才有效，**所以它必須在 `publish` 之後、`latest` 之前進 main**：進得太早，v0.1.0 還沒公開的這段時間 Windows 按鈕是 404（官網現在的 `.msi` 連結指向 v0.0.19，還是好的）；進得太晚（`latest` 之後才部署），從 Latest 切換到 Pages 部署完成這段時間是 404。照這個順序沒有空窗。
-- 做法：它在另一個分支 `claude/v010-site-download`（發布基礎建設的所有 commit，再加兩個官網 commit），不在 integration → main 的合併裡。基礎建設合併進 main 之後，這個分支對 `main` 開 PR 的差異只剩那兩個 commit。`publish` 之後合併它、等 Pages 部署完成（`gh run list --workflow "Deploy Pages" --limit 1`），再 dispatch `latest`。
+- 做法：它在另一個分支 `claude/v010-site-download`（從發布基礎建設的某個中間 commit 長出來，再加兩個官網 commit；基礎建設後來的 commit 不在這個分支裡），不在 integration → main 的合併裡。基礎建設合併進 main 之後，這個分支對 `main` 開 PR 的差異只剩那兩個 commit。`publish` 之後合併它、等 Pages 部署完成（`gh run list --workflow "Deploy Pages" --limit 1`），再 dispatch `latest`。
 - 做完驗證：`curl -sL -r 0-0 -o /dev/null -w '%{http_code}\n' https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0/Yuzora-windows-x64-setup.exe` 要回 200 或 206（用 GET 取一個位元組；簽名過的下載網址 HEAD 會被拒）。
 - `latest` 之後要把 `site/downloads.js` 改回 `${RELEASE_DOWNLOAD_BASE}Yuzora-windows-x64-setup.exe`（同一個檔案，拿掉釘死）：不改的話，發布 0.1.1 之後官網的 Windows 按鈕仍然給 0.1.0。#209 的官網重設計（動到同樣的檔案）合併時要保留 Windows 這個連結。
 
 **8. `manifest`**
 
-- 做之前：第 2 步的隔離檢查成功過；release 已公開；你決定好讓已安裝的 beta 開始更新。
+- 做之前：第 3 步的隔離檢查成功過；release 已公開；你決定好讓已安裝的 beta 開始更新。
 - 指令：`-f stage=manifest -f exclude_targets=windows-x86_64`。
 - 做完驗證：summary 有 `verified yuzora 0.1.0 (stable) targets=linux-aarch64,linux-x86_64,macos-aarch64 …`（沒有 windows）；`curl -sL https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0/yuzora-update.json | jq '.targets|keys'`；`gh release view v0.1.0 --json assets --jq '.assets[].name'` 多了 `yuzora-update.json` 與 `yuzora-update.json.sig`。
 - 單向？是。已暫存的更新收不回。**停止鍵**：刪掉 `.sig`（`gh release delete-asset v0.1.0 yuzora-update.json.sig --yes`）就讓之後的檢查看不到這個 release；已經暫存的 App 仍會在重啟時交換。
