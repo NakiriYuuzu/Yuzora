@@ -87,25 +87,32 @@ function replace(pane, props) {
  * what a rename does depends on the pane, which the host says has started or not and a document may claim:
  * - not started: a new pane with the new name takes its place, though another pane holds the file's document.
  * - an image, started or not: the same, there being no document to follow the rename.
- * - started, no document claims it: its document followed the rename; say whose it is, so the new name finds this pane.
+ * - started, no document claims it: its document followed the rename; say whose it is, so the new name finds this pane,
+ *   unless a pane of the list already is its document's: a document names one pane, so a second pane still on the old
+ *   name would be found by a file made under it. That pane is replaced like one that has not started.
  * - started, a document claims it: nothing, that document followed the rename by itself.
  * Focus stays put; a replaced pane that had the keys hands them to its new pane.
  */
 export function moved(from, to, on) {
   const before = focused()?.pane;
+  const all = panes();
+  const listed = new Set(all.map(p => p.pane));
   const gone = new Set();
   // A split gives its tab's keys to the new pane: the pane that has them is replaced last in its tab.
-  for (const p of [...panes()].sort((a, b) => (a.pane === before) - (b.pane === before))) {
+  for (const p of [...all].sort((a, b) => (a.pane === before) - (b.pane === before))) {
     const path = p.props?.path;
     if (!FILE_MODS.includes(p.mod) || !path || (p.props.on ?? null) !== (on ?? null)) continue;
     const rest = path === from ? "" : path.startsWith(from + "/") ? path.slice(from.length) : null;
     if (rest === null) continue;
-    if (!p.started || p.mod === MOD.image) {
+    const swapIn = () => {
       replace(p, { path: to + rest, on: on ?? null, opened: Date.now() });
       gone.add(p.pane);
-    } else if (!paneDocument(p.pane)) {
+    };
+    if (!p.started || p.mod === MOD.image) swapIn();
+    else if (!paneDocument(p.pane)) {
       const open = documentFor(to + rest, { on });
-      if (open) notePane(open.doc, p.pane);
+      if (open?.pane && listed.has(open.pane)) swapIn();
+      else if (open) notePane(open.doc, p.pane);
     }
   }
   // A split takes the keys; a pane that was replaced hands them to its new pane.
