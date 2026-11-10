@@ -311,6 +311,7 @@ test("a right click from the old frame opens the popup for the file it was drawn
   s.pressRight(drawn, 0);
   expect(s.world.menus).toHaveLength(1);
   expect(s.world.menus[0].props.menu).toMatchObject({ abs: `${SUB}/README.md`, root: SUB, dir: false });
+  expect(s.view.here.selected).toBeNull();
 });
 
 test("a folder selected in the tree drawn from the folder is not a folder of the repo's top", async () => {
