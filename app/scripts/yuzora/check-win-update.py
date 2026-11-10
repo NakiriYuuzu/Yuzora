@@ -22,6 +22,15 @@ folder as the working directory, which is the shortcut's; the swap and the
 PowerShell reopen, twice; the app's own children (there is no herdr-core on
 the runner, so none of that).
 
+The app is started as one that was never used on this machine: every HERDR_*,
+HC_* and YUZORA_* variable of the caller is dropped, and it gets its own
+YUZORA_APP_HOME, its own herdr-core session (HC_SESSION) and its own state and
+config folders (XDG_STATE_HOME, XDG_CONFIG_HOME), so nothing it starts can
+reach the herdr-core, state or settings of whoever runs the check. Where the
+app looks for a herdr-core program (%LOCALAPPDATA%\\Programs\\herdr-core, PATH)
+and the working directory its children inherit do not depend on any of them
+either, so this does not change what the check measures.
+
 What it does not cover:
  - herdr-core. None is installed here, so the longest-lived holders of the
    folder (`herdr-core serve`, and the `hold` process of each terminal, both
@@ -39,15 +48,18 @@ What it does not cover:
    copies the replacement cannot make: that ends the check with exit 2.
 
 It installs, replaces and removes the Yuzora at %LOCALAPPDATA%\\Programs\\Yuzora, so
-it refuses to run (exit 2, touching nothing) when that folder exists or Yuzora
-is running.
+it refuses to run (exit 2, touching nothing, before it runs the installer) when
+Yuzora is running, when that folder exists, or when Yuzora's uninstall entry is
+registered: the installer installs into the folder that entry names, so an
+install made anywhere with /D= would be replaced and then removed.
 
 usage: python check-win-update.py <setup.exe>
        python check-win-update.py --self-test
 
 Exit 0: passed. Exit 1: the update did not work. Exit 2: the check could not
-run (the app did not stay up, a patched copy would not start, wrong usage, or
-any error the check did not expect): not a result about the update.
+run (the app did not stay up, a patched copy would not start, wrong usage, a
+failing --self-test, or any error the check did not expect): not a result
+about the update.
 """
 import csv
 import json
@@ -63,6 +75,7 @@ import traceback
 PROGRAMS = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")
 INSTALL = os.path.join(PROGRAMS, "Yuzora")
 UNINSTALL = INSTALL + "-uninstall"
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\dev.yuuzu.yuzora"
 # How long the app must stay up for its window to count as open (it checks for updates at 10 s).
 STAYS_UP = 15
 SWAP_WITHIN = 60
@@ -146,11 +159,18 @@ def tail(path, lines=8):
         return "(no log)"
 
 
-def start(label, home, work):
-    """Yuzora as the Start menu shortcut starts it: an ordinary process whose working directory is the install folder."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("HERDR_", "YUZORA_"))}
+def app_env(base, home, work):
+    """`base` as an app that was never used here would see it: nothing of the caller's HERDR_*, HC_* or YUZORA_*, and a herdr-core session, state and config of its own under `work`."""
+    env = {k: v for k, v in base.items() if not k.upper().startswith(("HERDR_", "HC_", "YUZORA_"))}
     # No release server to reach (the port is closed), and nothing sent to anyone.
     env.update(YUZORA_APP_HOME=home, YUZORA_UPDATE_URL="http://127.0.0.1:9", HERDR_TELEMETRY="0", DO_NOT_TRACK="1", RUST_BACKTRACE="1")
+    env.update(HC_SESSION=os.path.basename(work), XDG_STATE_HOME=os.path.join(work, "state"), XDG_CONFIG_HOME=os.path.join(work, "config"))
+    return env
+
+
+def start(label, home, work):
+    """Yuzora as the Start menu shortcut starts it: an ordinary process whose working directory is the install folder."""
+    env = app_env(os.environ, home, work)
     log = os.path.join(work, label + ".log")
     with open(log, "wb") as out:
         proc = subprocess.Popen([os.path.join(INSTALL, "yuzora.exe")], cwd=INSTALL, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
@@ -240,10 +260,26 @@ def uninstall():
         os.remove(beside(".new.json"))
 
 
-def refusal(pids, install_exists):
+def registered_install():
+    """Where Yuzora's uninstall entry says it is installed (an empty string if it names no place), None when there is no entry. The installer installs into that folder, wherever /D= put it."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY) as key:
+            try:
+                return winreg.QueryValueEx(key, "InstallLocation")[0]
+            except FileNotFoundError:
+                return ""
+    except FileNotFoundError:
+        return None
+
+
+def refusal(pids, install_exists, registered):
     """Why this machine is not one to run on, before anything is touched (None: it is one)."""
     if pids:
         return "Yuzora is already running (pids %s)" % sorted(pids)
+    if registered is not None:
+        return "Yuzora is registered as installed (%s). The installer would install over it, and this check removes what it installs: uninstall it first" % (registered or "no location given")
     if install_exists:
         return "%s exists. This check installs, replaces and removes Yuzora there, and an install that is not its own is not for it to remove: uninstall it first" % INSTALL
     return None
@@ -267,7 +303,7 @@ def cleanup(work, before):
 def run(setup):
     """Returns 0 once both updates went in; raises Fail (the update did not work) or Harness (the check could not run)."""
     before = yuzora_pids()
-    why = refusal(before, os.path.exists(INSTALL))
+    why = refusal(before, os.path.exists(INSTALL), registered_install())
     if why:
         raise Harness(why)
     work = tempfile.mkdtemp(prefix="yuzora-update-check-")
@@ -340,9 +376,72 @@ def self_test():
             continue
         raise AssertionError("expected a harness error for %r" % short)
 
-    assert refusal(set(), False) is None
-    assert "already running" in refusal({4}, False)
-    assert "uninstall it first" in refusal(set(), True)
+    assert refusal(set(), False, None) is None
+    assert "already running" in refusal({4}, False, None)
+    assert "uninstall it first" in refusal(set(), True, None)
+    elsewhere = refusal(set(), False, r"D:\Apps\Yuzora")
+    assert r"D:\Apps\Yuzora" in elsewhere and "uninstall it first" in elsewhere, elsewhere
+    assert "registered" in refusal(set(), False, "")
+    assert "already running" in refusal({4}, True, r"D:\Apps\Yuzora")
+
+    class Registry:
+        """Stands for winreg with one uninstall entry (or none)."""
+
+        HKEY_CURRENT_USER = "HKCU"
+
+        def __init__(self, entry):
+            self.entry = entry
+
+        def OpenKey(self, root, path):
+            assert (root, path) == ("HKCU", UNINSTALL_KEY), (root, path)
+            if self.entry is None:
+                raise FileNotFoundError(path)
+            return Opened(self.entry)
+
+        def QueryValueEx(self, key, name):
+            assert name == "InstallLocation", name
+            if "InstallLocation" not in key.entry:
+                raise FileNotFoundError(name)
+            return key.entry["InstallLocation"], 1
+
+    class Opened:
+        def __init__(self, entry):
+            self.entry = entry
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    real_winreg = sys.modules.get("winreg")
+    try:
+        sys.modules["winreg"] = Registry(None)
+        assert registered_install() is None
+        sys.modules["winreg"] = Registry({"InstallLocation": r"D:\Apps\Yuzora"})
+        assert registered_install() == r"D:\Apps\Yuzora"
+        sys.modules["winreg"] = Registry({})
+        assert registered_install() == ""
+    finally:
+        if real_winreg is None:
+            del sys.modules["winreg"]
+        else:
+            sys.modules["winreg"] = real_winreg
+
+    caller = {
+        "PATH": "p", "LOCALAPPDATA": "l", "TEMP": "t", "XDG_STATE_HOME": "real-state", "XDG_CONFIG_HOME": "real-config",
+        "HC_SESSION": "mine", "HC_SOCKET": "s", "HC_INSTALL_DIR": "i", "HC_TERMINAL_ID": "t1", "hc_scope": "x",
+        "HERDR_ENV": "1", "HERDR_SOCKET_PATH": "s", "YUZORA_APP_HOME": "real-home", "YUZORA_UPDATE_URL": "https://example.invalid",
+    }
+    work = os.path.join("scratch", "yuzora-update-check-ab12")
+    env = app_env(caller, os.path.join(work, "home"), work)
+    assert not [k for k in env if k.upper().startswith(("HC_", "HERDR_", "YUZORA_")) and k not in ("HC_SESSION", "HERDR_TELEMETRY", "YUZORA_APP_HOME", "YUZORA_UPDATE_URL")], env
+    assert (env["PATH"], env["LOCALAPPDATA"], env["TEMP"]) == ("p", "l", "t"), env
+    assert env["HC_SESSION"] == "yuzora-update-check-ab12", env
+    assert env["XDG_STATE_HOME"] == os.path.join(work, "state") and env["XDG_CONFIG_HOME"] == os.path.join(work, "config"), env
+    assert env["YUZORA_APP_HOME"] == os.path.join(work, "home") and env["YUZORA_UPDATE_URL"] == "http://127.0.0.1:9", env
+    assert "mine" not in env.values() and "real-home" not in env.values() and "real-state" not in env.values(), env
+    assert app_env({}, "h", os.path.join("a", "yuzora-update-check-cd34"))["HC_SESSION"] != env["HC_SESSION"]
 
     class Quiet:
         """Stands for stdout while an expected annotation prints."""
@@ -394,13 +493,51 @@ def self_test():
     finally:
         sys.stderr = sys.__stderr__
     assert wrong_usage == (2, 2), wrong_usage
+
+    def patched(**names):
+        class Patch:
+            def __enter__(self):
+                self.old = {name: globals()[name] for name in names}
+                globals().update(names)
+
+            def __exit__(self, *_):
+                globals().update(self.old)
+
+        return Patch()
+
+    spawned = []
+
+    def spawn(*args, **kwargs):
+        spawned.append(args)
+        raise AssertionError("started a program: %r" % (args,))
+
+    def broken_self_test():
+        raise AssertionError("the check itself is wrong")
+
+    real_run = subprocess.run
+    subprocess.run = spawn
+    sys.stdout = Quiet()
+    try:
+        with patched(registered_install=lambda: r"D:\Apps\Yuzora", yuzora_pids=lambda: set()):
+            try:
+                run("setup.exe")
+                refused = None
+            except Harness as e:
+                refused = str(e)
+        with patched(self_test=broken_self_test):
+            broken = main(["--self-test"])
+    finally:
+        sys.stdout = real
+        subprocess.run = real_run
+    assert refused and r"D:\Apps\Yuzora" in refused and spawned == [], (refused, spawned)
+    assert broken == 2, broken
     print("self-test passed")
     return 0
 
 
 def main(argv):
     if argv == ["--self-test"]:
-        return self_test()
+        return exit_code(self_test)
     if len(argv) != 1:
         print(__doc__, file=sys.stderr)
         return 2
