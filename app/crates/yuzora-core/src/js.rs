@@ -184,4 +184,21 @@ mod tests {
         let tokens = from_host(&m.call("tokens", &HostArguments::new([])).unwrap());
         assert_eq!(tokens["agents"]["claude"], "#c96a4b");
     }
+
+    // `motion(name)` is what `el.transition(property, policy)` takes: a mod names a speed and writes no milliseconds.
+    #[test]
+    fn motion_hands_a_named_speed_to_transition() {
+        let m = module("yuzora-test-mod");
+        let ask = |name: &str| m.call("motion", &HostArguments::new([HostValue::Str(name.into())]));
+        assert_eq!(from_host(&ask("fast").unwrap()), json!({ "duration": 120, "easing": "ease-out" }));
+        assert_eq!(from_host(&ask("base").unwrap()), json!({ "duration": 160, "easing": "ease-out" }));
+        // A typo is an error where it is written, not an animation of some default length.
+        let wrong = format!("{:?}", ask("slow").unwrap_err());
+        assert!(wrong.contains("slow") && wrong.contains("fast") && wrong.contains("base"), "{wrong}");
+        // The names a mod can write are the tokens' names.
+        let tokens = crate::tokens::tokens();
+        for name in tokens["motion"].as_object().unwrap().keys() {
+            assert!(DECLARATIONS.contains(&format!("\"{name}\"")), "{name} is not declared");
+        }
+    }
 }
