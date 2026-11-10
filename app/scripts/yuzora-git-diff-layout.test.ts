@@ -171,7 +171,7 @@ function measure(rows: object[], zoom: number, ruler = CELL, each: (pane: Pane) 
   zoomed.zoom = zoom;
   const pane = Object.create(GitDiff.prototype) as Pane;
   Object.assign(pane, { fit: ranks(rows), gauge: null, unit: null });
-  const cx = { notify() {} };
+  const cx = { notify() {}, timer: { after: () => ({ cancel() {} }) } };
   let frames = 0;
   const laid = { l: 0, r: 0 };
   for (; frames < 1000; frames++) {
@@ -364,6 +364,45 @@ test("putting a side's lines in order is work of the slice: with the slice used 
   const small = ranking(Array.from({ length: 100 }, () => row("a", "b")));
   scan(small, { left: SLICE });
   expect(small.done).toBe(true);
+});
+
+// yuzora(v010): the engine cuts a slice off where the script calls or branches, and the next slice goes on from the last
+// row that was finished. Whatever the place, every row is ranked once on each side that has a line, and what a line is
+// taken at is never less than the font draws it (a cut can make it more, by a read that is not repeated, or less than it
+// would have been, by one that is: both are bounds).
+test("a slice cut off anywhere is gone on from without a row lost, and every line is still bounded from above", () => {
+  const rows = [
+    row("a".repeat(40), "b".repeat(30)), { k: "=", t: "unchanged line é" }, { k: "=", t: "" }, row("م".repeat(60), ""), row("", "x".repeat(8)),
+    { k: "~", lt: "ab".repeat(20), ls: [{ t: "ab".repeat(10) }, { t: "ab".repeat(10), h: true }], rt: "cd".repeat(20), rs: [{ t: "cd".repeat(5) }, { t: "cd".repeat(15), h: true }] },
+    row("✓ done ".repeat(9), "\u{1f600}".repeat(6)), { k: "=", t: "same on both sides ".repeat(4) }, row("w".repeat(70), "w".repeat(70)), row("short", "also short"),
+  ];
+  const cut = new Error("cut");
+  const meterCutAt = (k: number) => {
+    let left = 1e9, calls = 0;
+    return { get left() { return left; }, set left(v: number) { if (++calls === k) throw cut; left = v; }, get calls() { return calls; } };
+  };
+  const probe = meterCutAt(0);
+  scan(ranking(rows), probe);
+  const decrements = probe.calls;
+  expect(decrements).toBeGreaterThan(10);
+  const whole = ranks(rows);
+  for (let k = 1; k <= decrements; k++) {
+    const fit = ranking(rows);
+    expect(() => scan(fit, meterCutAt(k))).toThrow(cut);
+    scan(fit, plenty());
+    expect(fit.done).toBe(true);
+    for (const name of ["l", "r"] as const) {
+      const side = fit[name] as Rank & { n: number };
+      const index = (key: number) => key - Math.floor(key / side.base) * side.base;
+      const got = Array.from(side.keys).map(index).sort((a, b) => a - b), want = Array.from(whole[name].keys).map(index).sort((a, b) => a - b);
+      expect(got).toEqual(want);
+      for (let at = 0; at < side.keys.length; at++) {
+        const { cells, r } = entry(side, at);
+        const text = String((r[`${name}t`] as string | undefined) ?? r.t ?? "");
+        expect(cells).toBeGreaterThanOrEqual(truly(text) - 1e-9);
+      }
+    }
+  }
 });
 
 test("the count of what is read sees every way a line can be read", () => {
