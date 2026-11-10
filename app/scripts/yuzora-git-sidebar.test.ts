@@ -61,9 +61,9 @@ const statusOf = (root: string) => {
   };
 };
 
-function world(settings: object = {}) {
+function world(settings: object = {}, props: any = null) {
   const w = {
-    cwd: "/a", pinned: null as null | { root: string; on: null },
+    cwd: "/a", props, pinned: null as null | { root: string; on: null },
     // What a repo's status says beyond statusOf, by root; the messages every repo answers with.
     status: {} as Record<string, object>, history: [] as string[], template: null as string | null,
     shared: new Map<string, any>(), toasts: [] as any[], overlays: [] as any[], runs: [] as any[], timers: [] as { ms: number; fn: (cx: any) => void }[],
@@ -107,7 +107,7 @@ function world(settings: object = {}) {
     theme: () => new Proxy({}, { get: () => "#000000" }), tokens: () => ({}),
     run: (...a: any[]) => { w.runs.push(a); }, openOverlay: (o: any) => w.overlays.push(o), closeOverlay() {}, notify: (n: any) => w.toasts.push(n),
     shared: (k: string) => (w.shared.has(k) ? w.shared.get(k) : k === PIN ? w.pinned : null),
-    setShared: (k: string, v: any) => { w.shared.set(k, v); }, props: () => null, nextCommand: () => new Promise(() => {}),
+    setShared: (k: string, v: any) => { w.shared.set(k, v); }, props: () => w.props, nextCommand: () => new Promise(() => {}),
     t: (k: string) => k, gitSettings: () => ({ showPushDialog: false, ...settings }),
     open: (cwd: string, on: string | null) => ask("open", [cwd, on]),
     status: (id: string, o: object) => ask("status", [id, o]),
@@ -1027,4 +1027,30 @@ test("a quiet fetch waits for the repo to be read in this visit, like any other 
   fetchTimer();
   await flush();
   expect(s.w.asks.fetch.map((g) => g.args)).toEqual([[":/a", { auto: true }]]);
+});
+
+test("the file menu's Discard reads git again, and discards the file only if it is still the kind of change the menu was opened for", async () => {
+  const menu = { cwd: "/a", on: null, section: "unstaged", path: "x.txt", orig: null, kind: "M" };
+  for (const then of ["the same", "untracked"]) {
+    const s = world({}, { menu, overlay: "o1" });
+    const press = () => named(s.frame(), "mi-discard").handlers.on_click({}, s.cx);
+    press();
+    press();
+    await flush();
+    await s.answer(s.pending("open")[0], info("/a"));
+    const read = s.pending("status")[0];
+    expect(read.args).toEqual([":/a", { force: true }]);
+    expect(s.w.asks.discard).toEqual([]);
+    await s.answer(read, then === "the same" ? statusOf("/a") : { ...statusOf("/a"), unstaged: [file("only-a.txt")], untracked: [{ path: "x.txt", kind: "?", add: 0, del: 0, binary: false }] });
+    expect([then, s.w.asks.discard.map((g) => g.args)]).toEqual([then, then === "the same" ? [[":/a", ["x.txt"]]] : []]);
+    if (then !== "the same") expect(s.frame().texts).toContain("discard.changed");
+  }
+});
+
+test("the file menu is opened with the kind of change its file was listed as", async () => {
+  const s = world();
+  await s.settle();
+  const f = s.frame();
+  f.list!.handlers.on_item_secondary_click(f.keyOf("x.txt"), {}, s.cx);
+  expect(s.w.overlays.at(-1).props.menu).toMatchObject({ path: "x.txt", section: "unstaged", kind: "M" });
 });
