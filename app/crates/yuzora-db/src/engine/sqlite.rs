@@ -259,21 +259,29 @@ fn run(
             return Err(DbError::Cancelled);
         }
         let mut stmt = conn.prepare(&statement.text).map_err(lite_err)?;
-        let width = stmt.column_count();
-        if width == 0 {
+        if stmt.column_count() == 0 {
             let changed = stmt.execute([]).map_err(lite_err)? as u64;
             if !send(Msg::Done(sql::changes_rows(&statement.text).then_some(changed))) {
                 return Ok(());
             }
             continue;
         }
-        let columns = stmt.columns().iter().map(|c| Column::new(c.name(), c.decl_type().unwrap_or(""))).collect();
-        if !send(Msg::Columns(columns)) {
-            return Ok(());
-        }
         let mut rows = stmt.query([]).map_err(lite_err)?;
         let mut batch = Vec::with_capacity(BATCH);
+        // What the statement returns is known once it has run: if another connection changed the schema
+        // since this one last read it, SQLite notices at the first step and compiles the statement
+        // again, with other columns than it was prepared with.
+        let mut width = 0;
+        let mut columns_sent = false;
         while let Some(row) = rows.next().map_err(lite_err)? {
+            if !columns_sent {
+                let ran: &rusqlite::Statement = row.as_ref();
+                width = ran.column_count();
+                if !send(Msg::Columns(columns_of(ran))) {
+                    return Ok(());
+                }
+                columns_sent = true;
+            }
             batch.push((0..width).map(|i| cell(row.get_ref(i).unwrap_or(ValueRef::Null))).collect());
             if batch.len() == BATCH {
                 if !send(Msg::Rows(std::mem::replace(&mut batch, Vec::with_capacity(BATCH))))
@@ -287,11 +295,18 @@ fn run(
             return Ok(());
         }
         drop(rows);
+        if !columns_sent && !send(Msg::Columns(columns_of(&stmt))) {
+            return Ok(());
+        }
         if !send(Msg::Done(sql::changes_rows(&statement.text).then(|| conn.changes()))) {
             return Ok(());
         }
     }
     Ok(())
+}
+
+fn columns_of(stmt: &rusqlite::Statement<'_>) -> Vec<Column> {
+    stmt.columns().iter().map(|c| Column::new(c.name(), c.decl_type().unwrap_or(""))).collect()
 }
 
 fn cell(value: ValueRef<'_>) -> Cell {

@@ -1188,6 +1188,23 @@ fn sqlite_a_query_after_another_connection_dropped_a_column_names_the_columns_it
     assert_eq!(names(&again), (vec!["id".to_owned(), "y".into(), "z".into()], vec!["1".to_owned(), "y1".into(), "z1".into()]));
 }
 
+/// The names of the columns are known when the statement has run, which for a statement that returns
+/// no row is its end: they are there, and the table is as editable as one with rows.
+#[test]
+fn sqlite_a_statement_that_returns_no_rows_still_names_its_columns() {
+    let (id, _) = sqlite_connection("wb-no-rows");
+    run(&id, "setup", "create table t(id integer primary key, v text);");
+    let state = run(&id, "no-rows", "select * from t where id < 0");
+    let summary = state.results.last().expect("a result");
+    assert!(summary.complete && summary.rows == 0, "{summary:?}");
+    let set = results::get(summary.id).expect("result");
+    assert_eq!(results::lock(&set).columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "v"]);
+
+    let pane = open(&id, "no-rows-pane", &table("", "t"));
+    assert_eq!(results::lock(&pane.set).columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "v"]);
+    assert!(pane.summary().editable && pane.summary().rows == 0, "{:?}", pane.summary());
+}
+
 // ---------------------------------------------------------------- what the server returns around the UPDATE
 
 #[test]
