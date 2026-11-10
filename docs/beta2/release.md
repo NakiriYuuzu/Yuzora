@@ -63,7 +63,7 @@
 更新的交換是 `rename(Yuzora → Yuzora.old)`，再 `rename(Yuzora.new → Yuzora)`（`app/src/update.rs` 的 `swap`），由執行中的 `yuzora.exe` 自己做。上游與 NSIS 腳本的註解說「Windows 可以改名執行中程式的資料夾」。這句只對一半：**執行中的 exe 不擋改名，但資料夾只要是任何行程的工作目錄（cwd）就不能改名（os error 32）**。以前沒有實測；2026-11-10 在 CI 的 windows-2022 量過（探針分支 `spike/v010-win-update-probe`）：
 
 - 程式在 `X\`、cwd 在別處：`X → X.old`、`X.new → X`、PowerShell 重開連三輪都成功。只要有任何一個活著的行程以 `X` 為 cwd（自己或別的行程）就失敗。
-- 開始功能表捷徑的 Start in 是安裝資料夾（NSIS 在 `CreateShortcut` 前 `SetOutPath "$INSTDIR"`），`/R` 的 `Exec` 也是。所以一般使用者的 app，cwd 就在要被改名的資料夾裡。出貨的 release build 用 `/S` 安裝、cwd 在安裝資料夾時，交換失敗（`update: cannot move … aside: … (os error 32)`），資料夾仍是舊版。
+- 開始功能表捷徑的 Start in 是安裝資料夾（NSIS 在 `CreateShortcut` 前 `SetOutPath "$INSTDIR"`），`/R` 的 `Exec` 也是（依 NSIS 文件，`Exec` 的工作目錄是 `$OUTDIR`；這一項沒有實測）。所以一般使用者的 app，cwd 就在要被改名的資料夾裡。出貨的 release build 用 `/S` 安裝、cwd 在安裝資料夾時，交換失敗（`update: cannot move … aside: … (os error 32)`），資料夾仍是舊版。
 - app 啟動的 `herdr-core.exe connect`（app 的子行程）與它再啟動的長壽 `herdr-core.exe serve` 都繼承 app 的 cwd，所以只把 app 自己的 cwd 移走不夠，也要在啟動任何子行程之前移走。
 
 **所以 beta.2–4 在 Windows 上的自我更新一定失敗**；Stable 帶著這個出貨就沒辦法靠更新修好。0.1.0 的修正（`app/src/yuzora/release/cwd.rs`）：
@@ -74,7 +74,7 @@
 - 常駐的檢查：`app-package.yml` 的 Windows job 在安裝程式檢查之後跑 `app/scripts/yuzora/check-win-update.py`：靜默安裝出貨檔，以安裝資料夾為 cwd 啟動（和捷徑一樣），預先放好暫存的更新（`Yuzora.new` 與收據），斷言資料夾換成新版、`Yuzora.old` 是舊版、PowerShell 重開的行程活著且安裝資料夾在它執行時還能改名，再做一次第二次更新。結束碼 1＝更新沒成功，2＝檢查本身跑不起來（視窗開不起來，不是更新結果）。修正前這個檢查必定紅（探針 run1 的 `R1-install.swap_1`、`D1-install.swap_1`）。
 - 交換失敗時，「重新啟動」現在會說原因（見〈交換失敗〉）。
 
-**仍然會失敗的情況**：使用者自己的行程把安裝資料夾當 cwd（例如在終端機裡 `cd` 進去）、防毒軟體握著檔案，以及**beta 啟動、現在還活著的 herdr-core**。NSIS 安裝程式覆蓋安裝時不會停掉 core（`yuzora.nsi` 只處理安裝資料夾裡的 `yuzora.exe`），beta.2–4 的 app 是從開始功能表捷徑啟動的，它啟動的 core（長壽，終端機活著就一直在）cwd 還在安裝資料夾裡，重新開機或 `hc server stop`（會結束終端機）才會消失。所以從 beta 手動裝上 0.1.0 的人，**第一次**自動更新（0.1.0 → 0.1.1）可能因此失敗；失敗時他們會看到下面的說明，重新開機一次就好。0.1.0 全新安裝、或 core 是 0.1.0 啟動的人不受影響。
+**仍然會失敗的情況**：使用者自己的行程把安裝資料夾當 cwd（例如在終端機裡 `cd` 進去）、防毒軟體握著檔案，以及**beta 啟動、現在還活著的 herdr-core**。NSIS 安裝程式覆蓋安裝時不會停掉 core（`yuzora.nsi` 只處理安裝資料夾裡的 `yuzora.exe`），beta.2–4 的 app 是從開始功能表捷徑啟動的，它啟動的 core（長壽，終端機活著就一直在）cwd 還在安裝資料夾裡，重新開機才會消失（停掉 herdr-core 也行，但會不會結束它的終端機沒有查證）。所以從 beta 手動裝上 0.1.0 的人，**第一次**自動更新（0.1.0 → 0.1.1）可能因此失敗；失敗時他們會看到下面的說明，重新開機一次就好。0.1.0 全新安裝、或 core 是 0.1.0 啟動的人不受影響。
 
 **交換失敗**（`update::swap` 回傳 false）：
 

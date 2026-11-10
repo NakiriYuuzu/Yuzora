@@ -306,6 +306,32 @@ mod tests {
     }
 
     #[test]
+    fn the_upstream_files_call_what_this_module_provides() {
+        let main = include_str!("../../main.rs");
+        let leave = main
+            .find("yuzora::release::cwd::leave_install_dir()")
+            .expect("main() leaves the install folder");
+        let swap = main
+            .find("update::apply_on_startup()")
+            .expect("main() applies a staged update");
+        assert!(
+            leave < swap,
+            "the working directory moves before the startup swap"
+        );
+        let update = include_str!("../../update.rs");
+        assert_eq!(
+            update.matches("update::note_swap_failure(&e)").count(),
+            2,
+            "both ways a swap fails"
+        );
+        let window = include_str!("../../window.rs");
+        assert!(
+            window.contains("self.fail(crate::yuzora::release::update::apply_failure())"),
+            "Restart says why"
+        );
+    }
+
+    #[test]
     fn restart_names_the_failure_once_and_then_the_default() {
         assert_eq!(apply_failure(), "no update is ready yet");
         note_swap_failure(&std::io::Error::other("no"));

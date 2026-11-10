@@ -141,7 +141,7 @@ def stay_up(proc, log, who, seconds=STAYS_UP):
 
 
 def stage(version, original):
-    """What `stage` leaves beside the install: the new folder and its receipt."""
+    """What `stage` leaves beside the install: the new folder and its receipt. Returns how many copies of the version text the exe had."""
     shutil.rmtree(beside(".new"), ignore_errors=True)
     if os.path.exists(beside(".new.json")):
         os.remove(beside(".new.json"))
@@ -156,10 +156,11 @@ def stage(version, original):
         raise Harness("the patched copy (%d replacements) says %r, not %r" % (count, said, version))
     with open(beside(".new.json"), "w") as f:
         f.write(json.dumps({"version": version}))
+    return count
 
 
 def update(n, version, was, original, home, work, known):
-    stage(version, original)
+    copies = stage(version, original)
     proc, log = start("update%d" % n, home, work)
     known.add(proc.pid)
     if not wait_for(lambda: version_of(INSTALL) == version, SWAP_WITHIN):
@@ -182,7 +183,7 @@ def update(n, version, was, original, home, work, known):
     deadline = time.time() + STAYS_UP
     while time.time() < deadline:
         if not (reopened & yuzora_pids()):
-            raise Harness("update %d: the reopened app ended within %d s; the app started before it stayed up, so suspect the patched copy or the window, not the update" % (n, STAYS_UP))
+            raise Harness("update %d: the reopened app ended within %d s; the app started before it stayed up, so suspect the patched copy (%d copies of %r replaced in its exe) or the window, not the update" % (n, STAYS_UP, copies, original["version"]))
         time.sleep(1)
     folder_is_free("the app it reopened")
     print("update %d: the reopened app (pid %s) is running and the install folder can be renamed" % (n, ", ".join(map(str, sorted(reopened)))), flush=True)
@@ -219,7 +220,7 @@ def run(setup):
         with open(os.path.join(INSTALL, "yuzora.exe"), "rb") as f:
             original = {"bytes": f.read(), "version": current}
         first, second = newer_versions(current)
-        print("installed %s; updates will be %s and %s" % (current, first, second), flush=True)
+        print("installed %s; updates will be %s and %s, made by replacing the version text in the exe" % (current, first, second), flush=True)
 
         proc, log = start("control", home, work)
         known.add(proc.pid)
