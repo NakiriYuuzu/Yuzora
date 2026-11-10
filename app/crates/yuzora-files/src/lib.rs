@@ -1115,6 +1115,8 @@ return JSON.stringify([a, b, c, d]); }})()"#
     /// A mod pane is listed with `started` (a copy of its mod is running); a command that names a pane that is no
     /// longer there does nothing, as the window answers it with an error and goes on. `tab.select` shows a tab
     /// and its Space.
+    /// `autoNote = false`: no pane notes itself; the test says which pane took the keys with `notePane`, as an
+    /// editor does when it gets them (a pane that only shows "Edit here" never does).
     /// `strip(space)` is the tab strip with the panes in each tab and `*` on the selected tab, `focus()` the
     /// pane that has the keys.
     const HERDR_WORLD: &str = r##"
@@ -1128,7 +1130,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
             { id: "t4", name: "", focus: "p4", panes: [{ pane: "p4", mod: null }] } ] },
         ];
         const given = {}, queue = [], revealed = [], focusedDocs = [], docs = new Map(), opens = {}, started = new Set();
-        let serial = 10, docs_made = 0, snapshot = null, nobody = false;
+        let serial = 10, docs_made = 0, snapshot = null, nobody = false, autoNote = true;
         const shown = () => world.find(s => s.active);
         const tabShown = () => shown().tabs.find(t => t.id === shown().selected);
         const tabOf = pane => world.flatMap(s => s.tabs).find(t => t.panes.some(p => p.pane === pane));
@@ -1178,7 +1180,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
             opens[p.pane] = docs.get(keyOf(at.path, at.on));
           }
           const here = tab.panes.find(p => p.pane === tab.focus);
-          if (opens[here.pane]) opens[here.pane].pane = here.pane;
+          if (autoNote && opens[here.pane]) opens[here.pane].pane = here.pane;
           snapshot = {
             spaces: world.map(s => ({ id: s.id, machine: s.machine, active: s.active, tabs: s.tabs.map(t => ({ id: t.id, name: t.name, active: s.selected === t.id })) })),
             panes: world.flatMap(s => s.tabs.flatMap(t => t.panes.map(p => ({ pane: p.pane, mod: p.mod ?? undefined, ...(p.mod ? { props: given[p.pane], started: started.has(p.pane) } : {}), tab: t.id })))),
@@ -1957,6 +1959,158 @@ return JSON.stringify([a, b, c, d]); }})()"#
         assert_eq!(
             seen,
             ["the pane of the new file", "the pane of the renamed"]
+        );
+    }
+
+    // A file open in two panes that have both started: the document is claimed by one pane, and a rename must leave
+    // the other no longer holding the old name, or a file made under that name is shown in it.
+    // `from`: the pane the second view is opened beside; the claimed pane is listed ahead of the second view or after it.
+    fn a_file_viewed_twice_is_renamed_and_made_again(from: &str) -> Vec<String> {
+        in_the_open(&format!(
+            r#"
+            autoNote = false;
+            openFile("/r/a.rs", null); flush();
+            const owner = focused().pane;
+            notePane(documentFor("/r/a.rs", {{ on: null }}).doc, owner);
+            run("pane.focus", {{ pane: "{from}" }}); flush();
+            openFile("/r/a.rs", null, {{ place: "side" }}); flush();
+            const second = focused().pane;
+            run("pane.focus", {{ pane: "p1" }}); flush();
+            const out = [strip("s1")];
+            rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+            out.push(strip("s1"), String(panes().some(p => p.pane === second)));
+            openFile("/r/a.rs", null); flush();
+            out.push(strip("s1"));
+            openFile("/r/b.rs", null); flush();
+            out.push(focused().pane === owner ? "the pane of the renamed" : focused().pane);
+            return out;
+        "#
+        ))
+    }
+
+    #[test]
+    fn a_file_made_under_the_old_name_gets_a_tab_when_the_renamed_documents_pane_is_listed_last() {
+        assert_eq!(
+            a_file_viewed_twice_is_renamed_and_made_again("p1"),
+            [
+                "[shell, editor /r/a.rs]* [editor /r/a.rs] [shell]",
+                "[shell, editor /r/b.rs]* [editor /r/a.rs] [shell]",
+                "false",
+                "[shell, editor /r/b.rs] [editor /r/a.rs]* [editor /r/a.rs] [shell]",
+                "the pane of the renamed",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_made_under_the_old_name_gets_a_tab_when_the_renamed_documents_pane_is_listed_first() {
+        assert_eq!(
+            a_file_viewed_twice_is_renamed_and_made_again("p2"),
+            [
+                "[shell]* [editor /r/a.rs] [shell, editor /r/a.rs]",
+                "[shell]* [editor /r/a.rs] [shell, editor /r/b.rs]",
+                "false",
+                "[shell] [editor /r/a.rs]* [editor /r/a.rs] [shell, editor /r/b.rs]",
+                "the pane of the renamed",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_made_under_the_old_name_gets_a_tab_when_two_spaces_showed_the_renamed_file() {
+        let seen = in_the_open(
+            r#"
+            autoNote = false;
+            openFile("/r/a.rs", null); flush();
+            const owner = focused().pane;
+            notePane(documentFor("/r/a.rs", { on: null }).doc, owner);
+            run("pane.focus", { pane: "p1" }); flush();
+            show("s3"); openFile("/r/a.rs", null); flush();
+            const second = focused().pane;
+            rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+            const out = [strip("s1"), strip("s3"), String(panes().some(p => p.pane === second))];
+            show("s1"); openFile("/r/a.rs", null); flush();
+            out.push(strip("s1"));
+            openFile("/r/b.rs", null); flush();
+            out.push(focused().pane === owner ? "the pane of the renamed" : focused().pane);
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [editor /r/a.rs] [shell]",
+                "[shell] [editor /r/b.rs]*",
+                "false",
+                "[shell] [editor /r/a.rs]* [editor /r/a.rs] [shell]",
+                "the pane of the renamed",
+            ]
+        );
+    }
+
+    #[test]
+    fn of_three_started_panes_on_a_renamed_file_no_document_has_claimed_one_is_left() {
+        let seen = in_the_open(
+            r#"
+            autoNote = false;
+            openFile("/r/a.rs", null); flush();
+            const first = focused().pane;
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            const second = focused().pane;
+            run("pane.focus", { pane: "p2" }); flush();
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            const third = focused().pane;
+            run("pane.focus", { pane: "p1" }); flush();
+            rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+            const kept = [first, second, third].filter(id => panes().some(p => p.pane === id));
+            const out = [String(kept.length), strip("s1")];
+            openFile("/r/a.rs", null); flush();
+            out.push(kept.includes(focused().pane) ? "a pane of the renamed" : "a pane of its own");
+            openFile("/r/b.rs", null); flush();
+            out.push(kept.includes(focused().pane) ? "a pane of the renamed" : "other");
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "1",
+                "[shell, editor /r/a.rs]* [editor /r/b.rs] [shell, editor /r/b.rs]",
+                "a pane of its own",
+                "a pane of the renamed",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_started_pane_takes_the_document_of_a_renamed_file_when_the_pane_that_held_it_is_gone() {
+        let seen = in_the_open(
+            r#"
+            autoNote = false;
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            const owner = focused().pane;
+            notePane(documentFor("/r/a.rs", { on: null }).doc, owner);
+            run("pane.focus", { pane: "p2" }); flush();
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            const second = focused().pane;
+            run("pane.focus", { pane: "p1" }); flush();
+            run("pane.close", { pane: owner }); flush();
+            rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+            const out = [strip("s1"), String(panes().some(p => p.pane === second))];
+            openFile("/r/b.rs", null); flush();
+            out.push(focused().pane === second ? "the pane that stayed" : focused().pane, strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [shell, editor /r/a.rs]",
+                "true",
+                "the pane that stayed",
+                "[shell] [shell, editor /r/a.rs]*",
+            ]
         );
     }
 
