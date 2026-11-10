@@ -83,24 +83,39 @@ const ROW = 24, HEAD = 26, ACTION = 22, ACTION_ALL = 84, LIST_PAD = 6, PICK_ROW 
 const count = (n) => (n < 100000 ? String(n) : n < 1000000 ? `${Math.round(n / 1000)}k` : "999k+");
 const SECTIONS = ["conflicts", "staged", "unstaged"];
 
+// What the Git mode keeps of one repo: the status last read, the commit being written, and what an action there has
+// said. One of them is shown (this.v). A status, a message or an action that comes back later goes to the repo it was
+// started for, whatever is shown by then, and a click is only taken for the repo whose row it was made on (rowKey).
+function repoView(repo = null) {
+  return { key: repo?.id ?? null, repo, st: null, error: null, busy: null, note: null, warnings: null, selected: null, confirmDiscard: null,
+    closed: {}, history: { history: [], template: null, last: null }, draft: { text: "", amend: false, author: "" } };
+}
+// Repos and places the mode can show again at once, at the most.
+const KEEP_REPOS = 8, KEEP_PLACES = 64;
+const rowKey = (v, it) => `${v.key}|${it.head ? `h:${it.section}` : `${it.section}:${it.f.path}`}`;
+
 export default class SidebarGit extends View {
   init(_props, cx) {
     this.menu = props()?.menu ?? null;
     if (this.menu) { this.handle = cx.focus_handle(); this.handle.focus(); return; }
     this.picker = props()?.picker ?? null;
     if (this.picker) { this.handle = cx.focus_handle(); this.handle.focus(); this.findRepos(cx); return; }
-    this.st = null; this.repo = null; this.error = null; this.busy = null; this.note = null;
-    this.closed = {}; this.warnings = null; this.showHistory = false; this.more = false;
-    this.amend = false; this.signOff = Boolean(gitSettings().signOff); this.noVerify = Boolean(gitSettings().skipHooks);
-    this.history = { history: [], template: null, last: null, authors: [] };
+    // The repos seen, by id, least recently used first; the places, by key, and the repo each was; the repo shown.
+    this.views = new Map(); this.seen = new Map(); this.v = repoView();
+    // The visit: which repo is being followed for changes, and the count that ends a follow when another starts.
+    this.following = null; this.visit = 0;
+    this.showHistory = false; this.more = false;
+    this.signOff = Boolean(gitSettings().signOff); this.noVerify = Boolean(gitSettings().skipHooks);
+    // The boxes hold the shown repo's commit: each repo has its own message and author, put in when it is shown.
     this.message = TextareaState.new({ placeholder: t("commit.placeholder"), rows: 3 });
     this.message.set_auto_grow(3, 10);
-    this.message.on("change", (_e, cx) => { const had = Boolean(this.text?.trim()); this.text = this.message.value(); if (had !== Boolean(this.text.trim())) cx.notify(); });
+    this.message.on("change", (_e, cx) => { const d = this.v.draft, had = Boolean(d.text.trim()); d.text = this.message.value(); if (had !== Boolean(d.text.trim())) cx.notify(); });
     this.message.on("submit", (e, cx) => { if (e?.modifiers?.platform || e?.modifiers?.control) this.commit(cx, false); });
     this.author = InputState.new({ placeholder: t("commit.author") });
-    this.text = "";
     this.attach(cx);
-    cx.timer.every(1000, (cx) => { if (key() !== this.ctx) this.attach(cx); });
+    // render() sees a new place in the frame it is drawn; this is for a copy that is not drawn (another mode
+    // is shown), whose badge and status still follow the focus.
+    cx.timer.every(1000, (cx) => { if (key() !== this.ctx) { this.attach(cx); cx.notify(); } });
     // "yuzora-sidebar-git.pick-repo" (a key in keys.json, or herdr-app do) opens the repo picker.
     cx.spawn(async () => { for (;;) if ((await nextCommand()) === "pick-repo") this.openPicker("dialog"); });
     this.fetchedAt = Date.now();
@@ -110,71 +125,125 @@ export default class SidebarGit extends View {
   // Settings › Git › auto fetch: a quiet fetch every N minutes; the refs it
   // moves come back through the watcher (↑↓ in the branch button).
   autoFetch(cx) {
-    const minutes = Number(gitSettings().autoFetchMinutes ?? 0), repo = this.repo;
+    const minutes = Number(gitSettings().autoFetchMinutes ?? 0), v = this.v, repo = v.repo;
     // Only once status came back trusted (the engine refuses otherwise too).
-    if (!minutes || !repo || !this.st || this.st.trust || this.busy || Date.now() - this.fetchedAt < minutes * 60000) return;
+    if (!minutes || !repo || !v.st || v.st.trust || v.busy || Date.now() - this.fetchedAt < minutes * 60000) return;
     this.fetchedAt = Date.now();
     cx.spawn(async () => { try { await fetch(repo.id, { auto: true }); } catch {} });
   }
 
-  // A new place: open its repo and follow it until the place changes.
+  // A new place. What is known of its repo is shown at once and the place is opened behind it. A place not seen
+  // before keeps what is shown until its repo is named (one `open`), so a `cd` inside the repo shown, or the
+  // focus moving to a pane in it, changes nothing on screen.
   attach(cx) {
-    this.ctx = key();
-    const ctx = this.ctx, here = place(), { cwd, on } = here;
+    const ctx = this.ctx = key(), here = place();
     this.place = here;
-    this.repo = null; this.st = null; this.error = null; this.warnings = null;
-    if (!cwd) { this.error = t("noFolder"); this.publish(); cx.notify(); return; }
+    const known = this.views.get(this.seen.get(ctx));
+    if (known) this.show(known);
+    if (!here.cwd) { this.showError(t("noFolder")); return; }
     cx.spawn(async (cx) => {
       try {
-        const repo = await open(cwd, on);
+        const repo = await open(here.cwd, here.on);
         if (this.ctx !== ctx) return;
         // A pinned repo opens as itself (git may spell it another way: a subst
         // drive on Windows, say; the file system tells). Without its `.git`
         // git opens the repo above it instead: unpinned. With one git won't
         // take now (it can't be read, say), the pin stays, and so does the
         // error: not the repo above.
-        if (here.pin && repo.root !== cwd && !(await this.sameFolder(repo.root, here))) {
+        if (here.pin && repo.root !== here.cwd && !(await this.sameFolder(repo.root, here))) {
           if (await this.unpinIfGone(here)) { if (this.ctx === ctx) this.attach(cx); return; }
           if (this.ctx !== ctx) return;
-          this.error = t("repo.opensAbove", { root: repo.root });
-          this.publish(); cx.notify();
+          this.showError(t("repo.opensAbove", { root: repo.root }));
+          cx.notify();
           return;
         }
         if (this.ctx !== ctx) return;
-        this.repo = repo;
-        await this.reload(cx);
-        this.loadMessages(cx);
-        // Local repos: the watcher bumps the generation. Remote ones: no
-        // watcher, so each ~25 s wait without news reads status again.
-        let gen = this.st?.generation ?? 0;
-        while (this.ctx === ctx) {
-          const next = await changed(repo.id, gen);
-          if (this.ctx !== ctx) break;
-          if (next > gen || repo.machine) { gen = next; await this.reload(cx, Boolean(repo.machine) && next === gen); }
-        }
+        const v = this.viewOf(repo);
+        this.remember(ctx, v);
+        this.show(v);
+        if (this.following !== v) this.follow(cx, v);
+        cx.notify();
       } catch (e) {
         if (this.ctx !== ctx) return;
         if (here.pin && await this.unpinIfGone(here)) { if (this.ctx === ctx) this.attach(cx); return; }
-        this.error = String(e).includes("not a git repository") ? t("notRepo") : String(e);
-        this.publish(); cx.notify();
+        this.showError(String(e).includes("not a git repository") ? t("notRepo") : String(e));
+        cx.notify();
       }
     });
-    cx.notify();
   }
 
-  async reload(cx, force = false) {
-    const repo = this.repo;
+  // The view of `repo`, the one seen before or a new one; it is now the most recently used.
+  viewOf(repo) {
+    const v = this.views.get(repo.id) ?? repoView(repo);
+    v.repo = repo;
+    this.views.delete(repo.id); this.views.set(repo.id, v);
+    return v;
+  }
+
+  // The place `ctx` is where `v`'s repo was found. A repo that is shown or has an action going stays.
+  remember(ctx, v) {
+    this.seen.delete(ctx); this.seen.set(ctx, v.key);
+    for (const k of this.seen.keys()) { if (this.seen.size <= KEEP_PLACES) break; this.seen.delete(k); }
+    for (const [id, other] of this.views) {
+      if (this.views.size <= KEEP_REPOS) break;
+      if (other !== this.v && other !== v && !other.busy) this.views.delete(id);
+    }
+  }
+
+  // What is shown from now on: its commit goes into the boxes (the one left keeps what is in them).
+  show(v) {
+    const old = this.v;
+    if (old === v) return;
+    old.draft.text = this.message.value(); old.draft.author = this.author.value();
+    this.v = v; this.following = null;
+    this.message.set_value(v.draft.text); this.author.set_value(v.draft.author);
+    if (v.st) this.publish();
+  }
+
+  // No repo to show: where the place is says why.
+  showError(text) {
+    const v = repoView();
+    v.error = text;
+    this.show(v);
+    this.publish();
+  }
+
+  // Reads `v` and follows it until another repo is shown or it is followed anew.
+  follow(cx, v) {
+    const visit = ++this.visit, repo = v.repo;
+    this.following = v;
+    const going = () => this.visit === visit && this.v === v;
+    cx.spawn(async (cx) => {
+      try {
+        await this.reload(cx, v);
+        this.loadMessages(cx, v);
+        // Local repos: the watcher bumps the generation. Remote ones: no
+        // watcher, so each ~25 s wait without news reads status again.
+        let gen = v.st?.generation ?? 0;
+        while (going()) {
+          const next = await changed(repo.id, gen);
+          if (!going()) break;
+          if (next > gen || repo.machine) { gen = next; await this.reload(cx, v, Boolean(repo.machine) && next === gen); }
+        }
+      } catch (e) {
+        v.error = String(e);
+        if (this.v === v) { this.publish(); cx.notify(); }
+      }
+    });
+  }
+
+  async reload(cx, v, force = false) {
+    const repo = v.repo;
     if (!repo) return;
     try {
-      const st = await status(repo.id, { force });
-      if (this.repo?.id !== repo.id) return;
-      this.st = st; this.error = null;
+      v.st = await status(repo.id, { force });
+      v.error = null;
     } catch (e) {
-      this.error = String(e);
+      v.error = String(e);
       const here = this.place;
-      if (here?.pin && this.repo?.id === repo.id && await this.unpinIfGone(here)) { this.attach(cx); return; }
+      if (here?.pin && this.v === v && await this.unpinIfGone(here)) { this.attach(cx); return; }
     }
-    this.publish(); cx.notify();
+    if (this.v === v) { this.publish(); cx.notify(); }
   }
 
   // A pinned repo that's gone (its folder, or the `.git` in it: the file
@@ -216,7 +285,7 @@ export default class SidebarGit extends View {
     if (!folder) return;
     const pin = pinned();
     openOverlay({ mod: "yuzora-sidebar-git", kind, ...(kind === "popup" ? { at: "pointer", height: 360 } : {}), width: 340,
-      props: { picker: { space: space.id, folder, on: space.machine ?? null, cwds, current: pin?.root ?? this.repo?.root ?? null, pinned: Boolean(pin) } } });
+      props: { picker: { space: space.id, folder, on: space.machine ?? null, cwds, current: pin?.root ?? this.v.repo?.root ?? null, pinned: Boolean(pin) } } });
   }
 
   // The picker popup (props.picker) lists the repos itself.
@@ -276,28 +345,34 @@ export default class SidebarGit extends View {
         .when(Boolean(found?.truncated), (el) => el.child(div().px(8).py(4).text_size(10.5).text_color(th.dim).child(t("repo.truncated", { count: list.length })))));
   }
 
-  loadMessages(cx) {
-    const repo = this.repo;
+  // The repo's earlier messages, and its commit template when the box is empty.
+  loadMessages(cx, v) {
+    const repo = v.repo;
     cx.spawn(async (cx) => {
       try {
         const m = await messages(repo.id);
-        if (this.repo?.id !== repo.id) return;
-        this.history = m;
-        if (!this.text.trim() && m.template) { this.message.set_value(m.template); this.text = m.template; }
-        cx.notify();
+        v.history = m;
+        if (!v.draft.text.trim() && m.template) this.setText(v, m.template);
+        if (this.v === v) cx.notify();
       } catch {}
     });
   }
 
+  // `v`'s message: in the box when `v` is shown.
+  setText(v, text) {
+    v.draft.text = text;
+    if (this.v === v) this.message.set_value(text);
+  }
+
   changedFiles() {
-    const st = this.st;
+    const st = this.v.st;
     if (!st) return 0;
     return new Set([...st.staged, ...st.unstaged, ...st.untracked, ...st.conflicts].map((f) => f.path)).size;
   }
 
-  // The mode bar's badge and the status bar's Git part.
+  // The mode bar's badge and the status bar's Git part: the shown repo's.
   publish() {
-    const st = this.st, n = this.changedFiles();
+    const v = this.v, st = v.st, n = this.changedFiles();
     const badge = st && !st.trust ? (n || null) : null;
     let status = null;
     if (st?.trust) {
@@ -309,44 +384,44 @@ export default class SidebarGit extends View {
       const op = st.operation.kind && st.operation.kind !== "none" ? ` · ${t(`op.${st.operation.kind}`)}` : "";
       status = {
         text: `⎇ ${name}${sync}${op} · ${n ? t("status.changes", { count: n }) : t("status.clean")}`,
-        tone: st.conflicts.length ? "blocked" : this.busy || op ? "working" : n ? "accent" : "muted",
+        tone: st.conflicts.length ? "blocked" : v.busy || op ? "working" : n ? "accent" : "muted",
       };
     }
     if (JSON.stringify(shared("yuzora.badge.git") ?? null) !== JSON.stringify(badge)) setShared("yuzora.badge.git", badge);
     if (JSON.stringify(shared("yuzora.status.git") ?? null) !== JSON.stringify(status)) setShared("yuzora.status.git", status);
   }
 
-  // One git call at a time from here; its error shows under the message box.
-  act(cx, name, work) {
-    if (this.busy || !this.repo) return;
-    this.busy = name; this.note = null; this.publish();
+  // One git call at a time from here; its error shows under the message box. It is done to `v` (the repo
+  // shown now unless a commit goes on to push) and what it says is kept there.
+  act(cx, name, work, v = this.v) {
+    if (v.busy || !v.repo) return;
+    v.busy = name; v.note = null;
+    if (this.v === v) this.publish();
     cx.spawn(async (cx) => {
       try {
-        const out = await work(this.repo);
-        if (out && out.ok === false) this.note = { tone: "error", text: out.output || t("failed") };
-        else if (out?.conflicts?.length) this.note = { tone: "warning", text: t("conflicts", { count: out.conflicts.length }) };
-      } catch (e) { this.note = { tone: "error", text: String(e) }; }
-      finally { this.busy = null; await this.reload(cx); }
+        const out = await work(v.repo);
+        if (out && out.ok === false) v.note = { tone: "error", text: out.output || t("failed") };
+        else if (out?.conflicts?.length) v.note = { tone: "warning", text: t("conflicts", { count: out.conflicts.length }) };
+      } catch (e) { v.note = { tone: "error", text: String(e) }; }
+      finally { v.busy = null; await this.reload(cx, v); }
     });
     cx.notify();
   }
 
-  openDiff(f, section) {
-    const repo = this.repo;
+  openDiff(f, section, repo = this.v.repo) {
     if (!repo) return;
     const mode = section === "staged" ? "staged" : "unstaged";
-    if (section === "conflicts") return this.openMerge(f.path);
+    if (section === "conflicts") return this.openMerge(f.path, repo);
     const spec = { cwd: repo.root, on: repo.machine, path: f.path, orig: f.orig ?? null, mode, at: Date.now() };
     showDiff(spec);
   }
 
-  openMerge(path) {
-    const repo = this.repo;
+  openMerge(path, repo = this.v.repo) {
     openRequested("yuzora.git.merge", "yuzora-git-merge", t("merge.tab"), { cwd: repo.root, on: repo.machine, path: path ?? null });
   }
 
   openLog() {
-    const repo = this.repo, space = shownSpace();
+    const repo = this.v.repo, space = shownSpace();
     if (!repo || !space) return;
     const pane = findLog(space, repo.root, repo.machine);
     if (pane) run("pane.focus", { pane: pane.pane });
@@ -354,43 +429,44 @@ export default class SidebarGit extends View {
   }
 
   openBranches() {
-    const repo = this.repo;
+    const repo = this.v.repo;
     if (!repo) return;
     openOverlay({ mod: "yuzora-git-branches", kind: "popup", at: "pointer", width: 340, height: 460, props: { cwd: repo.root, on: repo.machine } });
   }
 
-  // Checks first (IntelliJ's commit checks): blocking ones stop, the rest ask.
+  // Checks first (IntelliJ's commit checks): blocking ones stop, the rest ask. The message, author and options
+  // are what the shown repo's boxes hold now; the commit, its warnings and its result are that repo's.
   commit(cx, andPush, confirmed = false) {
-    const message = this.message.value();
-    if (!this.repo || this.busy) return;
-    if (!message.trim() && !this.amend) { this.note = { tone: "warning", text: t("commit.empty") }; cx.notify(); return; }
-    this.busy = "commit"; this.note = null; this.warnings = null; this.publish();
+    const v = this.v, message = this.message.value();
+    if (!v.repo || v.busy) return;
+    const { amend } = v.draft, { signOff, noVerify } = this, author = this.author.value().trim();
+    if (!message.trim() && !amend) { v.note = { tone: "warning", text: t("commit.empty") }; cx.notify(); return; }
+    v.busy = "commit"; v.note = null; v.warnings = null; this.publish();
     cx.spawn(async (cx) => {
-      const repo = this.repo;
+      const repo = v.repo;
       try {
         if (!confirmed) {
-          const checks = await commitChecks(repo.id, this.amend);
+          const checks = await commitChecks(repo.id, amend);
           const blocking = checks.filter((c) => ["identity", "conflicts", "nothing", "rebasing"].includes(c.kind));
-          if (blocking.length) { this.note = { tone: "error", text: blocking.map((c) => t(`check.${c.kind}`, { count: c.count ?? c.files?.length ?? 0 })).join("\n") }; return; }
-          if (checks.length) { this.warnings = { checks, andPush }; return; }
+          if (blocking.length) { v.note = { tone: "error", text: blocking.map((c) => t(`check.${c.kind}`, { count: c.count ?? c.files?.length ?? 0 })).join("\n") }; return; }
+          if (checks.length) { v.warnings = { checks, andPush }; return; }
         }
-        const author = this.author.value().trim();
-        const out = await commit(repo.id, { message, amend: this.amend, signOff: this.signOff, noVerify: this.noVerify, author: author || undefined });
-        if (!out.ok) { this.note = { tone: "error", text: out.output || t("failed") }; return; }
-        this.message.set_value(""); this.text = ""; this.amend = false; this.warnings = null;
+        const out = await commit(repo.id, { message, amend, signOff, noVerify, author: author || undefined });
+        if (!out.ok) { v.note = { tone: "error", text: out.output || t("failed") }; return; }
+        this.setText(v, ""); v.draft.amend = false; v.warnings = null;
         notify({ title: t("commit.done"), body: message.split("\n")[0], level: "success", timeout: 3000 });
-        this.loadMessages(cx);
-        if (andPush) { this.busy = null; await this.reload(cx); this.push(cx); return; }
-      } catch (e) { this.note = { tone: "error", text: String(e) }; }
-      finally { if (this.busy === "commit") this.busy = null; await this.reload(cx); }
+        this.loadMessages(cx, v);
+        if (andPush) { v.busy = null; await this.reload(cx, v); this.push(cx, v); return; }
+      } catch (e) { v.note = { tone: "error", text: String(e) }; }
+      finally { if (v.busy === "commit") v.busy = null; await this.reload(cx, v); }
     });
     cx.notify();
   }
 
   // The push dialog (setting showPushDialog), else straight to the upstream.
-  push(cx) {
-    const repo = this.repo;
-    if (!repo || this.busy) return;
+  push(cx, v = this.v) {
+    const repo = v.repo;
+    if (!repo || v.busy) return;
     if (gitSettings().showPushDialog !== false) {
       openOverlay({ mod: "yuzora-git-push", kind: "dialog", width: 520, height: 460, props: { cwd: repo.root, on: repo.machine } });
       return;
@@ -398,18 +474,19 @@ export default class SidebarGit extends View {
     this.act(cx, "push", async (r) => {
       const preview = await pushPreview(r.id);
       return push(r.id, { setUpstream: !preview.upstream, autoUpdate: Boolean(gitSettings().autoUpdateOnReject) });
-    });
+    }, v);
   }
 
   toggleAmend(cx) {
-    this.amend = !this.amend;
-    if (this.amend && !this.message.value().trim() && this.history.last) { this.message.set_value(this.history.last); this.text = this.history.last; }
-    if (!this.amend && this.message.value() === this.history.last) { this.message.set_value(""); this.text = ""; }
+    const v = this.v, d = v.draft;
+    d.amend = !d.amend;
+    if (d.amend && !this.message.value().trim() && v.history.last) this.setText(v, v.history.last);
+    if (!d.amend && this.message.value() === v.history.last) this.setText(v, "");
     cx.notify();
   }
 
   items() {
-    const st = this.st;
+    const v = this.v, st = v.st;
     if (!st) return [];
     const lists = { conflicts: st.conflicts.map((c) => ({ ...c, kind: "U" })), staged: st.staged, unstaged: [...st.unstaged, ...st.untracked] };
     const out = [];
@@ -417,7 +494,7 @@ export default class SidebarGit extends View {
       const files = lists[s];
       if (s === "conflicts" && !files.length) continue;
       out.push({ head: true, section: s, count: files.length });
-      if (!this.closed[s]) for (const f of files) out.push({ section: s, f });
+      if (!v.closed[s]) for (const f of files) out.push({ section: s, f });
     }
     return out;
   }
@@ -437,7 +514,7 @@ export default class SidebarGit extends View {
     const titles = { conflicts: t("section.conflicts"), staged: t("section.staged"), unstaged: t("section.unstaged") };
     const action = it.section === "staged" ? t("unstageAll") : it.section === "unstaged" ? t("stageAll") : t("resolve");
     return h_flex().id(`h-${it.section}`).h(HEAD).px(6).gap(4).items_center().text_size(11.5).text_color(th.muted).cursor_pointer()
-      .child(div().w(10).flex_none().text_size(10).child(this.closed[it.section] ? "▸" : "▾"))
+      .child(div().w(10).flex_none().text_size(10).child(this.v.closed[it.section] ? "▸" : "▾"))
       .child(div().flex_1().min_w(0).truncate().child(`${titles[it.section]} · ${it.count}`))
       .when(it.count > 0, (el) => el.child(div().w(ACTION_ALL).flex_none().text_right().text_size(11).hover((s) => s.text_color(th.foreground)).child(action)));
   }
@@ -449,12 +526,12 @@ export default class SidebarGit extends View {
   fileRow(it, th, probe) {
     const f = it.f, d = tokens().diff ?? {};
     const parts = f.path.split("/"), name = parts.pop(), dir = parts.join("/");
-    const id = `${it.section}:${f.path}`;
+    const id = rowKey(this.v, it);
     const seen = (el, slot) => (probe ? el.on_size_change(probe(slot)).on_mouse_move(probe(slot, "move")) : el);
     const glyph = (label) => seen(div().id(`g-${label}`).w(ACTION).h(18).flex().flex_none().items_center().justify_center().rounded(4)
       .text_size(12).text_color(th.dim).hover((s) => s.bg(th.hover).text_color(th.foreground)).child(label), `action:${label}`);
     return seen(h_flex().id(`f-${id}`).h(ROW).pl(6).gap(6).items_center().rounded(5).cursor_pointer()
-      .when(this.selected === id, (el) => el.bg(th.selected)).hover((s) => s.bg(th.hover))
+      .when(this.v.selected === id, (el) => el.bg(th.selected)).hover((s) => s.bg(th.hover))
       .child(div().w(12).flex_none().text_size(11).font_semibold().text_color(this.fileColor(f.kind, th)).child(f.kind === "?" ? "U" : f.kind))
       .child(seen(h_flex().id("text").flex_1().min_w(0).gap(4), "text").child(seen(div().id("name").flex_shrink(1).min_w(0).max_w(140).truncate().child(name), "name"))
         .when(Boolean(dir), (el) => el.child(seen(div().id("dir").flex_1().min_w(0).truncate().text_size(10.5).text_color(th.dim).child(dir), "dir"))))
@@ -466,9 +543,10 @@ export default class SidebarGit extends View {
         .when(it.section === "conflicts", (el) => el.child(glyph("⇄")))), "row");
   }
 
-  // A click on a row: the action under the pointer, else open its diff.
+  // A click on a row: the action under the pointer, else open its diff. The key names the repo the row
+  // was drawn for: a click that comes after another repo took the screen finds no row, and does nothing.
   clickRow(key, cx) {
-    const it = this.items().find((x) => (x.head ? `h:${x.section}` : `${x.section}:${x.f.path}`) === key);
+    const v = this.v, it = this.items().find((x) => rowKey(v, x) === key);
     if (!it) return;
     const fromRight = (this.listWidth ?? 0) - (this.downX ?? 0) - LIST_PAD;
     if (it.head) {
@@ -476,24 +554,24 @@ export default class SidebarGit extends View {
         if (it.section === "staged") this.act(cx, "stage", (r) => unstage(r.id, []));
         else if (it.section === "unstaged") this.act(cx, "stage", (r) => stage(r.id, []));
         else this.openMerge(null);
-      } else { this.closed[it.section] = !this.closed[it.section]; cx.notify(); }
+      } else { v.closed[it.section] = !v.closed[it.section]; cx.notify(); }
       return;
     }
     const f = it.f, slot = fromRight >= 0 ? Math.floor(fromRight / ACTION) : -1;
-    this.selected = key;
+    v.selected = key;
     if (it.section === "unstaged" && slot === 0) this.act(cx, "stage", (r) => stage(r.id, [f.path]));
-    else if (it.section === "unstaged" && slot === 1) { this.confirmDiscard = f; cx.notify(); }
+    else if (it.section === "unstaged" && slot === 1) { v.confirmDiscard = f; cx.notify(); }
     else if (it.section === "staged" && slot === 0) this.act(cx, "stage", (r) => unstage(r.id, [f.path]));
     else { this.openDiff(f, it.section); cx.notify(); }
   }
 
   // Right click: the file's menu, as a popup of this mod (props.menu).
   menuRow(key, cx) {
-    const it = this.items().find((x) => !x.head && `${x.section}:${x.f.path}` === key);
-    if (!it || !this.repo) return;
-    this.selected = key; cx.notify();
+    const v = this.v, it = this.items().find((x) => !x.head && rowKey(v, x) === key);
+    if (!it || !v.repo) return;
+    v.selected = key; cx.notify();
     openOverlay({ mod: "yuzora-sidebar-git", kind: "popup", at: "pointer", width: 230, height: 230,
-      props: { menu: { cwd: this.repo.root, on: this.repo.machine, section: it.section, path: it.f.path, orig: it.f.orig ?? null } } });
+      props: { menu: { cwd: v.repo.root, on: v.repo.machine, section: it.section, path: it.f.path, orig: it.f.orig ?? null } } });
   }
 
   checkbox(id, on, label, th, toggle) {
@@ -513,7 +591,7 @@ export default class SidebarGit extends View {
   }
 
   operationBar(th) {
-    const op = this.st?.operation;
+    const op = this.v.st?.operation;
     if (!op || !op.kind || op.kind === "none") return null;
     const step = op.step ? ` ${op.step[0]}/${op.step[1]}` : "";
     const att = tokens().attention ?? {};
@@ -522,7 +600,7 @@ export default class SidebarGit extends View {
     return v_flex().mx(8).mb(6).p(8).gap(6).rounded(6).bg(att.background ?? th.raised).border_1().border_color(att.border ?? th.border)
       .child(div().text_size(11.5).text_color(att.text ?? th.blocked).child(`${t(`op.${op.kind}`)}${step}${op.onto ? ` · ${op.onto}` : ""}`))
       .child(h_flex().gap(4).text_size(11)
-        .when(this.st.conflicts.length > 0, (el) => el.child(div().id("op-resolve").px(6).h(20).flex().items_center().rounded(4).bg(th.foreground).text_color(th.background)
+        .when(this.v.st.conflicts.length > 0, (el) => el.child(div().id("op-resolve").px(6).h(20).flex().items_center().rounded(4).bg(th.foreground).text_color(th.background)
           .cursor_pointer().on_click(() => this.openMerge(null)).child(t("resolve"))))
         .when(op.kind !== "bisecting", (el) => el.child(act("op-continue", t("op.continue"), "continue")).child(act("op-abort", t("op.abort"), "abort")))
         .when(op.kind !== "merging" && op.kind !== "bisecting", (el) => el.child(act("op-skip", t("op.skip"), "skip"))));
@@ -532,7 +610,7 @@ export default class SidebarGit extends View {
   menuAction(cx, id) {
     const m = this.menu, close = () => closeOverlay(props()?.overlay);
     const spec = { cwd: m.cwd, on: m.on, path: m.path, orig: m.orig };
-    if (id === "diff") { this.repo = { root: m.cwd, machine: m.on }; this.openDiff({ path: m.path, orig: m.orig }, m.section); return close(); }
+    if (id === "diff") { this.openDiff({ path: m.path, orig: m.orig }, m.section, { root: m.cwd, machine: m.on }); return close(); }
     if (id === "annotate") { run("tab.new", { name: `${t("annotate")} · ${m.path.split("/").pop()}`, mod: "yuzora-git-blame", props: spec }); return close(); }
     if (id === "history") { run("tab.new", { name: `${t("history")} · ${m.path.split("/").pop()}`, mod: "yuzora-git-log", props: { cwd: m.cwd, on: m.on, filter: { paths: [m.path], follow: true } } }); return close(); }
     if (id === "copy") { cx.write_to_clipboard(m.path); return close(); }
@@ -565,19 +643,21 @@ export default class SidebarGit extends View {
   render(cx) {
     if (this.menu) return this.renderMenu();
     if (this.picker) return this.renderPicker();
+    // The place is looked at in the frame it changes in, not when a timer next comes round.
+    if (key() !== this.ctx) this.attach(cx);
     const th = theme();
-    const st = this.st;
+    const v = this.v, st = v.st;
     const b = st?.branch;
     const items = this.items();
     const sizes = items.map((it) => (it.head ? HEAD : ROW));
     const ahead = b?.ahead ?? 0, behind = b?.behind ?? 0;
-    const canCommit = Boolean(st && !this.busy && (this.text.trim() || this.amend));
+    const canCommit = Boolean(st && !v.busy && (v.draft.text.trim() || v.draft.amend));
     const branchName = !b ? "…" : b.detached ? `${t("detached")} ${(b.oid ?? "").slice(0, 8)}` : b.head ?? "";
-    const tone = this.note?.tone === "error" ? th.ansi1 : th.blocked;
+    const tone = v.note?.tone === "error" ? th.ansi1 : th.blocked;
 
     // Which repo: the one the focus is in, or the one pinned for this space.
     const here = this.place, pin = Boolean(here?.pin);
-    const repoName = this.repo ? baseName(this.repo.root) : pin ? baseName(here.cwd) : t("repo.none");
+    const repoName = v.repo ? baseName(v.repo.root) : pin ? baseName(here.cwd) : t("repo.none");
     const header = h_flex().h(32).px(12).gap(6).flex_none().items_center()
       .child(div().font_semibold().flex_none().child(t("title")))
       .child(h_flex().id("repo-pick").flex_1().min_w(0).h(22).px(6).gap(4).items_center().rounded(4).text_size(11).text_color(th.muted)
@@ -587,19 +667,19 @@ export default class SidebarGit extends View {
         .child(div().min_w(0).truncate().child(repoName))
         .child(div().flex_none().text_size(9).text_color(th.dim).child("▾")))
       .child(div().id("graph").h(22).px(6).flex().items_center().rounded(4).bg(th.raised).text_size(11).text_color(th.muted)
-        .when(Boolean(this.repo), (el) => el.cursor_pointer().hover((s) => s.text_color(th.foreground)).on_click(() => this.openLog()))
+        .when(Boolean(v.repo), (el) => el.cursor_pointer().hover((s) => s.text_color(th.foreground)).on_click(() => this.openLog()))
         .child(t("graph")));
 
     if (!st) {
       return v_flex().id("root").size_full().bg(th.chrome).text_color(th.foreground).text_size(12.5)
         .child(header)
-        .child(div().px(12).pt(4).text_size(11.5).text_color(th.dim).child(this.error ?? t("loading")));
+        .child(div().px(12).pt(4).text_size(11.5).text_color(th.dim).child(v.error ?? t("loading")));
     }
 
     // The repo's own config names programs git would run on its own: nothing
     // reads it until the person trusts the folder.
     if (st.trust) {
-      const repo = this.repo;
+      const repo = v.repo;
       return v_flex().id("root").size_full().bg(th.chrome).text_color(th.foreground).text_size(12.5)
         .child(header)
         .child(v_flex().mx(8).p(10).gap(8).rounded(6).border_1().border_color(th.blocked).bg(th.raised)
@@ -608,8 +688,8 @@ export default class SidebarGit extends View {
           .child(div().id("trust").h(24).px(10).flex().items_center().justify_center().rounded(4).cursor_pointer()
             .bg(th.accent).text_color(th.accent_foreground).hover((s) => s.opacity(0.88))
             .on_click((_e, cx) => cx.spawn(async (cx) => {
-              try { await trust(repo.id); } catch (e) { this.error = String(e); }
-              await this.reload(cx, true);
+              try { await trust(repo.id); } catch (e) { v.error = String(e); }
+              await this.reload(cx, v, true);
             }))
             .child(t("trust.button"))));
     }
@@ -624,7 +704,7 @@ export default class SidebarGit extends View {
     const list = div().id("git-list").flex_1().min_h(0).relative().px(LIST_PAD)
       .on_size_change((size) => { this.listWidth = size.width; })
       .on_mouse_down("left", (e) => { this.downX = e.local_position?.x ?? null; })
-      .child(v_virtual_list("git-files", items.length, sizes, (i) => (items[i].head ? `h:${items[i].section}` : `${items[i].section}:${items[i].f.path}`),
+      .child(v_virtual_list("git-files", items.length, sizes, (i) => rowKey(v, items[i]),
         (range) => items.slice(range.start, range.end).map((it) => (it.head ? this.headRow(it, th) : this.fileRow(it, th))))
         .on_item_click((key, cx) => this.clickRow(key, cx))
         .on_item_secondary_click((key, _e, cx) => this.menuRow(key, cx))
@@ -633,28 +713,28 @@ export default class SidebarGit extends View {
       .when(items.length === 0 || (st.counts.total === 0 && !st.conflicts.length), (el) => el.child(div().absolute().top(56).left(0).right(0).text_center().text_size(11.5).text_color(th.dim).child(t("clean"))))
       .when(st.truncated, (el) => el.child(div().absolute().bottom(4).left(8).text_size(10.5).text_color(th.dim).child(t("truncated"))));
 
-    const discardAsk = this.confirmDiscard && v_flex().mx(8).mb(6).p(8).gap(6).rounded(6).bg(th.raised).border_1().border_color(th.border).text_size(11.5)
-      .child(div().child(t("discard.ask", { path: this.confirmDiscard.path })))
+    const discardAsk = v.confirmDiscard && v_flex().mx(8).mb(6).p(8).gap(6).rounded(6).bg(th.raised).border_1().border_color(th.border).text_size(11.5)
+      .child(div().child(t("discard.ask", { path: v.confirmDiscard.path })))
       .child(h_flex().gap(6)
-        .child(this.button("discard-yes", t("discard"), false, true, th, (cx) => { const f = this.confirmDiscard; this.confirmDiscard = null; this.act(cx, "discard", (r) => discard(r.id, [f.path])); }))
-        .child(this.button("discard-no", t("cancel"), false, true, th, (cx) => { this.confirmDiscard = null; cx.notify(); })));
+        .child(this.button(`discard-yes:${v.key}`, t("discard"), false, true, th, (cx) => { const f = v.confirmDiscard; v.confirmDiscard = null; this.act(cx, "discard", (r) => discard(r.id, [f.path]), v); }))
+        .child(this.button("discard-no", t("cancel"), false, true, th, (cx) => { v.confirmDiscard = null; cx.notify(); })));
 
-    const warnings = this.warnings && v_flex().p(8).gap(6).rounded(6).bg((tokens().attention ?? {}).background ?? th.raised).text_size(11)
-      .children(this.warnings.checks.map((c, i) => div().id(`w-${i}`).text_color(th.blocked).child(t(`check.${c.kind}`, { count: c.count ?? c.files?.length ?? 0, files: (c.files ?? []).slice(0, 3).join(", ") }))))
+    const warnings = v.warnings && v_flex().p(8).gap(6).rounded(6).bg((tokens().attention ?? {}).background ?? th.raised).text_size(11)
+      .children(v.warnings.checks.map((c, i) => div().id(`w-${i}`).text_color(th.blocked).child(t(`check.${c.kind}`, { count: c.count ?? c.files?.length ?? 0, files: (c.files ?? []).slice(0, 3).join(", ") }))))
       .child(h_flex().gap(6)
-        .child(this.button("w-yes", t("commit.anyway"), false, true, th, (cx) => { const p = this.warnings.andPush; this.warnings = null; this.commit(cx, p, true); }))
-        .child(this.button("w-no", t("cancel"), false, true, th, (cx) => { this.warnings = null; cx.notify(); })));
+        .child(this.button(`w-yes:${v.key}`, t("commit.anyway"), false, true, th, (cx) => { const p = v.warnings.andPush; v.warnings = null; this.commit(cx, p, true); }))
+        .child(this.button("w-no", t("cancel"), false, true, th, (cx) => { v.warnings = null; cx.notify(); })));
 
     const history = this.showHistory && v_flex().id("history").max_h(180).overflow_y_scrollbar().rounded(6).border_1().border_color(th.border).bg(th.popover ?? th.raised)
-      .children((this.history.history.length ? this.history.history : []).map((m, i) => div().id(`m-${i}`).px(8).py(4).text_size(11).truncate().cursor_pointer()
-        .hover((s) => s.bg(th.hover)).on_click((_e, cx) => { this.message.set_value(m); this.text = m; this.showHistory = false; cx.notify(); }).child(m.split("\n")[0])))
-      .when(!this.history.history.length, (el) => el.child(div().p(8).text_size(11).text_color(th.dim).child(t("history.empty"))));
+      .children((v.history.history.length ? v.history.history : []).map((m, i) => div().id(`m-${i}`).px(8).py(4).text_size(11).truncate().cursor_pointer()
+        .hover((s) => s.bg(th.hover)).on_click((_e, cx) => { this.setText(v, m); this.showHistory = false; cx.notify(); }).child(m.split("\n")[0])))
+      .when(!v.history.history.length, (el) => el.child(div().p(8).text_size(11).text_color(th.dim).child(t("history.empty"))));
 
     const commitBox = v_flex().flex_none().p(8).gap(6).border_t(1).border_color(th.divider ?? th.border)
       .child(div().id("message").rounded(6).border_1().border_color(th.border).bg(th.background).px(8).py(6).text_size(12).cursor_text()
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Textarea.new(this.message).w_full()))
       .child(h_flex().gap(10).flex_wrap()
-        .child(this.checkbox("amend", this.amend, t("commit.amend"), th, (cx) => this.toggleAmend(cx)))
+        .child(this.checkbox("amend", v.draft.amend, t("commit.amend"), th, (cx) => this.toggleAmend(cx)))
         .child(this.checkbox("signoff", this.signOff, t("commit.signOff"), th, (cx) => { this.signOff = !this.signOff; cx.notify(); }))
         .child(this.checkbox("noverify", this.noVerify, t("commit.noVerify"), th, (cx) => { this.noVerify = !this.noVerify; cx.notify(); }))
         .child(div().flex_1())
@@ -666,11 +746,11 @@ export default class SidebarGit extends View {
       .when(this.more, (el) => el.child(div().id("author").h(26).px(8).flex().items_center().rounded(6).border_1().border_color(th.border).bg(th.background).text_size(11.5)
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.author).w_full())))
       .when(Boolean(warnings), (el) => el.child(warnings))
-      .when(Boolean(this.note), (el) => el.child(div().text_size(11).text_color(tone).child(this.note.text)))
+      .when(Boolean(v.note), (el) => el.child(div().text_size(11).text_color(tone).child(v.note.text)))
       .child(h_flex().gap(6)
-        .child(this.button("commit", this.busy === "commit" ? t("commit.running") : this.amend ? t("commit.amendButton") : t("commit.button"), true, canCommit, th, (cx) => this.commit(cx, false)))
-        .child(this.button("commit-push", t("commit.andPush"), false, canCommit, th, (cx) => this.commit(cx, true)))
-        .child(this.button("push", this.busy === "push" ? t("push.running") : ahead ? `${t("push")} ↑${ahead}` : t("push"), false, Boolean(!this.busy && (ahead || !b.upstream) && !b.detached), th, (cx) => this.push(cx))));
+        .child(this.button(`commit:${v.key}`, v.busy === "commit" ? t("commit.running") : v.draft.amend ? t("commit.amendButton") : t("commit.button"), true, canCommit, th, (cx) => this.commit(cx, false)))
+        .child(this.button(`commit-push:${v.key}`, t("commit.andPush"), false, canCommit, th, (cx) => this.commit(cx, true)))
+        .child(this.button(`push:${v.key}`, v.busy === "push" ? t("push.running") : ahead ? `${t("push")} ↑${ahead}` : t("push"), false, Boolean(!v.busy && (ahead || !b.upstream) && !b.detached), th, (cx) => this.push(cx))));
 
     return v_flex().id("root").size_full().min_h(0).bg(th.chrome).text_color(th.foreground).text_size(12.5)
       .child(header)

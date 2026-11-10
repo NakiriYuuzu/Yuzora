@@ -345,6 +345,11 @@ test("the author typed for one repo's commit is not used for another's", async (
   s.frame();
   await s.settle();
   expect(s.w.author.value).toBe("");
+  s.go("/a");
+  s.frame();
+  expect(s.w.author.value).toBe("Mallory <m@example.com>");
+  s.go("/b");
+  s.frame();
   s.type("beta message");
   s.frame().button("commit.button")!.handlers.on_click({}, s.cx);
   await flush();
@@ -395,22 +400,40 @@ test("a commit that went through empties its own repo's message box, not the one
   expect(s.w.box.value).toBe("");
 });
 
-test("the warnings of a commit are the repo's that asked, and so is its busy button", async () => {
+test("the warnings a commit's checks raise are the repo's that asked, even when they arrive after it left", async () => {
   const s = world();
   await s.settle();
   s.type("alpha message");
   s.frame().button("commit.button")!.handlers.on_click({}, s.cx);
   await flush();
-  await s.answer(s.pending("commitChecks")[0], [{ kind: "todo", files: ["x.txt"] }]);
-  expect(s.frame().texts).toContain("commit.anyway");
   s.go("/b");
   s.frame();
   await s.settle();
+  await s.answer(s.pending("commitChecks")[0], [{ kind: "todo", files: ["x.txt"] }]);
   expect(s.frame().texts).not.toContain("commit.anyway");
   s.go("/a");
   s.frame();
   await s.settle();
   expect(s.frame().texts).toContain("commit.anyway");
+});
+
+test("the error of a stage that fails after the sidebar moved on is shown with the repo it was for", async () => {
+  const s = world();
+  await s.settle();
+  const f = s.frame();
+  s.aim(f, 0);
+  s.press(f, f.keyOf("x.txt"));
+  await flush();
+  s.go("/b");
+  s.frame();
+  await s.settle();
+  await s.fail(s.pending("stage")[0], new Error("index.lock exists"));
+  await s.settle();
+  expect(s.frame().texts.join("\n")).not.toContain("index.lock exists");
+  s.go("/a");
+  s.frame();
+  await s.settle();
+  expect(s.frame().texts.join("\n")).toContain("index.lock exists");
 });
 
 test("a push going on in one repo does not hold back the buttons of another", async () => {
@@ -426,6 +449,33 @@ test("a push going on in one repo does not hold back the buttons of another", as
   s.frame().button("push")!.handlers.on_click({}, s.cx);
   await flush();
   expect(s.pending("pushPreview").map((g) => g.args[0]).sort()).toEqual([":/a", ":/b"]);
+});
+
+test("a repo that is no longer shown is not read again when it changes", async () => {
+  const s = world();
+  await s.settle();
+  const watching = s.pending("changed").map((g) => g.args[0]);
+  expect(watching).toEqual([":/a"]);
+  s.go("/b");
+  s.frame();
+  await s.settle();
+  const reads = s.w.asks.status.length;
+  await s.answer(s.pending("changed", (g) => g.args[0] === ":/a")[0], 2);
+  await s.settle();
+  expect(s.w.asks.status.length).toBe(reads);
+  expect(s.pending("changed").map((g) => g.args[0])).toEqual([":/b"]);
+});
+
+test("an action on the repo shown while the next place is still being named is done to the repo shown", async () => {
+  const s = world();
+  await s.settle();
+  const f = s.frame();
+  s.go("/c");
+  s.frame();
+  s.aim(f, 0);
+  s.press(f, f.keyOf("x.txt"));
+  await flush();
+  expect(s.w.asks.stage.map((g) => g.args)).toEqual([[":/a", ["x.txt"]]]);
 });
 
 test("the sidebar keeps a bounded number of repos to show again", async () => {

@@ -675,6 +675,18 @@ fn git_sidebar_mount(cx: &mut TestAppContext, source: &str, module: HostModule) 
     (fixture, visual)
 }
 
+/// [`git_sidebar_mount`], keeping what the window asks a mod to draw again with when herdr's data changes.
+fn git_sidebar_mount_live(cx: &mut TestAppContext, source: &str, module: HostModule) -> (Fixture, VisualTestContext, Rc<ShellRuntime>, gpui::Entity<ShellRoot>) {
+    let fixture = Fixture::new(source);
+    gpui_shell::policy::set_default(Policy::new().with_host_module(module).unwrap());
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
+    let root = window.update(cx, |mounted, _, _| mounted.0.clone()).unwrap();
+    let mut visual = VisualTestContext::from_window(*window.deref(), cx);
+    git_sidebar_settle(&mut visual);
+    (fixture, visual, runtime, root)
+}
+
 fn git_sidebar_settle(visual: &mut VisualTestContext) {
     for _ in 0..3 {
         visual.update(|window, cx| window.draw(cx).clear(cx));
@@ -728,6 +740,33 @@ fn yuzora_git_repo_follows_the_focus_or_the_pin_of_its_space(cx: &mut TestAppCon
     visual.update(|window, _| window.remove_window());
 }
 
+// yuzora(v0.1.0 E1): the sidebar looks at where it is in the frame the focus moves in: the window draws a mod
+// again when herdr's data changes, and no second goes by before the new place is opened (the clock stays where it
+// is). A place seen before is shown from what was read of it, so going back opens it again but shows its changes
+// at once.
+#[gpui::test]
+fn yuzora_git_sidebar_follows_its_place_in_the_frame_it_changes(cx: &mut TestAppContext) {
+    let state = Rc::new(GitSidebar::default());
+    *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
+    let module = git_sidebar_module(state.clone(), Value::Null, &[], |_| Ok(json!({"repos": [], "truncated": false})));
+    let (_fixture, mut visual, runtime, root) = git_sidebar_mount_live(cx, &git_sidebar_source(&[]), module);
+    let opened = |state: &GitSidebar| state.opened.borrow().clone();
+    assert_eq!(opened(&state), ["/sp/a"]);
+    let draw_again = |visual: &mut VisualTestContext| {
+        visual.update(|_, cx| runtime.refresh(&root, cx).unwrap());
+        git_sidebar_settle(visual);
+    };
+    *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p2"});
+    draw_again(&mut visual);
+    assert_eq!(opened(&state), ["/sp/a", "/sp/b/c"], "the focus moved to another pane's folder");
+    assert_eq!(state.shared.borrow().get("yuzora.badge.git").cloned(), Some(json!(2)), "and its changes are the badge");
+    *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
+    draw_again(&mut visual);
+    assert_eq!(opened(&state), ["/sp/a", "/sp/b/c", "/sp/a"], "and back");
+    assert_eq!(state.shared.borrow().get("yuzora.badge.git").cloned(), Some(json!(1)));
+    visual.update(|window, _| window.remove_window());
+}
+
 // yuzora(L2): a pinned repo that's gone (no `.git` left in its folder, or no folder: `repos`
 // reads the file system, no git runs) is unpinned with a note, and the sidebar follows the focus
 // again; found gone when it opens, or later, when status fails, or when git opens it as another
@@ -772,7 +811,7 @@ fn yuzora_git_repo_pinned_and_gone_follows_the_focus_again(cx: &mut TestAppConte
         state.shared.borrow_mut().insert("yuzora.git.repo.s1".into(), json!({"root": root, "on": null}));
         let module = git_sidebar_module(state.clone(), Value::Null, FAILS, found);
         // The error the sidebar shows.
-        let source = git_sidebar_source(&[(".child(this.error ?? t(\"loading\"))", ".child((note(\"error\", this.error ?? null), this.error ?? t(\"loading\")))")]);
+        let source = git_sidebar_source(&[(".child(v.error ?? t(\"loading\"))", ".child((note(\"error\", v.error ?? null), v.error ?? t(\"loading\")))")]);
         let (_fixture, mut visual) = git_sidebar_mount(cx, &source, module);
         git_sidebar_tick(&mut visual);
         let pin = state.shared.borrow().get("yuzora.git.repo.s1").cloned().unwrap_or(Value::Null);

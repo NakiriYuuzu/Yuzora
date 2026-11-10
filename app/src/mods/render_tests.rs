@@ -2055,21 +2055,21 @@ const file = {{ path: "{path}", kind: "M", add: {add}, del: {del} }};
 export default class Scenario extends Real {{
   init(p, cx) {{
     super.init(p, cx);
-    this.st = {{ conflicts: [], staged: [], unstaged: [], untracked: [], counts: {{ total: 1 }} }};
-    this.st["{section}" === "unstaged" ? "unstaged" : "{section}"].push(file);
+    this.v.st = {{ conflicts: [], staged: [], unstaged: [], untracked: [], counts: {{ total: 1 }} }};
+    this.v.st["{section}" === "unstaged" ? "unstaged" : "{section}"].push(file);
   }}
   act() {{ this.acted = true; }}
   openDiff() {{ this.diffed = true; }}
   render(cx) {{
     const probe = (slot, kind) => (kind ? (e) => note("at:" + slot, e.bounds.x, e.bounds.width) : (size) => note(slot, size.width));
-    const key = "{section}:{path}";
+    const key = `${{this.v.key}}|{section}:{path}`;
     return div().id("list").w({width}).px(6)
       .on_size_change((size) => {{ this.listWidth = size.width; }})
       .on_mouse_down("left", (e) => {{ this.downX = e.local_position.x; }})
       .on_click((_e, cx) => {{
-        this.acted = false; this.diffed = false; this.confirmDiscard = null;
+        this.acted = false; this.diffed = false; this.v.confirmDiscard = null;
         this.clickRow(key, cx);
-        note("result", this.confirmDiscard ? "discard" : this.acted ? "act" : this.diffed ? "diff" : "none");
+        note("result", this.v.confirmDiscard ? "discard" : this.acted ? "act" : this.diffed ? "diff" : "none");
       }})
       .child(this.fileRow({{ section: "{section}", f: file }}, theme(), probe));
   }}
