@@ -4,6 +4,7 @@
 
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, Input } from "gpui-base";
+import { settings } from "herdr";
 import { motion } from "yuzora:core";
 
 const CLEAR = "#00000000";
@@ -69,6 +70,7 @@ export function button(th, id, label, onClick, kind = "plain", disabled = false)
     .child(label);
 }
 
+// The knob's id has the zoom in it: a new zoom is a new element, which starts in its place instead of sliding there.
 export function toggle(th, id, on, onClick) {
   return div()
     .id(id)
@@ -81,7 +83,7 @@ export function toggle(th, id, on, onClick) {
     .on_click(onClick)
     .child(
       div()
-        .id(`${id}-knob`)
+        .id(`${id}-knob-${settings().zoom}`)
         .absolute()
         .top(2)
         .left(on ? 18 : 2)
