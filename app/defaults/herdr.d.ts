@@ -185,13 +185,16 @@ export function agents(): AgentInfo[];
 export interface PaneInfo {
   pane: string;
   /** null for a mod pane (`pane.split {mod}`): then `mod` names it, and only
-   *  pane, mod, props, tab, title, focused and zoomed are set. */
+   *  pane, mod, props, started, tab, title, focused and zoomed are set. */
   terminal: string | null;
   mod?: string;
-  // yuzora(v0.1.0 files-open): `props`, so a mod finds the pane of a file before that pane has started.
+  // yuzora(v0.1.0 files-open): `props` and `started`, so a mod finds the pane of a file before that pane has started.
   /** The props a mod pane was given (`tab.new {mod, props}`, `pane.split {mod, props}`), as the layout keeps
    *  them. Listed for a pane in a tab not shown since the app started too, though its mod has not started. */
   props?: any;
+  /** A mod pane only: a copy of its mod is running. A restored layout starts only the tab shown, and a copy
+   *  keeps running when its tab is put away, so false means nothing has opened what its props name. */
+  started?: boolean;
   tab: string;
   /** The terminal's title (what the program set), or the mod's name. */
   title: string;

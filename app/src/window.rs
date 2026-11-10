@@ -1735,10 +1735,10 @@ impl AppWindow {
                     let focused = m.active.as_deref() == Some(pr.id.as_str()) && focused_pane.as_deref() == Some(p.id.as_str());
                     let zoomed = ctx.zoomed.as_deref() == Some(p.id.as_str());
                     // A mod pane: what it shows, no terminal.
-                    // yuzora(v0.1.0 files-open): `props` too. Only the tab shown starts its mod panes, so for the rest this is
-                    // the one place that says which file a pane the layout restored holds.
+                    // yuzora(v0.1.0 files-open): `props` and `started` too. Only the tab shown starts its mod panes, so for the rest
+                    // this is the one place that says which file a pane the layout restored holds, and that nothing has opened it.
                     if let Some(Content::Mod { name, props }) = p.content() {
-                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "props": props, "tab": ctx.id, "title": name, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
+                        panes.push(json!({ "pane": p.id, "terminal": null, "mod": name, "props": props, "started": self.copies.contains_key(&p.id), "tab": ctx.id, "title": name, "focused": focused, "zoomed": zoomed, "movable": self.pane_movable(&p.id) }));
                         continue;
                     }
                     let Some(addr) = p.terminal() else { continue };
