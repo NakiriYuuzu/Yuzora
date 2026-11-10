@@ -123,6 +123,14 @@ impl PgConn {
         let row = client.query_one("SHOW server_version", &[]).await.map_err(|e| DbError::Connect(describe(&e)))?;
         let full: String = row.get(0);
         let version = format!("PostgreSQL {}", full.split_whitespace().next().unwrap_or(&full));
+        // A value is shown as text and comes back as text: only ISO prints a
+        // zone as an offset (`CST` is read as -06:00 though Asia/Taipei printed
+        // it), and only extra_float_digits above 0 prints every digit of a float.
+        // The order of day and month in what a person types stays the session's.
+        client
+            .batch_execute("SET datestyle = 'ISO'; SET extra_float_digits = 3")
+            .await
+            .map_err(|e| DbError::Connect(describe(&e)))?;
         let canceller = PgCanceller {
             token: client.cancel_token(),
             tls,

@@ -7,6 +7,8 @@
 //! quietly opens a new connection. The pool treats a connection without a
 //! socket as closed, so it does not keep one around.
 
+use std::borrow::Cow;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures_util::future::{Either, select};
@@ -747,7 +749,7 @@ fn opt_text(row: &Row, i: usize) -> DbResult<Option<String>> {
 
 /// A parameter of an `UPDATE`.
 enum Param<'a> {
-    Text(&'a str),
+    Text(Cow<'a, str>),
     Int(i64),
     Float(f64),
     Bool(bool),
@@ -758,13 +760,17 @@ enum Param<'a> {
 static NO_TEXT: Option<&str> = None;
 
 impl<'a> Param<'a> {
-    fn of(cell: &'a Cell) -> Self {
+    /// `dates`: the columns that read a date from text by the session's `DATEFORMAT`.
+    fn of(column: &str, cell: &'a Cell, dates: &HashSet<String>) -> Self {
         match cell {
             Cell::Null => Param::Null,
             Cell::Bool(b) => Param::Bool(*b),
             Cell::Int(i) => Param::Int(*i),
             Cell::Float(f) => Param::Float(*f),
-            Cell::Text(s) => Param::Text(s),
+            Cell::Text(s) => match Some(s).filter(|_| dates.contains(column)).and_then(|s| iso_8601(s)) {
+                Some(iso) => Param::Text(Cow::Owned(iso)),
+                None => Param::Text(Cow::Borrowed(s)),
+            },
             Cell::Bytes(b) => Param::Bytes(b),
         }
     }
@@ -779,6 +785,64 @@ impl<'a> Param<'a> {
             Param::Null => &NO_TEXT,
         }
     }
+}
+
+/// A date, or a date and a time, written the way the grid shows them (year
+/// first: `2024-01-06 10:00:00.5`, also `2024/1/6 10:00`) as `2024-01-06T10:00:00.5`.
+/// `datetime` and `smalldatetime` read the first by the session's `DATEFORMAT`
+/// (a day-first login stores January 6th as June 1st, or refuses the 13th), the
+/// second the same way under every one. Any other shape is the person's own
+/// and is read the way the session reads it.
+fn iso_8601(text: &str) -> Option<String> {
+    let text = text.trim();
+    let (date, time) = match text.split_once([' ', 'T']) {
+        Some((date, time)) => (date, Some(time.trim())),
+        None => (text, None),
+    };
+    fn number(part: &str, digits: std::ops::RangeInclusive<usize>) -> Option<&str> {
+        (digits.contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())).then_some(part)
+    }
+    let mut date = date.split(['-', '/', '.']);
+    let (year, month, day) = (number(date.next()?, 4..=4)?, number(date.next()?, 1..=2)?, number(date.next()?, 1..=2)?);
+    if date.next().is_some() {
+        return None;
+    }
+    let time = match time {
+        None => "00:00:00".to_owned(),
+        Some(time) => {
+            let (clock, fraction) = match time.split_once('.') {
+                Some((clock, fraction)) => (clock, Some(number(fraction, 1..=9)?)),
+                None => (time, None),
+            };
+            let mut clock = clock.split(':');
+            let hours = number(clock.next()?, 1..=2)?;
+            let minutes = number(clock.next()?, 2..=2)?;
+            let seconds = clock.next().map_or(Some("00"), |s| number(s, 2..=2))?;
+            if clock.next().is_some() {
+                return None;
+            }
+            match fraction {
+                Some(fraction) => format!("{hours:0>2}:{minutes}:{seconds}.{fraction}"),
+                None => format!("{hours:0>2}:{minutes}:{seconds}"),
+            }
+        }
+    };
+    Some(format!("{year}-{month:0>2}-{day:0>2}T{time}"))
+}
+
+/// The columns of `table` (by name) that are `datetime` or `smalldatetime`:
+/// the two types that read a date from text by the session's `DATEFORMAT`
+/// (`date`, `datetime2` and `datetimeoffset` read the same text the same way
+/// under every one). A type made `FROM datetime` counts too.
+async fn day_order_columns(client: &mut Tds, database: &str, table: &ObjectRef) -> Result<HashSet<String>, TdsError> {
+    let sql = format!(
+        "SELECT c.name FROM {}.sys.columns c WHERE c.object_id = OBJECT_ID(@P1) \
+         AND TYPE_NAME(c.system_type_id) IN (N'datetime', N'smalldatetime')",
+        super::quote_ident(Engine::Mssql, database)
+    );
+    let name = super::qualified_in(Engine::Mssql, Some(database), table);
+    let rows = first_result(client, &sql, &[&name.as_str()]).await?;
+    rows.iter().map(|r| r.try_get::<&str, _>(0).map(|n| n.unwrap_or_default().to_owned())).collect()
 }
 
 /// `UPDATE [s].[t] SET [a] = @P1 WHERE [k] = @P2; SELECT ROWCOUNT_BIG();`:
@@ -813,10 +877,12 @@ async fn write_rows(
     let fail = |e: TdsError| (query_error(e.clone()), !fatal(&e));
     // The transaction commands are batches: run as an RPC (`execute`) the server
     // objects that the transaction count changed.
+    let dates = day_order_columns(client, database, table).await.map_err(fail)?;
     batch(client, "BEGIN TRANSACTION").await.map_err(fail)?;
     let mut written = 0;
     for edit in edits {
-        let params: Vec<Param<'_>> = edit.changes.iter().chain(&edit.key).map(|(_, c)| Param::of(c)).collect();
+        let params: Vec<Param<'_>> =
+            edit.changes.iter().chain(&edit.key).map(|(n, c)| Param::of(n, c, &dates)).collect();
         let refs: Vec<&dyn ToSql> = params.iter().map(Param::sql).collect();
         let sql = update_sql(database, table, edit);
         let sets = client.query(sql, &refs).await.map_err(fail)?.into_results().await.map_err(fail)?;
@@ -995,6 +1061,40 @@ mod tests {
             update_sql("app", &t("dbo", "people"), &edit),
             "UPDATE [app].[dbo].[people] SET [name] = @P1, [age] = @P2 WHERE [id] = @P3 AND [a]]b] = @P4; SELECT ROWCOUNT_BIG();"
         );
+    }
+
+    #[test]
+    fn a_year_first_date_is_written_the_one_way_every_dateformat_reads() {
+        for (typed, sent) in [
+            ("2024-01-06 10:00:00", "2024-01-06T10:00:00"),
+            ("2024-01-13 10:00:00.997", "2024-01-13T10:00:00.997"),
+            ("2024-01-06T10:00", "2024-01-06T10:00:00"),
+            ("2024-01-06", "2024-01-06T00:00:00"),
+            ("2024/1/6 9:05", "2024-01-06T09:05:00"),
+            ("  2024.01.06 10:00:00  ", "2024-01-06T10:00:00"),
+        ] {
+            assert_eq!(iso_8601(typed).as_deref(), Some(sent), "{typed}");
+        }
+        for typed in [
+            "",
+            "13/01/2024",
+            "06/01/24",
+            "6 Jan 2024",
+            "24-01-06",
+            "2024-01",
+            "2024-01-06 10",
+            "2024-01-06 10:00:00 AM",
+            "2024-01-06 10:00:00+08:00",
+            "2024-01-06 10:00:00.",
+            "2024-01-06 10:00:00.1234567890",
+            "2024-01-06 1:2:3",
+            "10:00:00",
+            "2024-01-06-07",
+            "2024-01-06 10:00:00:00",
+            "x2024-01-06",
+        ] {
+            assert_eq!(iso_8601(typed), None, "{typed:?} is the person's own way of writing it");
+        }
     }
 
     #[test]

@@ -87,6 +87,8 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 底部顯示「N 個儲存格已修改 · 捨棄 · 寫回」。寫回在一個交易內，每列用 primary key 定位，每列影響的列數必須剛好是 1，否則整筆 rollback 並顯示錯誤。key 是 NULL 的列拒絕寫回。
 - PostgreSQL 用文字格式參數寫回（server 依欄位型別解析），所以 numeric、interval、enum、array 等都能原文 round-trip。
 - 數字儲存格改成同一類的數字時，寫回的仍是數字：整數儲存格要能讀成 i64，浮點儲存格要能讀成有限的 f64（`Cell::edited`）。其他情況都以文字寫回，由伺服器轉換或拒絕。這是因為 SQLite 沒有型別（或 BLOB affinity）的欄位不會轉換型別，用文字寫回會把整數 5 變成文字 `'7'`。整數儲存格改成 `7.5` 仍然送文字，因為 SQL Server 收到 float 參數時，會在 int 欄位把它靜默截斷成 7。
+- 日期文字不依登入語言。SQL Server 的 `datetime`／`smalldatetime` 從文字讀日期時依 session 的 `DATEFORMAT`：British、German、French 等登入是日先月後，`2024-01-06` 會被讀成 6 月 1 日，13 日則報超出範圍，`datetime` 當主鍵時找不到列。寫回時，年在前的文字（`2024-01-06 10:00`、`2024/1/6`）送往這兩種型別的欄位（SET 與 WHERE 都是）前先改成 `2024-01-06T10:00:00`，這種寫法在任何 `DATEFORMAT` 下讀法都相同（`day_order_columns` 從系統目錄找出這類欄位，每次寫回多一次往返；別的欄位，包括文字欄，原文不動）。其他形狀（`13/01/2024`）是使用者自己的寫法，仍由 session 依登入語言讀。`date`、`datetime2`、`datetimeoffset`、`time`、`money`、`decimal`、`float` 不受 `DATEFORMAT` 與語言影響（六種 `DATEFORMAT`、九種語言實測）。
+- PostgreSQL 連線後固定 `SET datestyle = 'ISO'`（日月順序維持原設定）與 `SET extra_float_digits = 3`：格子顯示的文字要能原樣寫回。非 ISO 樣式把時區印成縮寫，`Asia/Taipei` 印 `CST`，而 `CST` 讀回是 -06:00，`timestamptz` 主鍵找不到列，改了顯示的文字則會存成差 14 小時的時間；`extra_float_digits = 0` 會少印 float 的位數，浮點主鍵同樣找不到列。副作用是這條連線上 SQL 分頁的日期也印成 ISO。`IntervalStyle` 和 `TimeZone` 不需要固定：interval 與 timestamptz 的 ISO 輸出在任何樣式下都能讀回。
 
 ## 引擎
 
