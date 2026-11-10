@@ -1060,12 +1060,23 @@ with these differences.
 - Yuzora keeps its spaces and tabs in herdr-core's `yuzora` layout document,
   so Herdr and Yuzora on one core don't overwrite each other's arrangement.
   Terminals are herdr-core's and both apps see them.
-- The default layout is `layouts/yuzora.json`: a 248px sidebar whose stack
-  `yuzora-sidebar` holds five modes (`yuzora-sidebar-workspace`, `-files`,
-  `-git`, `-database`, `-ssh`), the `yuzora-modebar` under it switching them
-  with `layout.select {"stack": "yuzora-sidebar", "child": "yuzora-sidebar-git"}`,
-  and the tab bar, the active tab and `yuzora-statusbar` on the right. It is
-  shipped: clone it before changing its structure, as with Herdr's layouts.
+- The default layout is `layouts/yuzora.json`: Herdr's own left side (a 248px
+  `sidebar` with the Spaces and agents lists), then the tab bar, the active tab,
+  the `panel` column and `yuzora-statusbar`. It is shipped: clone it before
+  changing its structure, as with Herdr's layouts.
+- Yuzora's four modes (Files, Git, Database, SSH) live in the right dock, which
+  the app adds to every layout at load and never writes into a layout file:
+  the mode nodes `yuzora-dock-files`, `-git`, `-database`, `-ssh` join the
+  `panel-body` stack, and a 40px `yuzora-dock-bar` (the `yuzora-modebar` mod)
+  sits right of `panel`. A layout with no `panel` and `panel-body` stack gets a
+  drawer at the right edge instead (it opens a mode in a window). The ids
+  starting `yuzora-dock` are reserved: don't write them into a layout file
+  (they are ignored there), and select a mode with
+  `layout.select {"stack": "panel-body", "child": "yuzora-dock-git"}` plus
+  `layout.show {"id": "panel"}`, or with the commands
+  `yuzora-modebar.files`, `.git`, `.database`, `.ssh` and `.toggle` (bind them
+  in `keys.json`). A layout opts out with `"yuzora": {"dock": "off"}` at its
+  root (`"drawer"` forces the drawer).
 - Themes `yuzora-dark` and `yuzora-light`: the layout shows the one for the
   system's appearance (or settings.json's `appearance`). Design values a theme
   has no name for (diff colors, agent brand colors, Space badge colors, the

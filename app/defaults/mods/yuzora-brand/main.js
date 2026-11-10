@@ -1,3 +1,5 @@
+// LEGACY (beta.4): the shipped yuzora layout no longer uses this; its top row is the upstream workspace-chrome.
+// Kept only for yuzora layouts cloned in beta.2/3 that still name it; deleted in the legacy cleanup.
 // The sidebar's top row: Yuzora's mark, clear of the macOS window buttons, and search
 // (the command palette). Owned by lane L1.
 import { View, div, svg, image } from "gpui-kit";
