@@ -332,8 +332,8 @@ export default class extends View {
 fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut TestAppContext) {
     let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
     let (from, to) = (
-        "import { theme, props, shared, settings, run, panes, focused, closeOverlay } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
-        "import { theme, props, shared, settings, run, panes, focused, closeOverlay, t, tokens, open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, gitSettings } from \"fixture\";",
+        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay } from \"herdr\";\nimport { t, tokens, session } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
+        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, session, t, tokens, open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, gitSettings } from \"fixture\";",
     );
     assert_eq!(source.matches(from).count(), 1, "the diff mod no longer has: {from}");
     source = source.replacen(from, to, 1);
@@ -378,10 +378,11 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
         ] {
             module = module.function(name, move |_| Ok(to_host(&value)));
         }
-        for name in ["shared", "run", "panes", "focused", "closeOverlay", "diffStage", "diffUnstage", "diffDiscard"] {
+        for name in ["shared", "setShared", "run", "panes", "focused", "closeOverlay", "diffStage", "diffUnstage", "diffDiscard"] {
             module = module.function(name, |_| Ok(HostValue::Null));
         }
         module = module.function("t", |a| Ok(a.string(0)?.into()));
+        module = module.function("session", |_| Ok("fixture-run".into()));
         let count = opened.clone();
         module = module.function("diffOpen", move |_| {
             count.set(count.get() + 1);
@@ -421,8 +422,8 @@ fn yuzora_diff_sides_are_as_wide_as_their_own_lines(cx: &mut TestAppContext) {
     let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
     for (from, to) in [
         (
-            "import { theme, props, shared, settings, run, panes, focused, closeOverlay } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
-            "import { theme, props, shared, settings, run, panes, focused, closeOverlay, t, tokens, open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, gitSettings, note } from \"fixture\";",
+            "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay } from \"herdr\";\nimport { t, tokens, session } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
+            "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, session, t, tokens, open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, gitSettings, note } from \"fixture\";",
         ),
         // A list's rows can't report their size, so the list's own first row is built once more
         // in the same render and laid out as the list lays out its rows: as wide as the list
@@ -480,10 +481,11 @@ fn yuzora_diff_sides_are_as_wide_as_their_own_lines(cx: &mut TestAppContext) {
         ] {
             module = module.function(name, move |_| Ok(to_host(&value)));
         }
-        for name in ["shared", "run", "panes", "focused", "closeOverlay", "diffStage", "diffUnstage", "diffDiscard"] {
+        for name in ["shared", "setShared", "run", "panes", "focused", "closeOverlay", "diffStage", "diffUnstage", "diffDiscard"] {
             module = module.function(name, |_| Ok(HostValue::Null));
         }
         module = module.function("t", |a| Ok(a.string(0)?.into()));
+        module = module.function("session", |_| Ok("fixture-run".into()));
         module = module.async_function("changes", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
         let calls = notes.clone();
         module = module.function("note", move |a| {
