@@ -1285,9 +1285,14 @@ with these differences.
   write-back with `database is locked` after about 5 seconds, and a read-only
   `BEGIN; SELECT …` left open is enough to cause it. PostgreSQL does not
   block a read except behind a strong lock (an uncommitted `ALTER TABLE`), but
-  a write-back to a row the transaction changed waits. To recover, press Stop
-  on the table, go to the SQL tab, `COMMIT` or `ROLLBACK`, and run the table
-  again. What the SQL tab has not committed is not in the table either. Tell
+  a write-back to a row the transaction changed waits. To recover from a read
+  that waits, go to the SQL tab, type `COMMIT` or `ROLLBACK`, and press Run:
+  while the table is still being read, Run stops that read first and then runs
+  the statement (it asks first when the table has unsaved edits). A write-back
+  that waits is not stopped by Run (it raises a bar with Keep waiting and
+  Stop saving): press Stop saving. A statement of
+  the person's own that is still running has to be stopped with Stop. Then run
+  the table again. What the SQL tab has not committed is not in the table either. Tell
   the person this when a table will not load or save after they used the SQL
   tab.
 - Connections count against a login's limit (`too many connections …`; the
