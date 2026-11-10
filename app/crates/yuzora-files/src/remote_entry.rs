@@ -142,9 +142,9 @@ impl Act<'_> {
             Problem::OtherDevice => format!(
                 "cannot {verb} {subject}: {target} is on another file system on {machine}, and a rename does not copy"
             ),
-            Problem::NoTool(tool) => format!(
-                "cannot {verb} {subject}: {machine} has no {tool}, which this needs"
-            ),
+            Problem::NoTool(tool) => {
+                format!("cannot {verb} {subject}: {machine} has no {tool}, which this needs")
+            }
             Problem::NoShell => format!(
                 "cannot {verb} {subject}: this needs sh on {machine}, and it has none (Windows machines cannot be changed from here)"
             ),
@@ -189,9 +189,10 @@ pub(crate) fn request(act: &Act, on: Option<&str>) -> Result<ExecRequest, Proble
                 },
             ],
         ),
-        Act::Move(from, to) if usable_path(from) && usable_path(to) => {
-            (MOVE_SCRIPT, vec![from, to, if other_case(from, to) { "1" } else { "0" }])
-        }
+        Act::Move(from, to) if usable_path(from) && usable_path(to) => (
+            MOVE_SCRIPT,
+            vec![from, to, if other_case(from, to) { "1" } else { "0" }],
+        ),
         _ => return Err(Problem::BadPath),
     };
     Ok(fsops::sh_request(on, script, &args, TIMEOUT, MAX_OUTPUT))
@@ -397,9 +398,20 @@ mod tests {
         }
         // Anything else is not an answer: the change may or may not have been made, and it says so.
         for said in [
-            "", "done", "done\ndone\n", "done \n", " done\n", "DONE\n", "ok\n", "refused\n",
-            "refused tool\n", "refused tool rm -rf\n", "refused tool cat\n", "refused folder extra\n",
-            "exists\nrefused folder\n", "done\r\n",
+            "",
+            "done",
+            "done\ndone\n",
+            "done \n",
+            " done\n",
+            "DONE\n",
+            "ok\n",
+            "refused\n",
+            "refused tool\n",
+            "refused tool rm -rf\n",
+            "refused tool cat\n",
+            "refused folder extra\n",
+            "exists\nrefused folder\n",
+            "done\r\n",
         ] {
             let got = interpret(answered(0, said, ""));
             assert!(
@@ -408,23 +420,36 @@ mod tests {
             );
         }
         // A script that did not end well, whatever it printed first, is its own words.
-        let got = interpret(answered(1, "done\n", "mv: cannot move 'a' to 'b': Permission denied\n"));
+        let got = interpret(answered(
+            1,
+            "done\n",
+            "mv: cannot move 'a' to 'b': Permission denied\n",
+        ));
         assert_eq!(
             got,
-            Err(Problem::Failed("mv: cannot move 'a' to 'b': Permission denied".into()))
+            Err(Problem::Failed(
+                "mv: cannot move 'a' to 'b': Permission denied".into()
+            ))
         );
-        assert!(matches!(interpret(answered(127, "", "")), Err(Problem::Failed(w)) if w.contains("127")));
+        assert!(
+            matches!(interpret(answered(127, "", "")), Err(Problem::Failed(w)) if w.contains("127"))
+        );
         // hc's own words: no sh there, a machine that is not connected, one that took too long.
         let said = |e| interpret(Err(e));
         assert_eq!(
-            said(ExecError::Remote("cannot start sh: No such file or directory (os error 2)".into())),
+            said(ExecError::Remote(
+                "cannot start sh: No such file or directory (os error 2)".into()
+            )),
             Err(Problem::NoShell)
         );
         assert_eq!(
             said(ExecError::Remote("machine lab is not connected".into())),
             Err(Problem::Failed("machine lab is not connected".into()))
         );
-        let late = said(ExecError::TimedOut { seconds: 30.0, machine: Some("lab".into()) });
+        let late = said(ExecError::TimedOut {
+            seconds: 30.0,
+            machine: Some("lab".into()),
+        });
         assert!(matches!(late, Err(Problem::Failed(w)) if w.contains("may or may not")));
     }
 
@@ -454,7 +479,10 @@ mod tests {
         assert!(request(&Act::Make("/a/b c", Kind::File), Some("offline")).is_ok());
         assert!(request(&Act::Move("/a/b", "/a/B"), Some("lab")).is_ok());
         let said = Act::Make(r"C:\a\b", Kind::File).describe(&Problem::BadPath, "lab");
-        assert!(said.contains("C:\\a\\b") && said.contains("start with /"), "{said}");
+        assert!(
+            said.contains("C:\\a\\b") && said.contains("start with /"),
+            "{said}"
+        );
     }
 
     #[test]
@@ -462,15 +490,30 @@ mod tests {
         let make = Act::Make("/srv/app/new.txt", Kind::File);
         let rename = Act::Move("/srv/a/old.txt", "/srv/b/new.txt");
         let say = |act: &Act, p| act.describe(&p, "lab");
-        assert_eq!(say(&make, Problem::Exists), "/srv/app/new.txt already exists");
-        assert_eq!(say(&rename, Problem::Exists), "/srv/b/new.txt already exists");
+        assert_eq!(
+            say(&make, Problem::Exists),
+            "/srv/app/new.txt already exists"
+        );
+        assert_eq!(
+            say(&rename, Problem::Exists),
+            "/srv/b/new.txt already exists"
+        );
         let told = say(&make, Problem::NoFolder);
-        assert!(told.contains("/srv/app") && told.contains("lab") && told.contains("does not exist"), "{told}");
+        assert!(
+            told.contains("/srv/app") && told.contains("lab") && told.contains("does not exist"),
+            "{told}"
+        );
         // A rename changes two folders, and either may be the one that cannot be.
         let told = say(&rename, Problem::FolderNotWritable);
-        assert!(told.contains("/srv/a and /srv/b") && told.contains("lab"), "{told}");
+        assert!(
+            told.contains("/srv/a and /srv/b") && told.contains("lab"),
+            "{told}"
+        );
         let told = say(&make, Problem::FolderNotWritable);
-        assert!(told.contains("/srv/app") && !told.contains(" and /srv"), "{told}");
+        assert!(
+            told.contains("/srv/app") && !told.contains(" and /srv"),
+            "{told}"
+        );
         assert!(say(&rename, Problem::Gone).contains("/srv/a/old.txt"));
         assert!(say(&rename, Problem::OtherDevice).contains("does not copy"));
         assert!(say(&rename, Problem::NoTool("mv")).contains("no mv"));
@@ -494,16 +537,36 @@ mod tests {
             assert_eq!(make(&shell, &folder, Kind::Folder), Ok(()), "{shell:?}");
             symlink("nowhere", &link).unwrap();
             for (path, kind) in [
-                (&file, Kind::File), (&file, Kind::Folder), (&folder, Kind::File),
-                (&folder, Kind::Folder), (&link, Kind::File), (&link, Kind::Folder),
+                (&file, Kind::File),
+                (&file, Kind::Folder),
+                (&folder, Kind::File),
+                (&folder, Kind::Folder),
+                (&link, Kind::File),
+                (&link, Kind::Folder),
             ] {
-                assert_eq!(make(&shell, path, kind), Err(Problem::Exists), "{shell:?} {path} {kind:?}");
+                assert_eq!(
+                    make(&shell, path, kind),
+                    Err(Problem::Exists),
+                    "{shell:?} {path} {kind:?}"
+                );
             }
             // Its folder: missing, not a folder, not to be written in or entered.
             for kind in [Kind::File, Kind::Folder] {
-                assert_eq!(make(&shell, &at(dir, "no/x"), kind), Err(Problem::NoFolder), "{shell:?}");
-                assert_eq!(make(&shell, &at(dir, "f/x"), kind), Err(Problem::NoFolder), "{shell:?}");
-                assert_eq!(make(&shell, &at(dir, "no/deeper/x"), kind), Err(Problem::NoFolder), "{shell:?}");
+                assert_eq!(
+                    make(&shell, &at(dir, "no/x"), kind),
+                    Err(Problem::NoFolder),
+                    "{shell:?}"
+                );
+                assert_eq!(
+                    make(&shell, &at(dir, "f/x"), kind),
+                    Err(Problem::NoFolder),
+                    "{shell:?}"
+                );
+                assert_eq!(
+                    make(&shell, &at(dir, "no/deeper/x"), kind),
+                    Err(Problem::NoFolder),
+                    "{shell:?}"
+                );
             }
             if !is_root() {
                 let locked = at(dir, "locked");
@@ -512,12 +575,20 @@ mod tests {
                     fs::set_permissions(&locked, fs::Permissions::from_mode(mode)).unwrap();
                     for kind in [Kind::File, Kind::Folder] {
                         let got = make(&shell, &at(dir, "locked/x"), kind);
-                        assert_eq!(got, Err(Problem::FolderNotWritable), "{shell:?} {mode:o} {kind:?}");
+                        assert_eq!(
+                            got,
+                            Err(Problem::FolderNotWritable),
+                            "{shell:?} {mode:o} {kind:?}"
+                        );
                     }
                 }
                 fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
             }
-            assert_eq!(names(dir).iter().filter(|n| n.starts_with('.')).count(), 0, "{shell:?}");
+            assert_eq!(
+                names(dir).iter().filter(|n| n.starts_with('.')).count(),
+                0,
+                "{shell:?}"
+            );
         }
     }
 
@@ -532,15 +603,25 @@ mod tests {
         let path = fifo.to_string_lossy().into_owned();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let got = shells().iter().map(|s| make(s, &path, Kind::File)).collect::<Vec<_>>();
+            let got = shells()
+                .iter()
+                .map(|s| make(s, &path, Kind::File))
+                .collect::<Vec<_>>();
             let _ = tx.send(got);
         });
-        let got = rx.recv_timeout(Duration::from_secs(10)).expect("waited for a reader of the pipe");
+        let got = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("waited for a reader of the pipe");
         assert!(got.iter().all(|g| *g == Err(Problem::Exists)), "{got:?}");
     }
 
     /// The modes, owners and groups of what `touch` and `mkdir` make, under the same umask and in the same folder.
-    fn what_the_machine_makes(umask: &str, dir: &Path, name: &str, folder: bool) -> (u32, u32, u32) {
+    fn what_the_machine_makes(
+        umask: &str,
+        dir: &Path,
+        name: &str,
+        folder: bool,
+    ) -> (u32, u32, u32) {
         let path = at(dir, name);
         let tool = if folder { "mkdir" } else { "touch" };
         let done = Command::new("/bin/sh")
@@ -562,9 +643,17 @@ mod tests {
                     let ours = at(d.path(), "ours");
                     run_under(&shell, Some(umask), &[], &Act::Make(&ours, kind)).unwrap();
                     let m = fs::metadata(&ours).unwrap();
-                    assert_eq!((m.mode() & 0o7777, m.uid(), m.gid()), theirs, "{shell:?} umask {umask} {kind:?}");
-                    fs::remove_dir_all(&ours).or_else(|_| fs::remove_file(&ours)).unwrap();
-                    fs::remove_dir_all(at(d.path(), "theirs")).or_else(|_| fs::remove_file(at(d.path(), "theirs"))).unwrap();
+                    assert_eq!(
+                        (m.mode() & 0o7777, m.uid(), m.gid()),
+                        theirs,
+                        "{shell:?} umask {umask} {kind:?}"
+                    );
+                    fs::remove_dir_all(&ours)
+                        .or_else(|_| fs::remove_file(&ours))
+                        .unwrap();
+                    fs::remove_dir_all(at(d.path(), "theirs"))
+                        .or_else(|_| fs::remove_file(at(d.path(), "theirs")))
+                        .unwrap();
                 }
             }
         }
@@ -577,7 +666,10 @@ mod tests {
             let mut groups = [0 as libc::gid_t; 64];
             let n = libc::getgroups(64, groups.as_mut_ptr());
             let own = libc::getegid();
-            groups[..usize::try_from(n).ok()?].iter().copied().find(|g| *g != own)
+            groups[..usize::try_from(n).ok()?]
+                .iter()
+                .copied()
+                .find(|g| *g != own)
         }
     }
 
@@ -595,10 +687,18 @@ mod tests {
                 let ours = at(&shared, "ours");
                 run_under(&shell, Some("002"), &[], &Act::Make(&ours, kind)).unwrap();
                 let m = fs::metadata(&ours).unwrap();
-                assert_eq!((m.mode() & 0o7777, m.uid(), m.gid()), theirs, "{shell:?} {kind:?}");
+                assert_eq!(
+                    (m.mode() & 0o7777, m.uid(), m.gid()),
+                    theirs,
+                    "{shell:?} {kind:?}"
+                );
                 assert_eq!(m.gid(), theirs.2);
-                fs::remove_dir_all(&ours).or_else(|_| fs::remove_file(&ours)).unwrap();
-                fs::remove_dir_all(at(&shared, "theirs")).or_else(|_| fs::remove_file(at(&shared, "theirs"))).unwrap();
+                fs::remove_dir_all(&ours)
+                    .or_else(|_| fs::remove_file(&ours))
+                    .unwrap();
+                fs::remove_dir_all(at(&shared, "theirs"))
+                    .or_else(|_| fs::remove_file(at(&shared, "theirs")))
+                    .unwrap();
             }
         }
     }
@@ -620,7 +720,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn entries_of(path: &str) -> Vec<String> {
         let out = Command::new("ls").arg("-lde").arg(path).output().unwrap();
-        String::from_utf8_lossy(&out.stdout).lines().skip(1).map(|l| l.trim().to_owned()).collect()
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .skip(1)
+            .map(|l| l.trim().to_owned())
+            .collect()
     }
 
     #[cfg(target_os = "macos")]
@@ -632,12 +736,19 @@ mod tests {
             for (kind, folder) in [(Kind::File, false), (Kind::Folder, true)] {
                 what_the_machine_makes("022", d.path(), "theirs", folder);
                 let theirs = entries_of(&at(d.path(), "theirs"));
-                assert!(theirs.iter().any(|l| l.contains("everyone")), "the folder hands nothing down: {theirs:?}");
+                assert!(
+                    theirs.iter().any(|l| l.contains("everyone")),
+                    "the folder hands nothing down: {theirs:?}"
+                );
                 let ours = at(d.path(), "ours");
                 run_under(&shell, Some("022"), &[], &Act::Make(&ours, kind)).unwrap();
                 assert_eq!(entries_of(&ours), theirs, "{shell:?} {kind:?}");
-                fs::remove_dir_all(&ours).or_else(|_| fs::remove_file(&ours)).unwrap();
-                fs::remove_dir_all(at(d.path(), "theirs")).or_else(|_| fs::remove_file(at(d.path(), "theirs"))).unwrap();
+                fs::remove_dir_all(&ours)
+                    .or_else(|_| fs::remove_file(&ours))
+                    .unwrap();
+                fs::remove_dir_all(at(d.path(), "theirs"))
+                    .or_else(|_| fs::remove_file(at(d.path(), "theirs")))
+                    .unwrap();
             }
         }
     }
@@ -651,7 +762,8 @@ mod tests {
                 let barrier = std::sync::Arc::new(std::sync::Barrier::new(12));
                 let handles: Vec<_> = (0..12)
                     .map(|_| {
-                        let (shell, target, barrier) = (shell.clone(), target.clone(), barrier.clone());
+                        let (shell, target, barrier) =
+                            (shell.clone(), target.clone(), barrier.clone());
                         std::thread::spawn(move || {
                             barrier.wait();
                             make(&shell, &target, kind)
@@ -659,8 +771,16 @@ mod tests {
                     })
                     .collect();
                 let got: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-                assert_eq!(got.iter().filter(|g| g.is_ok()).count(), 1, "{shell:?} {kind:?}: {got:?}");
-                assert!(got.iter().all(|g| matches!(g, Ok(()) | Err(Problem::Exists))), "{got:?}");
+                assert_eq!(
+                    got.iter().filter(|g| g.is_ok()).count(),
+                    1,
+                    "{shell:?} {kind:?}: {got:?}"
+                );
+                assert!(
+                    got.iter()
+                        .all(|g| matches!(g, Ok(()) | Err(Problem::Exists))),
+                    "{got:?}"
+                );
                 assert_eq!(names(d.path()), ["contested"]);
             }
         }
@@ -671,12 +791,15 @@ mod tests {
         for shell in shells() {
             let d = tempfile::tempdir().unwrap();
             let target = at(d.path(), "contested");
-            let sources: Vec<String> = (0..12).map(|i| put(d.path(), &format!("src{i}"), format!("{i}").as_bytes())).collect();
+            let sources: Vec<String> = (0..12)
+                .map(|i| put(d.path(), &format!("src{i}"), format!("{i}").as_bytes()))
+                .collect();
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(sources.len()));
             let handles: Vec<_> = sources
                 .iter()
                 .map(|from| {
-                    let (shell, from, target, barrier) = (shell.clone(), from.clone(), target.clone(), barrier.clone());
+                    let (shell, from, target, barrier) =
+                        (shell.clone(), from.clone(), target.clone(), barrier.clone());
                     std::thread::spawn(move || {
                         barrier.wait();
                         mv(&shell, &from, &target)
@@ -684,14 +807,30 @@ mod tests {
                 })
                 .collect();
             let got: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-            assert_eq!(got.iter().filter(|g| g.is_ok()).count(), 1, "{shell:?}: {got:?}");
-            assert!(got.iter().all(|g| matches!(g, Ok(()) | Err(Problem::Exists))), "{got:?}");
+            assert_eq!(
+                got.iter().filter(|g| g.is_ok()).count(),
+                1,
+                "{shell:?}: {got:?}"
+            );
+            assert!(
+                got.iter()
+                    .all(|g| matches!(g, Ok(()) | Err(Problem::Exists))),
+                "{got:?}"
+            );
             let winner = got.iter().position(Result::is_ok).unwrap();
             assert_eq!(fs::read_to_string(&target).unwrap(), winner.to_string());
             for (i, from) in sources.iter().enumerate().filter(|(i, _)| *i != winner) {
-                assert_eq!(fs::read_to_string(from).unwrap(), i.to_string(), "{shell:?}");
+                assert_eq!(
+                    fs::read_to_string(from).unwrap(),
+                    i.to_string(),
+                    "{shell:?}"
+                );
             }
-            assert_eq!(names(d.path()).len(), sources.len(), "{shell:?}: one name per file, nothing extra");
+            assert_eq!(
+                names(d.path()).len(),
+                sources.len(),
+                "{shell:?}: one name per file, nothing extra"
+            );
         }
     }
 
@@ -713,8 +852,16 @@ exec mv "$@""#,
             let to = at(d.path(), "to.txt");
             let race = at(shims.path(), "race");
             let env = [("PATH", path.as_str()), ("YZ_RACE", race.as_str())];
-            assert_eq!(run_under(&shell, None, &env, &Act::Move(&from, &to)), Ok(()), "{shell:?}");
-            assert_eq!(fs::read_to_string(&race).unwrap().trim(), "refused", "{shell:?}: the name was free to make");
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Move(&from, &to)),
+                Ok(()),
+                "{shell:?}"
+            );
+            assert_eq!(
+                fs::read_to_string(&race).unwrap().trim(),
+                "refused",
+                "{shell:?}: the name was free to make"
+            );
             assert_eq!(fs::read_to_string(&to).unwrap(), "mine", "{shell:?}");
             assert_eq!(names(d.path()), ["to.txt"]);
         }
@@ -748,7 +895,11 @@ exec mv "$@""#,
                 // not enough a folder that took the name has it moved into it: said, never silent.
                 match &got {
                     Err(Problem::Exists) => {
-                        assert_eq!(fs::read_to_string(at(d.path(), "from/x")).unwrap(), "x", "{shell:?} {kind}");
+                        assert_eq!(
+                            fs::read_to_string(at(d.path(), "from/x")).unwrap(),
+                            "x",
+                            "{shell:?} {kind}"
+                        );
                     }
                     Err(Problem::Failed(why)) if kind == "folder" => {
                         assert!(why.contains("moved into") && why.contains(&to), "{why}");
@@ -768,16 +919,26 @@ exec mv "$@""#,
 
     #[test]
     fn a_move_that_fails_leaves_the_entry_where_it_was_and_no_empty_file_in_its_name() {
-        let (_shims, path) = shimmed(&[("mv", r#"echo "mv: simulated: disk on fire" >&2; exit 1"#)]);
+        let (_shims, path) =
+            shimmed(&[("mv", r#"echo "mv: simulated: disk on fire" >&2; exit 1"#)]);
         for shell in shells() {
             let d = tempfile::tempdir().unwrap();
             let from = put(d.path(), "from.txt", b"mine");
             let folder = at(d.path(), "folder");
             fs::create_dir(&folder).unwrap();
-            for (src, dst) in [(&from, at(d.path(), "to.txt")), (&folder, at(d.path(), "to"))] {
+            for (src, dst) in [
+                (&from, at(d.path(), "to.txt")),
+                (&folder, at(d.path(), "to")),
+            ] {
                 let got = run_under(&shell, None, &[("PATH", &path)], &Act::Move(src, &dst));
-                assert!(matches!(&got, Err(Problem::Failed(w)) if w.contains("disk on fire")), "{shell:?}: {got:?}");
-                assert!(!Path::new(&dst).exists(), "{shell:?}: a name was left behind");
+                assert!(
+                    matches!(&got, Err(Problem::Failed(w)) if w.contains("disk on fire")),
+                    "{shell:?}: {got:?}"
+                );
+                assert!(
+                    !Path::new(&dst).exists(),
+                    "{shell:?}: a name was left behind"
+                );
             }
             assert_eq!(names(d.path()), ["folder", "from.txt"], "{shell:?}");
             assert_eq!(fs::read_to_string(&from).unwrap(), "mine");
@@ -788,7 +949,8 @@ exec mv "$@""#,
     fn a_move_that_is_told_to_stop_gives_the_name_back_once_it_is_over_and_says_it_was_stopped() {
         // The stand-in `mv` holds the move up, then fails or carries on; the script is asked to end meanwhile.
         for (hold, moved) in [("exit 1", false), ("exec mv \"$@\"", true)] {
-            let (shims, path) = shimmed(&[("mv", &format!("touch \"$YZ_STARTED\"; sleep 1; {hold}"))]);
+            let (shims, path) =
+                shimmed(&[("mv", &format!("touch \"$YZ_STARTED\"; sleep 1; {hold}"))]);
             for shell in shells() {
                 let d = tempfile::tempdir().unwrap();
                 let from = put(d.path(), "from.txt", b"mine");
@@ -810,18 +972,37 @@ exec mv "$@""#,
                 while !Path::new(&started).exists() && waited.elapsed() < Duration::from_secs(5) {
                     std::thread::sleep(Duration::from_millis(5));
                 }
-                assert!(Path::new(&started).exists(), "{shell:?}: the move did not start");
-                assert!(Path::new(&to).exists(), "{shell:?}: the name was not taken first");
+                assert!(
+                    Path::new(&started).exists(),
+                    "{shell:?}: the move did not start"
+                );
+                assert!(
+                    Path::new(&to).exists(),
+                    "{shell:?}: the name was not taken first"
+                );
                 // SAFETY: a signal to the child this test started.
                 unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
                 let out = child.wait_with_output().unwrap();
                 assert_eq!(out.status.code(), Some(1), "{shell:?}");
-                assert!(String::from_utf8_lossy(&out.stderr).contains("may or may not"), "{shell:?}");
-                assert!(out.stdout.is_empty(), "{shell:?}: no answer, since none was reached");
+                assert!(
+                    String::from_utf8_lossy(&out.stderr).contains("may or may not"),
+                    "{shell:?}"
+                );
+                assert!(
+                    out.stdout.is_empty(),
+                    "{shell:?}: no answer, since none was reached"
+                );
                 if moved {
-                    assert_eq!((fs::read_to_string(&to).unwrap(), Path::new(&from).exists()), ("mine".into(), false));
+                    assert_eq!(
+                        (fs::read_to_string(&to).unwrap(), Path::new(&from).exists()),
+                        ("mine".into(), false)
+                    );
                 } else {
-                    assert_eq!((fs::read_to_string(&from).unwrap(), Path::new(&to).exists()), ("mine".into(), false), "{shell:?}: an empty file stayed in the name");
+                    assert_eq!(
+                        (fs::read_to_string(&from).unwrap(), Path::new(&to).exists()),
+                        ("mine".into(), false),
+                        "{shell:?}: an empty file stayed in the name"
+                    );
                 }
                 assert_eq!(names(d.path()).len(), 1, "{shell:?}: {:?}", names(d.path()));
             }
@@ -835,16 +1016,31 @@ exec mv "$@""#,
         for missing in all {
             let bin = tempfile::tempdir().unwrap();
             for tool in all.iter().filter(|t| **t != missing) {
-                let found = Command::new("/bin/sh").args(["-c", &format!("command -v {tool}")]).output().unwrap();
-                symlink(String::from_utf8(found.stdout).unwrap().trim(), bin.path().join(tool)).unwrap();
+                let found = Command::new("/bin/sh")
+                    .args(["-c", &format!("command -v {tool}")])
+                    .output()
+                    .unwrap();
+                symlink(
+                    String::from_utf8(found.stdout).unwrap().trim(),
+                    bin.path().join(tool),
+                )
+                .unwrap();
             }
             let env = [("PATH", bin.path().to_str().unwrap())];
             let d = tempfile::tempdir().unwrap();
             let (from, to) = (put(d.path(), "from", b"x"), at(d.path(), "to"));
-            let act = if missing == "mkdir" { Act::Make(&to, Kind::Folder) } else { Act::Move(&from, &to) };
+            let act = if missing == "mkdir" {
+                Act::Make(&to, Kind::Folder)
+            } else {
+                Act::Move(&from, &to)
+            };
             for shell in shells() {
                 let got = run_under(&shell, None, &env, &act);
-                assert_eq!(got, Err(Problem::NoTool(missing)), "{shell:?} without {missing}");
+                assert_eq!(
+                    got,
+                    Err(Problem::NoTool(missing)),
+                    "{shell:?} without {missing}"
+                );
             }
             assert_eq!(names(d.path()), ["from"], "without {missing}");
         }
@@ -853,7 +1049,10 @@ exec mv "$@""#,
         let d = tempfile::tempdir().unwrap();
         let to = at(d.path(), "to");
         let env = [("PATH", none.path().to_str().unwrap())];
-        assert_eq!(run_under(&["/bin/sh"], None, &env, &Act::Make(&to, Kind::File)), Ok(()));
+        assert_eq!(
+            run_under(&["/bin/sh"], None, &env, &Act::Make(&to, Kind::File)),
+            Ok(())
+        );
     }
 
     #[test]
@@ -861,11 +1060,18 @@ exec mv "$@""#,
         // Only where the temp folder and /dev/shm or another volume are different devices.
         let d = tempfile::tempdir().unwrap();
         let here = fs::metadata(d.path()).unwrap().dev();
-        let Some(other) = ["/dev/shm", "/Volumes/Macintosh HD/private/tmp", "/System/Volumes/VM"]
-            .into_iter()
-            .find(|p| fs::metadata(p).map(|m| m.dev() != here && m.permissions().mode() & 0o222 != 0).unwrap_or(false)
-                && tempfile::tempdir_in(p).is_ok())
-        else {
+        let Some(other) = [
+            "/dev/shm",
+            "/Volumes/Macintosh HD/private/tmp",
+            "/System/Volumes/VM",
+        ]
+        .into_iter()
+        .find(|p| {
+            fs::metadata(p)
+                .map(|m| m.dev() != here && m.permissions().mode() & 0o222 != 0)
+                .unwrap_or(false)
+                && tempfile::tempdir_in(p).is_ok()
+        }) else {
             return;
         };
         let elsewhere = tempfile::tempdir_in(other).unwrap();
@@ -905,6 +1111,56 @@ exec mv "$@""#,
         }
     }
 
+    /// Against a real hc, in a session and with a machine of its own (never the user's core):
+    /// `YZ_REAL_HC=/tmp/x/hcx YZ_REAL_MACHINE=lab cargo test -p yuzora-files --lib -- --ignored
+    /// --exact remote_entry::tests::a_real_hc_makes_and_renames_end_to_end --nocapture`.
+    #[test]
+    #[ignore = "needs YZ_REAL_HC and YZ_REAL_MACHINE"]
+    fn a_real_hc_makes_and_renames_end_to_end() {
+        let hc = std::path::PathBuf::from(std::env::var("YZ_REAL_HC").unwrap());
+        let machine = std::env::var("YZ_REAL_MACHINE").unwrap();
+        let on = Some(machine.as_str());
+        yuzora_core::remote::set_hc_program(move || hc.clone());
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path();
+        let started = std::time::Instant::now();
+        let file = at(dir, "new file.txt");
+        fsops::create_file(&file, on).unwrap();
+        let after_file = started.elapsed();
+        fsops::create_dir(&at(dir, "folder"), on).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"");
+        assert!(dir.join("folder").is_dir());
+        for taken in [&file, &at(dir, "folder")] {
+            assert!(
+                fsops::create_file(taken, on)
+                    .unwrap_err()
+                    .contains("already exists")
+            );
+            assert!(
+                fsops::create_dir(taken, on)
+                    .unwrap_err()
+                    .contains("already exists")
+            );
+        }
+        let renamed = at(dir, "it's \"renamed\"\nname");
+        fsops::rename(&file, &renamed, on).unwrap();
+        assert!(Path::new(&renamed).is_file() && !Path::new(&file).exists());
+        fsops::rename(&at(dir, "folder"), &at(dir, "folder2"), on).unwrap();
+        fs::write(at(dir, "other"), "theirs").unwrap();
+        let refused = fsops::rename(&renamed, &at(dir, "other"), on).unwrap_err();
+        assert!(refused.contains("already exists"), "{refused}");
+        assert_eq!(fs::read_to_string(at(dir, "other")).unwrap(), "theirs");
+        let e = fsops::create_file(&at(dir, "no/parent.txt"), on).unwrap_err();
+        assert!(e.contains(&at(dir, "no")), "{e}");
+        let e = fsops::rename(&at(dir, "ghost"), &at(dir, "x"), on).unwrap_err();
+        assert!(e.contains("ghost"), "{e}");
+        println!(
+            "one create over hc: {after_file:?}; the whole run: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(names(dir), ["folder2", "it's \"renamed\"\nname", "other"]);
+    }
+
     /// On Linux machines, in throwaway containers (`docker info` must work, and the images are
     /// pulled): the scripts as an ordinary user, against folders with default ACLs and setgid, makers
     /// and movers that race, two file systems, programs that are missing.
@@ -937,7 +1193,10 @@ exec mv "$@""#,
                 .output()
                 .unwrap();
             let text = String::from_utf8_lossy(&out.stdout).into_owned();
-            println!("{image} ({shell})\n{text}{}", String::from_utf8_lossy(&out.stderr));
+            println!(
+                "{image} ({shell})\n{text}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             if !text.contains("RESULT fails=0") {
                 failures.push(format!("{image} ({shell})"));
             }

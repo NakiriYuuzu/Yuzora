@@ -194,7 +194,10 @@ fn moved(from: &str, to: &str, on: Option<&str>, cx: &mut App) {
         let Some(path) = renamed(&key.path, from, to).filter(|_| key.on.as_deref() == on) else {
             continue;
         };
-        let new_key = DocKey { on: key.on.clone(), path };
+        let new_key = DocKey {
+            on: key.on.clone(),
+            path,
+        };
         let docs = cx.default_global::<Docs>();
         if docs.by_key.get(&key) == Some(&id) {
             docs.by_key.remove(&key);
@@ -2159,6 +2162,39 @@ mod tests {
         cx.run_until_parked();
         assert!(futures::executor::block_on(saved).unwrap().ok);
         assert_eq!((read(&b), a.exists()), (text(cx), false));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_save_and_a_rename_of_its_file_on_a_machine_never_overlap(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "one\n").unwrap();
+        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let (view, window) = editing_on("lab", &a, cx);
+        let read = |p: &std::path::Path| std::fs::read_to_string(p).unwrap();
+        // A save in flight: the rename is refused, and the file is saved where it was.
+        type_text(&view, window, "two ", cx);
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        let rx = cx.update(|cx| rename(path(&a), path(&b), Some("lab".into()), cx));
+        cx.run_until_parked();
+        let refused = futures::executor::block_on(rx).unwrap().unwrap_err();
+        assert!(refused.contains("being saved"), "{refused}");
+        assert!(futures::executor::block_on(saved).unwrap().ok);
+        assert_eq!((read(&a), b.exists()), ("two one\n".into(), false));
+        // A rename in flight: the save is refused (it would write the old path), then saves where the file is.
+        type_text(&view, window, "three ", cx);
+        let rx = cx.update(|cx| rename(path(&a), path(&b), Some("lab".into()), cx));
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        assert_eq!(futures::executor::block_on(rx).unwrap(), Ok(()));
+        let saved = futures::executor::block_on(saved).unwrap();
+        assert_eq!((saved.ok, saved.error.as_deref()), (false, Some("busy")));
+        assert!(!a.exists());
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        assert!(futures::executor::block_on(saved).unwrap().ok);
+        assert_eq!((read(&b), a.exists()), ("two three one\n".into(), false));
     }
 
     #[cfg(unix)]

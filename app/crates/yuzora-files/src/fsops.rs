@@ -15,8 +15,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
-pub use crate::remote_write::Refusal;
 use crate::remote_entry::{self, Act, Kind};
+pub use crate::remote_write::Refusal;
 use crate::remote_write::{MAX_BYTES, posix_crc, resolve_links, save_gate};
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -2681,7 +2681,10 @@ mod tests {
         std::os::unix::fs::symlink("nowhere", &dangling).unwrap();
         for at in [&f, &sub, &live, &dangling] {
             let e = create_file(at, on).unwrap_err();
-            assert!(e.contains("already exists") && e.contains(at.as_str()), "{e}");
+            assert!(
+                e.contains("already exists") && e.contains(at.as_str()),
+                "{e}"
+            );
         }
         assert_eq!(read(&f), "mine");
         assert_eq!(std::fs::read_dir(&sub).unwrap().count(), 0);
@@ -2689,7 +2692,17 @@ mod tests {
         assert!(std::fs::symlink_metadata(&live).unwrap().is_symlink());
         assert_eq!(held(&d), ["dangling", "live", "new.txt", "sub"]);
         // A name is its bytes: nothing in it is read by the shell there.
-        for name in ["a b", "it's", "say \"hi\"", "two\nlines", "$HOME", "`x`", "-dash", "semi;colon", "é"] {
+        for name in [
+            "a b",
+            "it's",
+            "say \"hi\"",
+            "two\nlines",
+            "$HOME",
+            "`x`",
+            "-dash",
+            "semi;colon",
+            "é",
+        ] {
             let at = p(&d, name);
             create_file(&at, on).unwrap();
             assert!(Path::new(&at).is_file(), "{name:?}");
@@ -2709,7 +2722,10 @@ mod tests {
         std::os::unix::fs::symlink("nowhere", &dangling).unwrap();
         for at in [&sub, &file, &dangling] {
             let e = create_dir(at, on).unwrap_err();
-            assert!(e.contains("already exists") && e.contains(at.as_str()), "{e}");
+            assert!(
+                e.contains("already exists") && e.contains(at.as_str()),
+                "{e}"
+            );
         }
         assert_eq!(read(&p(&d, "sub/kept")), "x");
         assert_eq!(read(&file), "mine");
@@ -2747,7 +2763,10 @@ mod tests {
         // A file, a folder (it is no place to move into either), a link, a link to nothing.
         for to in [&b, &empty, &full, &live, &dangling] {
             let e = rename(&a, to, on).unwrap_err();
-            assert!(e.contains("already exists") && e.contains(to.as_str()), "{e}");
+            assert!(
+                e.contains("already exists") && e.contains(to.as_str()),
+                "{e}"
+            );
             assert_eq!(read(&a), "mine", "{to}");
         }
         assert_eq!(read(&b), "theirs");
@@ -2757,11 +2776,18 @@ mod tests {
         assert!(std::fs::symlink_metadata(&live).unwrap().is_symlink());
         // A folder over a folder, a folder over a file, a file over itself.
         for to in [&full, &b] {
-            assert!(rename(&empty, to, on).unwrap_err().contains("already exists"));
+            assert!(
+                rename(&empty, to, on)
+                    .unwrap_err()
+                    .contains("already exists")
+            );
         }
         assert!(rename(&a, &a, on).unwrap_err().contains("already exists"));
         assert!(Path::new(&empty).is_dir() && Path::new(&a).is_file());
-        assert_eq!(held(&d), ["a.txt", "b.txt", "dangling", "empty", "full", "live"]);
+        assert_eq!(
+            held(&d),
+            ["a.txt", "b.txt", "dangling", "empty", "full", "live"]
+        );
     }
 
     #[cfg(unix)]
@@ -2798,7 +2824,17 @@ mod tests {
         assert_eq!(read(&inside), "mine");
         assert!(!Path::new(&p(&d, "no")).exists());
         // A name is its bytes.
-        for name in ["a b", "it's", "say \"hi\"", "two\nlines", "$HOME", "`x`", "-dash", "semi;colon", "é"] {
+        for name in [
+            "a b",
+            "it's",
+            "say \"hi\"",
+            "two\nlines",
+            "$HOME",
+            "`x`",
+            "-dash",
+            "semi;colon",
+            "é",
+        ] {
             let at = p(&d, name);
             rename(&inside, &at, on).unwrap();
             assert_eq!(read(&at), "mine", "{name:?}");
@@ -2817,7 +2853,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_change_of_case_only_is_renamed_on_a_machine_that_folds_case_and_refused_on_one_that_does_not() {
+    fn a_change_of_case_only_is_renamed_on_a_machine_that_folds_case_and_refused_on_one_that_does_not()
+     {
         let on = lab();
         let d = tempfile::tempdir().unwrap();
         let from = put(&d, "readme.md", b"x");
@@ -2856,7 +2893,11 @@ mod tests {
             }
         }
         // Windows paths are not paths there.
-        assert!(create_file(r"C:\x\n.txt", Some("lab")).unwrap_err().contains('/'));
+        assert!(
+            create_file(r"C:\x\n.txt", Some("lab"))
+                .unwrap_err()
+                .contains('/')
+        );
         assert!(rename("relative", "/x", Some("lab")).is_err());
         assert_eq!(held(&d), ["a.txt"]);
         // A folder one cannot write in: told so, naming the machine, nothing made.
