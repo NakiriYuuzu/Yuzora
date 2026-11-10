@@ -90,6 +90,38 @@ pub struct DiffSession {
     pub changes: Vec<Change>,
 }
 
+/// A hunk header's `start,count`: git leaves the count out for one line, and for none the start
+/// is the line before.
+fn range(start: isize, count: usize) -> String {
+    match count {
+        0 => format!("{start},0"),
+        1 => format!("{}", start + 1),
+        n => format!("{},{n}", start + 1),
+    }
+}
+
+/// A file's name in a patch, `prefix` before it: quoted the way git does when it holds a quote, a
+/// backslash or a control character, as it is otherwise (spaces and wide characters included).
+fn patch_name(prefix: &str, name: &str) -> String {
+    if name.chars().any(|c| c == '"' || c == '\\' || c.is_control()) {
+        let mut quoted = String::from("\"");
+        for c in format!("{prefix}{name}").chars() {
+            match c {
+                '"' => quoted.push_str("\\\""),
+                '\\' => quoted.push_str("\\\\"),
+                '\n' => quoted.push_str("\\n"),
+                '\t' => quoted.push_str("\\t"),
+                c if c.is_control() => quoted.push_str(&format!("\\{:03o}", c as u32)),
+                c => quoted.push(c),
+            }
+        }
+        quoted.push('"');
+        quoted
+    } else {
+        format!("{prefix}{name}")
+    }
+}
+
 /// Joins a scoped read; a panic there is an error here, not a second panic.
 fn joined<T>(h: std::thread::ScopedJoinHandle<'_, GitResult<T>>) -> GitResult<T> {
     h.join().unwrap_or_else(|_| Err(GitError::Other("a diff read panicked".into())))
@@ -494,9 +526,137 @@ fn new_file_mode(repo: &Repo, path: &str) -> GitResult<&'static str> {
     })
 }
 
+/// Which side of a diff a run of lines is from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+/// Lines of context a patch keeps around a change, as `git diff` does.
+const PATCH_CONTEXT: usize = 3;
+
 impl DiffSession {
     fn sides(&self) -> (Vec<&[u8]>, Vec<&[u8]>) {
         (diff::lines(self.left.as_deref().unwrap_or_default()), diff::lines(self.right.as_deref().unwrap_or_default()))
+    }
+
+    /// The lines the pane's selection covers, as the file has them: each run is lines
+    /// `start..end` (0-based) of one side, taken in the order given and joined by `\n`. A line
+    /// keeps its tabs, spaces and characters, and loses only its line end; where a run runs past
+    /// the side it stops at the side's last line. Nothing for a diff that shows no lines.
+    pub fn lines_text(&self, runs: &[(Side, usize, usize)]) -> String {
+        if self.binary || self.too_large {
+            return String::new();
+        }
+        let (left, right) = self.sides();
+        let mut out: Vec<String> = Vec::new();
+        for &(side, start, end) in runs {
+            let lines = if side == Side::Left { &left } else { &right };
+            let end = end.min(lines.len());
+            for line in lines.get(start..end).unwrap_or_default() {
+                out.push(String::from_utf8_lossy(diff::strip_eol(line)).into_owned());
+            }
+        }
+        out.join("\n")
+    }
+
+    /// The patch of some hunks of the view `ws` makes (their numbers there), as `git apply` takes it:
+    /// from the left text to the right one, with only these hunks. Each keeps up to three lines of
+    /// context that are the same on both sides, hunks near enough to touch share one `@@`, and the
+    /// new side's numbers count only the hunks in the patch. Empty for no hunk.
+    pub fn patch(&self, ws: Whitespace, hunks: &[usize]) -> String {
+        if self.binary || self.too_large {
+            return String::new();
+        }
+        let (left, right) = self.sides();
+        let changes = if ws == Whitespace::Exact { self.changes.clone() } else { diff::diff_lines(&left, &right, ws) };
+        let mut picked: Vec<usize> = hunks.iter().copied().filter(|h| *h < changes.len()).collect();
+        picked.sort_unstable();
+        picked.dedup();
+        if picked.is_empty() {
+            return String::new();
+        }
+        let mut out: Vec<u8> = self.patch_header().into_bytes();
+        // What the earlier hunks of this patch add to the file's length.
+        let mut grown: isize = 0;
+        let mut at = 0;
+        while at < picked.len() {
+            // Hunks that are neighbours with at most two contexts between them make one `@@`.
+            let (first, mut last) = (picked[at], picked[at]);
+            at += 1;
+            while at < picked.len() && picked[at] == last + 1 && changes[last + 1].a.start - changes[last].a.end <= 2 * PATCH_CONTEXT {
+                last = picked[at];
+                at += 1;
+            }
+            let before = if first == 0 { 0 } else { changes[first - 1].a.end };
+            let after = changes.get(last + 1).map_or(left.len(), |c| c.a.start);
+            let from = changes[first].a.start - PATCH_CONTEXT.min(changes[first].a.start - before);
+            let to = changes[last].a.end + PATCH_CONTEXT.min(after - changes[last].a.end);
+
+            let mut body: Vec<u8> = Vec::new();
+            let mut line = |sign: u8, raw: &[u8]| {
+                body.push(sign);
+                body.extend_from_slice(raw);
+                if !raw.ends_with(b"\n") {
+                    body.extend_from_slice(b"\n\\ No newline at end of file\n");
+                }
+            };
+            let (mut was, mut now) = (0usize, 0usize);
+            let unchanged = |line: &mut dyn FnMut(u8, &[u8]), range: std::ops::Range<usize>, last_of_hunk: usize| {
+                for i in range {
+                    // The last line of a text with no line end can't be a context line when
+                    // more of the hunk follows it: the added lines after it need it ended.
+                    if !left[i].ends_with(b"\n") && i + 1 != last_of_hunk {
+                        line(b'-', left[i]);
+                        let mut ended = left[i].to_vec();
+                        ended.push(b'\n');
+                        line(b'+', &ended);
+                    } else {
+                        line(b' ', left[i]);
+                    }
+                }
+            };
+            let mut next = from;
+            for c in &changes[first..=last] {
+                unchanged(&mut line, next..c.a.start, usize::MAX);
+                was += c.a.len();
+                now += c.b.len();
+                for l in &left[c.a.clone()] {
+                    line(b'-', l);
+                }
+                for l in &right[c.b.clone()] {
+                    line(b'+', l);
+                }
+                next = c.a.end;
+            }
+            unchanged(&mut line, next..to, to);
+            let kept = to - from - was;
+            let (was, now) = (kept + was, kept + now);
+            let start = from as isize + grown;
+            out.extend_from_slice(format!("@@ -{} +{} @@\n", range(from as isize, was), range(start, now)).as_bytes());
+            out.extend_from_slice(&body);
+            grown += now as isize - was as isize;
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// `diff --git` down to the `+++` line: the file's names, and that it is new, gone or renamed.
+    fn patch_header(&self) -> String {
+        let old = self.orig.as_deref().unwrap_or(&self.path);
+        let (a, b) = (patch_name("a/", old), patch_name("b/", &self.path));
+        let mut head = format!("diff --git {a} {b}\n");
+        if self.left.is_none() {
+            head.push_str("new file mode 100644\n");
+        } else if self.right.is_none() {
+            head.push_str("deleted file mode 100644\n");
+        } else if old != self.path {
+            head.push_str(&format!("rename from {}\nrename to {}\n", patch_name("", old), patch_name("", &self.path)));
+        }
+        let from = if self.left.is_none() { "/dev/null".to_owned() } else { patch_name("a/", old) };
+        let to = if self.right.is_none() { "/dev/null".to_owned() } else { patch_name("b/", &self.path) };
+        head.push_str(&format!("--- {from}\n+++ {to}\n"));
+        head
     }
 
     fn check_index(&self) -> GitResult<()> {
@@ -1062,5 +1222,176 @@ exec 'REAL' "$@"
         let (repo, _) = timed_git(&s, Some("cat-file"));
         let d = DiffSession::load(repo, "new.txt".into(), None, Mode::Unstaged).unwrap();
         assert_eq!((d.left, d.right.as_deref()), (None, Some(&b"x\n"[..])));
+    }
+
+    // yuzora(v010): copying from the pane. What a selection covers is the file's own text.
+    #[test]
+    fn copied_lines_are_the_files_own_text() {
+        let s = scratch();
+        s.commit("f.txt", "keep\n", "base");
+        let text = "\tindent with a tab\n  trailing spaces  \n\n\u{6F22}\u{5B57}\u{FF21}\u{1F600}\ncrlf line\r\nlast line, no newline";
+        s.write("f.txt", text);
+        let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Unstaged).unwrap();
+        let right = |from, to| d.lines_text(&[(Side::Right, from, to)]);
+        assert_eq!(right(0, 2), "\tindent with a tab\n  trailing spaces  ", "tab and trailing spaces kept");
+        assert_eq!(right(1, 3), "  trailing spaces  \n", "an empty line is a line");
+        assert_eq!(right(3, 4), "\u{6F22}\u{5B57}\u{FF21}\u{1F600}", "wide characters kept");
+        assert_eq!(right(4, 5), "crlf line", "only the line end goes, the carriage return with it");
+        assert_eq!(right(5, 6), "last line, no newline", "a last line with no newline gets none");
+        assert_eq!(d.lines_text(&[(Side::Left, 0, 1)]), "keep", "the left side is the index's text");
+        assert_eq!(d.lines_text(&[(Side::Right, 5, 6), (Side::Left, 0, 1)]), "last line, no newline\nkeep", "runs in the order given, either side");
+        assert_eq!(right(5, 99), "last line, no newline", "a run past the end stops at the last line");
+        assert_eq!((right(99, 100), right(3, 3), right(4, 2)), (String::new(), String::new(), String::new()));
+        assert_eq!(d.lines_text(&[(Side::Right, 1, 1), (Side::Right, 0, 1)]), "\tindent with a tab", "a run of no lines adds no empty line");
+        assert_eq!(d.lines_text(&[]), "");
+
+        s.commit("g.txt", "a\n", "g");
+        std::fs::write(std::path::Path::new(s.root()).join("g.txt"), b"a\xffb\nsecond\n").unwrap();
+        let g = DiffSession::load(s.repo.clone(), "g.txt".into(), None, Mode::Unstaged).unwrap();
+        assert_eq!(g.lines_text(&[(Side::Right, 0, 2)]), "a\u{FFFD}b\nsecond", "a byte that is not UTF-8 shows as the replacement character");
+
+        s.write("bin.dat", "a\0b\n");
+        let b = DiffSession::load(s.repo.clone(), "bin.dat".into(), None, Mode::Unstaged).unwrap();
+        assert_eq!(b.lines_text(&[(Side::Right, 0, 1)]), "", "a binary file shows no lines");
+    }
+
+    /// Two commits of `path`, and the first one's id: the patch of the second's diff applies to the first.
+    fn two_texts(s: &crate::repo::testing::Scratch, path: &str, old: &str, new: &str) -> (String, String) {
+        let one = s.commit(path, old, "old");
+        let two = s.commit(path, new, "new");
+        (one, two)
+    }
+
+    /// The tree at `rev` with `patch` applied, once `git apply --check` has accepted it (the branch is left behind: [`back`] returns to it).
+    fn applied(s: &crate::repo::testing::Scratch, rev: &str, patch: &str) {
+        s.git(&["checkout", "-q", "-f", "--detach", rev]);
+        s.git(&["clean", "-fdq"]);
+        s.write("g.patch", patch);
+        s.git(&["apply", "--check", "g.patch"]);
+        s.git(&["apply", "g.patch"]);
+    }
+
+    fn back(s: &crate::repo::testing::Scratch) {
+        s.git(&["checkout", "-q", "-f", "main"]);
+        s.git(&["clean", "-fdq"]);
+    }
+
+    fn lines_of(n: usize, change: impl Fn(usize) -> Option<Option<String>>) -> String {
+        // `change(i)`: None keeps line i, Some(None) deletes it, Some(Some(t)) puts t in its place.
+        (1..=n).map(|i| match change(i) { None => Some(format!("l{i}\t\n")), Some(t) => t.map(|t| format!("{t}\n")) }).flatten().collect()
+    }
+
+    #[test]
+    fn a_patch_of_some_hunks_applies_to_the_old_text_and_makes_what_those_hunks_changed() {
+        let s = scratch();
+        let old = lines_of(20, |_| None);
+        // A line changed, one far below it deleted, one added near that, the last changed.
+        let new: String = (1..=20).flat_map(|i| match i {
+            2 => vec!["L2 changed\t".to_owned(), "and one more".to_owned()],
+            10 => vec![],
+            12 => vec![format!("l12\t"), "added after 12".to_owned()],
+            20 => vec!["last".to_owned()],
+            i => vec![format!("l{i}\t")],
+        }).map(|l| format!("{l}\n")).collect();
+        let (one, two) = two_texts(&s, "f.txt", &old, &new);
+        let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Commit(two)).unwrap();
+        let (ll, rl) = (diff::lines(old.as_bytes()), diff::lines(new.as_bytes()));
+        let cs = diff::diff_lines(&ll, &rl, Whitespace::Exact);
+        assert_eq!(cs.len(), 4, "{cs:?}");
+        let all = d.patch(Whitespace::Exact, &[0, 1, 2, 3]);
+        assert!(all.starts_with("diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,5 +1,6 @@\n"), "{all}");
+        assert_eq!(all.matches("\n@@ ").count(), 4 - 1, "the two hunks with two lines between them share one: {all}");
+        assert!(all.contains("\n@@ -7,9 +8,9 @@\n") && all.contains("\n@@ -17,4 +18,4 @@\n"), "the new side counts the line the first hunk added: {all}");
+        let (middle, last) = (d.patch(Whitespace::Exact, &[1, 2]), d.patch(Whitespace::Exact, &[3]));
+        assert!(middle.contains("\n@@ -7,9 +7,9 @@\n") && last.contains("\n@@ -17,4 +17,4 @@\n"), "without it, it counts nothing: {middle} {last}");
+        applied(&s, &one, &all);
+        assert_eq!(s.read("f.txt"), new, "every hunk in: the new text");
+        for picked in [vec![0], vec![1, 2], vec![3], vec![0, 3], vec![2], vec![0, 1, 2]] {
+            let patch = d.patch(Whitespace::Exact, &picked);
+            applied(&s, &one, &patch);
+            let sel = Selection { hunks: picked.iter().map(|h| (*h, None)).collect() };
+            let want = String::from_utf8(combine(&ll, &rl, &cs, &sel, Pick::Apply)).unwrap();
+            assert_eq!(s.read("f.txt"), want, "hunks {picked:?}: {patch}");
+        }
+        assert_eq!(d.patch(Whitespace::Exact, &[3, 0, 3, 0]), d.patch(Whitespace::Exact, &[0, 3]), "in order, once each");
+        assert_eq!((d.patch(Whitespace::Exact, &[]), d.patch(Whitespace::Exact, &[4, 99])), (String::new(), String::new()), "no hunk, no patch");
+    }
+
+    #[test]
+    fn hunks_with_a_hunk_between_them_keep_their_contexts_apart() {
+        let s = scratch();
+        // Changes at lines 3, 5 and 7, one line apart.
+        let old: String = (1..=12).map(|i| format!("l{i}\n")).collect();
+        let new = old.replace("l3\n", "L3\n").replace("l5\n", "L5\n").replace("l7\n", "L7\n");
+        let (one, two) = two_texts(&s, "f.txt", &old, &new);
+        let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Commit(two)).unwrap();
+        let patch = d.patch(Whitespace::Exact, &[0, 2]);
+        assert!(patch.contains("\n@@ -1,4 +1,4 @@\n l1\n l2\n-l3\n+L3\n l4\n@@ -6,5 +6,5 @@\n l6\n-l7\n+L7\n l8\n l9\n l10\n"), "the first stops at the line before the hunk left out, the second starts after it: {patch}");
+        applied(&s, &one, &patch);
+        assert_eq!(s.read("f.txt"), old.replace("l3\n", "L3\n").replace("l7\n", "L7\n"));
+    }
+
+    #[test]
+    fn a_patch_names_a_new_file_a_deleted_one_a_renamed_one_and_a_name_with_spaces() {
+        let s = scratch();
+        let head = |s: &crate::repo::testing::Scratch| s.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        let name = "dir/a file \u{6F22}.txt";
+        let base = s.commit("keep.txt", "k\n", "base");
+        let added = s.commit(name, "one\n\ttwo \n", "add");
+        s.git(&["mv", name, "moved.txt"]);
+        s.write("moved.txt", "one\n\ttwo \nthree\n");
+        s.git(&["add", "-A"]);
+        s.git(&["commit", "-q", "-m", "move and change"]);
+        let moved = head(&s);
+        s.git(&["rm", "-q", "moved.txt"]);
+        s.git(&["commit", "-q", "-m", "delete"]);
+        let gone = head(&s);
+
+        let d = DiffSession::load(s.repo.clone(), name.into(), None, Mode::Commit(added.clone())).unwrap();
+        let patch = d.patch(Whitespace::Exact, &[0]);
+        assert!(patch.contains("new file mode 100644\n--- /dev/null\n+++ b/dir/a file \u{6F22}.txt\n@@ -0,0 +1,2 @@\n"), "{patch}");
+        applied(&s, &base, &patch);
+        assert_eq!(s.read(name), "one\n\ttwo \n", "a new file");
+        back(&s);
+
+        let d = DiffSession::load(s.repo.clone(), "moved.txt".into(), Some(name.into()), Mode::Commit(moved.clone())).unwrap();
+        let patch = d.patch(Whitespace::Exact, &[0]);
+        assert!(patch.contains("rename from dir/a file \u{6F22}.txt\nrename to moved.txt\n"), "{patch}");
+        applied(&s, &added, &patch);
+        assert_eq!((s.read("moved.txt"), std::path::Path::new(s.root()).join(name).exists()), ("one\n\ttwo \nthree\n".to_owned(), false), "renamed and changed");
+        back(&s);
+
+        let d = DiffSession::load(s.repo.clone(), "moved.txt".into(), None, Mode::Commit(gone)).unwrap();
+        let patch = d.patch(Whitespace::Exact, &[0]);
+        assert!(patch.contains("deleted file mode 100644\n--- a/moved.txt\n+++ /dev/null\n@@ -1,3 +0,0 @@\n"), "{patch}");
+        applied(&s, &moved, &patch);
+        assert!(!std::path::Path::new(s.root()).join("moved.txt").exists(), "a deleted file");
+    }
+
+    #[test]
+    fn a_patch_keeps_a_missing_last_newline_where_it_was_and_ends_a_line_that_gets_company() {
+        for (old, new) in [("a\nb", "a\nb\nc\n"), ("a\nb\nc", "a\nB\nc"), ("a\nb\n", "a\nB"), ("a\nb", "a\nB\n"), ("a\r\nb\r\nc\r\n", "a\r\nB\r\nc\r\nd")] {
+            let s = scratch();
+            let (one, two) = two_texts(&s, "f.txt", old, new);
+            let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Commit(two)).unwrap();
+            let n = d.view("side", 3, Whitespace::Exact)["hunks"].as_array().unwrap().len();
+            assert!(n > 0, "{old:?} to {new:?} has a hunk");
+            let patch = d.patch(Whitespace::Exact, &(0..n).collect::<Vec<_>>());
+            applied(&s, &one, &patch);
+            assert_eq!(s.read("f.txt"), new, "{old:?} to {new:?}: {patch}");
+        }
+    }
+
+    #[test]
+    fn a_patch_of_a_view_that_ignores_whitespace_applies_to_the_old_text() {
+        let s = scratch();
+        let old = "a\n  b\nc\nd\ne\nf\ng\nh\ni\nj\nk\n";
+        let new = "a\n    b\nc\nD\ne\nf\ng\nh\ni\nj\nk\n";
+        let (one, two) = two_texts(&s, "f.txt", old, new);
+        let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Commit(two)).unwrap();
+        assert_eq!(d.view("side", 3, Whitespace::Trim)["hunks"].as_array().unwrap().len(), 1, "the indent is not a hunk here");
+        let patch = d.patch(Whitespace::Trim, &[0]);
+        applied(&s, &one, &patch);
+        assert_eq!(s.read("f.txt"), "a\n  b\nc\nD\ne\nf\ng\nh\ni\nj\nk\n", "the hunk that is there, the indent as it was");
     }
 }

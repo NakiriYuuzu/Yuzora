@@ -314,7 +314,11 @@ impl TypeInfo {
                     VarLenType::Image | VarLenType::Text | VarLenType::NText => {
                         src.read_u32_le().await? as usize
                     }
-                    _ => todo!("not yet implemented for {:?}", ty),
+                    _ => {
+                        return Err(Error::Protocol(
+                            format!("unsupported column type: {:?}", ty).into(),
+                        ))
+                    }
                 };
 
                 let collation = match ty {

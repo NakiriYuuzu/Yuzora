@@ -6,8 +6,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Popover, ToggleGroup, Toggle } from "gpui-base";
-import { theme, window, nextCommand } from "herdr";
-import { t, tokens } from "yuzora:core";
+import { theme, window, settings, nextCommand } from "herdr";
+import { t, tokens, motion } from "yuzora:core";
 import { state, tick } from "yuzora:perf";
 
 const ICONS = "mods/yuzora-perf";
@@ -17,6 +17,10 @@ const CATEGORIES = [
   { id: "tools", icon: `${ICONS}/wrench.svg` },
 ];
 const MONO = "JetBrains Mono";
+// A bar animates only in pixels, so its track's width is known here: the panel's, less its two borders, the list's 12 px
+// padding and the row's 4 px, on each side (a test paints it and compares).
+const PANEL_W = 420;
+const TRACK_W = PANEL_W - 2 - 2 * 12 - 2 * 4;
 
 const mb = (bytes) => bytes / 1_000_000;
 const one = (n) => (Number.isFinite(n) ? n.toFixed(1) : "—");
@@ -125,7 +129,10 @@ export default class Perf extends View {
               .child(key === "memory" ? `${one(mb(r.memory))} MB` : `${one(r.cpu)} %`))
             .child(muted(div()).child(share === null ? t("no_share") : t("share", { value: one(share) })))))
         .child(div().h(3).w_full().rounded(2).bg(th.divider).overflow_hidden()
-          .child(div().h_full().rounded(2).bg(th.dim).w(`${Math.min(100, Math.max(0, share ?? 0))}%`)));
+          // Keyed by category: the rows sort by memory, so a bar changes places as its share changes. And by the
+          // zoom: a new zoom is a new bar, which starts at its width instead of sliding there.
+          .child(div().id(`share-${r.id}-${settings().zoom}`).h_full().rounded(2).bg(th.dim).w(TRACK_W * Math.min(100, Math.max(0, share ?? 0)) / 100)
+            .transition("width", motion("base"))));
     };
     const close = h_flex().id("close").size(22).flex_none().rounded(5).items_center().justify_center().cursor_pointer()
       .text_color(th.muted).hover((s) => s.bg(th.hover).text_color(th.foreground))
@@ -141,7 +148,7 @@ export default class Perf extends View {
     if (h.failures > 0 && h.last_error) alerts.push(t("last_error", { error: h.last_error }));
 
     // The bottom padding is the gap above the status bar (Popover has no offset).
-    return div().pb(6).child(v_flex().id("panel").w(420).bg(th.popover).border(1).border_color(th.border).rounded(10)
+    return div().pb(6).child(v_flex().id("panel").w(PANEL_W).bg(th.popover).border(1).border_color(th.border).rounded(10)
       .shadow_lg().overflow_hidden().text_size(12.5).text_color(th.foreground)
       .child(h_flex().px(16).pt(14).gap(8).items_center()
         .child(div().flex_1().text_size(15).font_semibold().child(t("title")))

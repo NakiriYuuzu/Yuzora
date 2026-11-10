@@ -22,6 +22,10 @@ Hand-modified upstream files:
   fixed-point values exactly, including boundaries and trailing scale.
 - `src/tds/codec/token/token_col_metadata.rs`: keep every MONEY/SMALLMONEY null
   metadata path in the same exact `Numeric` representation.
+- `src/tds/codec/type_info.rs`: a column type the decoder has no length rule for
+  (`Udt`: geography, geometry, hierarchyid and other CLR types; `SSVariant`)
+  returns `Error::Protocol("unsupported column type: …")` instead of hitting
+  `todo!()`. The panic killed the query task and left the pane loading for ever.
 - `Cargo.toml` (`Cargo.toml.orig` left as upstream; cargo does not read it): the
   `rustls` feature moves from tokio-rustls 0.24 / rustls 0.21 / rustls-pemfile 1 /
   rustls-native-certs 0.6 to tokio-rustls 0.26 (`ring` + `tls12`, default features

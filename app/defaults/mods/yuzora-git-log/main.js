@@ -6,9 +6,58 @@
 // the graph is a native cell per visible row, so render touches visible rows only.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
-import { spaces, panes, focused, theme, settings, run, props, openOverlay, closeOverlay, notify, setShared } from "herdr";
+import { spaces, panes, focused, theme, settings, run, props, openOverlay, closeOverlay, notify, shared, setShared } from "herdr";
 import { t, tokens, getSetting } from "yuzora:core";
 import { open, branches, logOpen, logInfo, logRows, logWait, logFind, logRefresh, logClose, commitDetails, compare, GraphCell, checkout, branchCreate, tagCreate, cherryPick, revert, reset, undoCommit, rewordInMemory, patchCreate, settings as gitSettings } from "yuzora:git";
+
+// Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
+// the space of the pane it is given, so a pane is only looked for among the tabs of the shown
+// space. The functions down to the end of this block are the same in every Git mod that has
+// them (a mod cannot import another mod's files): scripts/yuzora-git-pane-reuse.test.ts keeps
+// them equal.
+function shownSpace() {
+  return spaces().find((s) => s.active) ?? null;
+}
+
+function findPane(mod, space) {
+  const tabs = new Set((space?.tabs ?? []).map((x) => x.id));
+  return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
+}
+
+// A diff, merge or rebase pane is asked in shared `<key>.<space id>`, so a space's pane keeps what
+// its space asked for while another space asks for its own.
+function requestKey(key, space) {
+  return `${key}.${space}`;
+}
+
+// Merge and rebase: the shown space's pane is asked in its space's request and focused, else a tab
+// of its own gets the request as its props.
+function openRequested(key, mod, name, fields) {
+  const space = shownSpace();
+  if (!space) return;
+  const spec = { ...fields, at: Date.now() };
+  const pane = findPane(mod, space);
+  if (pane) {
+    setShared(requestKey(key, space.id), spec);
+    run("pane.focus", { pane: pane.pane });
+  } else run("tab.new", { name, space: space.id, mod, props: spec });
+}
+
+// What each graph pane shows, by tab: { [tab id]: { space, root, on } }. A mod cannot read another
+// pane's props, so a graph pane says it here once its repo is open (yuzora-git-log) and the Git
+// sidebar looks it up (findLog). The place stays when the pane closes: the tab and its graph are
+// still there, a quit closes every pane, and after a restart a tab that is not shown has no pane
+// running to say it again. Writing drops the places of tabs that are gone, except a machine's: its
+// spaces are not listed until it is connected.
+const LOGS = "yuzora.git.logs";
+function claimLog({ space, tab, root, on }) {
+  const logs = shared(LOGS) ?? {}, place = { space, root, on: on ?? null };
+  if (JSON.stringify(logs[tab]) === JSON.stringify(place)) return;
+  const all = spaces(), ids = new Set(all.map((s) => s.id)), tabs = new Set(all.flatMap((s) => s.tabs.map((x) => x.id)));
+  const kept = Object.entries(logs).filter(([id, old]) => tabs.has(id) || (old?.space?.includes("/") && !ids.has(old.space)));
+  setShared(LOGS, { ...Object.fromEntries(kept), [tab]: place });
+}
+// ---- end of the shared pane helpers ----
 
 const ROW = 26, LANE = 16, FILE = 24, MENU = 28, MENU_HEAD = 34;
 // The commit detail panel: the info above, a divider to drag, the changed files below. Neither
@@ -41,16 +90,6 @@ function ago(s) {
   return t("ago.y", { n: Math.round(d / 86400 / 365) });
 }
 
-// A pane another mod draws: its spec goes in shared state, then the pane is
-// focused if open, else made.
-function openPane(key, mod, name, fields) {
-  const spec = { ...fields, at: Date.now() };
-  setShared(key, spec);
-  const pane = panes().find((p) => p.mod === mod);
-  if (pane) run("pane.focus", { pane: pane.pane });
-  else run("tab.new", { name, mod, props: spec });
-}
-
 // A closed log's waiting loop would sit until the next ref change, then re-read the
 // whole log for nobody; refreshing first wakes it, and the close cancels that read.
 function dropLog(id) {
@@ -63,7 +102,7 @@ function openDiff(repo, file, how) {
 }
 
 function openMerge(repo) {
-  openPane("yuzora.git.merge", "yuzora-git-merge", t("tab.merge"), { cwd: repo.root, on: repo.machine, path: null });
+  openRequested("yuzora.git.merge", "yuzora-git-merge", t("tab.merge"), { cwd: repo.root, on: repo.machine, path: null });
 }
 
 // The context menu's rows, in groups (a rule between groups). Also sizes the popup.
@@ -87,6 +126,7 @@ export default class GitLog extends View {
   }
 
   render(cx) {
+    if (!this.p.menu) this.onScreen(cx);
     return this.p.menu ? this.renderMenu(cx) : this.renderLog(cx);
   }
 
@@ -112,12 +152,17 @@ export default class GitLog extends View {
       this.fields = {};
       for (const k of Object.keys(v)) this.fields[k] = this.field(k, v[k]);
     }
-    const space = spaces().find((s) => s.active);
-    const cwd = this.p.cwd || space?.folder || null, on = this.p.cwd ? this.p.on ?? null : space?.machine ?? null;
+    this.on = this.p.on ?? null;
+    if (this.p.cwd) this.begin(cx, this.p.cwd);
+    else this.waiting = true;
+  }
+
+  begin(cx, cwd) {
     if (!cwd) return;
     cx.spawn(async (cx) => {
       try {
-        this.repo = await open(cwd, on);
+        this.repo = await open(cwd, this.on);
+        this.claim();
         if (this.p.compare) await this.loadCompare();
         else this.openLog(cx);
       } catch (e) {
@@ -125,6 +170,30 @@ export default class GitLog extends View {
       }
       cx.notify();
     });
+  }
+
+  // Without a repo in its props the pane takes the shown space's folder. That is read here and
+  // not in init, which runs while the app is still switching to the space the pane is first
+  // drawn in, before it publishes that space. A graph pane (no filter, no compare) also learns
+  // its tab here, and says which repo it shows once both are known: its repo comes from open,
+  // which can finish before or after the first draw.
+  onScreen(cx) {
+    const graph = !this.p.filter && !this.p.compare;
+    if (this.where || !(graph || this.waiting)) return;
+    const space = shownSpace(), tab = space?.tabs.find((x) => x.active)?.id;
+    if (!tab) return;
+    if (this.waiting) {
+      this.waiting = false;
+      this.on = space.machine ?? null;
+      this.begin(cx, space.folder);
+    }
+    if (!graph) return;
+    this.where = { space: space.id, tab };
+    cx.spawn(async () => this.claim());
+  }
+
+  claim() {
+    if (this.where && this.repo) claimLog({ ...this.where, root: this.repo.root, on: this.repo.machine });
   }
 
   // One filter box. Typing in some applies after a pause; Enter and leaving apply all.
@@ -682,7 +751,7 @@ export default class GitLog extends View {
       case "reset": this.screen = "reset"; this.at = 1; break;
       case "undo": return this.act(cx, "undo", (r) => undoCommit(r.id));
       case "rebase":
-        openPane("yuzora.git.rebase", "yuzora-git-rebase", t("tab.rebase"), { cwd: m.cwd, on: m.on ?? null, base: `${m.hash}^` });
+        openRequested("yuzora.git.rebase", "yuzora-git-rebase", t("tab.rebase"), { cwd: m.cwd, on: m.on ?? null, base: `${m.hash}^` });
         return this.closeMenu();
       case "compare": {
         const short = m.hash.slice(0, 8);
@@ -781,10 +850,10 @@ function placeDiff(spec, where) {
 // Where a diff opens (Git settings): into the open diff pane, which follows
 // the shared request; else a modal, or straight into a pane as Keep would.
 function showDiff(spec) {
-  const s = gitSettings();
-  const pane = s.diffFollowPane !== false && panes().find((p) => p.mod === "yuzora-git-diff");
+  const s = gitSettings(), space = shownSpace();
+  const pane = s.diffFollowPane !== false && findPane("yuzora-git-diff", space);
   if (pane) {
-    setShared("yuzora.git.diff", spec);
+    setShared(requestKey("yuzora.git.diff", space.id), spec);
     return run("pane.focus", { pane: pane.pane });
   }
   if (s.diffOpenIn === "pane") return placeDiff(spec, s.diffKeepIn);

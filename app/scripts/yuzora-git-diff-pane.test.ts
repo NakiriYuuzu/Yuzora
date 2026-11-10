@@ -9,7 +9,7 @@ const src = await readFile(new URL("../defaults/mods/yuzora-git-diff/main.js", i
 // the shared request is `request`.
 function diffPane(p: object, request: object | null) {
   const body = src.replace(/^import [\s\S]*?;\n/gm, "").replace("export default class GitDiff", "class GitDiff");
-  const stubs = { View: class {}, props: () => p, shared: () => request, gitSettings: () => ({}), VirtualListScrollHandle: { new: () => ({}) } };
+  const stubs = { View: class {}, props: () => p, shared: (k: string) => (k === "yuzora.git.run" ? "this-run" : request), setShared() {}, session: () => "this-run", focused: () => ({ space: "s1" }), gitSettings: () => ({}), VirtualListScrollHandle: { new: () => ({}) } };
   const GitDiff = new Function(...Object.keys(stubs), `${body}; return GitDiff;`)(...Object.values(stubs));
   const view = new GitDiff();
   view.init(p, { focus_handle: () => ({}), spawn() {}, notify() {} });

@@ -750,6 +750,7 @@ export default class Settings extends View {
       .child(this.row(t, yz.appUpdates(u.app.version).title, app[0], h_flex().gap(8).flex_none() // yuzora(L6)
         .child(this.button(t, "st-whats-new", "What's new", () => { closeOverlay(props()?.overlay); run("app.whats_new"); }))
         .when(Boolean(app[1]), (el) => el.child(app[1]))))
+      .when(Boolean(u.app.failure), (el) => el.child(yz.updateFailure(t, u.app.failure))) // yuzora(win-update): why Restart did not switch, in full (a toast holds a line)
       .child(div().h(18))
       .child(this.heading(t, "herdr-core"))
       .child(this.row(t, `herdr-core ${c.version ?? ""}`, core[0], core[1] ?? div()))
