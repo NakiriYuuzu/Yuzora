@@ -194,6 +194,33 @@ export default class P extends View {
   });
 }
 
+// Only an object whose every value is an arrow is read as called by its key; any other is not known.
+test("an object indexed and called is followed when it is arrows, and reported when it holds anything else", () => {
+  const unsupported = (literal: string) => {
+    const src = `${HEAD}
+function go(cx) { cx.notify(); }
+export default class P extends View {
+  one() { return 1; }
+  render(cx) { return div().child(String(${literal}[this.tab](cx))); }
+}`;
+    return scan({ "main.js": src }).unsupported.map((u) => [u.where, u.form]);
+  };
+  expect(unsupported("{ a: go }")).toEqual([["P.render", "a call of a computed callee"]]);
+  expect(unsupported("{ a(cx) { cx.notify(); } }")).toEqual([["P.render", "a call of a computed callee"]]);
+  expect(unsupported("{ a: () => this.one(), b: go }")).toEqual([["P.render", "a call of a computed callee"]]);
+  expect(unsupported("{ a: () => this.one(), b: (cx) => this.one() }")).toEqual([]);
+});
+
+test("a class of the mod that has a constructor is not followed by new, and one that has none is plain", () => {
+  const src = (cls: string) => `${HEAD}
+${cls}
+export default class P extends View {
+  render(cx) { const l = new Local(cx); return div().child(String(l)); }
+}`;
+  expect(scan({ "main.js": src("class Local { constructor(cx) { cx.notify(); } }") }).unsupported.map((u) => [u.where, u.form])).toEqual([["P.render", "new Local()"]]);
+  expect(scan({ "main.js": src("class Local { tag() { return 1; } }") }).unsupported).toEqual([]);
+});
+
 test("a await that is not always reached is reported, and one that always is is not", () => {
   const sources = (await_: string) => `${HEAD}
 export default class P extends View {
