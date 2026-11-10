@@ -52,7 +52,7 @@ function world(settings: object, diffPane: string | null, focusedPane: string | 
     gitSettings: () => ({ diffOpenIn: "modal", diffKeepIn: "split", diffFollowPane: true, ...settings }),
     t: (k: string) => (k === "tab.diff" ? "Diff" : k),
   };
-  const src = ["shownSpace", "findPane", "placeDiff", "showDiff"].map((name) => fn(sources[OPENERS[0]], name)).join("\n") + "\nreturn { showDiff, placeDiff };";
+  const src = ["shownSpace", "findPane", "requestKey", "placeDiff", "showDiff"].map((name) => fn(sources[OPENERS[0]], name)).join("\n") + "\nreturn { showDiff, placeDiff };";
   const { showDiff, placeDiff } = new Function(...Object.keys(stubs), src)(...Object.values(stubs));
   return { showDiff, placeDiff, calls };
 }
@@ -68,7 +68,7 @@ test("by default a diff opens in a modal", () => {
 test("an open diff pane follows the next file, unless the settings say otherwise", () => {
   const w = world({}, "p9");
   w.showDiff(spec);
-  expect(w.calls).toEqual([["setShared", "yuzora.git.diff", { ...spec, space: "s1" }], ["run", "pane.focus", { pane: "p9" }]]);
+  expect(w.calls).toEqual([["setShared", "yuzora.git.diff.s1", spec], ["run", "pane.focus", { pane: "p9" }]]);
   const off = world({ diffFollowPane: false }, "p9");
   off.showDiff(spec);
   expect(off.calls.map((c) => c[0])).toEqual(["openOverlay"]);
