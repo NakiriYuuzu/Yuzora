@@ -161,6 +161,7 @@ pub fn list_layouts(home: &Path) -> Vec<Value> {
                 "shipped": shipped,
                 "cloned_from": cloned,
                 "preview": root.as_ref().and_then(|r| r.get("preview")).and_then(Value::as_str),
+                "dock": root.as_ref().and_then(|r| r.get("yuzora")).and_then(|y| y.get("dock")).and_then(Value::as_str),
                 "source": if shipped { "shipped" } else if cloned.is_null() { "personal" } else { "clone" },
             }))
         })
@@ -582,7 +583,7 @@ mod tests {
         let record: BTreeMap<String, Files> = [("agents".to_owned(), files("old")), ("tabs".to_owned(), files("t")), ("layout:main".to_owned(), Files::new())].into();
         write(&home.join("installed.json"), &serde_json::to_string(&record).unwrap());
         write(&home.join("layouts/main.json"), r#"{"id":"root","type":"block","preview":"layouts/main.png"}"#);
-        write(&home.join("layouts/mine.json"), r#"{"id":"root","type":"block","cloned_from":{"name":"main","version":"x"}}"#);
+        write(&home.join("layouts/mine.json"), r#"{"id":"root","type":"block","yuzora":{"dock":"off"},"cloned_from":{"name":"main","version":"x"}}"#);
         write(&home.join("layouts/broken.json"), "{");
         write(&home.join("layouts/main.json.before-0.1.0"), "{}");
 
@@ -601,6 +602,8 @@ mod tests {
         let names: Vec<_> = layouts.iter().map(|l| (l["name"].as_str().unwrap(), l["source"].as_str().unwrap(), l["valid"].as_bool().unwrap())).collect();
         assert_eq!(names, [("broken", "personal", false), ("main", "shipped", true), ("mine", "clone", true)]);
         assert_eq!(layouts[1]["preview"], "layouts/main.png");
+        assert_eq!(layouts[1]["dock"], Value::Null, "a layout with no yuzora.dock field");
+        assert_eq!(layouts[2]["dock"], "off", "the layout file's own dock choice");
         std::fs::remove_dir_all(&home).unwrap();
     }
 

@@ -43,7 +43,7 @@ export interface ModEntry {
   shipped: boolean; edited: boolean; resettable: boolean; cloned_from: { name: string; version: string } | null;
   pane: boolean; settings: boolean; source: "shipped" | "edited" | "clone" | "personal";
 }
-export interface LayoutEntry { name: string; path: string; valid: boolean; shipped: boolean; cloned_from: { name: string; version: string } | null; preview: string | null; source: "shipped" | "clone" | "personal" }
+export interface LayoutEntry { name: string; path: string; valid: boolean; shipped: boolean; cloned_from: { name: string; version: string } | null; preview: string | null; /** The layout file's own `yuzora.dock` ("auto", "drawer", "off"), or null when it has none. */ dock: string | null; source: "shipped" | "clone" | "personal" }
 export interface InstallPlan { kind: "mod" | "bundle"; source: string; mods: { from: string; as: string }[]; layouts: { from: string; as: string }[]; keys: boolean; reaches: ("programs" | "network" | "files")[]; files: number; bytes: number; token: string }
 /** The yuzora-settings crate's version (Yuzora's). */
 export function version(): string;
@@ -75,8 +75,8 @@ export function planInstall(path: string): Promise<Outcome & { plan?: InstallPla
 export function installFolder(token: string): Promise<Outcome & { plan?: InstallPlan }>;
 /** Opens a folder (or shows a file) in the system's file manager. */
 export function reveal(path: string): null;
-/** general.startup: the sidebar mode to show when the window opens (a yuzora-sidebar child), or null for the last one. */
-export function startup(): { sidebar: string | null };
+/** general.startup: the right-hand dock mode to open when the window opens (files, git, database or ssh), "none" to start with the dock closed, or null to leave it as it was. */
+export function startup(): { dock: string | null };
 /** This run of the app: a different value after every start (for shared values that mean nothing after a restart, like an overlay id). */
 export function session(): string;
 "#;
@@ -392,13 +392,20 @@ fn reveal(path: &str) -> Result<(), HostError> {
 pub mod startup {
     use serde_json::Value;
 
-    pub const MODES: &[&str] = &["workspace", "files", "git", "database", "ssh"];
+    /// The right-hand dock's modes (the workspace is no mode of the dock).
+    pub const MODES: &[&str] = &["files", "git", "database", "ssh"];
 
-    /// `general.startup.sidebar`: a mode (`git`) shows that sidebar child
-    /// (`yuzora-sidebar-git`); `"last"` or unset leaves the layout's own.
-    pub fn sidebar(general: &Value) -> Option<String> {
-        let mode = general.pointer("/startup/sidebar").and_then(Value::as_str)?;
-        MODES.contains(&mode).then(|| format!("yuzora-sidebar-{mode}"))
+    /// `general.startup.dock`: a mode (`git`) opens the dock on that mode;
+    /// `"none"` starts with it closed; `"last"`, unset or anything else
+    /// (the old sidebar's `workspace` too) leaves it as it was.
+    pub fn dock(general: &Value) -> Option<String> {
+        let mode = general.pointer("/startup/dock").and_then(Value::as_str)?;
+        (mode == "none" || MODES.contains(&mode)).then(|| mode.to_owned())
+    }
+
+    /// What the script's `startup()` returns for the `general` section.
+    pub fn value(general: &Value) -> Value {
+        serde_json::json!({ "dock": dock(general) })
     }
 }
 
@@ -478,7 +485,7 @@ pub fn host_module() -> HostModule {
         })
         .function("startup", |_| {
             let general = yuzora_core::settings::section(yuzora_core::settings::GENERAL);
-            Ok(to_host(&json!({ "sidebar": startup::sidebar(&general) })))
+            Ok(to_host(&startup::value(&general)))
         })
         .function("session", |_| Ok(HostValue::Str(session().to_owned())))
 }
@@ -520,11 +527,21 @@ mod tests {
     }
 
     #[test]
-    fn startup_names_a_sidebar_child() {
-        assert_eq!(startup::sidebar(&json!({ "startup": { "sidebar": "git" } })).as_deref(), Some("yuzora-sidebar-git"));
-        assert_eq!(startup::sidebar(&json!({ "startup": { "sidebar": "last" } })), None);
-        assert_eq!(startup::sidebar(&json!({ "startup": { "sidebar": "../x" } })), None);
-        assert_eq!(startup::sidebar(&Value::Null), None);
+    fn startup_names_a_dock_mode_or_none() {
+        for mode in ["files", "git", "database", "ssh", "none"] {
+            assert_eq!(startup::dock(&json!({ "startup": { "dock": mode } })).as_deref(), Some(mode));
+        }
+        // Left as it was: "last", unset, the old sidebar's workspace (not a dock mode), the old key, a path.
+        for general in [json!({ "startup": { "dock": "last" } }), json!({ "startup": { "dock": "workspace" } }), json!({ "startup": { "sidebar": "git" } }), json!({ "startup": { "dock": "../x" } }), json!({ "startup": { "dock": 3 } }), Value::Null] {
+            assert_eq!(startup::dock(&general), None, "{general}");
+        }
+    }
+
+    #[test]
+    fn startup_reads_the_dock_from_the_general_section() {
+        // (The script's `startup()` reads the person's settings; this is what it makes of the section.)
+        assert_eq!(startup::value(&json!({ "startup": { "dock": "git", "sidebar": "ssh" } })), json!({ "dock": "git" }));
+        assert_eq!(startup::value(&Value::Null), json!({ "dock": null }));
     }
 
     #[test]

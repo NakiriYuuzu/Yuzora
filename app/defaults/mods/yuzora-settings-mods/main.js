@@ -9,12 +9,15 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState } from "gpui-base";
-import { theme, run, shared, pickFolder, props } from "herdr";
-import { t, panes } from "yuzora:core";
+import { theme, run, shared, setShared, closeOverlay, pickFolder, props } from "herdr";
+import { t, panes, getSetting, setSetting, session } from "yuzora:core";
 import { listMods, resetMod, appStatus, checkMod, planInstall, installFolder, reveal } from "yuzora:settings";
 import { page, title, heading, button, segmented, note, badge, spinner, input } from "./ui.js";
 
 const MONO = "JetBrains Mono";
+// The right dock (src/yuzora/dock.rs): where a layout shows Yuzora's modes.
+const DOCK = ["auto", "drawer", "off"];
+const SHELL = "shell"; // the settings.json section: { dock: { layouts: { <layout>: "auto" | "drawer" | "off" } } }
 
 export default class Mods extends View {
   init(_props, cx) {
@@ -66,6 +69,44 @@ export default class Mods extends View {
   // `herdr-app status` lists "mod <copy name>: <error>": a copy is its folder's name.
   errorsOf(name) {
     return this.errors.filter((e) => e.startsWith(`mod ${name}: `)).map((e) => e.slice(`mod ${name}: `.length));
+  }
+
+  // The right dock ------------------------------------------------------
+
+  readShell() {
+    const shell = getSetting(SHELL);
+    return shell && typeof shell === "object" && !Array.isArray(shell) ? shell : {};
+  }
+
+  writeShell(shell) {
+    setSetting(SHELL, shell);
+  }
+
+  // What shows for a layout: the person's choice, else the layout file's own yuzora.dock, else auto.
+  dockChoice(l) {
+    const mine = this.readShell().dock?.layouts?.[l.name];
+    return DOCK.includes(mine) ? mine : DOCK.includes(l.dock) ? l.dock : "auto";
+  }
+
+  // Saved in Yuzora's settings (a shipped layout can't be edited); the layout on screen is shown again at
+  // once, which loads it with the new choice (its panel width, open mode and drawer place are kept).
+  setDock(l, choice, cx) {
+    if (!DOCK.includes(choice)) return;
+    const shell = JSON.parse(JSON.stringify(this.readShell()));
+    const dock = shell.dock && typeof shell.dock === "object" && !Array.isArray(shell.dock) ? shell.dock : (shell.dock = {});
+    const layouts = dock.layouts && typeof dock.layouts === "object" && !Array.isArray(dock.layouts) ? dock.layouts : (dock.layouts = {});
+    layouts[l.name] = choice;
+    this.writeShell(shell);
+    if (shared("layout") === l.name) {
+      // The drawer's window (src/yuzora/dock.rs: a drawer only) goes with the drawer: off or auto has none to belong to.
+      const open = shared("yuzora.dock.open");
+      if (choice !== "drawer" && open && open.session === session()) {
+        setShared("yuzora.dock.open", null);
+        closeOverlay(open.id);
+      }
+      run("layout.switch", { name: l.name });
+    }
+    cx.notify();
   }
 
   // Actions -------------------------------------------------------------
@@ -299,6 +340,13 @@ export default class Mods extends View {
                 }, "danger")),
               ),
           ),
+      )
+      .child(
+        h_flex()
+          .gap(8)
+          .items_center()
+          .child(div().text_size(12).text_color(th.dim).child(t("dock")))
+          .child(segmented(th, `ly-dock-${l.name}`, DOCK.map((c) => [c, t(`dock_${c}`)]), this.dockChoice(l), (v, cx) => this.setDock(l, v, cx))),
       )
       .when(this.cloning?.kind === "layout" && this.cloning.name === l.name, (el) => el.child(this.cloneRow(th, l.name)))
       .child(this.result(th, l.name) ?? this.result(th, key) ?? div());

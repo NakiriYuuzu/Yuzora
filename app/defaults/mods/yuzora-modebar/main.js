@@ -10,12 +10,14 @@
 // open that mode; toggle shows the last one or closes it.
 // A mode's badge is shared("yuzora.badge.<mode>"): a number, or null for none. Each lane sets its own;
 // the legacy workspace mode's (agents waiting for a reply, every machine) is amber and set here.
+// "When Yuzora opens" (settings > General, general.startup.dock) is applied here, by the first bar or drawer of the run.
 // Owned by lane L1 (the dock forms: lane dock).
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agents, layout, run, theme, shared, setShared, props, placement, spaces, openOverlay, closeOverlay, nextCommand } from "herdr";
 import { t, tokens, session } from "yuzora:core";
+import { startup } from "yuzora:settings";
 
 const STACK = "yuzora-sidebar";
 const MODES = ["workspace", "files", "git", "database", "ssh"];
@@ -29,6 +31,8 @@ const LAST = "yuzora.dock.last"; // the mode the toggle command shows again
 const OPEN = "yuzora.dock.open"; // the drawer's window now: { id, mode, session }; the window's header sets it, clears it on closing
 const COLORS = "yuzora.space.colors", SPACE_COLORS = "space.colors";
 const WINDOW_W = 380;
+const STARTED = "yuzora.startup.applied"; // session() of the run whose startup mode was applied: once per run
+const HONORED = "yuzora.startup.honored"; // settings > General shows its "When Yuzora opens" choice only once something applies it
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -88,6 +92,7 @@ export default class Modebar extends View {
   init(_props, cx) {
     this.dock = props()?.dock ?? null;
     if (this.dock === "head") { setShared(OPEN, { id: props()?.overlay ?? null, mode: props()?.mode ?? null, session: session() }); return; }
+    if (this.dock === "bar" || this.dock === "drawer") this.start();
     cx.spawn(async (cx) => {
       for (;;) {
         this.command(await nextCommand());
@@ -96,8 +101,25 @@ export default class Modebar extends View {
     });
   }
 
-  // The window closes (its ×, a layout switch, the app quitting): it is no longer open. A window that
-  // replaced this one (a mode tab) has already said so under its own id, which stays.
+  // Settings > General "When Yuzora opens": the dock's mode to open (or "none": closed), applied by the first
+  // dock this run shows, once. A layout switch later in the run does not apply it again.
+  start() {
+    setShared(HONORED, true);
+    if (shared(STARTED) === session()) return;
+    setShared(STARTED, session());
+    const mode = startup().dock;
+    if (mode === null) return;
+    if (this.dock === "bar") {
+      if (mode === "none") run("layout.hide", { id: PANEL });
+      else this.showMode(mode);
+    } else if (mode !== "none") {
+      openMode(mode);
+    }
+  }
+
+  // The window closes (its ×, a layout switch, the app quitting): it is no longer open. A mode tab's replacement
+  // opens with the same key: the window removes the old overlay first (this close() clears OPEN), then the new
+  // header's init writes its own id. A close() that finds another id there leaves it.
   close() {
     if (this.dock === "head" && openNow()?.id === props()?.overlay) setShared(OPEN, null);
   }
@@ -186,7 +208,7 @@ export default class Modebar extends View {
       // The edge side shows while the drawer peeks, so the icon goes there and the name on the inner side.
       const name = div().w(96).flex_none().truncate().text_size(12.5).child(t(`mode.${mode}`));
       return h_flex().id(`dock-${mode}`).h(36).flex_none().items_center().rounded(6).cursor_pointer()
-        .bg(on ? th.selected : th.popover).text_color(on ? tk.text.strong : th.muted)
+        .bg(on ? th.selected : th.popover).text_color(on ? th.foreground : th.muted)
         .hover((s) => s.bg(th.hover).text_color(th.foreground))
         .tooltip(t(`mode.${mode}`))
         .on_click((e) => this.pickDrawer(mode, e))
@@ -208,13 +230,13 @@ export default class Modebar extends View {
   }
 
   head() {
-    const th = theme(), tk = tokens();
+    const th = theme();
     const stop = (_e, cx) => cx.stop_propagation();
     const mode = props()?.mode;
     const tab = (m) => {
       const on = m === mode;
       return h_flex().id(`head-${m}`).h(26).px(8).gap(6).rounded(6).items_center().flex_none().cursor_pointer()
-        .bg(on ? th.selected : th.popover).text_color(on ? tk.text.strong : th.muted)
+        .bg(on ? th.selected : th.popover).text_color(on ? th.foreground : th.muted)
         .when(!on, (el) => el.hover((s) => s.bg(th.hover).text_color(th.foreground)))
         .on_mouse_down("left", stop)
         .on_click(() => this.pickTab(m))

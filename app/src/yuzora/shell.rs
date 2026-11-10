@@ -113,16 +113,16 @@ mod tests {
         let mut ours = sidebar(include_str!("../../defaults/layouts/yuzora.json"));
         let mut theirs = sidebar(include_str!("../../defaults/layouts/main.json"));
         assert_eq!(ours.size, Some(Size::Px { px: 248.0 }));
-        assert_eq!(ours.find("brand").unwrap().size, Some(Size::Px { px: 40.0 }));
+        assert_eq!(ours.find("brand").expect("yuzora.json's sidebar has no `brand`").size, Some(Size::Px { px: 40.0 }));
         assert_eq!(ours.min, Some(44.0), "the collapse button needs room to shrink to");
         assert!(ours.find("brand").unwrap().window_drag, "the top row moves the window");
         assert!(matches!(ours.find("sidebar-footer").unwrap().content(),
             Some(Content::Mod { props, .. }) if props["footer"] == json!(true)), "the footer prop makes the second copy a footer");
         for side in [&mut ours, &mut theirs] {
             side.size = None;
-            side.find_mut("brand").unwrap().size = None;
+            side.find_mut("brand").expect("the sidebar has no `brand`: sync defaults/layouts/yuzora.json's left side with upstream main.json").size = None;
         }
-        assert_eq!(ours, theirs, "everything else is the upstream sidebar's");
+        assert_eq!(ours, theirs, "upstream's defaults/layouts/main.json sidebar changed: sync it into defaults/layouts/yuzora.json (sizes aside)");
     }
 
     #[test]

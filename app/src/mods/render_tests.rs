@@ -50,11 +50,14 @@ impl Staged {
         dir
     }
     // yuzora(dock): `setup` that reads and writes shared state, so it can play another copy's part.
+    // A `setup` with `BEFORE_INIT` in it runs the text before it ahead of `super.init` (to swap what init starts, such
+    // as a page's refresh that runs a listing on a thread of its own, which the test executor refuses).
     fn wrapper_with_shared(&self, entry: &str, setup: &str) -> PathBuf {
         let dir = self.0.clone();
+        let (early, setup) = setup.split_once(BEFORE_INIT).unwrap_or(("", setup));
         std::fs::write(dir.join("main.js"), format!(
             "import Real from './{entry}/main.js'; import {{ shared, setShared }} from 'herdr'; \
-             export default class Scenario extends Real {{ init(props, cx) {{ super.init(props, cx); {setup} }} }}"
+             export default class Scenario extends Real {{ init(props, cx) {{ {early} super.init(props, cx); {setup} }} }}"
         )).unwrap();
         dir
     }
@@ -64,6 +67,9 @@ impl Drop for Staged {
         std::fs::remove_dir_all(&self.0).unwrap();
     }
 }
+
+// yuzora(dock): the marker `wrapper_with_shared` splits a setup at.
+const BEFORE_INIT: &str = "/*before-init*/";
 
 #[derive(Default)]
 struct Calls {
@@ -967,7 +973,7 @@ fn shipped_layouts_and_keys() {
         layouts.insert(path.file_stem().unwrap().to_str().unwrap().to_owned());
     }
     assert_eq!(layouts, crate::window::shipped_layouts().into_iter().map(str::to_owned).collect());
-    let mod_commands = ["ribbon.next"];
+    let mod_commands = ["ribbon.next", "yuzora-modebar.toggle"];
     for text in [
         include_str!("../../defaults/keys.json"),
         include_str!("../../defaults/keys.macos.json"),
@@ -1249,6 +1255,10 @@ fn dock_copy(
     setup: Option<&str>,
 ) -> DockCopy {
     let calls = Rc::new(RefCell::new(Calls::default()));
+    // "When Yuzora opens" is applied once per run, by the first bar or drawer: as if that was done, so what the
+    // person set (settings.json of whoever runs the tests) never reaches these copies. A test of it clears this.
+    let this_run = from_host(&yuzora_core::host_module().call("session", &gpui_shell::HostArguments::new(Vec::<HostValue>::new())).unwrap());
+    calls.borrow_mut().shared.insert("yuzora.startup.applied".into(), this_run);
     for (key, value) in shared {
         calls.borrow_mut().shared.insert((*key).into(), value.clone());
     }
@@ -1416,11 +1426,71 @@ fn yuzora_dock_head_acts_on_its_window(cx: &mut TestAppContext) {
     assert!(silent.overlays.is_empty() && silent.runs.is_empty() && silent.effects.is_empty(), "{:?}", silent.overlays);
 
     // Closing (a layout switch, quitting) clears what it said, but not once another window has said it:
-    // a tab's replacement opens first and its own header has already written its id.
+    // a tab's replacement replaces the old window (the old header closes first and clears it, then the new one's
+    // init writes its id), so a close() that finds another window's id there must leave it.
     assert_eq!(head(cx, "o7", &[], &[], Some("this.close();")).shared.get("yuzora.dock.open"), Some(&Value::Null));
     let replaced = head(cx, "o7", &[], &[], Some(
         "setShared('yuzora.dock.open', { ...shared('yuzora.dock.open'), id: 'o8', mode: 'ssh' }); this.close();"));
     assert_eq!(replaced.shared["yuzora.dock.open"]["id"], "o8", "o8 said it, closing o7 leaves it: {:?}", replaced.shared);
+}
+
+// R6: settings > Mods > Layouts has a dock choice (Auto, Drawer, Off) on every layout. Picking one saves it in
+// Yuzora's settings (shell.dock.layouts.<name>) and, for the layout on screen only, shows that layout again at once.
+// The scenario swaps the page's data and its two settings accessors, so nothing of the person's is read or written.
+#[gpui::test]
+fn yuzora_settings_mods_sets_the_dock_per_layout(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let layouts = r#"[
+        { name: 'win98', path: '/x/win98.json', valid: true, shipped: true, cloned_from: null, preview: null, dock: null, source: 'shipped' },
+        { name: 'mine', path: '/x/mine.json', valid: true, shipped: false, cloned_from: null, preview: null, dock: 'off', source: 'personal' },
+        { name: 'yuzora', path: '/x/yuzora.json', valid: true, shipped: true, cloned_from: null, preview: null, dock: null, source: 'shipped' } ]"#;
+    let scenario = |pick: &str| format!(
+        "this.refresh = () => {{}}; this.list = () => {{}}; /*before-init*/ const rows = {layouts}; \
+         Object.defineProperty(this, 'data', {{ get: () => ({{ mods: [], layouts: rows }}), set: () => {{}} }}); \
+         this.loaded = true; let store = {{ unrelated: 1 }}; \
+         this.readShell = () => store; this.writeShell = (s) => {{ store = s; }}; \
+         const choices = () => rows.map((l) => this.dockChoice(l)); \
+         setShared('t.before', choices()); {pick} setShared('t.after', choices()); setShared('t.store', store);"
+    );
+    let go = |cx: &mut TestAppContext, pick: &str| {
+        dock_copy(cx, &staged, "mods/yuzora-settings-mods", json!({"tab": "layouts"}), &Value::Null, Value::Null, &[("layout", json!("win98"))], &[], Some(&scenario(pick)))
+    };
+
+    // Every layout's row has the three choices, in English.
+    let none = go(cx, "");
+    for name in ["win98", "mine", "yuzora"] {
+        for choice in ["auto", "drawer", "off"] {
+            assert!(none.tree.contains(&format!("ly-dock-{name}-{choice}")), "{name} {choice}: {}", none.tree);
+        }
+    }
+    // (A copy staged here has no strings folder, so the page draws string keys: they must be in en.json, the only language.)
+    let strings: Value = serde_json::from_str(include_str!("../../defaults/mods/yuzora-settings-mods/i18n/en.json")).unwrap();
+    for key in ["dock", "dock_auto", "dock_drawer", "dock_off"] {
+        assert!(none.tree.contains(&format!("text \"{key}\"")), "{key}: {}", none.tree);
+        assert!(strings[key].is_string(), "{key} is in en.json");
+    }
+    assert!(!std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/defaults/mods/yuzora-settings-mods/i18n/zh-TW.json")).exists());
+    // Nothing chosen: the layout file's own field shows (mine: off), else auto.
+    assert_eq!(none.shared["t.before"], json!(["auto", "off", "auto"]));
+    assert!(none.runs.is_empty());
+
+    // The layout on screen (win98): saved, and shown again at once.
+    let now = go(cx, "this.setDock(rows[0], 'off', cx);");
+    assert_eq!(now.shared["t.store"], json!({"unrelated": 1, "dock": {"layouts": {"win98": "off"}}}), "the other sections of the setting stay");
+    assert_eq!(now.shared["t.after"], json!(["off", "off", "auto"]));
+    assert_eq!(now.runs, [json!(["layout.switch", {"name": "win98"}])]);
+
+    // Another layout: only saved. And the person's auto beats the layout file's own off.
+    let other = go(cx, "this.setDock(rows[1], 'auto', cx);");
+    assert_eq!(other.shared["t.store"]["dock"]["layouts"], json!({"mine": "auto"}));
+    assert_eq!(other.shared["t.after"], json!(["auto", "auto", "auto"]));
+    assert!(other.runs.is_empty(), "{:?}", other.runs);
+
+    // A word that is no choice saves nothing.
+    let bad = go(cx, "this.setDock(rows[0], 'sideways', cx);");
+    assert_eq!(bad.shared["t.store"], json!({"unrelated": 1}));
+    assert!(bad.runs.is_empty());
 }
 
 // R3: the dock never touches shared("workspace.panels"), which only decides the tab bar's Files and
@@ -1460,6 +1530,13 @@ fn yuzora_status_branch_opens_git_in_the_dock(cx: &mut TestAppContext) {
     assert!(yuzora.to_string().contains("yuzora-dock-git") && !yuzora.to_string().contains("yuzora-sidebar\""));
     let click = dock_copy(cx, &staged, "mods/yuzora-statusbar", json!({}), &yuzora, Value::Null, &[], &[], Some("this.openGit();"));
     assert_eq!(click.runs, [json!(["yuzora-modebar.git"])]);
+    // The same layout asking for the drawer: the bar is a float, and the status bar still finds it.
+    let mut drawer: Value = serde_json::from_str(include_str!("../../defaults/layouts/yuzora.json")).unwrap();
+    drawer["yuzora"] = json!({"dock": "drawer"});
+    let drawer = dock_layout(&drawer.to_string());
+    assert!(drawer.to_string().contains("\"yuzora-dock\"") && !drawer.to_string().contains("yuzora-dock-bar"));
+    let click = dock_copy(cx, &staged, "mods/yuzora-statusbar", json!({}), &drawer, Value::Null, &[], &[], Some("this.openGit();"));
+    assert_eq!(click.runs, [json!(["yuzora-modebar.git"])], "a drawer's float counts as a mode bar on screen");
     let bar = dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": "bar"}), &yuzora, Value::Null, &[], &["git"], None);
     assert_eq!(bar.runs, select_and_show("git"), "{}", bar.tree);
     // An old clone (no dock props): the same command selects the sidebar stack's Git.
@@ -1531,6 +1608,26 @@ fn yuzora_dock_keeps_space_colors_in_step(cx: &mut TestAppContext) {
         let again = dock_copy(cx, &staged, "mods/spaces", json!({}), layout, placement.clone(), &settled, &[], None);
         assert_eq!(theirs(&again), theirs(&second), "{dock}: Herdr's mod leaves a hex alone");
     }
+}
+
+// R5b: with the dock off, the mode bar is not drawn, and the tab bar (always in the yuzora layout) does the same
+// Space color write: Herdr's `spaces` mod must not stay on color names while the tabs are in Yuzora's hex.
+#[gpui::test]
+fn yuzora_tab_bar_keeps_space_colors_in_step(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let layout = dock_layout(include_str!("../../defaults/layouts/main.json"));
+    let theirs = |copy: &DockCopy| copy.shared.get("space.colors").cloned();
+    let go = |cx: &mut TestAppContext, shared: &[(&str, Value)]| dock_copy(cx, &staged, "mods/yuzora-shell-tabs", json!({}), &layout, Value::Null, shared, &[], None);
+    let yuzora = json!({"s1": "#2563eb", "s2": "#0f766e", "gone": "#c2410c", "bad": "ansi4"});
+    let copy = go(cx, &[("yuzora.space.colors", yuzora.clone()), ("space.colors", json!({"s1": "ansi6", "s2": "#123456", "other": "ansi3"}))]);
+    assert_eq!(theirs(&copy), Some(json!({"s1": "#2563eb", "s2": "#123456", "other": "ansi3"})), "a name is replaced by Yuzora's hex, a Herdr hex and an unknown Space stay");
+    let copy = go(cx, &[("yuzora.space.colors", yuzora)]);
+    assert_eq!(theirs(&copy), Some(json!({"s1": "#2563eb", "s2": "#0f766e"})), "Herdr had none: only the Spaces that exist");
+    // No Yuzora colors yet: the badges give the Spaces theirs first (the same hex the left side then shows); a Herdr hex still stays.
+    let copy = go(cx, &[("space.colors", json!({"s1": "#123456"}))]);
+    assert_eq!(theirs(&copy).unwrap()["s1"], json!("#123456"), "Herdr's own pick stays");
+    assert_eq!(theirs(&copy).unwrap()["s2"], copy.shared["yuzora.space.colors"]["s2"], "the badge color is the one Herdr shows");
 }
 
 // yuzora(L1): Herdr's own Files and Changes panels start off in Yuzora (its sidebar has Files and
@@ -2025,4 +2122,97 @@ fn sidebar_git_row_buttons_are_where_clickrow_counts_them(cx: &mut TestAppContex
             }
         }
     }
+}
+
+// yuzora(dock): PR-4 review r1 and acceptance fixes.
+fn this_run() -> Value {
+    from_host(&yuzora_core::host_module().call("session", &gpui_shell::HostArguments::new(Vec::<HostValue>::new())).unwrap())
+}
+
+// S1 (live half): the dock choice leaving the drawer closes the drawer's window at once (the one of this run only).
+#[gpui::test]
+fn yuzora_settings_mods_closes_the_drawers_window(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let scenario = |pick: &str| format!(
+        "this.refresh = () => {{}}; this.list = () => {{}}; /*before-init*/ const rows = [ {{ name: 'win98', path: '/x/win98.json', valid: true, shipped: true, cloned_from: null, preview: null, dock: null, source: 'shipped' }}, \
+           {{ name: 'mine', path: '/x/mine.json', valid: true, shipped: false, cloned_from: null, preview: null, dock: null, source: 'personal' }} ]; \
+         Object.defineProperty(this, 'data', {{ get: () => ({{ mods: [], layouts: rows }}), set: () => {{}} }}); \
+         this.loaded = true; let store = {{}}; this.readShell = () => store; this.writeShell = (s) => {{ store = s; }}; {pick}"
+    );
+    let go = |cx: &mut TestAppContext, pick: &str, session: Value| {
+        let open = json!({"id": "o7", "mode": "git", "session": session});
+        dock_copy(cx, &staged, "mods/yuzora-settings-mods", json!({"tab": "layouts"}), &Value::Null, Value::Null, &[("layout", json!("win98")), ("yuzora.dock.open", open)], &[], Some(&scenario(pick)))
+    };
+    let run = this_run();
+    for choice in ["off", "auto"] {
+        let r = go(cx, &format!("this.setDock(rows[0], '{choice}', cx);"), run.clone());
+        assert!(r.effects.contains(&json!(["o7"])), "{choice}: closeOverlay o7: {:?}", r.effects);
+        assert_eq!(r.shared.get("yuzora.dock.open"), Some(&Value::Null), "{choice}");
+        assert_eq!(r.runs, [json!(["layout.switch", {"name": "win98"}])], "{choice}");
+    }
+    for (pick, session, why) in [
+        ("this.setDock(rows[0], 'drawer', cx);", run.clone(), "still a drawer"),
+        ("this.setDock(rows[1], 'off', cx);", run.clone(), "not the layout on screen"),
+        ("this.setDock(rows[0], 'off', cx);", json!("an earlier run"), "an earlier run's window is none of this run's"),
+    ] {
+        let r = go(cx, pick, session);
+        assert!(r.effects.is_empty(), "{why}: {:?}", r.effects);
+    }
+}
+
+// N1: the page and the app name the same settings section (the page's own accessors are swapped in R6, so this is the only link).
+#[test]
+fn yuzora_settings_mods_and_the_dock_name_the_same_section() {
+    let js = include_str!("../../defaults/mods/yuzora-settings-mods/main.js");
+    let line = js.lines().find(|l| l.trim_start().starts_with("const SHELL = ")).expect("const SHELL in the page");
+    let word = line.split('"').nth(1).expect("a string literal");
+    assert_eq!(word, crate::yuzora::dock::SHELL);
+}
+
+// Bug (acceptance): the mode bar lights a mode only while the panel is open on it: on Changes, or with the panel closed, no mode is lit.
+#[gpui::test]
+fn yuzora_dock_bar_lights_only_the_mode_the_panel_shows(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let closed = dock_layout(include_str!("../../defaults/layouts/main.json"));
+    let draw = |cx: &mut TestAppContext, layout: &Value| dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": "bar"}), layout, Value::Null, &[], &[], None).tree;
+    let none = draw(cx, &closed);
+    let on_changes = draw(cx, &dock_shows(closed.clone(), "changes"));
+    let on_git = draw(cx, &dock_shows(closed.clone(), "yuzora-dock-git"));
+    assert_eq!(on_changes, none, "Changes in the panel lights no mode");
+    assert_ne!(on_git, none, "Git does");
+    // The panel closed on Git's last choice: not lit.
+    let mut hidden = dock_shows(closed.clone(), "yuzora-dock-git");
+    fn hide(n: &mut Value) {
+        if n["id"] == "panel" {
+            n["hidden"] = json!(true);
+        }
+        for c in n.get_mut("children").and_then(Value::as_array_mut).into_iter().flatten() {
+            hide(c);
+        }
+    }
+    hide(&mut hidden);
+    assert_eq!(draw(cx, &hidden), none);
+}
+
+// Bug (acceptance, win98): the open mode's name in the drawer and the window's tabs is the theme's foreground, which
+// reads on the selected color of every theme (the token's strong white did not on win98's light gray).
+#[gpui::test]
+fn yuzora_dock_selected_mode_uses_the_theme_foreground(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let layout = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
+    let place = json!({"edge": "right", "align": "center", "vertical": true, "hovered": false, "dragging": false});
+    let open = json!({"id": "o7", "mode": "git", "session": this_run()});
+    let drawer = dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": "drawer"}), &layout, place.clone(), &[("yuzora.dock.open", open.clone())], &[], None).tree;
+    let closed = dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": "drawer"}), &layout, place, &[], &[], None).tree;
+    let strong = tokens_text_strong();
+    assert!(!drawer.contains(&strong) || closed.contains(&strong), "the selected item has no token strong text: {drawer}");
+    let head = dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": "head", "mode": "git", "overlay": "o7"}), &layout, Value::Null, &[], &[], None).tree;
+    assert!(!head.contains(&strong), "{head}");
+}
+
+fn tokens_text_strong() -> String {
+    yuzora_core::tokens::for_theme(false)["text"]["strong"].as_str().unwrap().to_owned()
 }

@@ -34,14 +34,15 @@ the same window.
   <img src="docs/readme/workspace-en.png" width="880" alt="Yuzora beta.2: the workspace sidebar lists three Spaces and their agents, and one tab is split into an agent's terminal, a Git diff and a table" />
 </p>
 
+<sub>This screenshot is from beta.2 and is due for a retake: since beta.4 the left side is Herdr's own Spaces and agents lists under its "Herdr" header, and the Files, Git, Database and SSH modes are on the right.</sub>
+
 ## Features
 
-- **Spaces and agents.** A Space is a folder on this computer or on a herdr machine reached over SSH. The workspace
-  sidebar lists machines → Spaces → worktrees → agents, shows each agent's state by color and shape (working, needs a
-  reply, done, idle) and keeps the agents that need you in a "Needs attention" list.
+- **Spaces and agents.** A Space is a folder on this computer or on a herdr machine reached over SSH. The left side
+  (Herdr's own Spaces and agents lists) groups Spaces by machine, nests worktrees under their repo and shows each agent's state, with the agents that need you first.
 - **Mixed splits.** The new-pane menu (command `yuzora-shell-tabs.new-pane`) puts a tool pane (Git, editor, database, SFTP…), a terminal or an agent right of or
   below the focused pane, in the same tab.
-- **Git** modeled on IntelliJ IDEA Community, with the staging area: changes and commits in the sidebar, a diff pane
+- **Git** modeled on IntelliJ IDEA Community, with the staging area: changes and commits in the right-hand dock, a diff pane
   that stages hunks and lines, the log with its branch graph, branches, push, three-way merge, interactive rebase
   and annotate. Folders whose own Git config runs programs ask for your trust first.
 - **Files and editor.** A file tree with Git marks and file-name and content search, a code editor with tree-sitter
@@ -137,7 +138,7 @@ Its release steps are in [docs/operations.md](docs/operations.md).
 | [`app/`](app/) | **beta.2 app**: herdr-app brought in with `git subtree`, its own Cargo workspace |
 | `app/src/yuzora/` | Yuzora's one integration point in the app: branding, switches, `yuzora:*` modules, updates |
 | `app/crates/yuzora-*` | Yuzora's native layer: `yuzora-core` and one crate per area (shell, git, db, ssh, files, settings, perf) |
-| `app/defaults/mods/yuzora-*` | Yuzora's mods: sidebar modes, tool panes, mode bar, status bar |
+| `app/defaults/mods/yuzora-*` | Yuzora's mods: the dock's modes, tool panes, mode bar, status bar |
 | `app/defaults/layouts/yuzora.json`, `themes/yuzora-{dark,light}.json`, `yuzora/tokens.json` | Default layout, themes and design tokens |
 | `app/scripts/yuzora/`, `app/distribution/yuzora/` | Packaging, update manifest, upstream sync check |
 | [`docs/beta2/`](docs/beta2/) | Architecture, lanes, the design of each area, evidence screenshots |
@@ -152,18 +153,17 @@ beta.2 is built in parallel lanes, each owning its own directories and its secti
 <!-- yuzora:lane:L1:start -->
 ### L1 · Shell and workspace
 
-The workspace sidebar (machines → Spaces → worktrees → agents, needs attention, scope chips per machine), the mode
-bar with each mode's badge, the tab bar (the new-pane menu, opened with the `yuzora-shell-tabs.new-pane` command, mixes tool panes, terminals and agents into one tab),
+The left side is Herdr's own (`workspace-chrome`, `spaces`, `agents`); the right-hand dock holds the Files, Git, Database and SSH modes: a 40px mode bar with each mode's badge beside a panel, or a drawer in a layout without one (Settings > Mods > Layouts turns it Auto, Drawer or Off per layout; `cmd-alt-b` / `ctrl-alt-b` toggles it). Then the tab bar (the new-pane menu, opened with the `yuzora-shell-tabs.new-pane` command, mixes tool panes, terminals and agents into one tab),
 pane headers (amber while an agent needs a reply) and the status bar. A new Space starts by picking its folder; on a
 remote machine you type the path, checked on that machine. `yuzora:shell` (`app/crates/yuzora-shell`) holds the
-sidebar's model, Space badges and a small Git summary. Details: [docs/beta2/shell.md](docs/beta2/shell.md).
+workspace model, Space badges and a small Git summary. Details: [docs/beta2/shell.md](docs/beta2/shell.md).
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
 ### L2 · Git
 
 Git modelled on JetBrains IntelliJ IDEA Community, with the staging area:
-the sidebar's Git mode (changes, staging, commit, push), a diff pane with
+the right-hand dock's Git mode (changes, staging, commit, push), a diff pane with
 hunk and line staging, the commit log with its branch graph, the branches
 popup, push dialog, three-way merge, interactive rebase, annotate, and a
 repository pane (stashes, tags, remotes, worktrees, submodules, patches).
@@ -175,19 +175,19 @@ module), never on the UI thread. Design and the IntelliJ checklist:
 <!-- yuzora:lane:L3:start -->
 ### L3 · Databases
 
-PostgreSQL, SQL Server and SQLite in the sidebar's Database mode: saved connections (passwords in the system keychain), a database picker and the schema tree; a table pane with Data (virtual grid, sorting, copying, editing cells and writing them back in one transaction), Structure (columns, indexes, foreign keys, DDL) and SQL; and a SQL pane with several result sets, cancel and history. Connections through an SSH tunnel aren't wired up yet. Native layer `app/crates/yuzora-db` (`yuzora:db`); design and limits in [docs/beta2/db.md](docs/beta2/db.md).
+PostgreSQL, SQL Server and SQLite in the right-hand dock's Database mode: saved connections (passwords in the system keychain), a database picker and the schema tree; a table pane with Data (virtual grid, sorting, copying, editing cells and writing them back in one transaction), Structure (columns, indexes, foreign keys, DDL) and SQL; and a SQL pane with several result sets, cancel and history. Connections through an SSH tunnel aren't wired up yet. Native layer `app/crates/yuzora-db` (`yuzora:db`); design and limits in [docs/beta2/db.md](docs/beta2/db.md).
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->
 ### L4 · SSH / SFTP
 
-The SSH / SFTP sidebar mode lists hosts from `~/.ssh/config`, Yuzora's own hosts and herdr machines, with connection state and latency. A host's quick actions open SFTP (a side-by-side local ↔ host pane with a transfer queue that resumes and keeps permissions and times), a terminal there, a HERDR session (`hc machine add`) and known hosts. New host keys are confirmed by fingerprint and changed keys are flagged; Yuzora writes host keys to its own file and only reads `~/.ssh`. A remote file can open in a local text editor, and each save uploads it. `yuzora_ssh::tunnel` forwards a local port through a host, for the database mode to use later. Details: [docs/beta2/ssh.md](docs/beta2/ssh.md).
+The SSH / SFTP mode in the right-hand dock lists hosts from `~/.ssh/config`, Yuzora's own hosts and herdr machines, with connection state and latency. A host's quick actions open SFTP (a side-by-side local ↔ host pane with a transfer queue that resumes and keeps permissions and times), a terminal there, a HERDR session (`hc machine add`) and known hosts. New host keys are confirmed by fingerprint and changed keys are flagged; Yuzora writes host keys to its own file and only reads `~/.ssh`. A remote file can open in a local text editor, and each save uploads it. `yuzora_ssh::tunnel` forwards a local port through a host, for the database mode to use later. Details: [docs/beta2/ssh.md](docs/beta2/ssh.md).
 <!-- yuzora:lane:L4:end -->
 
 <!-- yuzora:lane:L5:start -->
 ### L5 · Files and editor
 
-- **Files** mode in the sidebar: the focused pane's repo as a tree with git marks (M/A/D/U/?), new file and folder, rename, move to Trash, copy path, reveal in Finder; fuzzy file-name search and content search (ripgrep when installed, a built-in search otherwise).
+- **Files** mode in the right-hand dock: the focused pane's repo as a tree with git marks (M/A/D/U/?), new file and folder, rename, move to Trash, copy path, reveal in Finder; fuzzy file-name search and content search (ripgrep when installed, a built-in search otherwise).
 - **Editor** pane: tree-sitter highlighting for 14 languages, save with a conflict check (⌘S), find and replace (⌘F / ⌘H). It follows changes made on disk and shows when an agent is editing the same file.
 - **Markdown** pane: a GFM preview that follows the editor as you type, with a source / preview toggle. An image and SVG viewer.
 - Files on another machine (remote spaces) can be browsed and opened read-only since beta.2.
@@ -200,7 +200,7 @@ Details: [docs/beta2/files.md](docs/beta2/files.md).
 
 Settings open on Yuzora's own pages. Herdr's settings frame gets a "Yuzora" group listing every mod that declares `"yuzora": {"settings": …}`, and Privacy and Updates speak for Yuzora (it collects and sends nothing). L6's pages:
 
-- **General** (`yuzora-settings-general`): look (themes, fonts, size, zoom), terminal clipboard writes (the sidebar mode at startup appears once the mode bar applies it).
+- **General** (`yuzora-settings-general`): look (themes, fonts, size, zoom), terminal clipboard writes, and the right-hand dock mode to open at startup (shown once the dock applies it).
 - **Templates** (`yuzora-settings-templates`): herdr-core agent templates on each machine. List them, edit the frontmatter as a form and the body as text (checked before saving), move one to the trash, or start one in a Space and tab (`yuzora-settings-launch`: `hc run` with `herdr.space`/`herdr.tab` labels).
 - **Mods** (`yuzora-settings-mods`): shipped, edited, cloned and personal mods and layouts with their errors. Clone, show in folder, check, switch or reset a layout, or install from a folder after a trust warning. An edited shipped mod is moved aside to `<name>-edited` and the shipped one comes back at the next start.
 
