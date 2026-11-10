@@ -316,10 +316,19 @@ impl MsConn {
                 return Err(DbError::NotEditable(crate::i18n::t("edit.null_key", &[])));
             }
         }
+        let reused = self.client.is_some();
         let mut client = self.take_client().await?;
         // Nested in a transaction the SQL tab left open, COMMIT only counts
         // down: the tab's ROLLBACK would undo the write-back after it read as done.
-        match scalar(&mut client, "SELECT CAST(@@TRANCOUNT AS nvarchar(11))").await {
+        // Also the first thing sent: a socket the server closed while the
+        // connection sat idle fails here, with nothing written, and is replaced.
+        const OPEN_TRANSACTIONS: &str = "SELECT CAST(@@TRANCOUNT AS nvarchar(11))";
+        let mut open_transactions = scalar(&mut client, OPEN_TRANSACTIONS).await;
+        if reused && open_transactions.as_ref().is_err_and(dropped) {
+            client = open(&self.spec).await?;
+            open_transactions = scalar(&mut client, OPEN_TRANSACTIONS).await;
+        }
+        match open_transactions {
             Ok(n) if n == "0" => {}
             Ok(_) => {
                 self.client = Some(client);
@@ -358,18 +367,25 @@ impl MsConn {
     }
 
     /// `sql` with parameters; the rows of its first result.
+    ///
+    /// It only reads, so a socket the server closed while the connection sat
+    /// idle is replaced and the query runs again, once.
     async fn rows(&mut self, sql: &str, params: &[&dyn ToSql]) -> DbResult<Vec<Row>> {
-        let mut client = self.take_client().await?;
-        match first_result(&mut client, sql, params).await {
-            Ok(rows) => {
-                self.client = Some(client);
-                Ok(rows)
-            }
-            Err(e) => {
-                if !fatal(&e) {
+        let mut reused = self.client.is_some();
+        loop {
+            let mut client = self.take_client().await?;
+            match first_result(&mut client, sql, params).await {
+                Ok(rows) => {
                     self.client = Some(client);
+                    return Ok(rows);
                 }
-                Err(query_error(e))
+                Err(e) if reused && dropped(&e) => reused = false,
+                Err(e) => {
+                    if !fatal(&e) {
+                        self.client = Some(client);
+                    }
+                    return Err(query_error(e));
+                }
             }
         }
     }
@@ -686,6 +702,11 @@ fn type_name(t: ColumnType) -> &'static str {
 }
 
 // ---------------------------------------------------------------- errors
+
+/// The server (or the network) ended the connection.
+fn dropped(e: &TdsError) -> bool {
+    matches!(e, TdsError::Io { .. })
+}
 
 /// The connection can't be used after this one.
 fn fatal(e: &TdsError) -> bool {
