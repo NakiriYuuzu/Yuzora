@@ -788,7 +788,12 @@ fn enclosing(tree: &str, at: usize) -> Vec<&str> {
     out
 }
 
-const CLIPS: [&str; 4] = ["truncate", "whitespace_nowrap", "text_ellipsis", "overflow_hidden"];
+const CLIPS: [&str; 4] = [
+    "truncate",
+    "whitespace_nowrap",
+    "text_ellipsis",
+    "overflow_hidden",
+];
 
 #[gpui::test]
 fn a_failed_swap_is_explained_in_full_under_settings_updates(cx: &mut TestAppContext) {
@@ -797,17 +802,58 @@ fn a_failed_swap_is_explained_in_full_under_settings_updates(cx: &mut TestAppCon
     let mut p = props();
     p["section"] = json!("updates");
     let reason = crate::yuzora::release::update::swap_failure_text(true, "(os error 32)");
-    assert!(reason.len() > 250, "the reason is a paragraph, far past one toast line: {reason}");
-    let tree = describe(cx, &staged, "frame/settings", true, p.clone(), updates("stuck", "current"), None).unwrap();
-    assert!(tree.contains("st-app-update-failure") && tree.contains("st-app-update"), "Restart stays, and the reason sits with it: {tree}");
-    let at = tree.lines().position(|l| l.trim() == format!("text {reason:?}")).unwrap_or_else(|| panic!("the whole reason as one piece of text: {tree}"));
+    assert!(
+        reason.len() > 250,
+        "the reason is a paragraph, far past one toast line: {reason}"
+    );
+    let tree = describe(
+        cx,
+        &staged,
+        "frame/settings",
+        true,
+        p.clone(),
+        updates("stuck", "current"),
+        None,
+    )
+    .unwrap();
+    assert!(
+        tree.contains("st-app-update-failure") && tree.contains("st-app-update"),
+        "Restart stays, and the reason sits with it: {tree}"
+    );
+    let at = tree
+        .lines()
+        .position(|l| l.trim() == format!("text {reason:?}"))
+        .unwrap_or_else(|| panic!("the whole reason as one piece of text: {tree}"));
     let lines: Vec<&str> = tree.lines().collect();
     for line in std::iter::once(lines[at - 1]).chain(enclosing(&tree, at)) {
-        assert!(CLIPS.iter().all(|clip| !line.contains(clip)), "the reason is cut off by {line}");
+        assert!(
+            CLIPS.iter().all(|clip| !line.contains(clip)),
+            "the reason is cut off by {line}"
+        );
     }
-    assert!(tree.contains("could not be installed"), "{tree}");
-    let none = describe(cx, &staged, "frame/settings", true, p, updates("ready", "current"), None).unwrap();
-    assert!(!none.contains("st-app-update-failure") && !none.contains("another program"), "nothing failed: nothing to explain: {none}");
+    // The harness has no catalog for the frame (it prints the key), so look the heading up where the app does.
+    assert!(tree.contains("text \"updates.failed\""), "{tree}");
+    let catalog: Value =
+        serde_json::from_str(include_str!("../../defaults/frame/settings/i18n/en.json")).unwrap();
+    assert!(
+        catalog["updates"]["failed"]
+            .as_str()
+            .is_some_and(|heading| heading.contains("could not be installed"))
+    );
+    let none = describe(
+        cx,
+        &staged,
+        "frame/settings",
+        true,
+        p,
+        updates("ready", "current"),
+        None,
+    )
+    .unwrap();
+    assert!(
+        !none.contains("st-app-update-failure") && !none.contains("another program"),
+        "nothing failed: nothing to explain: {none}"
+    );
 }
 
 #[gpui::test]
@@ -818,12 +864,28 @@ fn the_toast_for_a_failed_swap_shows_its_title_and_body_whole(cx: &mut TestAppCo
         let toast = crate::yuzora::release::update::toast_of(busy);
         let mut note = toast["notification"].clone();
         note["overlay"] = json!("o1");
-        let (title, body) = (note["title"].as_str().unwrap().to_owned(), note["body"].as_str().unwrap().to_owned());
-        let tree = describe(cx, &staged, "mods/toast", true, note, updates("stuck", "current"), None).unwrap();
+        let (title, body) = (
+            note["title"].as_str().unwrap().to_owned(),
+            note["body"].as_str().unwrap().to_owned(),
+        );
+        let tree = describe(
+            cx,
+            &staged,
+            "mods/toast",
+            true,
+            note,
+            updates("stuck", "current"),
+            None,
+        )
+        .unwrap();
         for text in [&title, &body] {
             assert!(tree.contains(&format!("text {text:?}")), "{text}: {tree}");
         }
-        assert_eq!(tree.matches(".truncate").count(), 2, "the toast truncates one line each, so each line has to fit it (update.rs checks their width): {tree}");
+        assert_eq!(
+            tree.matches(".truncate").count(),
+            2,
+            "the toast truncates one line each, so each line has to fit it (update.rs checks their width): {tree}"
+        );
     }
 }
 
