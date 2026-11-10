@@ -38,7 +38,8 @@ const walk = (n: Node, out: Node[] = []): Node[] => { out.push(n); n.kids.forEac
 type Gate = { args: any[]; resolve: (v: any) => void; reject: (e: any) => void; done: boolean };
 const NAMES = ["open", "status", "changed", "messages", "stage", "unstage", "discard", "commitChecks", "commit", "push", "pushPreview", "sequencer", "fetch", "trust", "repos"] as const;
 
-const ROOT_OF: Record<string, string> = { "/a": "/a", "/a/sub": "/a", "/b": "/b", "/c": "/c" };
+const ROOT_OF: Record<string, string> = { "/a": "/a", "/a/sub": "/a", "/b": "/b", "/b/sub": "/b", "/c": "/c" };
+const PIN = "yuzora.git.repo.s1";
 const info = (root: string) => ({ id: `:${root}`, root, machine: null, gitDir: `${root}/.git`, commonDir: `${root}/.git` });
 const file = (path: string) => ({ path, kind: "M", add: 1, del: 0, binary: false });
 // What each repo has changed: unstaged files, staged files.
@@ -63,7 +64,9 @@ const statusOf = (root: string) => {
 function world(settings: object = {}) {
   const w = {
     cwd: "/a", pinned: null as null | { root: string; on: null },
-    shared: new Map<string, any>(), toasts: [] as any[], overlays: [] as any[], timers: [] as { ms: number; fn: (cx: any) => void }[],
+    // What a repo's status says beyond statusOf, by root; the messages every repo answers with.
+    status: {} as Record<string, object>, history: [] as string[], template: null as string | null,
+    shared: new Map<string, any>(), toasts: [] as any[], overlays: [] as any[], runs: [] as any[], timers: [] as { ms: number; fn: (cx: any) => void }[],
     asks: Object.fromEntries(NAMES.map((n) => [n, [] as Gate[]])) as Record<(typeof NAMES)[number], Gate[]>,
     box: { value: "", handlers: {} as Record<string, (...a: any[]) => void> },
     author: { value: "" },
@@ -80,12 +83,13 @@ function world(settings: object = {}) {
       if (!calls.length) return;
       for (const g of calls) {
         if (w.asks.open.includes(g)) await answer(g, info(ROOT_OF[g.args[0]]));
-        else if (w.asks.status.includes(g)) await answer(g, statusOf(String(g.args[0]).slice(1)));
-        else await answer(g, { history: [], template: null, last: null });
+        else if (w.asks.status.includes(g)) await answer(g, statusFor(String(g.args[0]).slice(1)));
+        else await answer(g, { history: w.history, template: w.template, last: null });
       }
     }
     throw new Error("git is still being asked");
   };
+  const statusFor = (root: string) => ({ ...statusOf(root), ...(w.status[root] ?? {}) });
   const stubs: Record<string, any> = {
     View: class {},
     div: builder, svg: builder, v_flex: builder, h_flex: builder, Input: { new: builder }, Textarea: { new: builder }, Scrollbar: { vertical: builder },
@@ -101,8 +105,8 @@ function world(settings: object = {}) {
     panes: () => [{ pane: "p1", tab: "t1", cwd: w.cwd }],
     focused: () => ({ space: "s1", tab: "t1", pane: "p1", cwd: null }),
     theme: () => new Proxy({}, { get: () => "#000000" }), tokens: () => ({}),
-    run() {}, openOverlay: (o: any) => w.overlays.push(o), closeOverlay() {}, notify: (n: any) => w.toasts.push(n),
-    shared: (k: string) => (k === "yuzora.git.repo.s1" ? w.pinned : w.shared.get(k) ?? null),
+    run: (...a: any[]) => { w.runs.push(a); }, openOverlay: (o: any) => w.overlays.push(o), closeOverlay() {}, notify: (n: any) => w.toasts.push(n),
+    shared: (k: string) => (w.shared.has(k) ? w.shared.get(k) : k === PIN ? w.pinned : null),
     setShared: (k: string, v: any) => { w.shared.set(k, v); }, props: () => null, nextCommand: () => new Promise(() => {}),
     t: (k: string) => k, gitSettings: () => ({ showPushDialog: false, ...settings }),
     open: (cwd: string, on: string | null) => ask("open", [cwd, on]),
@@ -161,7 +165,9 @@ function world(settings: object = {}) {
   const tick = () => w.timers.filter((t) => t.ms === 1000).forEach((t) => t.fn(cx));
   const go = (cwd: string) => { w.cwd = cwd; };
   const badge = () => w.shared.get("yuzora.badge.git") ?? null;
-  return { w, view, cx, frame, aim, press, type, tick, go, settle, pending, answer, fail, badge };
+  const submit = () => w.box.handlers.submit?.({ modifiers: { platform: true } }, cx);
+  const pin = (root: string | null) => { w.shared.set(PIN, root ? { root, on: null } : null); };
+  return { w, view, cx, frame, aim, press, type, tick, go, settle, pending, answer, fail, badge, submit, pin };
 }
 
 test("a new place is followed in the next frame, without waiting for the sidebar's timer", async () => {
@@ -511,4 +517,454 @@ test("the sidebar keeps a bounded number of repos to show again", async () => {
   expect(s.frame().texts).toContain("loading");
   s.go(roots.at(-1)!);
   expect(s.frame().files).toEqual([`${roots.at(-1)!.slice(1)}.txt`]);
+});
+
+// ---- v0.1.0 E1 r1: what is on screen is what a click acts on ----------------------------------------------------
+
+type S = ReturnType<typeof world>;
+type F = ReturnType<S["frame"]>;
+const WRITES = ["stage", "unstage", "discard", "commitChecks", "commit", "push", "pushPreview", "sequencer", "fetch", "trust"] as const;
+const writes = (s: S) => WRITES.flatMap((n) => s.w.asks[n].map((g) => `${n} ${JSON.stringify(g.args)}`));
+// What a click has done to the world outside the sidebar: git writes, panes and popups opened, toasts.
+const effects = (s: S) => JSON.stringify([writes(s), s.w.overlays, s.w.runs, s.w.toasts]);
+// A control by its name: the id it is drawn with starts with it (and names its repo).
+const named = (f: F, name: string) => f.nodes.find((n) => n.id === name || n.id?.startsWith(`${name}:`))!;
+const click = (s: S, f: F, name: string) => named(f, name).handlers.on_click({}, s.cx);
+const clickable = (f: F) => f.nodes.filter((n) => n.handlers.on_click).map((n) => n.id ?? "(no id)");
+
+// Every handler a frame has, called the way the window calls them from that frame: each click, each row's click in
+// every slot and its right click, and ⌘Enter in the message box.
+function fire(s: S, f: F) {
+  for (const n of f.nodes) n.handlers.on_click?.({}, s.cx);
+  for (const key of f.list?.keys ?? []) {
+    for (const slot of [0, 1, 2]) {
+      s.aim(f, slot);
+      f.list!.handlers.on_item_click(key, s.cx);
+    }
+    f.list!.handlers.on_item_secondary_click(key, {}, s.cx);
+  }
+  s.submit();
+}
+
+async function visit(s: S, count: number, tag: string) {
+  for (let i = 0; i < count; i++) {
+    const r = `/${tag}${i}`;
+    ROOT_OF[r] = r; CHANGES[r] = { unstaged: [`${tag}${i}.txt`] };
+    s.go(r); s.frame(); await s.settle();
+  }
+}
+
+// A frame of repo A with every control the sidebar draws: the commit box with its history, author and
+// warnings, a discard asked about, and the operation bar (with conflicts to resolve).
+async function crowded(s: S, operation = "merging") {
+  s.w.status["/a"] = { operation: { kind: operation, step: null, onto: "main", head: null, interactive: false }, conflicts: [file("c.txt")] };
+  s.w.history = ["one", "two"];
+  await s.settle();
+  s.go("/b"); s.frame(); await s.settle();
+  s.type("beta draft");
+  s.go("/a"); s.frame(); await s.settle();
+  s.type("alpha message");
+  click(s, s.frame(), "more");
+  click(s, s.frame(), "history-toggle");
+  const f = s.frame();
+  s.aim(f, 1); s.press(f, f.keyOf("x.txt"));
+  click(s, s.frame(), "commit");
+  await flush();
+  await s.answer(s.pending("commitChecks")[0], [{ kind: "todo", files: ["x.txt"] }]);
+  return s.frame();
+}
+
+// The window still shows `onScreen`, drawn for the repo it was, when `open` brings another repo's view to the screen
+// outside a draw, and that repo's status is read: nothing is drawn after.
+async function takenOver(s: S) {
+  s.go("/b/sub");
+  const onScreen = s.frame();
+  await s.answer(s.pending("open", (g) => g.args[0] === "/b/sub")[0], info("/b"));
+  await s.settle();
+  return onScreen;
+}
+
+test("every control of a frame does nothing once another repo took the screen, whatever repo's frame it was", async () => {
+  for (const operation of ["merging", "rebasing"]) {
+    const s = world();
+    const onScreen = await crowded(s, operation);
+    const want = ["repo-pick", "graph", "branch", "amend", "signoff", "noverify", "history-toggle", "more", "m-0", "m-1", "commit", "commit-push", "push",
+      "w-yes", "w-no", "discard-yes", "discard-no", "op-resolve", "op-continue", "op-abort", ...(operation === "merging" ? [] : ["op-skip"])];
+    const ids = clickable(onScreen);
+    for (const name of want) expect(ids.filter((id) => id === name || id.startsWith(`${name}:`)).length).toBe(1);
+    expect(ids.length).toBe(want.length);
+    expect(onScreen.rows.length).toBeGreaterThan(3);
+    await takenOver(s);
+    expect(s.w.box.value).toBe("beta draft");
+    const before = effects(s), notes = s.view.v.note, amend = s.view.v.draft.amend;
+    fire(s, onScreen);
+    await flush();
+    expect(effects(s)).toBe(before);
+    expect(s.w.box.value).toBe("beta draft");
+    expect([s.view.v.note, s.view.v.draft.amend, s.view.v.busy]).toEqual([notes, amend, null]);
+    expect(s.w.asks.commitChecks.length).toBe(1);
+  }
+});
+
+test("every control of a frame names its repo, so a press in one repo's frame and a release in another's are not one click", async () => {
+  const s = world();
+  const a = await crowded(s);
+  const mine = clickable(a);
+  expect(mine.length).toBeGreaterThan(15);
+  for (const id of mine) expect(id.endsWith(":" + ":/a")).toBe(true);
+  s.go("/b"); s.frame(); await s.settle();
+  for (const id of clickable(s.frame())) expect(id.endsWith(":" + ":/b")).toBe(true);
+  expect(clickable(s.frame()).filter((id) => mine.includes(id))).toEqual([]);
+});
+
+test("Commit drawn for one repo does not commit another's draft when the click lands before the next frame", async () => {
+  const s = world();
+  await s.settle();
+  s.go("/b"); s.frame(); await s.settle();
+  s.type("beta draft");
+  s.go("/a"); s.frame(); await s.settle();
+  s.type("alpha message");
+  const onScreen = await takenOver(s);
+  click(s, onScreen, "commit");
+  await flush();
+  expect(s.pending("commitChecks")).toEqual([]);
+  expect(s.w.asks.commit).toEqual([]);
+});
+
+test("Commit anyway, Push and the operation bar drawn for one repo do not act on another repo", async () => {
+  const s = world();
+  const onScreen = await crowded(s);
+  await takenOver(s);
+  const before = effects(s);
+  for (const name of ["w-yes", "push", "commit-push", "op-abort", "op-continue", "amend"]) click(s, onScreen, name);
+  await flush();
+  expect(effects(s)).toBe(before);
+  expect(s.w.asks.commit).toEqual([]);
+  expect(s.view.v.draft.amend).toBe(false);
+});
+
+test("⌘Enter in the message box commits the repo whose box was on screen, not the one that took the screen after it", async () => {
+  const s = world();
+  await s.settle();
+  s.go("/b"); s.frame(); await s.settle();
+  s.type("beta draft");
+  s.go("/a"); s.frame(); await s.settle();
+  s.type("alpha message");
+  s.frame();
+  s.go("/b/sub");
+  s.frame();
+  await s.answer(s.pending("open", (g) => g.args[0] === "/b/sub")[0], info("/b"));
+  await s.settle();
+  s.submit();
+  await flush();
+  expect(s.w.asks.commitChecks).toEqual([]);
+  s.frame();
+  s.submit();
+  await flush();
+  expect(s.w.asks.commitChecks.map((g) => g.args)).toEqual([[":/b", false]]);
+});
+
+test("the amend ticked for one repo is not ticked for another, and the other's commit is not an amend", async () => {
+  const s = world();
+  await s.settle();
+  click(s, s.frame(), "amend");
+  expect(s.frame().texts).toContain("commit.amendButton");
+  s.go("/b"); s.frame(); await s.settle();
+  expect(s.frame().texts).not.toContain("commit.amendButton");
+  s.type("beta");
+  s.frame().button("commit.button")!.handlers.on_click({}, s.cx);
+  await flush();
+  expect(s.pending("commitChecks")[0].args).toEqual([":/b", false]);
+  s.go("/a"); s.frame(); await s.settle();
+  expect(s.frame().texts).toContain("commit.amendButton");
+});
+
+// ---- what a repo holds is not let go of -------------------------------------------------------------------------
+
+test("a commit message, author and amend typed for a repo are there when it is shown again, after any number of other repos", async () => {
+  const s = world();
+  await s.settle();
+  s.type("feat: a long message I wrote for A");
+  s.w.author.value = "Pair <p@example.com>";
+  click(s, s.frame(), "amend");
+  await visit(s, 12, "keep");
+  s.go("/a"); s.frame(); await s.settle();
+  expect(s.w.box.value).toBe("feat: a long message I wrote for A");
+  expect(s.w.author.value).toBe("Pair <p@example.com>");
+  expect(s.frame().texts).toContain("commit.amendButton");
+});
+
+test("a repo whose push is going on, or whose commit waits on a question, is not let go of either", async () => {
+  const s = world();
+  await s.settle();
+  s.frame().button("push")!.handlers.on_click({}, s.cx);
+  await flush();
+  await visit(s, 12, "busy");
+  await s.fail(s.pending("pushPreview")[0], new Error("rejected"));
+  s.go("/a"); s.frame(); await s.settle();
+  expect(s.frame().texts).toContain("Error: rejected");
+
+  const q = world();
+  await q.settle();
+  q.type("alpha message");
+  q.frame().button("commit.button")!.handlers.on_click({}, q.cx);
+  await flush();
+  await q.answer(q.pending("commitChecks")[0], [{ kind: "todo", files: ["x.txt"] }]);
+  await visit(q, 12, "ask");
+  q.go("/a"); q.frame(); await q.settle();
+  expect(q.frame().texts).toContain("commit.anyway");
+});
+
+test("the repos that hold nothing are still let go of: a message that is only the commit template is not a draft", async () => {
+  const s = world();
+  s.w.template = "TEMPLATE";
+  await s.settle();
+  expect(s.w.box.value).toBe("TEMPLATE");
+  await visit(s, 12, "tpl");
+  s.go("/a");
+  s.frame();
+  await s.answer(s.pending("open")[0], info("/a"));
+  expect(s.frame().texts).toContain("loading");
+});
+
+// ---- the waits of an arrival -------------------------------------------------------------------------------------
+
+const aside = async (s: S) => {
+  await s.settle();
+  s.go("/b"); s.frame(); await s.settle();
+  s.go("/a"); s.frame(); await s.settle();
+};
+const goes = async (s: S, to: string) => { s.pin(null); s.go(to); s.frame(); await s.settle(); };
+const there = { repos: [{ rel: ".", root: "/p", name: "p" }], truncated: false };
+
+test("a pinned repo's open that fails does not put its error over the place the person went to meanwhile", async () => {
+  for (const reply of ["still there", "cannot be looked at"] as const) {
+    const s = world();
+    await aside(s);
+    s.pin("/p"); s.frame();
+    await s.fail(s.pending("open", (g) => g.args[0] === "/p")[0], new Error("fatal: detected dubious ownership"));
+    expect(s.pending("repos").length).toBe(1);
+    await goes(s, "/b");
+    const reads = s.w.asks.status.length;
+    if (reply === "still there") await s.answer(s.pending("repos")[0], there);
+    else await s.fail(s.pending("repos")[0], new Error("machine away"));
+    const f = s.frame();
+    expect(f.files).toEqual(["y.txt", "x.txt"]);
+    expect(f.texts.join("\n")).not.toMatch(/dubious|machine away/);
+    expect(s.badge()).toBe(2);
+    await s.answer(s.pending("changed", (g) => g.args[0] === ":/b")[0], 5);
+    await s.settle();
+    expect(s.w.asks.status.length).toBe(reads + 1);
+  }
+});
+
+test("a pinned repo git opened as the one above, being looked at while the person moves on, changes nothing where they went", async () => {
+  const s = world();
+  await aside(s);
+  s.pin("/p"); s.frame();
+  await s.answer(s.pending("open", (g) => g.args[0] === "/p")[0], info("/above"));
+  expect(s.pending("repos").map((g) => g.args[0])).toEqual(["/above"]);
+  await goes(s, "/b");
+  await s.answer(s.pending("repos")[0], { repos: [], truncated: false });
+  expect(s.pending("repos")).toEqual([]);
+  expect(s.w.toasts).toEqual([]);
+  expect(s.frame().files).toEqual(["y.txt", "x.txt"]);
+});
+
+test("a pinned repo git opened as the one above, found to be pinned there after the person moved on, puts no error where they went", async () => {
+  const s = world();
+  await aside(s);
+  s.pin("/p"); s.frame();
+  await s.answer(s.pending("open", (g) => g.args[0] === "/p")[0], info("/above"));
+  await s.answer(s.pending("repos")[0], { repos: [], truncated: false });
+  expect(s.pending("repos").map((g) => g.args[0])).toEqual(["/p"]);
+  s.go("/b");
+  s.pin(null);
+  s.frame();
+  await s.settle();
+  await s.answer(s.pending("repos")[0], there);
+  const f = s.frame();
+  expect(f.files).toEqual(["y.txt", "x.txt"]);
+  expect(f.texts).not.toContain("repo.opensAbove");
+});
+
+test("a read that fails for the repo shown asks about the place it was shown for, not the one coming", async () => {
+  const s = world();
+  await s.settle();
+  const watch = s.pending("changed")[0];
+  s.pin("/p"); s.frame();
+  await s.answer(watch, 2);
+  await s.fail(s.pending("status", (g) => g.args[0] === ":/a" && g.args[1].force === false).at(-1)!, new Error("fatal: boom"));
+  expect(s.pending("repos")).toEqual([]);
+  expect(s.w.toasts).toEqual([]);
+});
+
+// ---- a repo remembered is shown at once, and trusted only when this visit has read it ------------------------
+
+const WRITE_CONTROLS = ["commit", "commit-push", "push", "op-abort", "op-continue", "w-yes", "discard-yes", "trust"];
+
+test("a repo shown again from memory can be looked at at once, but nothing it draws writes until this visit has read it", async () => {
+  const s = world();
+  await crowded(s);
+  const left = writes(s).length;
+  s.go("/b"); s.frame(); await s.settle();
+  s.go("/a");
+  const back = s.frame();
+  expect(back.files).toEqual(["c.txt", "x.txt", "only-a.txt"]);
+  expect(back.texts).not.toContain("loading");
+  expect(clickable(back).length).toBeGreaterThan(15);
+  fire(s, back);
+  await flush();
+  expect(writes(s).length).toBe(left);
+  await s.settle();
+  const read = s.frame();
+  fire(s, read);
+  await flush();
+  expect(writes(s).length).toBeGreaterThan(left);
+  expect(writes(s).join("\n")).toMatch(/stage|discard|commitChecks|sequencer/);
+});
+
+test("a click on a row's buttons, or on Stage all, waits for this visit's read; opening its diff does not", async () => {
+  const s = world();
+  await s.settle();
+  s.go("/b"); s.frame(); await s.settle();
+  s.go("/a");
+  const back = s.frame();
+  s.aim(back, 0); s.press(back, back.keyOf("x.txt"));
+  s.aim(back, 1); s.press(back, back.keyOf("x.txt"));
+  s.aim(back, 3); s.press(back, back.keyOf("x.txt"));
+  await flush();
+  expect(s.w.asks.stage).toEqual([]);
+  expect(s.frame().texts).not.toContain("discard.ask");
+  expect(s.w.overlays.length + s.w.runs.length).toBeGreaterThan(0);
+  await s.settle();
+  const read = s.frame();
+  s.aim(read, 1); s.press(read, read.keyOf("x.txt"));
+  expect(s.frame().texts).toContain("discard.ask");
+});
+
+test("a repo that now waits for trust shows the notice the moment its status says so, and its remembered list could not be acted on before", async () => {
+  const s = world();
+  await s.settle();
+  s.go("/b"); s.frame(); await s.settle();
+  s.go("/a");
+  const back = s.frame();
+  expect(back.files).toEqual(["x.txt", "only-a.txt"]);
+  s.type("alpha");
+  s.frame().button("commit.button")!.handlers.on_click({}, s.cx);
+  await flush();
+  s.aim(back, 0); s.press(back, back.keyOf("x.txt"));
+  await flush();
+  expect(writes(s)).toEqual([]);
+  await s.answer(s.pending("open", (g) => g.args[0] === "/a")[0], info("/a"));
+  const status = s.pending("status", (g) => g.args[0] === ":/a");
+  await s.answer(status.at(-1)!, { ...statusOf("/a"), trust: ["core.fsmonitor"] });
+  const f = s.frame();
+  expect(f.texts).toContain("trust.title");
+  expect(f.files).toEqual([]);
+  expect(s.badge()).toBe(null);
+  expect(s.w.shared.get("yuzora.status.git")).toEqual({ text: "⎇ trust.status", tone: "blocked" });
+});
+
+test("a trust notice remembered is not answered before this visit has read the folder again", async () => {
+  const s = world();
+  s.w.status["/a"] = { trust: ["core.fsmonitor"] };
+  await s.settle();
+  expect(s.frame().texts).toContain("trust.title");
+  s.go("/b"); s.frame(); await s.settle();
+  s.go("/a");
+  const back = s.frame();
+  expect(back.texts).toContain("trust.title");
+  click(s, back, "trust");
+  await flush();
+  expect(s.w.asks.trust).toEqual([]);
+  await s.settle();
+  click(s, s.frame(), "trust");
+  await flush();
+  expect(s.w.asks.trust.map((g) => g.args)).toEqual([[":/a"]]);
+});
+
+test("a status read for an earlier visit that comes back after the repo was shown again does not count as this visit's", async () => {
+  const s = world();
+  await s.settle();
+  s.frame().button("push")!.handlers.on_click({}, s.cx);
+  await flush();
+  s.go("/b"); s.frame(); await s.settle();
+  await s.fail(s.pending("pushPreview")[0], new Error("rejected"));
+  const late = s.pending("status", (g) => g.args[0] === ":/a")[0];
+  s.go("/a");
+  const back = s.frame();
+  await s.answer(late, statusOf("/a"));
+  s.aim(back, 0); s.press(back, back.keyOf("x.txt"));
+  await flush();
+  expect(s.w.asks.stage).toEqual([]);
+  await s.settle();
+  const read = s.frame();
+  s.aim(read, 0); s.press(read, read.keyOf("x.txt"));
+  await flush();
+  expect(s.w.asks.stage.length).toBe(1);
+});
+
+// ---- a question asked is the question the person sees ---------------------------------------------------------
+
+test("a discard asked about is not asked again when the repo is shown again", async () => {
+  const s = world();
+  await s.settle();
+  const f = s.frame();
+  s.aim(f, 1); s.press(f, f.keyOf("x.txt"));
+  expect(s.frame().texts).toContain("discard.ask");
+  s.go("/b"); s.frame(); await s.settle();
+  s.go("/a");
+  const back = s.frame();
+  expect(back.texts).not.toContain("discard.ask");
+  await s.settle();
+  expect(s.frame().texts).not.toContain("discard.ask");
+  expect(s.w.asks.discard).toEqual([]);
+});
+
+test("a discard asked about is dropped when the file turns out to be another kind of change, and kept while it is the same", async () => {
+  const s = world();
+  await s.settle();
+  const ask = async () => { const f = s.frame(); s.aim(f, 1); s.press(f, f.keyOf("x.txt")); expect(s.frame().texts).toContain("discard.ask"); };
+  const refresh = async (st: object) => {
+    await s.answer(s.pending("changed")[0], s.w.asks.changed.length + 1);
+    await s.answer(s.pending("status")[0], { ...statusOf("/a"), ...st });
+  };
+  await ask();
+  await refresh({ unstaged: [file("x.txt"), file("only-a.txt")].map((x) => ({ ...x, add: 5 })) });
+  expect(s.frame().texts).toContain("discard.ask");
+  await refresh({ unstaged: [file("only-a.txt")], untracked: [{ path: "x.txt", kind: "?", add: 0, del: 0, binary: false }] });
+  expect(s.frame().texts).not.toContain("discard.ask");
+  expect(s.w.asks.discard).toEqual([]);
+  await ask();
+  await refresh({ unstaged: [file("only-a.txt")] });
+  expect(s.frame().texts).not.toContain("discard.ask");
+});
+
+test("the file menu does not open from a list that has not been read in this visit", async () => {
+  const s = world();
+  await s.settle();
+  s.go("/b"); s.frame(); await s.settle();
+  s.go("/a");
+  const back = s.frame();
+  const key = back.keyOf("x.txt");
+  back.list!.handlers.on_item_secondary_click(key, {}, s.cx);
+  expect(s.w.overlays).toEqual([]);
+  await s.settle();
+  const read = s.frame();
+  read.list!.handlers.on_item_secondary_click(key, {}, s.cx);
+  expect(s.w.overlays.length).toBe(1);
+});
+
+// ---- the header says what is shown --------------------------------------------------------------------------------
+
+test("while a place is being opened the header still says what is on screen: its name, and whether that is the pinned one", async () => {
+  const s = world();
+  await s.settle();
+  const header = (f: F) => { const pick = named(f, "repo-pick"); return { dot: pick.kids.length === 3, name: pick.kids.at(-2)!.texts[0] }; };
+  expect(header(s.frame())).toEqual({ dot: false, name: "a" });
+  s.pin("/p");
+  expect(header(s.frame())).toEqual({ dot: false, name: "a" });
+  await s.answer(s.pending("open", (g) => g.args[0] === "/p")[0], info("/p"));
+  expect(header(s.frame())).toEqual({ dot: true, name: "p" });
 });
