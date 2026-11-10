@@ -105,13 +105,13 @@
 
 英文：
 
-> **Windows, if you are on a beta (0.1.0-beta.2 to beta.4):** the beta cannot update itself on Windows, so download `Yuzora-windows-x64-setup.exe` from this release and run it over your install. Then restart your PC once. The beta started a background program (herdr-core) that still holds Yuzora's install folder, and that stops the first automatic update (0.1.0 to the next) until it is gone. Restarting ends it, and your terminals with it. If you would rather not restart, run `hc server stop` in a terminal outside Yuzora instead: it ends every terminal and the agents running in them, the same as a restart would. From 0.1.0 on, Yuzora updates itself.
+> **Windows, if you are on a beta (0.1.0-beta.2 to beta.4):** the beta cannot update itself on Windows, so close Yuzora, download `Yuzora-windows-x64-setup.exe` from this release and run it over your install. (With the beta still open, the installer may not be able to replace its files.) Then restart your PC once. The beta started a background program (herdr-core) that still holds Yuzora's install folder, and that stops the first automatic update (0.1.0 to the next) until it is gone. Restarting ends it, and your terminals with it. If you would rather not restart, run `hc server stop` in a terminal outside Yuzora instead: it ends every terminal and the agents running in them, the same as a restart would. From 0.1.0 on, Yuzora updates itself.
 
 繁體中文：
 
-> **Windows 上還在用 beta（0.1.0-beta.2 到 beta.4）的人：** beta 版在 Windows 上無法自動更新，請從這個 release 下載 `Yuzora-windows-x64-setup.exe`，直接執行覆蓋安裝，裝完請重新開機一次。beta 版啟動了一個背景程式（herdr-core），它還握著 Yuzora 的安裝資料夾，會讓 0.1.0 之後的第一次自動更新失敗，直到它結束為止；重新開機會結束它，裡面的終端機也會一起結束。不想重新開機的話，可以在 Yuzora 以外的終端機執行 `hc server stop`：它會結束所有終端機與裡面執行的 agent，和重新開機的損失一樣。從 0.1.0 起，Yuzora 會自己更新。
+> **Windows 上還在用 beta（0.1.0-beta.2 到 beta.4）的人：** beta 版在 Windows 上無法自動更新，請先完全關閉 Yuzora，再從這個 release 下載 `Yuzora-windows-x64-setup.exe`，直接執行覆蓋安裝（beta 還開著時，安裝程式可能無法取代它的檔案），裝完請重新開機一次。beta 版啟動了一個背景程式（herdr-core），它還握著 Yuzora 的安裝資料夾，會讓 0.1.0 之後的第一次自動更新失敗，直到它結束為止；重新開機會結束它，裡面的終端機也會一起結束。不想重新開機的話，可以在 Yuzora 以外的終端機執行 `hc server stop`：它會結束所有終端機與裡面執行的 agent，和重新開機的損失一樣。從 0.1.0 起，Yuzora 會自己更新。
 
-（兩段的重點：一定要手動下載裝一次；重新開機是為了讓 0.1.0 → 下一版的第一次自動更新直接成功，不必先失敗一次；不要建議只在工作管理員結束 herdr-core，見上。`hc server stop` 在沒有終端機時夠用是實測（第三輪探針 C7、C10，兩者都沒有終端機開著）；有終端機時夠用是讀碼（`server_stop` 會結束所有終端機與 holder）；「重新開機」沒有在 runner 上量，它結束所有行程，推論一定夠用。）
+（兩段的重點：先關閉 Yuzora，再手動下載裝一次（`yuzora.nsi` 遇到 `yuzora.exe` 時先 `Delete`，失敗再把整個資料夾 `Rename` 成 `.old`，最後 `File` 寫入；執行中的 beta 兩步都會失敗，因為 exe 在執行、資料夾又是它的 cwd，之後 `File` 得直接寫入執行中的 exe。這是讀碼推論，沒有用真的 beta 開著量過：C3、C9 開著的是修正後的 build，cwd 已在家目錄，所以資料夾改名成功；所以兩段只寫「可能無法取代」，沒有寫會怎樣）；重新開機是為了讓 0.1.0 → 下一版的第一次自動更新直接成功，不必先失敗一次；不要建議只在工作管理員結束 herdr-core，見上。`hc server stop` 在沒有終端機時夠用是實測（第三輪探針 C7、C10，兩者都沒有終端機開著）；有終端機時夠用是讀碼（`server_stop` 會結束所有終端機與 holder）；「重新開機」沒有在 runner 上量，它結束所有行程，推論一定夠用。）
 
 ### Linux
 
