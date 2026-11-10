@@ -2911,6 +2911,155 @@ fn yuzora_diff_a_pointer_held_at_the_edge_scrolls_the_list_and_the_selection_goe
     pane.close();
 }
 
+/// `rows` unchanged lines, the first one `300` letters long: side by side the lines scroll sideways, and the bar under them has a track.
+fn long_first_line_diff(rows: usize) -> Diff {
+    let mut diff = numbered_diff(rows, "line");
+    let long = "a".repeat(300);
+    diff.rows[0]["t"] = json!(long);
+    diff.left[0] = long.clone();
+    diff.right[0] = long;
+    diff
+}
+
+/// The button goes down at `x`, `y` (Shift held, or not), stays there for `ticks` of 50 ms with the pointer not moving, and comes up.
+fn hold_still(pane: &mut DiffPane, x: f64, y: f64, shift: bool, ticks: usize) {
+    pane.hover(x, y);
+    pane.press_with(x, y, shift);
+    pane.wait(ticks, 50);
+    pane.release(x, y);
+}
+
+// yuzora(v010-git-diff-fu-r1): a press that stays where it landed is the click it was, however long the button is held. Not
+// scrolled under it at the list's edge either, where the row the release lands on would be another than the one pressed and the
+// list would report no click.
+#[gpui::test]
+fn yuzora_diff_a_button_held_still_on_the_last_row_in_view_is_a_click(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
+    let bottom = pane.high as f64 - 8.;
+    let last = ((bottom - COPY_HEADER) / ROW_H) as u64;
+    hold_still(&mut pane, TEXT_LEFT, bottom, false, 4);
+    near(scrolled_in_frame(&pane), 0., "held 200 ms: the list stays");
+    assert_eq!(
+        pane.noted("clickRow"),
+        vec![json!(["clickRow", last])],
+        "the list reported the click"
+    );
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", last, last + 1]])),
+        "the row pressed, and no other"
+    );
+    pane.close();
+}
+
+#[gpui::test]
+fn yuzora_diff_a_shift_click_held_still_on_the_last_row_in_view_reaches_that_row_and_no_further(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
+    let bottom = pane.high as f64 - 8.;
+    let last = ((bottom - COPY_HEADER) / ROW_H) as u64;
+    pane.click(TEXT_LEFT, row_y(3), false);
+    hold_still(&mut pane, TEXT_LEFT, bottom, true, 4);
+    near(scrolled_in_frame(&pane), 0., "held 200 ms: the list stays");
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", 3, last + 1]])),
+        "from the row selected to the one clicked, and not a row further"
+    );
+    pane.close();
+}
+
+#[gpui::test]
+fn yuzora_diff_a_button_held_still_on_the_first_row_in_view_of_a_scrolled_list_is_a_click(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
+    pane.wheel(300., 300., 0., -100.);
+    let top = COPY_HEADER + 6.;
+    let first = ((100. + 6.) / ROW_H) as u64;
+    hold_still(&mut pane, TEXT_LEFT, top, false, 4);
+    near(
+        scrolled_in_frame(&pane),
+        100.,
+        "held 200 ms: the list stays where the wheel left it",
+    );
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", first, first + 1]])),
+        "the row pressed"
+    );
+    pane.close();
+}
+
+#[gpui::test]
+fn yuzora_diff_a_button_held_on_the_bars_track_selects_nothing_and_scrolls_nothing(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, long_first_line_diff(200), json!({}));
+    let (start, long) = pane.thumb().expect("a bar under the long line");
+    let (track, bar) = (start + long + 100., pane.high as f64 - 4.);
+    assert!(
+        track < 1200.,
+        "a track beside the thumb: {start}..{}",
+        start + long
+    );
+    hold_still(&mut pane, track, bar, false, 6);
+    near(scrolled_in_frame(&pane), 0., "the list stays");
+    assert_eq!(mark_of(&pane), Value::Null, "and no row is selected");
+    assert_eq!(selected(&mut pane), None);
+    pane.close();
+}
+
+#[gpui::test]
+fn yuzora_diff_unified_a_button_held_on_the_bar_under_the_lines_selects_nothing_and_scrolls_nothing(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, long_first_line_diff(200), json!({"layout": "unified"}));
+    let bar = pane.high as f64 - 4.;
+    hold_still(&mut pane, 600., bar, false, 6);
+    near(scrolled_in_frame(&pane), 0., "the list stays");
+    assert_eq!(mark_of(&pane), Value::Null, "and no row is selected");
+    assert_eq!(selected(&mut pane), None);
+    pane.close();
+}
+
+// yuzora(v010-git-diff-fu-r1): a drag begins when the pointer has gone a few pixels from where it landed or is over another row,
+// and not before: a shake of the hand at the list's edge is still a click, and a pointer that has gone further and is held there
+// scrolls the list.
+#[gpui::test]
+fn yuzora_diff_a_drag_begins_a_few_pixels_from_where_the_button_went_down(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
+    let bottom = pane.high as f64 - 8.;
+    let last = ((bottom - COPY_HEADER) / ROW_H) as u64;
+    pane.hover(TEXT_LEFT, bottom);
+    pane.press(TEXT_LEFT, bottom, 1);
+    pane.drag(TEXT_LEFT + 2., bottom);
+    pane.wait(4, 50);
+    pane.drag(TEXT_LEFT, bottom);
+    pane.release(TEXT_LEFT, bottom);
+    near(
+        scrolled_in_frame(&pane),
+        0.,
+        "a shake of 2 px: the list stays",
+    );
+    assert_eq!(
+        selected(&mut pane),
+        Some(json!([["l", last, last + 1]])),
+        "and it was a click"
+    );
+
+    pane.hover(TEXT_LEFT, bottom);
+    pane.press(TEXT_LEFT, bottom, 1);
+    pane.drag(TEXT_LEFT + 12., bottom);
+    pane.wait(4, 50);
+    assert!(
+        scrolled_in_frame(&pane) >= 20.,
+        "12 px away and held at the edge: the list scrolls"
+    );
+    pane.release(TEXT_LEFT + 12., bottom);
+    pane.close();
+}
 // yuzora(v010-git-diff-fu): a drag while the rows are being ranked is not cut short by it, and does not stop it: the selection made
 // is there when the ranking is done, and the ranking goes on to its end whether the button is up or down (a `hold` prop stops
 // it after its first slice till F12).
