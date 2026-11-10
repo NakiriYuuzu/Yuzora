@@ -1333,15 +1333,31 @@ fn alone(name: &str) -> bool {
 /// The zooms checked: below, at, and above 1, to the largest the person can pick but one.
 const ZOOMS: [f32; 5] = [0.8, 1., 1.2, 1.5, 2.];
 
-/// The first row's left line is the longest; where `rest` is set, four lines that look longer (a letter with an
-/// accent takes more than a cell at most) are laid out instead of it, so its width is the room for what was not.
-fn longest_first(rest: bool) -> Value {
-    let mut rows = vec![diff_row(Some((if rest { 124 } else { 300 }, "a")), Some((5, "b")))];
+/// The first row's left line, `len` letters, is the longest; where `rest` is set, four lines that look longer (a
+/// letter with an accent takes more than a cell at most) are laid out instead of it, so its width is the room for
+/// what was not.
+fn longest_first(len: usize, rest: bool) -> Value {
+    let mut rows = vec![diff_row(Some((len, "a")), Some((5, "b")))];
     if rest {
-        rows.extend((0..4).map(|_| diff_row(Some((100, "\u{e9}")), Some((5, "b")))));
+        rows.extend((0..4).map(|_| diff_row(Some((len * 4 / 5 + 1, "\u{e9}")), Some((5, "b")))));
     }
     Value::Array(rows)
 }
+
+/// What is left of a side after its longest line's end, at zoom 1, when the lines are scrolled as far as they go:
+/// the 18 the mod leaves less the 6 of indent before the line.
+fn left_after_the_end() -> f64 {
+    12.
+}
+
+/// How far from that the layout may put it: each length is rounded to a pixel, and a cell is worked out from the width
+/// of a run of 256, whose own is rounded up to one, for the lines that were not laid out.
+fn room_for_error(len: usize) -> f64 {
+    3. + len as f64 / 256.
+}
+
+/// What the tests of the zoom open: (case, the letters of the longest line, whether it is laid out).
+const LONGEST: [(&str, usize, bool); 3] = [("a line laid out", 300, false), ("a line that was not", 124, true), ("a long line that was not", 1600, true)];
 
 // yuzora(v010): at any zoom the lines scroll sideways to where the longest one ends and no further, and the
 // bar's thumb says so: it starts the track and ends it as the lines do, as long as the share of the lines it
@@ -1352,11 +1368,10 @@ fn yuzora_diff_the_sideways_scroll_ends_where_the_longest_line_does_at_every_zoo
     if !alone("yuzora_diff_the_sideways_scroll_ends_where_the_longest_line_does_at_every_zoom") {
         return;
     }
-    let mut at_one = None;
     let mut failures = Vec::new();
-    for zoom in [1.].into_iter().chain(ZOOMS) {
-        for (case, rest) in [("a line laid out", false), ("a line that was not", true)] {
-            let mut pane = DiffPane::zoomed(cx, longest_first(rest), zoom, json!({}));
+    for zoom in ZOOMS {
+        for (case, len, rest) in LONGEST {
+            let mut pane = DiffPane::zoomed(cx, longest_first(len, rest), zoom, json!({}));
             let width = pane.wide as f64;
             let home = pane.start_of("a").expect("the line at home");
             let bar = pane.thumb();
@@ -1366,12 +1381,8 @@ fn yuzora_diff_the_sideways_scroll_ends_where_the_longest_line_does_at_every_zoo
             let (z, mark) = (zoom as f64, format!("{case} at zoom {zoom}"));
             let (Some(gap), Some(far)) = (gap, far) else { failures.push(format!("{mark}: scrolled to the end, no line is left in sight")); continue };
             let travel = home - far;
-            let first = *at_one.get_or_insert(gap);
-            if zoom == 1. && !(0. ..30.).contains(&gap) {
-                failures.push(format!("{mark}: the widest line ends {gap} short of its cell's edge"));
-            }
-            if (gap - first * z).abs() > 3. {
-                failures.push(format!("{mark}: {gap} left after the end, when it is {first} at zoom 1"));
+            if (gap - left_after_the_end() * z).abs() > room_for_error(len) {
+                failures.push(format!("{mark}: {gap} left after the end, when it is {}", left_after_the_end() * z));
             }
             let Some((start, long)) = bar else { failures.push(format!("{mark}: no bar at home")); continue };
             let Some((end_start, end_long)) = thumb else { failures.push(format!("{mark}: no bar at the end")); continue };
@@ -1401,11 +1412,8 @@ fn yuzora_diff_a_zoom_set_while_it_is_open_holds_from_the_next_frame(cx: &mut Te
         return;
     }
     let mut failures = Vec::new();
-    for (case, rest) in [("a line laid out", false), ("a line that was not", true)] {
-        let mut pane = DiffPane::zoomed(cx, longest_first(rest), 1., json!({}));
-        let base = pane.end_gap("a").expect("the line at the end");
-        pane.close();
-        let mut pane = DiffPane::zoomed(cx, longest_first(rest), 2., json!({}));
+    for (case, len, rest) in LONGEST {
+        let mut pane = DiffPane::zoomed(cx, longest_first(len, rest), 2., json!({}));
         pane.wheel(100., 100., -100000., 0.);
         for (zoom, smaller) in [(1.5, true), (1., true), (0.8, true), (1.2, false), (2., false), (1.5, false)] {
             pane.set_zoom(zoom);
@@ -1421,10 +1429,10 @@ fn yuzora_diff_a_zoom_set_while_it_is_open_holds_from_the_next_frame(cx: &mut Te
                 failures.push(format!("{mark}: the thumb is {settled:?} on a track of 1200"));
             }
             let gap = pane.start_of("a").map(|start| pane.width("l") - (start + pane.text_width("a")));
-            let farthest = base * zoom as f64;
+            let (farthest, error) = (left_after_the_end() * zoom as f64, room_for_error(len));
             match gap {
-                Some(gap) if gap < farthest - 3. && smaller => failures.push(format!("{mark}: {gap} left after the end, and the farthest the lines go leaves {farthest}")),
-                Some(gap) if gap > farthest + 3. => failures.push(format!("{mark}: {gap} left after the end, and the farthest the lines go leaves {farthest}")),
+                Some(gap) if gap < farthest - error && smaller => failures.push(format!("{mark}: {gap} left after the end, and the farthest the lines go leaves {farthest}")),
+                Some(gap) if gap > farthest + error => failures.push(format!("{mark}: {gap} left after the end, and the farthest the lines go leaves {farthest}")),
                 None if smaller => failures.push(format!("{mark}: no line is in sight")),
                 _ => {}
             }
@@ -1446,7 +1454,7 @@ fn yuzora_diff_the_pointer_and_the_wheel_move_what_they_touch_at_every_zoom(cx: 
     let mut failures = Vec::new();
     for zoom in ZOOMS {
         let z = zoom as f64;
-        let mut pane = DiffPane::zoomed(cx, longest_first(false), zoom, json!({}));
+        let mut pane = DiffPane::zoomed(cx, longest_first(300, false), zoom, json!({}));
         let home = pane.start_of("a").unwrap();
         pane.wheel(100., 100., -200., 0.);
         let moved = home - pane.start_of("a").unwrap_or(f64::NAN);
