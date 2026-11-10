@@ -1135,18 +1135,50 @@ mod tests {
             original: Cell,
             typed: &str,
         ) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
+            composing_in_column(cx, name, original, ("sqlite", "text"), typed)
+        }
+
+        /// The same, for a name column of `type_name` on `engine`, which says what clearing it means.
+        fn composing_in_column<'a>(
+            cx: &'a mut TestAppContext,
+            name: &str,
+            original: Cell,
+            (engine, type_name): (&str, &str),
+            typed: &str,
+        ) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
+            let (cx, input, set) = editing_in(cx, name, original, (engine, type_name));
+            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, typed, None, window, cx));
+            settle(cx);
+            assert!(
+                input.update_in(cx, |s, window, cx| s.marked_text_range(window, cx)).is_some(),
+                "the composition is marked"
+            );
+            (cx, input, set)
+        }
+
+        /// The name column's first cell open for editing, all of it selected.
+        fn editing_in<'a>(
+            cx: &'a mut TestAppContext,
+            name: &str,
+            original: Cell,
+            (engine, type_name): (&str, &str),
+        ) -> (&'a mut VisualTestContext, Entity<InputState>, Arc<Mutex<ResultSet>>) {
             let set = results::create(name, "select * from people");
             {
                 let mut r = results::lock(&set);
                 r.columns = vec![
                     crate::model::Column::new("id", "int4"),
-                    crate::model::Column::new("name", "text"),
+                    crate::model::Column::new("name", type_name),
                     crate::model::Column::new("note", "text"),
                 ];
                 r.rows = vec![vec![Cell::text("1"), original, Cell::text("n")]];
                 r.complete = true;
                 let mut target = target();
                 target.owner = name.to_owned();
+                target.config = serde_json::from_value(
+                    serde_json::json!({"name": "c", "engine": engine, "host": "h", "user": "u", "path": "t.sqlite"}),
+                )
+                .unwrap();
                 r.editing = crate::results::Editing::Editable(Box::new(target));
             }
             let (id, owner) = (results::lock(&set).id, name.to_owned());
@@ -1158,12 +1190,6 @@ mod tests {
             settle(cx);
             let input =
                 grid.read_with(cx, |g, _| g.editing.as_ref().map(|e| e.input.clone())).expect("the editor is open");
-            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, typed, None, window, cx));
-            settle(cx);
-            assert!(
-                input.update_in(cx, |s, window, cx| s.marked_text_range(window, cx)).is_some(),
-                "the composition is marked"
-            );
             (cx, input, set)
         }
 
@@ -1255,6 +1281,77 @@ mod tests {
             cx.simulate_mouse_down(bounds.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
             settle(cx);
             assert_eq!(edit_of(&set, 1), None, "an unchosen composition made the NULL something");
+        }
+
+        fn leave_the_cell(cx: &mut VisualTestContext) {
+            let bounds = cx.debug_bounds("grid-cell-0-0").expect("the id cell");
+            cx.simulate_mouse_down(bounds.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
+            settle(cx);
+        }
+
+        const NUMBER: (&str, &str) = ("mssql", "int");
+
+        #[gpui::test]
+        fn a_number_cell_cleared_for_an_input_method_is_null_and_the_composition_is_not_what_is_kept(
+            cx: &mut TestAppContext,
+        ) {
+            cx.executor().allow_parking();
+            let (cx, _, set) = composing_in_column(cx, "composing-clear", Cell::Int(5), NUMBER, "ㄓㄨㄥ");
+            leave_the_cell(cx);
+            assert_eq!(
+                edit_of(&set, 1),
+                Some(Cell::Null),
+                "what is left of the cell, once the composition is out, is nothing"
+            );
+            assert_eq!(
+                results::lock(&set).cell(0, 1),
+                Some(&Cell::Null),
+                "the cell says NULL before anything is written"
+            );
+        }
+
+        #[gpui::test]
+        fn a_null_number_cell_that_was_only_composed_in_stays_null(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, _, set) = composing_in_column(cx, "composing-null-number", Cell::Null, NUMBER, "ㄓㄨㄥ");
+            leave_the_cell(cx);
+            assert_eq!(edit_of(&set, 1), None, "an unchosen composition made the NULL something");
+            assert_eq!(results::lock(&set).cell(0, 1), Some(&Cell::Null));
+        }
+
+        #[gpui::test]
+        fn a_number_chosen_with_an_input_method_is_a_number_and_the_composition_beside_it_is_dropped(
+            cx: &mut TestAppContext,
+        ) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = composing_in_column(cx, "composing-number", Cell::Int(5), NUMBER, "ㄓㄨㄥ");
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "7", window, cx));
+            input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, "ㄅ", None, window, cx));
+            leave_the_cell(cx);
+            assert_eq!(edit_of(&set, 1), Some(Cell::Int(7)));
+        }
+
+        #[gpui::test]
+        fn a_number_cell_cleared_by_hand_is_null_before_it_is_written(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = editing_in(cx, "clearing-number", Cell::Int(5), NUMBER);
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "", window, cx));
+            leave_the_cell(cx);
+            assert_eq!(edit_of(&set, 1), Some(Cell::Null));
+            assert_eq!(
+                results::lock(&set).cell(0, 1),
+                Some(&Cell::Null),
+                "the cell says NULL before anything is written"
+            );
+        }
+
+        #[gpui::test]
+        fn a_text_cell_cleared_by_hand_is_an_empty_string(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (cx, input, set) = editing_in(cx, "clearing-text", Cell::text("a"), ("mssql", "nvarchar"));
+            input.update_in(cx, |s, window, cx| s.replace_text_in_range(None, "", window, cx));
+            leave_the_cell(cx);
+            assert_eq!(edit_of(&set, 1), Some(Cell::text("")));
         }
 
         /// Enter reaching the input (an input method that did not take it for itself).
