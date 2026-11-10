@@ -10,6 +10,7 @@
 //! that returns rows (or changes some).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,7 @@ use crate::config::{self, ConnectionConfig};
 use crate::engine::{self, Canceller, Conn, ConnectSpec, RowSink};
 use crate::error::{DbError, DbResult};
 use crate::model::{Cell, Column, DbObject, ObjectRef, RowEdit, TableInfo};
-use crate::results::{self, EditTarget, Editing, ReadOnly, ResultId, ResultSet, WriteState};
+use crate::results::{self, EditTarget, Editing, ReadOnly, ResultId, ResultSet, WriteState, WriteStop};
 use crate::runtime;
 
 /// The sidebar's connections (schema, databases).
@@ -195,7 +196,8 @@ fn canceller(connection: &str, database: Option<&str>, owner: &str) -> Option<Ca
 /// jobs and results forgotten, its connections closed.
 pub fn release_owner(owner: &str) {
     supersede(owner);
-    pool().retain(|(_, _, o), _| o != owner);
+    let count = count_owner(owner);
+    pool().retain(|(_, _, o), _| o != owner && *o != count);
     results::release_owner(owner);
 }
 
@@ -363,8 +365,10 @@ pub fn cancel(id: JobId) {
         (job.connection.clone(), job.database.clone(), job.owner.clone())
     };
     update_job(id, |_| {});
-    if let Some(c) = canceller(&target.0, target.1.as_deref(), &target.2) {
-        runtime::spawn(async move { c.cancel().await });
+    for owner in [target.2.clone(), count_owner(&target.2)] {
+        if let Some(c) = canceller(&target.0, target.1.as_deref(), &owner) {
+            runtime::spawn(async move { c.cancel().await });
+        }
     }
 }
 
@@ -396,6 +400,8 @@ struct JobSink {
     /// The rows of one table: its results start out `Loading` until the key is known.
     table: bool,
     current: Option<Arc<Mutex<ResultSet>>>,
+    /// The newest result this sink made, finished or not.
+    last: Option<Arc<Mutex<ResultSet>>>,
 }
 
 impl JobSink {
@@ -407,6 +413,7 @@ impl JobSink {
             max_rows: max_rows(),
             table: false,
             current: None,
+            last: None,
         }
     }
 
@@ -426,6 +433,7 @@ impl JobSink {
         }
         update_job(self.job, |j| j.results.push(id));
         self.current = Some(set.clone());
+        self.last = Some(set.clone());
         set
     }
 
@@ -566,14 +574,25 @@ pub fn open_table(
         let sql = engine::select_sql(engine, home.as_deref(), &table, order, limit);
         let mut sink = JobSink::for_table(id, &owner, &sql);
         let outcome = l.conn().execute(&sql, &mut sink).await;
-        // The key as column positions; no key (or a key column not in the
-        // result) means read-only, with the reason shown.
-        if let Some(set) = sink.current.clone().or_else(|| last_result(id)) {
+        // The pane's connection is free from here: the count and any write-back
+        // do not wait for each other.
+        drop(l);
+        // The rows are in, whether or not the engine said so (a read that hit
+        // the cap ends mid-stream): the result is complete, and it is now
+        // known what it is. The key as column positions; no key (or a key
+        // column not in the result) means read-only, with the reason shown.
+        let read_failed = match &outcome {
+            Ok(()) | Err(DbError::Cancelled) => None,
+            Err(e) => Some(e.to_string()),
+        };
+        sink.finish(read_failed.clone());
+        if let Some(set) = sink.last.clone() {
             let mut r = results::lock(&set);
             let names: Vec<String> = info.as_ref().map(TableInfo::key_columns).unwrap_or_default();
             let positions: Option<Vec<usize>> =
                 names.iter().map(|n| r.columns.iter().position(|c| &c.name == n)).collect();
             r.editing = match (info.as_ref(), positions) {
+                _ if read_failed.is_some() => Editing::ReadOnly(ReadOnly::ReadFailed),
                 _ if read_only => Editing::ReadOnly(ReadOnly::Connection),
                 (Err(e), _) => Editing::ReadOnly(ReadOnly::NoInfo(e.to_string())),
                 (Ok(_), Some(key)) if !key.is_empty() => Editing::Editable(EditTarget {
@@ -593,43 +612,72 @@ pub fn open_table(
                 _ => Editing::ReadOnly(ReadOnly::NoKey),
             };
             r.version += 1;
+            let result = r.id;
+            drop(r);
+            results::changed(result);
+            update_job(id, |_| {});
         }
-        // The row count, after the rows (a slow count never delays them) and
-        // while the job still runs, so Stop reaches it too.
+        // The row count, after the rows and while the job still runs, so Stop
+        // reaches it too. It has a connection of its own: a slow `count(*)`
+        // on a big table neither holds back editing nor queues a write-back.
         if outcome.is_ok() && !job_cancelled(id) {
-            let mut one = FirstCell(None);
-            let counted = l.conn().execute(&engine::count_sql(engine, home.as_deref(), &table), &mut one).await;
-            if let (Ok(()), Some(n), Some(set)) = (counted, one.0, last_result(id)) {
-                let mut r = results::lock(&set);
-                r.total = n.display().trim().parse().ok();
-                r.version += 1;
+            let total = count_rows(&connection, database.as_deref(), &owner, engine, &table, id).await;
+            if let (Some(total), Some(set)) = (total, sink.last.clone()) {
+                let result = {
+                    let mut r = results::lock(&set);
+                    r.total = Some(total);
+                    r.version += 1;
+                    r.id
+                };
+                results::changed(result);
             }
         }
-        drop(l);
         finish_job(id, outcome, &mut sink);
     });
     id
 }
 
-fn last_result(job: JobId) -> Option<Arc<Mutex<ResultSet>>> {
-    let id = *jobs().1.get(&job)?.results.last()?;
-    results::get(id)
+/// `count(*)` of `table`, on the connection leased under [`count_owner`]
+/// (closed again right after: only the count needs it).
+async fn count_rows(
+    connection: &str,
+    database: Option<&str>,
+    owner: &str,
+    engine: config::Engine,
+    table: &ObjectRef,
+    job: JobId,
+) -> Option<u64> {
+    let counting = count_owner(owner);
+    let mut l = lease(connection, database, &counting).await.ok()?;
+    let home = l.conn().database().map(str::to_owned);
+    let mut one = FirstCell { job, cell: None };
+    let counted = l.conn().execute(&engine::count_sql(engine, home.as_deref(), table), &mut one).await;
+    drop(l);
+    pool().remove(&(connection.to_owned(), database.map(str::to_owned), counting));
+    counted.ok()?;
+    one.cell?.display().trim().parse().ok()
 }
 
-/// Keeps the first cell of the first row.
-struct FirstCell(Option<Cell>);
+/// Keeps the first cell of the first row, for `job`.
+struct FirstCell {
+    job: JobId,
+    cell: Option<Cell>,
+}
 
 impl RowSink for FirstCell {
     fn columns(&mut self, _: Vec<Column>) {}
     fn rows(&mut self, rows: Vec<Vec<Cell>>) -> bool {
-        if self.0.is_none() {
-            self.0 = rows.into_iter().next().and_then(|r| r.into_iter().next());
+        if self.cell.is_none() {
+            self.cell = rows.into_iter().next().and_then(|r| r.into_iter().next());
         }
         // Not `false`: stopping early would send a cancel that could land on
         // the next statement. A count is one row anyway.
         true
     }
     fn done(&mut self, _: Option<u64>) {}
+    fn cancelled(&self) -> bool {
+        job_cancelled(self.job)
+    }
 }
 
 // ---------------------------------------------------------------- write-back
@@ -663,34 +711,61 @@ pub fn row_edits(set: &ResultSet) -> DbResult<(EditTarget, Vec<RowEdit>)> {
 
 /// Stops `result`'s write-back, whether it still waits for the pane's
 /// connection or is already on the server.
-pub fn stop_write(_result: ResultId) {}
+pub fn stop_write(result: ResultId) {
+    if let Some(set) = results::get(result) {
+        results::lock(&set).stop_write();
+    }
+}
 
 /// The owner the connection of a table's `count(*)` is leased under.
 pub fn count_owner(owner: &str) -> String {
-    owner.to_owned()
-}
-
-/// `write_back` for a result held by its grid, whether or not the store still has it.
-pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
-    let id = results::lock(set).id;
-    write_back(id).await
+    format!("{owner}:count")
 }
 
 /// Writes a result's pending edits in one transaction; on success they become
 /// its values.
 pub async fn write_back(result: ResultId) -> DbResult<u64> {
-    let set = results::get(result).ok_or_else(|| DbError::NotFound(String::new()))?;
+    match results::get(result) {
+        Some(set) => write_back_set(&set).await,
+        None => Err(DbError::NotFound(crate::i18n::t("edit.result_gone", &[]))),
+    }
+}
+
+/// [`write_back`] for a result its grid holds, whether or not the store still
+/// has it. A failure always ends up on the result (`write`), where the grid
+/// shows it.
+pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
+    let outcome = write_back_inner(set).await;
+    if let Err(error) = &outcome {
+        let id = {
+            let mut r = results::lock(set);
+            r.show_failure(error);
+            r.id
+        };
+        results::changed(id);
+    }
+    outcome
+}
+
+async fn write_back_inner(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
+    let result = results::lock(set).id;
+    let stop = WriteStop::new();
     let prepared = {
-        let mut r = results::lock(&set);
+        let mut r = results::lock(set);
         // Pressed again before the pane shows the first one: the same edits
         // would be written twice.
         if r.is_writing() {
             return Err(DbError::NotEditable(crate::i18n::t("edit.writing", &[])));
         }
-        let out = row_edits(&r).map(|(target, edits)| (target, edits, r.edits.clone()));
+        let still_there = results::get(result).is_some_and(|stored| Arc::ptr_eq(&stored, set));
+        let out = if still_there {
+            row_edits(&r).map(|(target, edits)| (target, edits, r.edits.clone()))
+        } else {
+            Err(DbError::NotFound(crate::i18n::t("edit.result_gone", &[])))
+        };
         r.write = match &out {
-            Ok(_) => WriteState::Writing,
-            Err(e) => WriteState::Failed(e.to_string()),
+            Ok(_) => WriteState::Writing(stop.clone()),
+            Err(e) => WriteState::failed(e.to_string()),
         };
         r.version += 1;
         out
@@ -702,7 +777,11 @@ pub async fn write_back(result: ResultId) -> DbResult<u64> {
     // case it was saved meanwhile.
     let unchanged = || config::get(&target.connection).is_ok_and(|c| c.connects_like(&target.config));
     let changed = || DbError::NotEditable(crate::i18n::t("edit.connection_changed", &[]));
-    let outcome = async {
+    // What a stop needs to reach the server, once there is a connection; and
+    // whether the statements had started by then.
+    let engine_stop: Mutex<Option<Canceller>> = Mutex::new(None);
+    let began = AtomicBool::new(false);
+    let work = Box::pin(async {
         if !unchanged() {
             return Err(changed());
         }
@@ -710,14 +789,34 @@ pub async fn write_back(result: ResultId) -> DbResult<u64> {
         if !unchanged() {
             return Err(changed());
         }
+        *engine_stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(l.conn().canceller());
+        began.store(true, Ordering::SeqCst);
         l.conn().apply_edits(&target.table, &edits).await
-    }
-    .await;
+    });
+    let stopped = Box::pin(stop.stopped());
+    let outcome = match futures_util::future::select(work, stopped).await {
+        futures_util::future::Either::Left((outcome, _)) => outcome,
+        futures_util::future::Either::Right((_, work)) => {
+            // Waiting for the connection ends with the future; on the server
+            // the statement has to be told (PostgreSQL, SQLite), or the socket
+            // dropped with it (SQL Server).
+            drop(work);
+            let canceller = engine_stop.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(canceller) = canceller {
+                canceller.cancel().await;
+            }
+            Err(DbError::Cancelled)
+        }
+    };
     {
-        let mut r = results::lock(&set);
+        let mut r = results::lock(set);
         match &outcome {
             Ok(_) => r.commit_edits(&written),
-            Err(e) => r.write = WriteState::Failed(e.to_string()),
+            Err(DbError::Cancelled) => {
+                let words = if began.load(Ordering::SeqCst) { "edit.stopped_maybe" } else { "edit.stopped" };
+                r.write = WriteState::failed(crate::i18n::t(words, &[]));
+            }
+            Err(e) => r.write = WriteState::failed(e.to_string()),
         }
         r.version += 1;
     }

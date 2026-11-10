@@ -496,6 +496,62 @@ fn mssql_a_big_table_is_editable_before_its_count_arrives() {
     editable_before_the_count(&id, table("dbo", "big"));
 }
 
+/// The count has a connection of its own, so a slow one (here: one that is
+/// still being waited for) holds back neither editing nor a write-back, and
+/// Stop reaches it.
+#[test]
+fn sqlite_editing_and_writing_back_do_not_wait_for_the_count() {
+    let (id, _) = sqlite_connection("wb-count");
+    run(&id, "setup", "create table people(id integer primary key, name text); insert into people values (1, 'a');");
+    let pane_owner = owner(&id, "count-pane");
+    let held = runtime::block_on(session::lease(&id, None, &session::count_owner(&pane_owner))).unwrap();
+
+    let job = session::open_table(&id, None, &pane_owner, &table("", "people"), None);
+    let mut found = None;
+    until("the table never became editable while its count was waiting", || {
+        let state = session::job_state(job).expect("job");
+        found = state.results.first().map(|r| r.id).filter(|rid| results::get(*rid).is_some_and(|s| results::lock(&s).editable()));
+        found.is_some()
+    });
+    let set = results::get(found.unwrap()).unwrap();
+    let state = session::job_state(job).unwrap();
+    assert!(state.running, "the job is still counting");
+    assert_eq!(results::lock(&set).total, None);
+
+    results::lock(&set).set_edit(0, 1, Cell::text("mine"));
+    let written = within(Duration::from_secs(5), "a write-back while the count waits", {
+        let set = set.clone();
+        move || runtime::block_on(session::write_back_set(&set))
+    });
+    assert_eq!(written, Ok(1));
+    assert_eq!(results::lock(&set).total, None, "the count is still out");
+
+    drop(held);
+    let state = wait(job);
+    assert_eq!(state.error, None);
+    assert_eq!(results::lock(&set).total, Some(1));
+    assert_eq!(rows(&id, "select name from people"), [["mine"]]);
+}
+
+#[test]
+fn sqlite_a_count_that_was_stopped_never_runs() {
+    let (id, _) = sqlite_connection("wb-count-stop");
+    run(&id, "setup", "create table people(id integer primary key, name text); insert into people values (1, 'a');");
+    let pane_owner = owner(&id, "count-stop-pane");
+    let held = runtime::block_on(session::lease(&id, None, &session::count_owner(&pane_owner))).unwrap();
+    let job = session::open_table(&id, None, &pane_owner, &table("", "people"), None);
+    let mut found = None;
+    until("the table never became editable", || {
+        found = session::job_state(job).and_then(|s| s.results.first().filter(|r| r.editable).map(|r| r.id));
+        found.is_some()
+    });
+    session::cancel(job);
+    drop(held);
+    let state = wait(job);
+    assert!(state.cancelled, "{state:?}");
+    assert_eq!(results::lock(&results::get(found.unwrap()).unwrap()).total, None, "a stopped job does not count");
+}
+
 // ---------------------------------------------------------------- what the server returns around the UPDATE
 
 #[test]

@@ -87,11 +87,56 @@ impl Editing {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteState {
     Idle,
-    /// Queued for the pane's connection or running on it.
-    Writing,
-    /// The last write-back failed with this (never empty).
+    /// Queued for the pane's connection or running on it; the stop ends it.
+    Writing(WriteStop),
+    /// The last write-back failed with this; build it with [`WriteState::failed`]
+    /// so it is never empty.
     Failed(String),
 }
+
+impl WriteState {
+    pub fn failed(message: impl Into<String>) -> Self {
+        let message = message.into();
+        if message.trim().is_empty() {
+            WriteState::Failed(crate::i18n::t("edit.failed", &[]))
+        } else {
+            WriteState::Failed(message)
+        }
+    }
+}
+
+/// The way to end a write-back that has not finished.
+#[derive(Clone, Debug)]
+pub struct WriteStop(Arc<tokio::sync::watch::Sender<bool>>);
+
+impl WriteStop {
+    pub fn new() -> Self {
+        Self(Arc::new(tokio::sync::watch::channel(false).0))
+    }
+
+    pub fn stop(&self) {
+        self.0.send_replace(true);
+    }
+
+    /// Resolves once [`WriteStop::stop`] was called (at once if it already was).
+    pub async fn stopped(&self) {
+        let _ = self.0.subscribe().wait_for(|stopped| *stopped).await;
+    }
+}
+
+impl Default for WriteStop {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PartialEq for WriteStop {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for WriteStop {}
 
 #[derive(Debug)]
 pub struct ResultSet {
@@ -167,7 +212,7 @@ impl ResultSet {
     }
 
     pub fn editable(&self) -> bool {
-        matches!(self.editing, Editing::Editable(_)) && self.complete && self.error.is_none()
+        matches!(self.editing, Editing::Editable(_))
     }
 
     pub fn target(&self) -> Option<&EditTarget> {
@@ -186,7 +231,23 @@ impl ResultSet {
     }
 
     pub fn is_writing(&self) -> bool {
-        self.write == WriteState::Writing
+        matches!(self.write, WriteState::Writing(_))
+    }
+
+    /// Ends the write-back in flight, if there is one.
+    pub fn stop_write(&self) {
+        if let WriteState::Writing(stop) = &self.write {
+            stop.stop();
+        }
+    }
+
+    /// Makes sure `error` shows on a result whose write-back it ended: a
+    /// failure already recorded (or another write-back running) stays.
+    pub fn show_failure(&mut self, error: &crate::error::DbError) {
+        if matches!(self.write, WriteState::Idle) {
+            self.write = WriteState::failed(error.to_string());
+            self.version += 1;
+        }
     }
 
     /// Why the last write-back failed, if it did.
