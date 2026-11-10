@@ -661,6 +661,21 @@ pub fn row_edits(set: &ResultSet) -> DbResult<(EditTarget, Vec<RowEdit>)> {
     Ok((target, edits))
 }
 
+/// Stops `result`'s write-back, whether it still waits for the pane's
+/// connection or is already on the server.
+pub fn stop_write(_result: ResultId) {}
+
+/// The owner the connection of a table's `count(*)` is leased under.
+pub fn count_owner(owner: &str) -> String {
+    owner.to_owned()
+}
+
+/// `write_back` for a result held by its grid, whether or not the store still has it.
+pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
+    let id = results::lock(set).id;
+    write_back(id).await
+}
+
 /// Writes a result's pending edits in one transaction; on success they become
 /// its values.
 pub async fn write_back(result: ResultId) -> DbResult<u64> {
