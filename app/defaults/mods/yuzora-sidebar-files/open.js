@@ -10,6 +10,7 @@ const MOD = { image: "yuzora-files-image", markdown: "yuzora-markdown", text: "y
 const PLACES = ["tab", "side"];
 // A document is shown by an editor pane or a Markdown pane alike.
 const DOC_MODS = [MOD.text, MOD.markdown];
+const FILE_MODS = [...DOC_MODS, MOD.image];
 // A mod pane's props name its file (the layout keeps them, so a pane restored from it has them too).
 const holds = (p, path, on) => p.props?.path === path && (p.props.on ?? null) === (on ?? null);
 
@@ -59,27 +60,36 @@ export function openFile(path, on, { place = "tab", ...at } = {}) {
   else run("tab.new", { name: base(path), space: spaces().find(s => s.active)?.id, mod: MOD[kind], props });
 }
 
+// A pane's props can't change, so where nothing can follow a rename (a pane that has not started, an image) a new
+// pane with other props takes its place, beside it, and the old one goes.
+function replace(pane, props) {
+  run("pane.split", { direction: "right", pane: pane.pane, mod: pane.mod, props });
+  run("pane.close", { pane: pane.pane });
+}
+
 /**
- * After `from` was renamed to `to`, the panes showing it (or a file under it). A document follows the rename in
- * the same pane, whose props keep the old name: say whose it is, so the new name finds that pane. A pane's props
- * can't change, so where nothing follows (an image, a pane that has not started and has no document) a new pane
- * takes the old one's place; focus stays put.
+ * After `from` was renamed to `to`, the panes whose props name it (or a file under it). The props can't change, so
+ * what a rename does depends on the pane, which the host says has started or not and a document may claim:
+ * - not started: a new pane with the new name takes its place, though another pane holds the file's document.
+ * - an image, started or not: the same, there being no document to follow the rename.
+ * - started, no document claims it: its document followed the rename; say whose it is, so the new name finds this pane.
+ * - started, a document claims it: nothing, that document followed the rename by itself.
+ * Focus stays put.
  */
 export function moved(from, to, on) {
   const before = focused()?.pane;
   const gone = new Set();
   for (const p of panes()) {
     const path = p.props?.path;
-    if (!path || (p.props.on ?? null) !== (on ?? null)) continue;
+    if (!FILE_MODS.includes(p.mod) || !path || (p.props.on ?? null) !== (on ?? null)) continue;
     const rest = path === from ? "" : path.startsWith(from + "/") ? path.slice(from.length) : null;
     if (rest === null) continue;
-    const open = DOC_MODS.includes(p.mod) ? documentFor(to + rest, { on }) : null;
-    if (open) {
-      notePane(open.doc, p.pane);
-    } else if (p.mod === MOD.image || (DOC_MODS.includes(p.mod) && !paneDocument(p.pane))) {
-      run("pane.split", { direction: "right", pane: p.pane, mod: p.mod, props: { path: to + rest, on: on ?? null, opened: Date.now() } });
-      run("pane.close", { pane: p.pane });
+    if (!p.started || p.mod === MOD.image) {
+      replace(p, { path: to + rest, on: on ?? null, opened: Date.now() });
       gone.add(p.pane);
+    } else if (!paneDocument(p.pane)) {
+      const open = documentFor(to + rest, { on });
+      if (open) notePane(open.doc, p.pane);
     }
   }
   // A split takes the keys; a pane that was replaced hands them to its new pane.
