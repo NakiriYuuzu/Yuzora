@@ -295,7 +295,7 @@ export default class FilesSidebar extends View {
           if (this.searchMode === "name") {
             const found = await findFiles(root, query, { on: here.on, hidden: this.hidden, limit: 200, fresh });
             if (seq !== this.searchSeq) return;
-            this.results = found.matches.map(f => ({ key: f.path, root, on: here.on, path: f.path }));
+            this.results = found.matches.map(f => ({ key: join(root, f.path), root, on: here.on, path: f.path }));
             const notes = [
               found.tooLong ? t("search.too_long") : found.matches.length ? null : t("search.none"),
               found.more ? t("search.truncated", { count: found.matches.length }) : null,
@@ -307,7 +307,7 @@ export default class FilesSidebar extends View {
           } else {
             const found = await grep(root, query, { on: here.on, hidden: this.hidden, limit: 500 });
             if (seq !== this.searchSeq) return;
-            this.results = found.hits.map((h, i) => ({ key: `${i}:${h.path}:${h.line}`, root, on: here.on, path: h.path, line: h.line, column: h.column, text: h.text }));
+            this.results = found.hits.map((h, i) => ({ key: `${i}:${join(root, h.path)}:${h.line}`, root, on: here.on, path: h.path, line: h.line, column: h.column, text: h.text }));
             const notes = !found.available ? [t("search.no_rg")] : [
               found.hits.length ? null : t("search.none"),
               found.truncated ? t("search.truncated", { count: found.hits.length }) : null,
