@@ -3033,3 +3033,233 @@ fn the_database_table_pane_asks_before_the_sidebar_replaces_unwritten_edits(
         Some(1)
     );
 }
+
+// Run in the SQL tab while the pane's job is still going. A read of the table can be stuck behind a transaction the
+// SQL tab left open (BEGIN; UPDATE …): the Run that would end it did nothing, and nothing said why.
+
+/// The Database table pane on its SQL tab with a job going that never reports (`running`: `"table"` is its read of
+/// the table, `"sql"` a statement of the person's), `COMMIT` in the editor, noting what it shows (the tab, whether a
+/// job goes, its error, whether the bar asks about edits), the SQL tab's hint, and every job it watches and Stop.
+/// `finder`: Run only notes that it was pressed, so looking for it (a click on every spot) starts nothing.
+fn db_busy_source(running: &str, edited: Option<u64>, finder: bool) -> String {
+    let run_body = if finder { "" } else { "super.run(cx);" };
+    let results = edited.map_or_else(
+        || "[]".to_owned(),
+        |id| {
+            format!(
+                r#"[{{ id: {id}, statement: "select * from first", columns: 2, rows: 1, edits: 1 }}]"#
+            )
+        },
+    );
+    format!(
+        r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import {{ note }} from "probe";
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    super.init(p, cx);
+    this.target = {{ connection: "gone-a", database: null, schema: "public", name: "first", kind: "table" }};
+    this.tab = "sql";
+    this.sql = "COMMIT";
+    this.jobId = 41;
+    this.jobKind = "{running}";
+    this.state = {{ id: 41, running: true, version: 1, elapsedMs: 0, error: null, cancelled: false, results: {results} }};
+  }}
+  watch(cx, id, kind) {{ note("watch", kind ?? null); super.watch(cx, id, kind); }}
+  run(cx) {{ note("run"); {run_body} }}
+  stop() {{ note("stop"); }}
+  sqlHint() {{ const hint = super.sqlHint?.() ?? null; note("hint", hint); return hint; }}
+  render(cx) {{
+    try {{
+      const tree = super.render(cx);
+      const s = this.state;
+      note("shown", this.tab, s === null ? "loading" : s.running ? "running" : "settled", s?.error ?? null, this.confirm !== null);
+      return tree;
+    }} catch (e) {{
+      note("render-error", String(e?.message ?? e));
+      throw e;
+    }}
+  }}
+}}
+"#
+    )
+}
+
+/// What the pane showed last: `(tab, "loading" | "running" | "settled", error, bar up)`.
+fn db_busy_now(s: &Scenario) -> (String, String, Option<String>, bool) {
+    let n = s.last("shown").expect("the pane drew a frame");
+    (
+        n[1].as_str().unwrap().to_owned(),
+        n[2].as_str().unwrap().to_owned(),
+        n[3].as_str().map(str::to_owned),
+        n[4].as_bool().unwrap(),
+    )
+}
+
+/// The jobs the pane watched, by kind, in order.
+fn db_watched(s: &Scenario) -> Vec<Value> {
+    s.notes
+        .borrow()
+        .iter()
+        .filter(|n| n.first() == Some(&json!("watch")))
+        .map(|n| n[1].clone())
+        .collect()
+}
+
+/// Where Run is, found on a pane of its own: finding a button means clicking everywhere, and Run starts the SQL.
+fn db_find_run(
+    cx: &mut TestAppContext,
+    staged: &Staged,
+    running: &str,
+    edited: Option<u64>,
+    width: f32,
+) -> Option<(f32, f32, f32, f32)> {
+    let mut finder = Scenario::mount_with_props(
+        cx,
+        staged,
+        &db_busy_source(running, edited, true),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    clickable(&mut finder, "run", width, 100.0)
+}
+
+fn db_hint(s: &Scenario) -> String {
+    s.last("hint")
+        .and_then(|n| n[1].as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+// The way out of a stuck table: Run on the SQL tab ends the read that waits and runs the COMMIT.
+#[gpui::test]
+fn the_database_table_pane_runs_the_sql_tab_over_a_table_read_that_is_still_going(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_busy_source("table", None, false),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    assert_eq!(db_busy_now(&s).1, "running");
+    let hint = db_hint(&s);
+    let run = db_find_run(cx, &staged, "table", None, width)
+        .expect("Run can't be pressed on the SQL tab while the table is being read");
+    press(&mut s, run);
+    let started = Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(5) {
+        s.settle();
+        if db_busy_now(&s).1 == "settled" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let (tab, phase, error, _) = db_busy_now(&s);
+    assert_eq!(
+        (tab.as_str(), phase.as_str()),
+        ("data", "settled"),
+        "the SQL did not run"
+    );
+    assert!(
+        error.is_some_and(|e| e.contains("gone-a")),
+        "what showed is not the SQL's answer"
+    );
+    assert_eq!(db_watched(&s), [json!("sql")]);
+    assert!(
+        s.last("stop").is_none(),
+        "Run asked the person to Stop first"
+    );
+    assert_eq!(
+        hint, "sql_over_read",
+        "the SQL tab does not say what Run does to the read"
+    );
+}
+
+// A statement of the person's own is not stopped by another Run: the toolbar offers Stop, and the SQL tab says so.
+#[gpui::test]
+fn the_database_table_pane_says_why_run_waits_for_a_statement_that_is_still_going(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_busy_source("sql", None, false),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    assert!(
+        db_hint(&s) == "sql_busy",
+        "the SQL tab does not say why Run waits: {:?}",
+        db_hint(&s)
+    );
+    assert!(
+        clickable(&mut s, "run", width, 100.0).is_none(),
+        "Run is offered while a statement goes"
+    );
+    let stop = clickable(&mut s, "stop", width, 100.0).expect("Stop can't be pressed");
+    press(&mut s, stop);
+    assert!(s.last("stop").is_some());
+    assert!(db_watched(&s).is_empty());
+}
+
+// Edits being written when Run is pressed: the bar offers to wait or to stop saving, and Run neither stops the read
+// nor the save, nor starts the SQL.
+#[gpui::test]
+fn the_database_table_pane_does_not_run_the_sql_tab_over_a_save_in_flight(cx: &mut TestAppContext) {
+    use yuzora_db::{
+        model::{Cell, Column},
+        results::{self, WriteState, WriteStop},
+    };
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let key = db_key();
+    let set = results::create(&key, "select * from first");
+    let saving = WriteStop::new();
+    let id = {
+        let mut r = results::lock(&set);
+        r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
+        r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+        r.complete = true;
+        r.edits.insert((0, 1), Cell::text("x"));
+        r.write = WriteState::Writing(saving.clone());
+        r.id
+    };
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_busy_source("table", Some(id), false),
+        json!({"key": key}),
+        width,
+        400.0,
+    );
+    let run = db_find_run(cx, &staged, "table", Some(id), width)
+        .expect("Run can't be pressed on the SQL tab while the table is being read");
+    press(&mut s, run);
+    s.tick(50);
+    assert_eq!(
+        db_busy_now(&s),
+        ("sql".into(), "running".into(), None, true),
+        "Run asks about the save and leaves the read"
+    );
+    assert!(db_watched(&s).is_empty(), "the SQL was started");
+    assert!(s.last("stop").is_none());
+    assert!(!saving.is_stopped(), "Run stopped the save");
+    assert_eq!(
+        results::get(id).map(|set| results::lock(&set).edits.len()),
+        Some(1)
+    );
+}
