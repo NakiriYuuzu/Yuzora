@@ -10,6 +10,22 @@ use std::{
     time::Instant,
 };
 
+// yuzora(motion): the tests of Yuzora's mod animations, a child so they use these fixtures.
+mod motion_tests;
+
+// yuzora(git-perf): how every test here starts. The shipped yuzora mods call yuzora:* host functions
+// (the status bar asks git about its folder in its first frame) that finish on threads of their own and wake
+// a task of gpui's test scheduler from there. The scheduler calls a wake from another thread nondeterminism,
+// and fails the test at its end, unless the test says it mixes real I/O in. Whether the thread is quicker
+// than the first poll is a race, so no test here may start without this. forbid_parking right after keeps
+// the rest as it was (gpui 0.3.8 remembers the first call for that check only): timers still jump the clock
+// and a wait with nothing left to run still panics, instead of parking in real time.
+fn shell_init(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.executor().forbid_parking();
+    cx.update(gpui_shell::init);
+}
+
 struct Staged(PathBuf);
 impl Staged {
     fn new() -> Self {
@@ -244,7 +260,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
 
 #[gpui::test]
 fn mod_copies_share_code_without_sharing_props_state_or_lifetime(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let root = staged.0.join("cache");
     std::fs::create_dir_all(&root).unwrap();
@@ -303,7 +319,7 @@ export default class Panel extends View {
 
 #[gpui::test]
 fn mod_code_revisions_share_successes_and_failures_without_poisoning_old_copies(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let root = staged.0.join("cache");
     std::fs::create_dir_all(&root).unwrap();
@@ -351,7 +367,7 @@ export default class Panel extends View { render() { return div().child('version
 
 #[gpui::test]
 fn mod_host_imports_keep_sync_async_and_missing_export_surfaces_distinct(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let root = staged.0.join("cache");
     std::fs::create_dir_all(&root).unwrap();
@@ -437,7 +453,7 @@ fn props() -> Value {
 
 #[gpui::test]
 fn shipped_initial_descriptions(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let start = Instant::now();
     let staged = Staged::new();
     let entries = staged.entries();
@@ -460,7 +476,7 @@ fn shipped_initial_descriptions(cx: &mut TestAppContext) {
 /// staged folder's drop recreates it, and the folder outlives the test.
 #[gpui::test]
 fn a_described_mod_leaves_no_folder_behind(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let path = staged.0.clone();
     describe(cx, &staged, "mods/agents", true, props(), updates("current", "current"), None).unwrap();
@@ -471,7 +487,7 @@ fn a_described_mod_leaves_no_folder_behind(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn brand_leaves_room_for_macos_traffic_lights_only_outside_full_screen(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (fullscreen, inset) in [(false, true), (true, false)] {
         let mut values = fixture(true, props(), updates("current", "current"));
@@ -484,7 +500,7 @@ fn brand_leaves_room_for_macos_traffic_lights_only_outside_full_screen(cx: &mut 
 
 #[gpui::test]
 fn tabs_leave_room_for_macos_traffic_lights(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (platform, titlebar, fullscreen, width, lights, zoom, expected) in [
         ("macos", "none", false, 44, true, 1.0, 32),
@@ -516,7 +532,7 @@ fn tabs_leave_room_for_macos_traffic_lights(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn windows_tab_buttons_use_matching_vector_icons(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for platform in ["windows", "linux"] {
         for maximized in [false, true] {
@@ -537,7 +553,7 @@ fn windows_tab_buttons_use_matching_vector_icons(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for which in ["font", "ui_font"] {
         let mut p = props();
@@ -555,7 +571,7 @@ fn font_pickers_contain_scroll_on_the_wrapper(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn long_theme_names_stay_inside_their_card(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let long = "catppuccin-macchiato";
     let mut p = props();
@@ -580,7 +596,7 @@ fn long_theme_names_stay_inside_their_card(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn confirm_dialog_background_follows_the_frame_corners(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut p = props();
     p["title"] = json!("Close space?");
@@ -592,7 +608,7 @@ fn confirm_dialog_background_follows_the_frame_corners(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn layout_previews_stay_inside_their_cards(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut p = props();
     p["section"] = json!("look");
@@ -610,7 +626,7 @@ fn layout_previews_stay_inside_their_cards(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn check_materializes_retained_elements_in_a_rendered_view(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for body in [
         "v_flex().h(400).child(v_virtual_list('rows', 0, 28, (i) => 'a', () => { throw new Error('deferred rows ran'); }))",
@@ -633,7 +649,7 @@ fn check_materializes_retained_elements_in_a_rendered_view(cx: &mut TestAppConte
 
 #[gpui::test]
 fn rebuilt_machine_offers_connect_only_for_identity_mismatch(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (state, why, offered) in [
         ("unreachable", "a different core answers there (\"new-id\")", true),
@@ -655,7 +671,7 @@ fn rebuilt_machine_offers_connect_only_for_identity_mismatch(cx: &mut TestAppCon
 
 #[gpui::test]
 fn machine_picker_keeps_long_lists_scrollable(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let tree = describe(
         cx, &staged, "mods/machine-add", false, props(), updates("current", "current"),
@@ -670,7 +686,7 @@ fn machine_picker_keeps_long_lists_scrollable(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn machine_add_needing_input_keeps_the_picker_and_shows_instructions(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let calls = Rc::new(RefCell::new(Calls::default()));
     let policy = Policy::new().with_host_module(module(fixture(false, props(), updates("current", "current")), calls.clone())).unwrap();
@@ -694,7 +710,7 @@ fn machine_add_needing_input_keeps_the_picker_and_shows_instructions(cx: &mut Te
 
 #[gpui::test]
 fn option_key_settings_are_only_shown_on_macos(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for platform in ["linux", "windows", "macos"] {
         let mut p = props();
@@ -711,7 +727,7 @@ fn option_key_settings_are_only_shown_on_macos(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn settings_sections_and_updates(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let start = Instant::now();
     let staged = Staged::new();
     for section in ["look", "alerts", "privacy", "updates"] {
@@ -762,7 +778,7 @@ fn animated_images_advance_with_explicit_and_implicit_ids(cx: &mut TestAppContex
     use image::{Delay, Frame, Rgba, RgbaImage, codecs::gif::GifEncoder};
     use std::{sync::Arc, time::Duration};
 
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let mut bytes = Vec::new();
     {
         let mut encoder = GifEncoder::new(&mut bytes);
@@ -808,7 +824,7 @@ fn animated_images_advance_with_explicit_and_implicit_ids(cx: &mut TestAppContex
 
 #[gpui::test]
 fn settings_keep_notes_in_the_whats_new_window(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let notes = json!([
         {"version":"1.8.0","date":"2026-10-26","items":[{"headline":"Newest headline","detail":"Newest details","fixed":false,"media":[]},{"headline":"","detail":"Newest fix","fixed":true,"media":[]}],"spotlight":true},
@@ -831,7 +847,7 @@ fn settings_keep_notes_in_the_whats_new_window(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let start = Instant::now();
     let staged = Staged::new();
     for page in 1..=4 {
@@ -925,7 +941,7 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn duplicate_element_negative_control(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let dir = staged.0.join("negative");
     std::fs::create_dir(&dir).unwrap();
@@ -1008,7 +1024,7 @@ fn shipped_layouts_and_keys() {
 
 #[gpui::test]
 fn picker_scrolls_the_selection_into_view(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut values = fixture(true, props(), updates("current", "current"));
     let tabs: Vec<Value> = (1..=12)
@@ -1028,7 +1044,7 @@ fn picker_scrolls_the_selection_into_view(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut bound = fixture(true, props(), updates("current", "current"));
     bound.insert("keys".into(), json!([{"section":"global","keys":"ctrl-p","action":"app.palette"}]));
@@ -1048,7 +1064,7 @@ fn status_bar_shows_the_real_palette_key(cx: &mut TestAppContext) {
 // that fills its parent) it drew nothing under the place pills.
 #[gpui::test]
 fn yuzora_new_pane_menu_shows_its_list_in_an_overlay(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let menu = json!({"menu":"pane","overlay":"o1"});
     let line = |tree: &str, id: &str| tree.lines().find(|l| l.contains(&format!("\"{id}\""))).unwrap_or_else(|| panic!("{id} missing: {tree}")).to_owned();
@@ -1083,7 +1099,7 @@ fn yuzora_new_pane_menu_shows_its_list_in_an_overlay(cx: &mut TestAppContext) {
 // sidebar is where Spaces are told apart); switching Space swaps the tabs, none active shows none.
 #[gpui::test]
 fn yuzora_tab_bar_lists_only_the_current_space(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let tab = |id: &str, active: bool, settled: bool| json!({"id":id,"index":1,"name":id,"active":active,"status":"idle","panes":1,"zoomed":false,"settled":settled,"settled_at":null,"changed_at":null,"working_since":null});
     let spaces = |active: Option<&str>| json!([
@@ -1109,7 +1125,7 @@ fn yuzora_tab_bar_lists_only_the_current_space(cx: &mut TestAppContext) {
 // layout it lands in Herdr's own `main`, where none of Yuzora's features exist (2026-11-04).
 #[gpui::test]
 fn yuzora_tools_menu_has_no_next_layout_row(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let tree = describe(cx, &staged, "mods/yuzora-sidebar-workspace", true, json!({"menu":"tools","overlay":"o1"}), updates("current", "current"), None).unwrap();
     assert!(tree.contains("\"m-palette\"") && tree.contains("\"m-help\""), "the other rows stay: {tree}");
@@ -1120,7 +1136,7 @@ fn yuzora_tools_menu_has_no_next_layout_row(cx: &mut TestAppContext) {
 // 2026-11-04), with or without a focused pane; "+" and the window's tabs stay.
 #[gpui::test]
 fn yuzora_tab_bar_has_no_new_pane_or_split_buttons(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for populated in [true, false] {
         let tree = describe(cx, &staged, "mods/yuzora-shell-tabs", populated, json!({}), updates("current", "current"), None).unwrap();
@@ -1135,7 +1151,7 @@ fn yuzora_tab_bar_has_no_new_pane_or_split_buttons(cx: &mut TestAppContext) {
 // the menu as a centered dialog of this mod.
 #[gpui::test]
 fn yuzora_new_pane_command_opens_the_menu(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let open = |cx: &mut TestAppContext, command: &str| {
         let calls = Rc::new(RefCell::new(Calls::default()));
@@ -1172,7 +1188,7 @@ fn yuzora_new_pane_command_opens_the_menu(cx: &mut TestAppContext) {
 // pane, or a new tab when nothing is focused.
 #[gpui::test]
 fn yuzora_new_pane_menu_puts_a_pick_where_the_pills_say(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut picks = |populated: bool, setup: &str| {
         let calls = Rc::new(RefCell::new(Calls::default()));
@@ -1300,7 +1316,7 @@ fn select_and_show(mode: &str) -> Vec<Value> {
 // panel shown; the one showing closes the panel (a second show would leave it open).
 #[gpui::test]
 fn yuzora_dock_bar_switches_modes(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let bar = json!({"dock": "bar"});
     let closed = dock_layout(include_str!("../../defaults/layouts/main.json"));
@@ -1340,7 +1356,7 @@ fn yuzora_dock_bar_switches_modes(cx: &mut TestAppContext) {
 // it can't hold them), on the side away from its edge; vertical, the names sit inside the icons.
 #[gpui::test]
 fn yuzora_dock_drawer_opens_a_window(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layout = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
     let place = |edge: &str, vertical: bool| json!({"edge": edge, "align": "center", "vertical": vertical, "hovered": false, "dragging": false});
@@ -1404,7 +1420,7 @@ fn yuzora_dock_drawer_opens_a_window(cx: &mut TestAppContext) {
 // open one says so, and it takes no commands (the drawer does; a header copy would answer them too).
 #[gpui::test]
 fn yuzora_dock_head_acts_on_its_window(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layout = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
     let head = |cx: &mut TestAppContext, overlay: &str, shared: &[(&str, Value)], commands: &[&str], setup: Option<&str>| {
@@ -1439,7 +1455,7 @@ fn yuzora_dock_head_acts_on_its_window(cx: &mut TestAppContext) {
 // The scenario swaps the page's data and its two settings accessors, so nothing of the person's is read or written.
 #[gpui::test]
 fn yuzora_settings_mods_sets_the_dock_per_layout(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layouts = r#"[
         { name: 'win98', path: '/x/win98.json', valid: true, shipped: true, cloned_from: null, preview: null, dock: null, source: 'shipped' },
@@ -1497,7 +1513,7 @@ fn yuzora_settings_mods_sets_the_dock_per_layout(cx: &mut TestAppContext) {
 // Changes buttons: the modes aren't registered there (an option the spec turned down).
 #[gpui::test]
 fn yuzora_dock_leaves_workspace_panels_alone(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let main = dock_layout(include_str!("../../defaults/layouts/main.json"));
     let terminals = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
@@ -1518,7 +1534,7 @@ fn yuzora_dock_leaves_workspace_panels_alone(cx: &mut TestAppContext) {
 // (the command, handled above), or an old clone's sidebar stack (the legacy bar takes it too).
 #[gpui::test]
 fn yuzora_status_branch_opens_git_in_the_dock(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layout = dock_layout(include_str!("../../defaults/layouts/main.json"));
     let click = dock_copy(cx, &staged, "mods/yuzora-statusbar", json!({}), &layout, Value::Null, &[], &[], Some("this.openGit();"));
@@ -1578,7 +1594,7 @@ fn yuzora_status_branch_opens_git_in_the_dock(cx: &mut TestAppContext) {
 // nothing to say, and Herdr's mods and this one agree after one pass (no ping-pong).
 #[gpui::test]
 fn yuzora_dock_keeps_space_colors_in_step(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let main = dock_layout(include_str!("../../defaults/layouts/main.json"));
     let terminals = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
@@ -1614,7 +1630,7 @@ fn yuzora_dock_keeps_space_colors_in_step(cx: &mut TestAppContext) {
 // Space color write: Herdr's `spaces` mod must not stay on color names while the tabs are in Yuzora's hex.
 #[gpui::test]
 fn yuzora_tab_bar_keeps_space_colors_in_step(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layout = dock_layout(include_str!("../../defaults/layouts/main.json"));
     let theirs = |copy: &DockCopy| copy.shared.get("space.colors").cloned();
@@ -1634,7 +1650,7 @@ fn yuzora_tab_bar_keeps_space_colors_in_step(cx: &mut TestAppContext) {
 // Git): no saved choice means none, a saved one stays, and Settings > General turns them on and off.
 #[gpui::test]
 fn yuzora_herdr_panels_start_off(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let shown: Value = serde_json::from_str(include_str!("../../defaults/layouts/yuzora.json")).unwrap();
     let mut session = |entry: &str, layout: &Value, saved: Option<Value>, setup: Option<&str>| {
@@ -1845,7 +1861,7 @@ fn state(s: &Scenario) -> (Option<f64>, f64, f64) {
 // yuzora(L2): the commit message scrolls. `overflow_y_scrollbar` with a `max_h` did not move.
 #[gpui::test]
 fn git_log_commit_message_scrolls_and_the_files_stay(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (side, width, height) in [(true, 340.0, 600.0), (false, 700.0, 260.0)] {
         let mut s = Scenario::mount(cx, &staged, &detail_scenario(300, side, width, height, 40), width, height);
@@ -1864,7 +1880,7 @@ fn git_log_commit_message_scrolls_and_the_files_stay(cx: &mut TestAppContext) {
 // yuzora(L2): drag the bar between the info and the files; the heights follow and stop at the minimums.
 #[gpui::test]
 fn git_log_detail_divider_drags_and_keeps_minimums(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (side, width, height) in [(true, 340.0, 600.0), (false, 700.0, 300.0)] {
         let mut s = Scenario::mount(cx, &staged, &detail_scenario(300, side, width, height, 40), width, height);
@@ -1895,7 +1911,7 @@ fn git_log_detail_divider_drags_and_keeps_minimums(cx: &mut TestAppContext) {
 // yuzora(L2): a pane too short for the default height still shows the divider and 72px of files.
 #[gpui::test]
 fn git_log_detail_default_height_leaves_room_for_the_files(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (side, width, height) in [(true, 340.0, 300.0), (true, 340.0, 200.0), (false, 700.0, 200.0)] {
         let s = Scenario::mount(cx, &staged, &detail_scenario(300, side, width, height, 40), width, height);
@@ -1909,7 +1925,7 @@ fn git_log_detail_default_height_leaves_room_for_the_files(cx: &mut TestAppConte
 // yuzora(L2): leaving the pane with the button down ends the drag (its release would not be seen).
 #[gpui::test]
 fn git_log_detail_divider_drag_ends_when_the_pointer_leaves_the_pane(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let mut s = Scenario::mount(cx, &staged, &detail_scenario(300, true, 340.0, 600.0, 40), 700.0, 600.0);
     let (_, visible, _) = state(&s);
@@ -1927,7 +1943,7 @@ fn git_log_detail_divider_drag_ends_when_the_pointer_leaves_the_pane(cx: &mut Te
 // one text per paragraph (a text per line cost 12ms of the 50ms JS render budget at 2000 lines).
 #[gpui::test]
 fn git_log_commit_message_is_shown_whole_up_to_a_cap(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     for (lines, cut) in [(100, false), (2500, true)] {
         let setup = format!(
@@ -1951,7 +1967,7 @@ fn git_log_commit_message_is_shown_whole_up_to_a_cap(cx: &mut TestAppContext) {
 // area is as tall as its limit either way, so it is measured by how far the message scrolls.
 #[gpui::test]
 fn git_log_commit_message_paragraphs_in_the_panel_take_the_height_of_their_lines(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let scrolled = |cx: &mut TestAppContext, line: &str, lines: usize| {
         let mut s = Scenario::mount(cx, &staged, &detail_scenario_of(line, lines, true, 340.0, 600.0, 0), 340.0, 600.0);
@@ -2003,7 +2019,7 @@ export default class Scenario extends Real {{
 // empty list leave room for their text, and a click anywhere in the frame leaves the keys working.
 #[gpui::test]
 fn yuzora_git_repo_picker_fills_its_overlay_frame(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let size = |s: &Scenario, k: &str| s.last(k).map(|v| v[2].as_f64().unwrap()).unwrap_or_else(|| panic!("{k} not measured"));
     let picked = |s: &mut Scenario, y: f64| {
         let before = s.notes.borrow().len();
@@ -2052,21 +2068,22 @@ const file = {{ path: "{path}", kind: "M", add: {add}, del: {del} }};
 export default class Scenario extends Real {{
   init(p, cx) {{
     super.init(p, cx);
-    this.st = {{ conflicts: [], staged: [], unstaged: [], untracked: [], counts: {{ total: 1 }} }};
-    this.st["{section}" === "unstaged" ? "unstaged" : "{section}"].push(file);
+    this.v.st = {{ conflicts: [], staged: [], unstaged: [], untracked: [], counts: {{ total: 1 }} }};
+    this.v.st["{section}" === "unstaged" ? "unstaged" : "{section}"].push(file);
+    this.v.confirmed = true; // yuzora(v0.1.0 E1 r1): a view made by hand counts as read, as a click on its buttons needs
   }}
   act() {{ this.acted = true; }}
   openDiff() {{ this.diffed = true; }}
   render(cx) {{
     const probe = (slot, kind) => (kind ? (e) => note("at:" + slot, e.bounds.x, e.bounds.width) : (size) => note(slot, size.width));
-    const key = "{section}:{path}";
+    const key = `${{this.v.key}}|{section}:{path}`;
     return div().id("list").w({width}).px(6)
       .on_size_change((size) => {{ this.listWidth = size.width; }})
       .on_mouse_down("left", (e) => {{ this.downX = e.local_position.x; }})
       .on_click((_e, cx) => {{
-        this.acted = false; this.diffed = false; this.confirmDiscard = null;
+        this.acted = false; this.diffed = false; this.v.confirmDiscard = null;
         this.clickRow(key, cx);
-        note("result", this.confirmDiscard ? "discard" : this.acted ? "act" : this.diffed ? "diff" : "none");
+        note("result", this.v.confirmDiscard ? "discard" : this.acted ? "act" : this.diffed ? "diff" : "none");
       }})
       .child(this.fileRow({{ section: "{section}", f: file }}, theme(), probe));
   }}
@@ -2083,7 +2100,7 @@ fn number(n: &Value) -> f64 {
 // the buttons: they stay at the right edge, wherever clickRow counts from.
 #[gpui::test]
 fn sidebar_git_row_keeps_counts_and_buttons_clear_of_the_name(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let long = format!("deep/er/{}/{}.rs", "folder".repeat(10), "a-very-long-file-name".repeat(4));
     for (section, buttons) in [("unstaged", 2usize), ("staged", 1), ("conflicts", 1)] {
@@ -2116,7 +2133,7 @@ fn sidebar_git_row_keeps_counts_and_buttons_clear_of_the_name(cx: &mut TestAppCo
 // and measured like the real one, clicks go through the real `clickRow` (the virtual list is not laid out in a test window).
 #[gpui::test]
 fn sidebar_git_row_buttons_are_where_clickrow_counts_them(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let long = format!("deep/{}.rs", "a-long-file-name".repeat(3));
     for (section, expect) in [("unstaged", vec![("action:↺", "discard"), ("action:+", "act")]), ("staged", vec![("action:−", "act")])] {
@@ -2189,7 +2206,7 @@ export default class Scenario extends Real {{
 // paragraph and after the last too, a whitespace-only line is blank).
 #[gpui::test]
 fn git_log_commit_message_paragraphs_lay_out_like_a_div_per_line(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let long = "word ".repeat(60);
     for (name, body, blocks) in [
@@ -2220,7 +2237,7 @@ fn this_run() -> Value {
 // S1 (live half): the dock choice leaving the drawer closes the drawer's window at once (the one of this run only).
 #[gpui::test]
 fn yuzora_settings_mods_closes_the_drawers_window(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let scenario = |pick: &str| format!(
         "this.refresh = () => {{}}; this.list = () => {{}}; /*before-init*/ const rows = [ {{ name: 'win98', path: '/x/win98.json', valid: true, shipped: true, cloned_from: null, preview: null, dock: null, source: 'shipped' }}, \
@@ -2261,7 +2278,7 @@ fn yuzora_settings_mods_and_the_dock_name_the_same_section() {
 // Bug (acceptance): the mode bar lights a mode only while the panel is open on it: on Changes, or with the panel closed, no mode is lit.
 #[gpui::test]
 fn yuzora_dock_bar_lights_only_the_mode_the_panel_shows(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let closed = dock_layout(include_str!("../../defaults/layouts/main.json"));
     let draw = |cx: &mut TestAppContext, layout: &Value| dock_copy(cx, &staged, "mods/yuzora-modebar", json!({"dock": "bar"}), layout, Value::Null, &[], &[], None).tree;
@@ -2288,7 +2305,7 @@ fn yuzora_dock_bar_lights_only_the_mode_the_panel_shows(cx: &mut TestAppContext)
 // reads on the selected color of every theme (the token's strong white did not on win98's light gray).
 #[gpui::test]
 fn yuzora_dock_selected_mode_uses_the_theme_foreground(cx: &mut TestAppContext) {
-    cx.update(gpui_shell::init);
+    shell_init(cx);
     let staged = Staged::new();
     let layout = dock_layout(include_str!("../../defaults/layouts/terminals.json"));
     let place = json!({"edge": "right", "align": "center", "vertical": true, "hovered": false, "dragging": false});

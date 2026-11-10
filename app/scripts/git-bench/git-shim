@@ -1,0 +1,9 @@
+#!/bin/sh
+# A `git` for PATH that notes when each call starts and ends (ms) in $OUT/timeline.log, then runs the real one ($GIT_REAL).
+now() { perl -MTime::HiRes=time -e 'printf "%.0f", time*1000'; }
+s=$(now)
+"$GIT_REAL" "$@"; rc=$?
+e=$(now)
+while [ "$1" = "-c" ] || [ "$1" = "-C" ]; do shift 2; done
+printf '%s\t%s\t%s\t%s\n' "$s" "$e" "$$" "$(echo "$*" | cut -c1-50 | head -1)" >> "$OUT/timeline.log"
+exit $rc

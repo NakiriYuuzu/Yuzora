@@ -43,7 +43,8 @@ test("every function the diff helpers call is imported by the mod they live in",
 function world(settings: object, diffPane: string | null, focusedPane: string | null = "p1") {
   const calls: unknown[][] = [];
   const stubs = {
-    panes: () => (diffPane ? [{ pane: "p0", mod: "other" }, { pane: diffPane, mod: "yuzora-git-diff" }] : [{ pane: "p0", mod: "other" }]),
+    spaces: () => [{ id: "s1", active: true, tabs: [{ id: "t1", active: true }] }],
+    panes: () => (diffPane ? [{ pane: "p0", mod: "other", tab: "t1" }, { pane: diffPane, mod: "yuzora-git-diff", tab: "t1" }] : [{ pane: "p0", mod: "other", tab: "t1" }]),
     setShared: (k: string, v: unknown) => calls.push(["setShared", k, v]),
     run: (name: string, args: unknown) => calls.push(["run", name, args]),
     openOverlay: (spec: unknown) => calls.push(["openOverlay", spec]),
@@ -51,7 +52,7 @@ function world(settings: object, diffPane: string | null, focusedPane: string | 
     gitSettings: () => ({ diffOpenIn: "modal", diffKeepIn: "split", diffFollowPane: true, ...settings }),
     t: (k: string) => (k === "tab.diff" ? "Diff" : k),
   };
-  const src = `${fn(sources[OPENERS[0]], "placeDiff")}\n${fn(sources[OPENERS[0]], "showDiff")}\nreturn { showDiff, placeDiff };`;
+  const src = ["shownSpace", "findPane", "requestKey", "placeDiff", "showDiff"].map((name) => fn(sources[OPENERS[0]], name)).join("\n") + "\nreturn { showDiff, placeDiff };";
   const { showDiff, placeDiff } = new Function(...Object.keys(stubs), src)(...Object.values(stubs));
   return { showDiff, placeDiff, calls };
 }
@@ -67,7 +68,7 @@ test("by default a diff opens in a modal", () => {
 test("an open diff pane follows the next file, unless the settings say otherwise", () => {
   const w = world({}, "p9");
   w.showDiff(spec);
-  expect(w.calls).toEqual([["setShared", "yuzora.git.diff", spec], ["run", "pane.focus", { pane: "p9" }]]);
+  expect(w.calls).toEqual([["setShared", "yuzora.git.diff.s1", spec], ["run", "pane.focus", { pane: "p9" }]]);
   const off = world({ diffFollowPane: false }, "p9");
   off.showDiff(spec);
   expect(off.calls.map((c) => c[0])).toEqual(["openOverlay"]);
@@ -95,7 +96,9 @@ function diffView(p: object, shared: object | null, settings: object = {}) {
   const stubs = {
     View: class {},
     props: () => p,
-    shared: () => shared,
+    shared: (k: string) => (k === "yuzora.git.run" ? "this-run" : shared),
+    setShared() {},
+    session: () => "this-run",
     run: (name: string, args: unknown) => calls.push(["run", name, args]),
     focused: () => ({ pane: "p1" }),
     closeOverlay: (id: string) => calls.push(["closeOverlay", id]),
