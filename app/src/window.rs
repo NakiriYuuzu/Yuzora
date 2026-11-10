@@ -289,7 +289,7 @@ struct Copy {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum OverlayKind {
+pub(crate) enum OverlayKind { // yuzora(motion): read by yuzora::motion
     Dialog,
     Popup,
     Toast,
@@ -330,6 +330,8 @@ struct Overlay {
     /// The app's own screen (a `frame-` mod: What's new, the welcome): only
     /// its own close ends it, never a layout switch.
     frame: bool,
+    /// When it was added: its arrival (yuzora::motion) runs from here. None: it has none (blocks and terminals).
+    entered: Option<Instant>, // yuzora(motion)
 }
 
 struct Drag {
@@ -377,6 +379,7 @@ pub struct AppWindow {
     /// Mod copies by slot (block id, `<stack>#header`, or `overlay:<id>`).
     copies: HashMap<String, Copy>,
     overlays: Vec<Overlay>,
+    handover: crate::yuzora::motion::Handover, // yuzora(motion): dialogs and popups closed since the last frame
     folders: BTreeMap<String, Found>,
     /// Mods placed once; later the layout decides where (or whether) they show.
     seen: BTreeSet<String>,
@@ -490,6 +493,7 @@ impl AppWindow {
             terms: HashMap::new(),
             copies: HashMap::new(),
             overlays: Vec::new(),
+            handover: Default::default(), // yuzora(motion)
             folders: mods::scan().into_iter().map(|f| (f.id.clone(), f)).collect(),
             seen,
             bounds: Default::default(),
@@ -3637,6 +3641,7 @@ impl AppWindow {
             place,
             key: key.clone(),
             frame: spec.get("mod").and_then(Value::as_str).is_some_and(|m| m.starts_with("frame-")),
+            entered: self.handover.arrives(kind, cx.background_executor().now()).filter(|_| !has_layout), // yuzora(motion): on the clock the frames use, so tests can move it; a dialog that replaces one just closed goes on from it
         });
         if let Some(k) = &key {
             if spec.get("keep").and_then(Value::as_bool) == Some(true) {
@@ -3691,6 +3696,7 @@ impl AppWindow {
     fn remove_overlay(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(i) = self.overlays.iter().position(|o| o.id == id) {
             let o = self.overlays.remove(i);
+            self.handover.closed(o.kind, o.entered); // yuzora(motion)
             if self.win_drag.as_ref().is_some_and(|d| d.id == o.id) {
                 self.win_drag = None;
             }
@@ -4318,8 +4324,9 @@ impl AppWindow {
         }
     }
 
-    fn render_overlays(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_overlays(&self, viewport: Size<Pixels>, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> { // yuzora(motion): the window, to ask for the next frame
         let mut out = Vec::new();
+        let (now, reduce_motion) = (cx.background_executor().now(), cx.reduce_motion()); // yuzora(motion)
         let mut toast_y = 16.0;
         // Drawn last, so it stays clickable over an open dialog.
         let pill = self.render_update_pill(cx);
@@ -4353,13 +4360,17 @@ impl AppWindow {
                 .occlude()
                 .when(o.kind != OverlayKind::Window, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
                 .child(content);
+            // yuzora(motion): a new dialog, popup or toast fades in and settles; at rest this is `body` and 1.0
+            let arrival = crate::yuzora::motion::phase(o.kind, o.entered, now, reduce_motion);
+            let drawn_in = self.copies.get(&o.slot).and_then(|c| c.root.as_ref()).map(|r| r.read(cx).content().entity_id());
+            let body = arrival.apply(body, window, drawn_in);
             match o.kind {
                 OverlayKind::Window => out.push(self.render_window(o, body, viewport, cx)),
                 OverlayKind::Dialog => out.push(
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(hsla(0.0, 0.0, 0.0, 0.35))
+                        .bg(hsla(0.0, 0.0, 0.0, 0.35 * arrival.opacity)) // yuzora(motion): the dim layer fades in with the dialog
                         .occlude()
                         .flex()
                         .items_center()
@@ -4899,7 +4910,8 @@ impl Render for AppWindow {
         let focused = self.focused_path(window, cx);
         let tree = self.render_node(&self.chrome, &focused, None, cx);
         let tree = self.window_frame(tree, window, cx);
-        let overlays = self.render_overlays(window.viewport_size(), cx);
+        let overlays = self.render_overlays(window.viewport_size(), window, cx); // yuzora(motion)
+        self.handover.frame_drawn(); // yuzora(motion)
         let tracker = self.float_tracker(cx);
         let win_tracker = self.window_tracker(cx);
         let pane_drag = self.pane_drag_layer(cx);
@@ -5673,6 +5685,7 @@ export default class Probe extends View {
     }
 
     include!("window/pane_size_tests.rs");
+    include!("window/overlay_motion_tests.rs"); // yuzora(motion): the arrival of dialogs, popups and toasts
 
     #[test]
     fn terminal_menu_preserves_clicked_target_and_uses_mod_dimensions() {
