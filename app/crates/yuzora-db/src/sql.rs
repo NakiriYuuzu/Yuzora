@@ -209,6 +209,13 @@ pub fn open_transaction() -> crate::error::DbError {
     crate::error::DbError::NotEditable(crate::i18n::t("edit.open_transaction", &[]))
 }
 
+/// [`open_transaction`] on a SQL Server connection that opens one by itself
+/// (`IMPLICIT_TRANSACTIONS`): reading the table did, and COMMIT alone does not
+/// keep the next read from opening another.
+pub fn open_implicit_transaction() -> crate::error::DbError {
+    crate::error::DbError::NotEditable(crate::i18n::t("edit.open_implicit_transaction", &[]))
+}
+
 // ---------------------------------------------------------------- scanning
 
 /// What the statement being read so far is about: whether anything but

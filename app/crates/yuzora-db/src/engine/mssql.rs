@@ -325,17 +325,16 @@ impl MsConn {
         // down: the tab's ROLLBACK would undo the write-back after it read as done.
         // Also the first thing sent: a socket the server closed while the
         // connection sat idle fails here, with nothing written, and is replaced.
-        const OPEN_TRANSACTIONS: &str = "SELECT CAST(@@TRANCOUNT AS nvarchar(11))";
-        let mut open_transactions = scalar(&mut client, OPEN_TRANSACTIONS).await;
-        if reused && open_transactions.as_ref().is_err_and(dropped) {
+        let mut state = transactions(&mut client).await;
+        if reused && state.as_ref().is_err_and(dropped) {
             client = open(&self.spec).await?;
-            open_transactions = scalar(&mut client, OPEN_TRANSACTIONS).await;
+            state = transactions(&mut client).await;
         }
-        match open_transactions {
-            Ok(n) if n == "0" => {}
-            Ok(_) => {
+        let implicit = match state {
+            Ok((0, implicit)) => implicit,
+            Ok((_, implicit)) => {
                 self.client = Some(client);
-                return Err(sql::open_transaction());
+                return Err(if implicit { sql::open_implicit_transaction() } else { sql::open_transaction() });
             }
             Err(e) => {
                 if !fatal(&e) {
@@ -343,22 +342,29 @@ impl MsConn {
                 }
                 return Err(query_error(e));
             }
-        }
-        match write_rows(&mut client, &self.database, table, &edits, &self.canceller.commit).await {
-            Ok(written) => {
+        };
+        // With IMPLICIT_TRANSACTIONS on, any statement that touches a table
+        // opens a transaction, and BEGIN opens one more: the COMMIT would leave
+        // the first open and the write-back would be lost with the connection.
+        // It is off for the write-back and back on after it, as the SQL tab left it.
+        if implicit && let Err(e) = batch(&mut client, "SET IMPLICIT_TRANSACTIONS OFF").await {
+            if !fatal(&e) {
                 self.client = Some(client);
-                Ok(written)
             }
-            Err((error, usable)) => {
-                // Whatever the failure, nothing stays half written; a connection
-                // that can't even say so is let go.
-                if usable {
-                    let rolled_back = rollback(&mut client).await.is_ok();
-                    self.client = rolled_back.then_some(client);
-                }
-                Err(error)
-            }
+            return Err(query_error(e));
         }
+        let outcome = write_rows(&mut client, &self.database, table, &edits, &self.canceller.commit).await;
+        // Whatever the failure, nothing stays half written; a connection
+        // that can't even say so is let go.
+        let mut usable = match &outcome {
+            Ok(_) => true,
+            Err((_, usable)) => *usable && rollback(&mut client).await.is_ok(),
+        };
+        if usable && implicit {
+            usable = batch(&mut client, "SET IMPLICIT_TRANSACTIONS ON").await.is_ok();
+        }
+        self.client = usable.then_some(client);
+        outcome.map_err(|(error, _)| error)
     }
 
     /// The socket, opened again if it was given up.
@@ -490,6 +496,17 @@ fn expand_home(path: &str) -> String {
         Some(rest) => yuzora_core::paths::home_dir().join(rest).to_string_lossy().into_owned(),
         None => path.to_owned(),
     }
+}
+
+/// How many transactions the connection has open, and whether it opens one by
+/// itself (`IMPLICIT_TRANSACTIONS`, also set by `ANSI_DEFAULTS`). Neither
+/// statement touches a table, so asking opens nothing.
+async fn transactions(client: &mut Tds) -> Result<(i32, bool), TdsError> {
+    let row = client.simple_query("SELECT @@TRANCOUNT, @@OPTIONS & 2").await?.into_row().await?;
+    let row = row.ok_or_else(|| TdsError::Protocol("no answer to the question of open transactions".into()))?;
+    let open: Option<i32> = row.try_get(0)?;
+    let options: Option<i32> = row.try_get(1)?;
+    Ok((open.unwrap_or(1), options.unwrap_or(0) != 0))
 }
 
 /// The first column of the first row.
@@ -988,7 +1005,13 @@ async fn write_rows(
         written += 1;
     }
     commit.mark();
-    batch(client, "COMMIT TRANSACTION").await.map_err(fail)?;
+    // A COMMIT that leaves the count above zero has not committed: said only
+    // after asking, so a write-back is never reported for work the server
+    // still holds open.
+    let left = scalar(client, "COMMIT TRANSACTION; SELECT CAST(@@TRANCOUNT AS nvarchar(11))").await.map_err(fail)?;
+    if left != "0" {
+        return Err((DbError::Query(crate::i18n::t("edit.not_committed", &[])), true));
+    }
     Ok(written)
 }
 
