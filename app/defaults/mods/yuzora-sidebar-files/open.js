@@ -75,11 +75,21 @@ export function openFile(path, on, { place = "tab", ...at } = {}) {
   else run("tab.new", { name: base(path), space: spaces().find(s => s.active)?.id, mod: MOD[kind], props });
 }
 
-// A pane's props can't change, so where nothing can follow a rename (a pane that has not started, an image) a new
-// pane with other props takes its place, beside it, and the old one goes.
+/**
+ * A pane's props can't change, so where nothing can follow a rename (a pane that has not started, an image) a new
+ * pane with other props takes its place, beside it, and the old one goes. Says whether the old pane was in the tab shown.
+ * There the pane the split makes has the focus, and `pane.swap` defaults to the focused pane, so swapping it with the
+ * old one before that closes leaves the new one the old one's place and share of the row (`run()` doesn't say what the
+ * split made, so a mod can't name it). In a tab not shown, or with a layout block holding the keyboard (no pane is
+ * focused), the focused pane is not it: the pane before the old one then takes half of its share.
+ */
 function replace(pane, props) {
+  const f = focused();
+  const here = Boolean(f?.pane) && f.tab === pane.tab;
   run("pane.split", { direction: "right", pane: pane.pane, mod: pane.mod, props });
+  if (here) run("pane.swap", { target: pane.pane });
   run("pane.close", { pane: pane.pane });
+  return here;
 }
 
 /**
@@ -105,8 +115,11 @@ export function moved(from, to, on) {
     const rest = path === from ? "" : path.startsWith(from + "/") ? path.slice(from.length) : null;
     if (rest === null) continue;
     const swapIn = () => {
-      replace(p, { path: to + rest, on: on ?? null, opened: Date.now() });
+      const here = replace(p, { path: to + rest, on: on ?? null, opened: Date.now() });
       gone.add(p.pane);
+      // The split put the zoom of the tab shown away: back on the pane it was on (the new one if that is the one replaced).
+      const zoomed = here && all.find(q => q.tab === p.tab && q.zoomed);
+      if (zoomed) run("pane.zoom", zoomed.pane === p.pane ? {} : { pane: zoomed.pane });
     };
     if (!p.started || p.mod === MOD.image) swapIn();
     else if (!paneDocument(p.pane)) {
