@@ -89,12 +89,13 @@ function replace(pane, props) {
  * - an image, started or not: the same, there being no document to follow the rename.
  * - started, no document claims it: its document followed the rename; say whose it is, so the new name finds this pane.
  * - started, a document claims it: nothing, that document followed the rename by itself.
- * Focus stays put.
+ * Focus stays put; a replaced pane that had the keys hands them to its new pane.
  */
 export function moved(from, to, on) {
   const before = focused()?.pane;
   const gone = new Set();
-  for (const p of panes()) {
+  // A split gives its tab's keys to the new pane: the pane that has them is replaced last in its tab.
+  for (const p of [...panes()].sort((a, b) => (a.pane === before) - (b.pane === before))) {
     const path = p.props?.path;
     if (!FILE_MODS.includes(p.mod) || !path || (p.props.on ?? null) !== (on ?? null)) continue;
     const rest = path === from ? "" : path.startsWith(from + "/") ? path.slice(from.length) : null;
