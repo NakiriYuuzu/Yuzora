@@ -379,6 +379,7 @@ pub struct AppWindow {
     /// Mod copies by slot (block id, `<stack>#header`, or `overlay:<id>`).
     copies: HashMap<String, Copy>,
     overlays: Vec<Overlay>,
+    handover: crate::yuzora::motion::Handover, // yuzora(motion): dialogs and popups closed since the last frame
     folders: BTreeMap<String, Found>,
     /// Mods placed once; later the layout decides where (or whether) they show.
     seen: BTreeSet<String>,
@@ -492,6 +493,7 @@ impl AppWindow {
             terms: HashMap::new(),
             copies: HashMap::new(),
             overlays: Vec::new(),
+            handover: Default::default(), // yuzora(motion)
             folders: mods::scan().into_iter().map(|f| (f.id.clone(), f)).collect(),
             seen,
             bounds: Default::default(),
@@ -3639,7 +3641,7 @@ impl AppWindow {
             place,
             key: key.clone(),
             frame: spec.get("mod").and_then(Value::as_str).is_some_and(|m| m.starts_with("frame-")),
-            entered: (!has_layout).then(|| cx.background_executor().now()), // yuzora(motion): on the clock the frames use, so tests can move it
+            entered: self.handover.arrives(kind, cx.background_executor().now()).filter(|_| !has_layout), // yuzora(motion): on the clock the frames use, so tests can move it; a dialog that replaces one just closed goes on from it
         });
         if let Some(k) = &key {
             if spec.get("keep").and_then(Value::as_bool) == Some(true) {
@@ -3694,6 +3696,7 @@ impl AppWindow {
     fn remove_overlay(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(i) = self.overlays.iter().position(|o| o.id == id) {
             let o = self.overlays.remove(i);
+            self.handover.closed(o.kind, o.entered); // yuzora(motion)
             if self.win_drag.as_ref().is_some_and(|d| d.id == o.id) {
                 self.win_drag = None;
             }
@@ -4908,6 +4911,7 @@ impl Render for AppWindow {
         let tree = self.render_node(&self.chrome, &focused, None, cx);
         let tree = self.window_frame(tree, window, cx);
         let overlays = self.render_overlays(window.viewport_size(), window, cx); // yuzora(motion)
+        self.handover.frame_drawn(); // yuzora(motion)
         let tracker = self.float_tracker(cx);
         let win_tracker = self.window_tracker(cx);
         let pane_drag = self.pane_drag_layer(cx);

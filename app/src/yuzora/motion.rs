@@ -52,6 +52,36 @@ impl Phase {
     }
 }
 
+/// The dialogs and popups taken out since the last frame, for the one that takes their place. A dialog that closes and
+/// another that opens in the same update (a settings page handing over to a section, a palette to what it ran) is one
+/// thing changing to whoever is looking: it goes on from where the first was, so the dim layer never drops out and
+/// nothing fades in a second time. The frame that follows empties it, so it holds nothing for a later, new overlay.
+#[derive(Default)]
+pub struct Handover(Vec<(OverlayKind, Option<Instant>)>);
+
+impl Handover {
+    /// An overlay of `kind` that was added at `entered` is gone.
+    pub(crate) fn closed(&mut self, kind: OverlayKind, entered: Option<Instant>) {
+        if matches!(kind, OverlayKind::Dialog | OverlayKind::Popup) {
+            self.0.push((kind, entered));
+        }
+    }
+
+    /// When a new overlay of `kind` counts as added at `now`: when the overlay it takes the place of was, if one of its
+    /// kind has just closed (it takes that one's place only once), else now.
+    pub(crate) fn arrives(&mut self, kind: OverlayKind, now: Instant) -> Option<Instant> {
+        match self.0.iter().rposition(|(k, _)| *k == kind) {
+            Some(i) => self.0.remove(i).1,
+            None => Some(now),
+        }
+    }
+
+    /// A frame has been drawn: what closed before it is no longer just closed.
+    pub fn frame_drawn(&mut self) {
+        self.0.clear();
+    }
+}
+
 /// The phase `elapsed` into an arrival of `duration`, `ease`d, from `from` px away. Before the start it is the start;
 /// from the end on (and for no duration at all) it is at rest.
 pub fn at(elapsed: Duration, duration: Duration, ease: fn(f32) -> f32, from: f32) -> Phase {
@@ -220,5 +250,51 @@ mod tests {
                 "now before it was added: its start"
             );
         }
+    }
+
+    #[test]
+    fn a_closed_dialog_hands_its_time_on_once_and_only_until_the_next_frame() {
+        let (t0, now) = (Instant::now(), Instant::now() + MS(900));
+        let mut h = Handover::default();
+        h.closed(OverlayKind::Dialog, Some(t0));
+        h.closed(OverlayKind::Popup, None);
+        assert_eq!(
+            h.arrives(OverlayKind::Dialog, now),
+            Some(t0),
+            "goes on from the dialog it replaces"
+        );
+        assert_eq!(
+            h.arrives(OverlayKind::Dialog, now),
+            Some(now),
+            "a second one is new: a closed overlay is replaced once"
+        );
+        assert_eq!(
+            h.arrives(OverlayKind::Popup, now),
+            None,
+            "one of blocks had no arrival, and neither has what replaces it"
+        );
+        h.closed(OverlayKind::Dialog, Some(t0));
+        h.frame_drawn();
+        assert_eq!(
+            h.arrives(OverlayKind::Dialog, now),
+            Some(now),
+            "after a frame it is new"
+        );
+        h.closed(OverlayKind::Dialog, Some(t0));
+        assert_eq!(
+            h.arrives(OverlayKind::Popup, now),
+            Some(now),
+            "a popup does not take the place of a dialog"
+        );
+    }
+
+    #[test]
+    fn a_toast_and_a_window_are_never_replaced() {
+        let (t0, now) = (Instant::now(), Instant::now() + MS(900));
+        let mut h = Handover::default();
+        h.closed(OverlayKind::Toast, Some(t0));
+        h.closed(OverlayKind::Window, Some(t0));
+        assert_eq!(h.arrives(OverlayKind::Toast, now), Some(now));
+        assert_eq!(h.arrives(OverlayKind::Window, now), Some(now));
     }
 }

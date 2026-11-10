@@ -525,7 +525,11 @@ fn overlay_arrival_once(cx: &mut gpui::TestAppContext) {
     );
     cx.update(|window, cx| view.update(cx, |this, cx| this.remove_overlay("once", window, cx)));
     arrival_frame(cx, 16);
-    cx.update(|window, cx| view.update(cx, |this, cx| this.open_overlay("once".into(), spec.clone(), window, cx)));
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.open_overlay("once".into(), spec.clone(), window, cx)
+        })
+    });
     arrival_draw(cx);
     assert!(
         shown(cx).is_none(),
@@ -785,7 +789,8 @@ fn overlay_arrival_swap(cx: &mut gpui::TestAppContext) {
     let red: gpui::Background = gpui::rgb(0xff0000).into();
     let page = json!({ "kind": "dialog", "width": 300, "height": 120, "layout": { "id": "blk", "type": "block", "content": { "mod": "probe" } } });
     let dialog = json!({ "kind": "dialog", "mod": "probe", "width": 300, "height": 120 });
-    let menu = json!({ "kind": "popup", "mod": "probe", "width": 260, "at": { "x": 200, "y": 150 } });
+    let menu =
+        json!({ "kind": "popup", "mod": "probe", "width": 260, "at": { "x": 200, "y": 150 } });
 
     let stays_put = |cx: &mut gpui::VisualTestContext, what: &str| {
         let first = arrival_quads(cx);
@@ -852,7 +857,8 @@ fn overlay_arrival_swap(cx: &mut gpui::TestAppContext) {
     arrival_open(&view, cx, "c", dialog.clone());
     let first = arrival_quads(cx);
     assert!(
-        arrival_layer(&first, viewport, arrival_dim()).is_none() && arrival_button(&first).is_none(),
+        arrival_layer(&first, viewport, arrival_dim()).is_none()
+            && arrival_button(&first).is_none(),
         "closed a frame before: a new dialog, it arrives"
     );
     arrival_frame(cx, 400);
@@ -870,9 +876,20 @@ fn overlay_arrival_swap(cx: &mut gpui::TestAppContext) {
         "a popup that takes the place of a popup does not arrive again"
     );
     arrival_close(&view, cx, "e");
-    arrival_open(&view, cx, "toast", json!({ "kind": "toast", "notification": { "title": "Saved" } }));
+    arrival_open(
+        &view,
+        cx,
+        "toast",
+        json!({ "kind": "toast", "notification": { "title": "Saved" } }),
+    );
     arrival_frame(cx, 400);
-    arrival_swap(&view, cx, "toast", "toast2", json!({ "kind": "toast", "notification": { "title": "Again" } }));
+    arrival_swap(
+        &view,
+        cx,
+        "toast",
+        "toast2",
+        json!({ "kind": "toast", "notification": { "title": "Again" } }),
+    );
     assert!(
         arrival_button(&arrival_quads(cx)).is_none(),
         "a toast after a toast is a new one, it arrives"
@@ -899,15 +916,25 @@ fn overlay_arrival_travel(cx: &mut gpui::TestAppContext) {
         arrival_frame(cx, 1);
         let body = arrival_wide(&arrival_quads(cx), case.body_width)
             .unwrap_or_else(|| panic!("{}: not painted 1 ms in", case.id));
-        let left = 6.0 * (1.0 - gpui_base::animation::ease_out_cubic(1.0 / case.duration_ms as f32));
+        let left =
+            6.0 * (1.0 - gpui_base::animation::ease_out_cubic(1.0 / case.duration_ms as f32));
         let sign = if case.id == "toast" { 1.0 } else { -1.0 };
         arrival_near(
             body.1,
             want.1 + sign * left,
             0.5,
-            &format!("{} starts 6 px {} its place", case.id, if sign > 0.0 { "below" } else { "above" }),
+            &format!(
+                "{} starts 6 px {} its place",
+                case.id,
+                if sign > 0.0 { "below" } else { "above" }
+            ),
         );
-        arrival_near(body.0, want.0, 0.5, &format!("{} starts straight above or below its place", case.id));
+        arrival_near(
+            body.0,
+            want.0,
+            0.5,
+            &format!("{} starts straight above or below its place", case.id),
+        );
         arrival_close(&view, cx, case.id);
     }
 }
