@@ -502,6 +502,19 @@ impl RowSink for JobSink {
     }
 }
 
+/// Runs a job's work. A panic in a driver ends the job with an error instead
+/// of leaving it running (and its pane loading) for ever.
+fn spawn_job(id: JobId, work: impl std::future::Future<Output = ()> + Send + 'static) {
+    runtime::spawn(async move {
+        if futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(work)).await.is_err() {
+            update_job(id, |j| {
+                j.running = false;
+                j.error = Some(crate::i18n::t("error.job_panicked", &[]));
+            });
+        }
+    });
+}
+
 fn finish_job(id: JobId, outcome: DbResult<()>, sink: &mut JobSink) {
     let error = match &outcome {
         Err(DbError::Cancelled) => None,
@@ -524,7 +537,7 @@ pub fn start_query(connection: &str, database: Option<&str>, owner: &str, sql: &
     let id = new_job(connection, database, owner);
     let (connection, database, owner, sql) =
         (connection.to_owned(), database.map(str::to_owned), owner.to_owned(), sql.to_owned());
-    runtime::spawn(async move {
+    spawn_job(id, async move {
         let mut sink = JobSink::new(id, &owner, &sql);
         let started = Instant::now();
         let outcome = match lease(&connection, database.as_deref(), &owner).await {
@@ -550,7 +563,7 @@ pub fn open_table(
     let id = new_job(connection, database, owner);
     let (connection, database, owner, table) =
         (connection.to_owned(), database.map(str::to_owned), owner.to_owned(), table.clone());
-    runtime::spawn(async move {
+    spawn_job(id, async move {
         let opened_with = match config::get(&connection) {
             Ok(c) => c,
             Err(e) => {
@@ -809,4 +822,30 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
     }
     results::changed(result);
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_job_whose_work_panics_ends_with_an_error() {
+        let id = new_job("c", None, "panic-test");
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        spawn_job(id, async move {
+            let _tx = tx;
+            panic!("a driver bug");
+        });
+        // The sender drops when the panicking task unwinds.
+        assert!(rx.recv().is_err());
+        let state = loop {
+            let state = job_state(id).expect("the job");
+            if !state.running {
+                break state;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(state.error.is_some_and(|e| !e.is_empty()));
+        supersede("panic-test");
+    }
 }

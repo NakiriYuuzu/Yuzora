@@ -4,6 +4,7 @@
     "missing": "Missing {field}",
     "no_connection": "No connection {id}",
     "no_job": "That query is gone",
+    "job_panicked": "The database driver failed unexpectedly while running this; the connection will be opened again",
     "ssh_pending": "Connecting through the SSH host {host} comes with the SSH lane; clear the tunnel to connect directly"
   },
   "edit": {
