@@ -483,3 +483,17 @@ test("a refresh asked for while the timer's read runs makes an open search follo
   await s.settle(A, repo("/a"));
   expect(searches() - before).toBe(1);
 });
+
+test("a closed folder with a change below it carries a dot, and a changed file its letter", async () => {
+  const s = sidebar();
+  const marks = { "/a/src/a.js": "M", "/a/x.txt": "A" };
+  await s.settle(A, repo("/a", marks));
+  const closed = s.frame().texts;
+  expect(closed).toEqual(expect.arrayContaining(["•", "A"]));
+  expect(closed).not.toContain("M");
+  s.press(s.frame(), SRC);
+  await s.settle(A, repo("/a", marks));
+  const open = s.frame().texts;
+  expect(open).toEqual(expect.arrayContaining(["M", "A"]));
+  expect(open).not.toContain("•");
+});

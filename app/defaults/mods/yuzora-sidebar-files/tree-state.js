@@ -149,10 +149,8 @@ export function createStore(io) {
         if (folder && !e.open.has(folder)) continue;
         try { await list(e, root, folder, notify); }
         catch (err) {
-          // A root that was left says nothing of the tree that replaced it.
-          if (!live(e) || e.root !== root) continue;
           if (!folder) rootFailure = err;
-          else { e.open.delete(folder); touch(e, notify); }
+          else if (e.root === root) { e.open.delete(folder); touch(e, notify); }
         }
       }
     };
@@ -194,6 +192,7 @@ export function createStore(io) {
       listAll(e, root, ["", ...[...e.open].sort()], notify).catch(fail(root)),
     ]);
     if (e.root !== root && live(e)) await listAll(e, e.root, [""], notify).catch(fail(e.root));
+    // A root that was left says nothing of the tree that replaced it.
     const failure = failed.get(null) ?? failed.get(e.root);
     e.error = failure ? String(failure?.message ?? failure) : null;
     if (e.error !== before) touch(e, notify);

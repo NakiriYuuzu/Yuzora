@@ -721,6 +721,10 @@ h.answer(h.pending("git")[0], repo("/repo"));
 await flush();
 h.answer(h.pending("list").find(c => c.root === "/repo"), listing("docs/", "sub/"));
 await run;
+const afterMove = { open: [...a.open], selected: a.selected };
+const left = await store.expand(a, "/repo/sub", "x", () => {});
+const afterLeft = [...a.open];
+const staleAsked = h.calls.list.filter(c => c.root === "/repo/sub" && c.folder === "x").length;
 const again = store.expand(a, "/repo", "docs", () => {});
 await flush();
 h.fail(oldRead, new Error("gone"));
@@ -730,8 +734,15 @@ const lateOpen = await opened;
 const mine = h.pending("list").find(c => c.root === "/repo" && c.folder === "docs");
 h.answer(mine, listing("new.md"));
 await again;
-return JSON.stringify({ lateOpen, exists, root: a.root, treeRoot: a.tree.root, staleRoot: stale.root, open: [...a.open], docs: names(a, "docs"), top: names(a) });
+return JSON.stringify({ afterMove, left, staleAsked, afterLeft, lateOpen, exists, root: a.root, treeRoot: a.tree.root, staleRoot: stale.root, open: [...a.open], docs: names(a, "docs"), top: names(a) });
 "#);
+    assert_eq!(
+        got["afterMove"],
+        serde_json::json!({ "open": [], "selected": null })
+    );
+    assert_eq!(got["left"], serde_json::Value::Null);
+    assert_eq!(got["staleAsked"], 0);
+    assert_eq!(got["afterLeft"], serde_json::json!([]));
     assert_eq!(got["lateOpen"], serde_json::Value::Null);
     assert_eq!(got["exists"], 0);
     assert_eq!(got["root"], "/repo");
@@ -783,4 +794,62 @@ return JSON.stringify({ alone, manual, merged, onlyTimers });
         got["onlyTimers"],
         serde_json::json!({ "ok": true, "timed": true })
     );
+}
+
+#[test]
+fn a_failed_listing_of_the_root_git_is_about_to_leave_is_not_the_new_trees_error_whichever_comes_first(
+) {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/repo/sub"));
+const run = store.reload(a, () => {});
+await flush();
+h.fail(h.pending("list")[0], new Error("EACCES /repo/sub"));
+await flush();
+h.answer(h.pending("git")[0], repo("/repo"));
+await flush();
+h.answer(h.pending("list").find(c => c.root === "/repo"), listing("a.txt"));
+const read = await run;
+return JSON.stringify({ read, error: a.error, rows: names(a), fresh: panel(a).fresh });
+"#);
+    assert_eq!(
+        got["read"],
+        serde_json::json!({ "ok": true, "timed": false })
+    );
+    assert_eq!(got["error"], serde_json::Value::Null);
+    assert_eq!(got["rows"], serde_json::json!(["a.txt"]));
+    assert_eq!(got["fresh"], "fresh");
+}
+
+#[test]
+fn an_open_folder_of_the_root_that_was_left_failing_to_list_does_not_close_the_new_roots_folder() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/repo/sub"));
+a.open.add("docs");
+let notes = 0;
+const run = store.reload(a, () => { notes++; });
+await flush();
+const oldDocs = h.pending("list").find(c => c.root === "/repo/sub" && c.folder === "docs");
+const oldRoot = h.pending("list").find(c => c.root === "/repo/sub" && c.folder === "");
+h.answer(h.pending("git")[0], repo("/repo"));
+await flush();
+a.open.add("docs");
+const before = notes;
+h.fail(oldDocs, new Error("gone from the old root"));
+await flush();
+const during = { open: [...a.open], notes: notes - before };
+h.answer(oldRoot, listing("x.txt"));
+await flush();
+h.answer(h.pending("list").find(c => c.root === "/repo" && c.folder === ""), listing("docs/"));
+await run;
+return JSON.stringify({ during, open: [...a.open], error: a.error, rows: names(a) });
+"#);
+    assert_eq!(
+        got["during"],
+        serde_json::json!({ "open": ["docs"], "notes": 0 })
+    );
+    assert_eq!(got["open"], serde_json::json!(["docs"]));
+    assert_eq!(got["error"], serde_json::Value::Null);
+    assert_eq!(got["rows"], serde_json::json!(["docs"]));
 }
