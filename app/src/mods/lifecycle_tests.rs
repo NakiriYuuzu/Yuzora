@@ -419,8 +419,20 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
 // drawn whole, `shown` how many times the rows' properties were read in taking the diff in and `work`
 // in a frame (the rows are proxies that count), and `list` how tall the rows' list is. A `pane` prop
 // puts the diff in a box that wide, so the pointer can leave it.
+//
+// What a frame costs is counted beyond the rows: the module's built-in objects are frozen, so the string and
+// array methods cannot be metered, and what `Probed` counts is what goes through the module's own scans (`bound`
+// and what ranks the lines: the characters and lines they are given) and every read of the rows and of the
+// array that holds them, which `shown` and `work` note as their second and third values. `pending` is noted with
+// each frame: whether the diff still has lines to lay out out of sight, so a test draws until it has none.
 const DIFF_PROBE: &str = r#"
 import { note } from "fixture";
+const scanned = { n: 0 };
+if (typeof bound === "function") { const f = bound; bound = (s, ...rest) => { scanned.n += s.length; return f(s, ...rest); }; }
+for (const name of ["rank", "widest"]) {
+  const f = { rank: typeof rank === "function" && rank, widest: typeof widest === "function" && widest }[name];
+  if (f) { const wrap = (rows, ...rest) => { scanned.n += rows.length; return f(rows, ...rest); }; if (name === "rank") rank = wrap; else widest = wrap; }
+}
 export default class Probed extends GitDiff {
   cell(r, side, ...rest) {
     const el = super.cell(r, side, ...rest);
@@ -439,14 +451,18 @@ export default class Probed extends GitDiff {
   }
   show(view) {
     const touched = this.touched = { n: 0 };
-    const rows = view.rows.map((r) => new Proxy(r, { get(t, k, rc) { touched.n++; return Reflect.get(t, k, rc); } }));
+    const counting = { get(t, k, rc) { touched.n++; return Reflect.get(t, k, rc); } };
+    const rows = new Proxy(view.rows.map((r) => new Proxy(r, counting)), counting);
+    const before = scanned.n;
     super.show({ ...view, rows });
-    note("shown", touched.n);
+    note("shown", touched.n, scanned.n - before);
+    this.scanned = scanned.n;
   }
   render(cx) {
-    const before = this.touched?.n ?? 0;
+    const before = this.touched?.n ?? 0, scan = this.scanned ?? scanned.n;
     let root = super.render(cx);
-    note("work", (this.touched?.n ?? 0) - before);
+    note("work", (this.touched?.n ?? 0) - before, scanned.n - scan);
+    this.scanned = scanned.n;
     root = root.on_mouse_down("left", (e, cx) => {
       if (e.position.y < 28) { if (this.view) this.relayout(cx); }
       else if (!props().real) this.clickRow(Math.floor((e.position.y - 28) / 20), cx);
@@ -459,6 +475,7 @@ export default class Probed extends GitDiff {
       root = root.child(div().absolute().top(300).left(0).w_full().text_size(11.5).child(row));
     }
     note("rendered", v ? v.id : null, this.error);
+    note("pending", this.measuring?.() ? 1 : 0);
     return pane ? div().w(pane).h_full().child(root) : root;
   }
 }
@@ -477,6 +494,9 @@ struct DiffPane {
     person: Rc<RefCell<Value>>,
     runtime: Rc<ShellRuntime>,
     root: gpui::Entity<ShellRoot>,
+    /// How many frames the last [`Self::settle`] drew after the three it always does, for the diff to have nothing
+    /// left to lay out out of sight.
+    extra: usize,
     _fixture: Fixture,
 }
 
@@ -568,7 +588,7 @@ impl DiffPane {
         });
         let visual = VisualTestContext::from_window(*window.deref(), cx);
         visual.simulate_resize(size(px(wide), px(high)));
-        let mut view = Self { visual, notes, views, wide, high, zoom, person, runtime, root: mounted.unwrap(), _fixture: fixture };
+        let mut view = Self { visual, notes, views, wide, high, zoom, person, runtime, root: mounted.unwrap(), extra: 0, _fixture: fixture };
         view.settle();
         view
     }
@@ -603,16 +623,37 @@ impl DiffPane {
         self.notes.borrow().iter().filter(|n| n[0] == what).map(|n| n[1].as_f64().unwrap()).collect()
     }
 
+    /// How much the module's scans were given (characters of a line, lines of a side), taking the diff in, and in each frame.
+    fn metered(&self, what: &str) -> Vec<f64> {
+        self.notes.borrow().iter().filter(|n| n[0] == what).map(|n| n[2].as_f64().unwrap()).collect()
+    }
+
     /// How tall the rows' list was laid out last.
     fn list_height(&self) -> f64 {
         self.notes.borrow().iter().rev().find(|n| n[0] == "list").and_then(|n| n[1].as_f64()).expect("no list height reported")
     }
 
+    /// Draws three frames, and more while the diff has lines left to lay out out of sight (one batch of them is asked
+    /// for and answered a frame).
     fn settle(&mut self) {
+        let draw = |pane: &mut Self| {
+            pane.visual.update(|window, cx| window.draw(cx).clear(cx));
+            pane.visual.run_until_parked();
+        };
         for _ in 0..3 {
-            self.visual.update(|window, cx| window.draw(cx).clear(cx));
-            self.visual.run_until_parked();
+            draw(self);
         }
+        self.extra = 0;
+        while self.pending() && self.extra < 400 {
+            draw(self);
+            self.extra += 1;
+        }
+        assert!(!self.pending(), "the diff still had lines to lay out after {} frames", 3 + self.extra);
+    }
+
+    /// Whether the last frame asked for lines to be laid out out of sight.
+    fn pending(&self) -> bool {
+        self.notes.borrow().iter().rev().find(|n| n[0] == "pending").is_some_and(|n| n[1].as_f64() == Some(1.))
     }
 
     /// The probe row's cell on `side` ("l" or "r"), as wide as it was last laid out.
@@ -662,6 +703,24 @@ impl DiffPane {
             delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(dx as f32), gpui::px(dy as f32))),
             modifiers: gpui::Modifiers::none(),
             touch_phase: gpui::TouchPhase::Moved,
+        });
+        self.settle();
+    }
+
+    /// Wheels or swipes of `(dx, dy)` pixels, one after the other with no frame between them (the platform hands
+    /// each over as it comes, and a frame is drawn when it is next due), with the pointer at `x`, `y`.
+    fn wheels(&mut self, x: f64, y: f64, deltas: &[(f64, f64)]) {
+        self.hover(x, y);
+        self.visual.update(|window, cx| {
+            for (dx, dy) in deltas {
+                let event = gpui::ScrollWheelEvent {
+                    position: Self::at(x, y),
+                    delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(*dx as f32), gpui::px(*dy as f32))),
+                    modifiers: gpui::Modifiers::none(),
+                    touch_phase: gpui::TouchPhase::Moved,
+                };
+                window.dispatch_event(gpui::PlatformInput::ScrollWheel(event), cx);
+            }
         });
         self.settle();
     }
@@ -1534,6 +1593,158 @@ fn yuzora_diff_the_pointer_and_the_wheel_move_what_they_touch_at_every_zoom(cx: 
         pane.close();
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A changed row whose left line is cut into pieces of `lengths` characters of `letter`, the way the word diff cuts a
+/// line (every other piece is a change), each piece drawn on its own.
+fn row_in_pieces(letter: char, lengths: &[usize]) -> Value {
+    let pieces: Vec<Value> = lengths.iter().enumerate().map(|(i, n)| json!({"t": letter.to_string().repeat(*n), "h": i % 2 == 1})).collect();
+    let text: String = pieces.iter().map(|p| p["t"].as_str().unwrap()).collect();
+    json!({"k": "~", "h": 0, "l": 1, "li": 0, "lt": text, "ls": pieces, "r": 1, "ri": 0, "rt": "b"})
+}
+
+/// Pieces of the lengths in `cycle`, one after the other, until they are `total` characters.
+fn pieces_of(cycle: &[usize], total: usize) -> Vec<usize> {
+    let (mut out, mut sum) = (Vec::new(), 0);
+    for n in cycle.iter().cycle() {
+        let n = (*n).min(total - sum);
+        if n == 0 {
+            break;
+        }
+        out.push(n);
+        sum += n;
+    }
+    out
+}
+
+// yuzora(v010): a line is scrolled to its end as it is drawn, and a line the word diff cut into pieces is drawn a
+// piece at a time: each piece is as wide as its text, rounded up to a pixel. Working its width out as one piece fell
+// short by up to a pixel a piece (24px for 360 characters in 40 pieces, 88px for 1,000 in 200, 38px for a line of
+// JSON with 40 values changed), and the last characters of the line a change was made in could not be scrolled to.
+#[gpui::test]
+fn yuzora_diff_a_line_cut_into_pieces_is_scrolled_to_its_end_as_it_is_drawn(cx: &mut TestAppContext) {
+    if !alone("yuzora_diff_a_line_cut_into_pieces_is_scrolled_to_its_end_as_it_is_drawn") {
+        return;
+    }
+    let cases = [
+        ("360 letters in 40 pieces", pieces_of(&[9], 360)),
+        ("360 letters in 120 pieces", pieces_of(&[3], 360)),
+        ("1,000 letters in 200 pieces", pieces_of(&[5], 1000)),
+        ("a line of JSON with 40 values changed", pieces_of(&[4, 7, 3, 9, 5, 8, 6], 901)),
+    ];
+    let mut failures = Vec::new();
+    for zoom in ZOOMS {
+        for (case, lengths) in &cases {
+            let rows = Value::Array(vec![row_in_pieces('a', lengths), text_row(Some(&"a".repeat(120)), Some("b"))]);
+            let mut pane = DiffPane::zoomed(cx, rows, zoom, json!({}));
+            let gap = pane.end_gap("a");
+            pane.close();
+            let want = left_after_the_end() * zoom as f64;
+            match gap {
+                Some(gap) if (gap - want).abs() <= 1.5 => {}
+                other => failures.push(format!("{case} at zoom {zoom}: {other:?} left after its end, when it is {want}")),
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A small generator (xorshift32), so a failure is the same one every time.
+struct Dice(u32);
+
+impl Dice {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        self.0 as usize % n
+    }
+}
+
+// yuzora(v010): whatever the lines are cut into, the range ends where the widest one is drawn, which is not always the
+// one with the most characters (a piece takes up to a pixel more than its text) nor the one with the most pieces.
+// The widest drawn is the first row (the one the window can measure); the rest have more characters, more pieces, or
+// both, and the room left after it is the same whichever.
+#[gpui::test]
+fn yuzora_diff_the_range_ends_where_the_widest_line_is_drawn_whatever_the_lines_are_cut_into(cx: &mut TestAppContext) {
+    let mut dice = Dice(2463534242);
+    let mut failures = Vec::new();
+    for trial in 0..40 {
+        let cut = |dice: &mut Dice| {
+            let total = 40 + dice.below(300);
+            let mut out = Vec::new();
+            let mut sum = 0;
+            while sum < total {
+                let n = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11][dice.below(10)].min(total - sum);
+                out.push(n);
+                sum += n;
+            }
+            out
+        };
+        // What a piece of `n` letters is drawn as wide as at zoom 1: 6.9 pixels a letter, rounded up.
+        let drawn = |pieces: &[usize]| pieces.iter().map(|n| (*n as f64 * 6.9).ceil()).sum::<f64>();
+        let mut lines: Vec<Vec<usize>> = (0..2 + dice.below(5)).map(|_| cut(&mut dice)).collect();
+        lines.sort_by(|a, b| drawn(b).total_cmp(&drawn(a)));
+        let rows = Value::Array(lines.iter().map(|pieces| row_in_pieces('a', pieces)).collect());
+        let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
+        let gap = pane.end_gap("a");
+        pane.close();
+        match gap {
+            Some(gap) if (gap - left_after_the_end()).abs() <= 1.5 => {}
+            other => failures.push(format!("trial {trial}, lines of {:?} letters: {other:?} left after the widest one's end", lines.iter().map(|l| l.iter().sum::<usize>()).collect::<Vec<_>>())),
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010): lines in a script the table of widths does not list scroll to where the widest ends. They used to be
+// taken at three cells a character when there were more than four lines, though the font draws them in one
+// (5 lines of 150 Arabic letters: 498px to scroll, 2570px of room, and the left side empty at the end).
+#[gpui::test]
+fn yuzora_diff_text_in_a_script_the_table_does_not_list_scrolls_to_where_its_widest_line_ends(cx: &mut TestAppContext) {
+    let many = |letter: &str, widest: usize| {
+        let mut rows = vec![text_row(Some(&letter.repeat(widest)), Some("b"))];
+        rows.extend((0..299).map(|i| text_row(Some(&letter.repeat(widest - 1 - i % 50)), Some("b"))));
+        Value::Array(rows)
+    };
+    let few = |letter: &str| Value::Array((0..5).map(|_| text_row(Some(&letter.repeat(150)), Some("b"))).collect());
+    let cases = [
+        ("5 lines of Arabic", "\u{645}", few("\u{645}")),
+        ("5 lines of Hebrew", "\u{5d0}", few("\u{5d0}")),
+        ("5 lines of Thai", "\u{e01}", few("\u{e01}")),
+        ("5 lines with check marks", "\u{2713}", few("\u{2713}")),
+        ("300 lines of Arabic", "\u{645}", many("\u{645}", 150)),
+        ("300 lines of Thai", "\u{e01}", many("\u{e01}", 150)),
+    ];
+    let mut failures = Vec::new();
+    for (case, first, rows) in cases {
+        let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
+        let gap = pane.end_gap(first);
+        pane.close();
+        match gap {
+            Some(gap) if (gap - left_after_the_end()).abs() <= 1.5 => {}
+            other => failures.push(format!("{case}: {other:?} left after the widest line's end, when it is {}", left_after_the_end())),
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010): sideways wheels that come before the next frame are all counted: each moves the lines from where the
+// last one left them, not from where the last frame drew them (the window hands every wheel over at once, and
+// a frame is drawn when it is next due; the second used to take the place of the first).
+#[gpui::test]
+fn yuzora_diff_sideways_wheels_that_come_before_the_next_frame_all_count(cx: &mut TestAppContext) {
+    let mut pane = DiffPane::mount(cx, Value::Array(vec![diff_row(Some((300, "a")), Some((5, "b")))]), 1200., &Shared::default());
+    let home = pane.start_of("a").unwrap();
+    pane.wheels(100., 100., &[(-100., 0.), (-100., 0.), (-50., 0.)]);
+    near(home - pane.start_of("a").unwrap(), 250., "three wheels in a frame");
+    pane.wheels(100., 100., &[(80., 0.), (0., -40.), (-30., 0.), (60., 0.)]);
+    near(home - pane.start_of("a").unwrap(), 250. - 80. - 60. + 30., "back, a vertical one between not counted");
+    pane.wheels(100., 100., &[(-100000., 0.), (-100000., 0.)]);
+    let far = home - pane.start_of("a").unwrap();
+    pane.wheels(100., 100., &[(50., 0.)]);
+    near(home - pane.start_of("a").unwrap(), far - 50., "two wheels past the end keep nothing beyond it");
+    pane.close();
 }
 
 // yuzora(L2): the Git sidebar's main.js with its herdr, yuzora:core and yuzora:git imports
