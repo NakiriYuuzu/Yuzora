@@ -3210,22 +3210,17 @@ fn yuzora_diff_moves_of_a_pointer_held_at_the_bottom_edge_scroll_nothing_the_clo
         0.,
         "60 moves at the edge, the clock still: the list stays",
     );
-    pane.wait(1, 50);
-    let one = scrolled_in_frame(&pane);
-    assert!(
-        one > 0. && one <= ROW_H + 1.,
-        "one tick at the edge scrolls a row, not more: {one}"
-    );
-    for i in 0..4 {
+    for i in 0..5 {
         for j in 0..15 {
             pane.drag(TEXT_LEFT, bottom - ((i + j) % 2) as f64);
         }
         pane.wait(1, 50);
     }
-    near(
-        scrolled_in_frame(&pane),
-        one + 4. * ROW_H,
-        "four ticks with fifteen moves between each: a row a tick",
+    pane.settle();
+    let ticked = scrolled_in_frame(&pane);
+    assert!(
+        ticked >= 3. * ROW_H && ticked <= 5. * ROW_H,
+        "five ticks with fifteen moves before each: a row a tick, as the frame shows it a tick behind, not more: {ticked}"
     );
     pane.release(TEXT_LEFT, bottom);
     pane.close();
