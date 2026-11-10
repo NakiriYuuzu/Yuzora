@@ -421,13 +421,15 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
 // puts the diff in a box that wide, so the pointer can leave it.
 //
 // What a frame costs is counted beyond the rows: the module's built-in objects are frozen, so the string and
-// array methods cannot be metered, and what `Probed` counts is what goes through the module's own scans (`bound`
-// and what ranks the lines: the characters and lines they are given) and every read of the rows and of the
-// array that holds them, which `shown` and `work` note as their second and third values. `pending` is noted with
-// each frame: whether the diff still has lines to lay out out of sight, so a test draws until it has none.
+// array methods cannot be metered, and what `Probed` counts is every read of the rows and of the array that
+// holds them (`reads`), what goes through the module's own scans (`bound` and what ranks the lines: the characters
+// and lines they are given, `scans`) and the texts a frame builds and their characters (`built`, in `work`), which
+// `shown` and `work` note in that order. The window's text system counts the characters it lays out in each frame
+// (`MeasuredFont`). `pending` is noted with each frame: whether the diff still has lines to lay out out of sight, so
+// a test draws until it has none.
 const DIFF_PROBE: &str = r#"
 import { note } from "fixture";
-const scanned = { n: 0 };
+const scanned = { n: 0 }, built = { n: 0 };
 if (typeof bound === "function") { const f = bound; bound = (s, ...rest) => { scanned.n += s.length; return f(s, ...rest); }; }
 for (const name of ["rank", "widest"]) {
   const f = { rank: typeof rank === "function" && rank, widest: typeof widest === "function" && widest }[name];
@@ -443,6 +445,7 @@ export default class Probed extends GitDiff {
     super.toggleLine(h, side, index, cx);
   }
   segments(segs, text, ...rest) {
+    built.n += 1 + text.length;
     const el = super.segments(segs, text, ...rest), first = String.fromCodePoint(text.codePointAt(0));
     return this.probing ? el.id(`probe-text-${first}`).on_size_change((s) => note("text", first, s.width)).on_mouse_move((e) => note("over", first, e.local_position.x)) : el;
   }
@@ -458,10 +461,20 @@ export default class Probed extends GitDiff {
     note("shown", touched.n, scanned.n - before);
     this.scanned = scanned.n;
   }
+  batch(name) {
+    const batch = super.batch(name);
+    if (batch.lines.length) this.asked = true;
+    return batch;
+  }
+  measured(...rest) {
+    if ((this.dropped ?? 0) < (props().drop ?? 0)) { this.dropped = (this.dropped ?? 0) + 1; return; }
+    super.measured(...rest);
+  }
   render(cx) {
-    const before = this.touched?.n ?? 0, scan = this.scanned ?? scanned.n;
+    const before = this.touched?.n ?? 0, scan = this.scanned ?? scanned.n, made = built.n;
+    this.asked = false;
     let root = super.render(cx);
-    note("work", (this.touched?.n ?? 0) - before, scanned.n - scan);
+    note("work", (this.touched?.n ?? 0) - before, scanned.n - scan, built.n - made);
     this.scanned = scanned.n;
     root = root.on_mouse_down("left", (e, cx) => {
       if (e.position.y < 28) { if (this.view) this.relayout(cx); }
@@ -472,10 +485,10 @@ export default class Probed extends GitDiff {
       this.probing = true;
       const row = this.row(v.rows[0], 0, theme(), tokens().diff ?? {}, 0);
       this.probing = false;
-      root = root.child(div().absolute().top(300).left(0).w_full().text_size(11.5).child(row));
+      root = root.child(div().absolute().top(300).left(0).w_full().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).child(row));
     }
     note("rendered", v ? v.id : null, this.error);
-    note("pending", this.measuring?.() ? 1 : 0);
+    note("pending", this.asked || (this.gauge && this.unit?.key !== this.gauge.key) ? 1 : 0);
     return pane ? div().w(pane).h_full().child(root) : root;
   }
 }
@@ -497,6 +510,11 @@ struct DiffPane {
     /// How many frames the last [`Self::settle`] drew after the three it always does, for the diff to have nothing
     /// left to lay out out of sight.
     extra: usize,
+    /// The characters the window laid out in each frame drawn by [`Self::settle`] (only in a [`MeasuredFont`] window).
+    laid: Vec<usize>,
+    /// Whether the diff is meant to have lines to lay out that its frames keep asking for (a `drop` prop loses the
+    /// first sizes it is told, so a batch stays in flight).
+    expects_pending: bool,
     _fixture: Fixture,
 }
 
@@ -533,6 +551,7 @@ impl DiffPane {
         let theme = json!({"background": "#101010", "foreground": "#e0e0e0", "border": "#303030", "raised": "#202020", "dim": "#808080", "muted": "#a0a0a0", "accent": "#4080ff", "selected": "#304050", "hover": "#282828", "ansi1": "#f08a8a", "ansi2": "#86d17a"});
         let view = json!({"id": "d1", "rows": rows, "hunks": vec![json!({}); hunks], "stageable": true, "add": 3, "del": 0, "leftExists": true, "rightExists": true});
         let mut herdr = HostModule::new("herdr");
+        let opened_drops = props.get("drop").is_some();
         let mut opened = json!({"cwd": "/r", "on": null, "path": "wide-new.ts", "mode": "unstaged", "at": 1});
         if wide > pane {
             opened["pane"] = json!(pane);
@@ -588,7 +607,7 @@ impl DiffPane {
         });
         let visual = VisualTestContext::from_window(*window.deref(), cx);
         visual.simulate_resize(size(px(wide), px(high)));
-        let mut view = Self { visual, notes, views, wide, high, zoom, person, runtime, root: mounted.unwrap(), extra: 0, _fixture: fixture };
+        let mut view = Self { visual, notes, views, wide, high, zoom, person, runtime, root: mounted.unwrap(), extra: 0, laid: Vec::new(), expects_pending: opened_drops, _fixture: fixture };
         view.settle();
         view
     }
@@ -624,7 +643,7 @@ impl DiffPane {
     }
 
     /// How much the module's scans were given (characters of a line, lines of a side), taking the diff in, and in each frame.
-    fn metered(&self, what: &str) -> Vec<f64> {
+    fn scans(&self, what: &str) -> Vec<f64> {
         self.notes.borrow().iter().filter(|n| n[0] == what).map(|n| n[2].as_f64().unwrap()).collect()
     }
 
@@ -639,16 +658,18 @@ impl DiffPane {
         let draw = |pane: &mut Self| {
             pane.visual.update(|window, cx| window.draw(cx).clear(cx));
             pane.visual.run_until_parked();
+            pane.laid.push(LAID.with(Cell::take));
         };
         for _ in 0..3 {
             draw(self);
         }
         self.extra = 0;
-        while self.pending() && self.extra < 400 {
+        let limit = if self.expects_pending { 10 } else { 400 };
+        while self.pending() && self.extra < limit {
             draw(self);
             self.extra += 1;
         }
-        assert!(!self.pending(), "the diff still had lines to lay out after {} frames", 3 + self.extra);
+        assert!(self.expects_pending || !self.pending(), "the diff still had lines to lay out after {} frames", 3 + self.extra);
     }
 
     /// Whether the last frame asked for lines to be laid out out of sight.
@@ -1273,9 +1294,17 @@ fn yuzora_diff_a_click_on_a_line_number_picks_it_through_the_list(cx: &mut TestA
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+thread_local! {
+    /// The characters a [`MeasuredFont`] laid out since a frame last took the count.
+    static LAID: Cell<usize> = const { Cell::new(0) };
+}
+
 /// A font as it was measured (`scripts/yuzora-git-diff-font-widths.swift`: JetBrains Mono at 11.5px, with
 /// what the system falls back to): a character is as many cells (the width of an ASCII one) as the table
-/// says. The window's own test font gives every character but those past U+FFFF one cell.
+/// says. The window's own test font gives every character but those past U+FFFF one cell, whatever the family.
+/// This one knows two: JetBrains Mono, and any other, whose cell is a sixth wider, so a text laid out in
+/// another family than the one the rows are drawn in is not as wide as they are. It counts the characters
+/// it lays out ([`LAID`]).
 struct MeasuredFont(std::collections::HashMap<char, f32>, gpui::NoopTextSystem);
 
 impl MeasuredFont {
@@ -1293,7 +1322,7 @@ impl MeasuredFont {
 impl gpui::PlatformTextSystem for MeasuredFont {
     fn add_fonts(&self, fonts: Vec<std::borrow::Cow<'static, [u8]>>) -> anyhow::Result<()> { self.1.add_fonts(fonts) }
     fn all_font_names(&self) -> Vec<String> { self.1.all_font_names() }
-    fn font_id(&self, descriptor: &gpui::Font) -> anyhow::Result<gpui::FontId> { self.1.font_id(descriptor) }
+    fn font_id(&self, descriptor: &gpui::Font) -> anyhow::Result<gpui::FontId> { Ok(gpui::FontId(if descriptor.family.as_ref() == "JetBrains Mono" { 0 } else { 1 })) }
     fn font_metrics(&self, font_id: gpui::FontId) -> gpui::FontMetrics { self.1.font_metrics(font_id) }
     fn typographic_bounds(&self, font_id: gpui::FontId, glyph_id: gpui::GlyphId) -> anyhow::Result<gpui::Bounds<f32>> { self.1.typographic_bounds(font_id, glyph_id) }
     fn advance(&self, font_id: gpui::FontId, glyph_id: gpui::GlyphId) -> anyhow::Result<gpui::Size<f32>> { self.1.advance(font_id, glyph_id) }
@@ -1302,9 +1331,11 @@ impl gpui::PlatformTextSystem for MeasuredFont {
     fn rasterize_glyph(&self, params: &gpui::RenderGlyphParams, raster_bounds: gpui::Bounds<gpui::DevicePixels>) -> anyhow::Result<(gpui::Size<gpui::DevicePixels>, Vec<u8>)> { self.1.rasterize_glyph(params, raster_bounds) }
     fn recommended_rendering_mode(&self, font_id: gpui::FontId, font_size: gpui::Pixels) -> gpui::TextRenderingMode { self.1.recommended_rendering_mode(font_id, font_size) }
 
-    fn layout_line(&self, text: &str, font_size: gpui::Pixels, _runs: &[gpui::FontRun]) -> gpui::LineLayout {
+    fn layout_line(&self, text: &str, font_size: gpui::Pixels, runs: &[gpui::FontRun]) -> gpui::LineLayout {
+        LAID.with(|laid| laid.set(laid.get() + text.chars().count()));
         let metrics = self.1.font_metrics(gpui::FontId(0));
-        let cell = font_size * 0.6;
+        let font_id = runs.first().map_or(gpui::FontId(0), |run| run.font_id);
+        let cell = font_size * 0.6 * if font_id == gpui::FontId(0) { 1. } else { 7. / 6. };
         let mut position = gpui::px(0.);
         let mut glyphs = Vec::new();
         for (index, c) in text.char_indices() {
@@ -1321,7 +1352,7 @@ impl gpui::PlatformTextSystem for MeasuredFont {
             width,
             ascent: font_size * (metrics.ascent / metrics.units_per_em as f32),
             descent: font_size * (metrics.descent / metrics.units_per_em as f32),
-            runs: if glyphs.is_empty() { Vec::new() } else { vec![gpui::ShapedRun { font_id: gpui::FontId(0), glyphs }] },
+            runs: if glyphs.is_empty() { Vec::new() } else { vec![gpui::ShapedRun { font_id, glyphs }] },
             len: text.len(),
         }
     }
@@ -1595,6 +1626,80 @@ fn yuzora_diff_the_pointer_and_the_wheel_move_what_they_touch_at_every_zoom(cx: 
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// A diff whose widest lines are the first rows, 300 characters on each side and cut into pieces, and `rows` rows after
+/// them whose lines are short.
+fn wide_lines_then(rows: usize) -> Value {
+    let widest = |letter: char| pieces_of(&[4, 7, 3, 9, 5, 8, 6], 300).into_iter().map(|n| letter.to_string().repeat(n)).collect::<Vec<_>>();
+    let cut = |letter: char| widest(letter).iter().enumerate().map(|(i, t)| json!({"t": t, "h": i % 2 == 1})).collect::<Vec<_>>();
+    let mut all = vec![];
+    for _ in 0..3 {
+        all.push(json!({"k": "~", "h": 0, "l": 1, "li": 0, "lt": widest('a').concat(), "ls": cut('a'), "r": 1, "ri": 0, "rt": widest('b').concat(), "rs": cut('b')}));
+    }
+    all.extend((0..rows).map(|i| json!({"k": "~", "h": 0, "l": i + 2, "li": i + 1, "lt": "a line of text", "r": i + 2, "ri": i + 1, "rt": "another line"})));
+    Value::Array(all)
+}
+
+/// What the frames of a pane cost: for each frame the diff was drawn in, the reads of the rows, what the module's scans
+/// were given and the texts it built.
+fn frame_costs(pane: &DiffPane) -> Vec<[f64; 3]> {
+    pane.notes.borrow().iter().filter(|n| n[0] == "work").map(|n| [n[1].as_f64().unwrap(), n[2].as_f64().unwrap(), n[3].as_f64().unwrap()]).collect()
+}
+
+// yuzora(v010): what a frame costs does not depend on how many rows the diff has. Counted, not timed, and counted
+// where the work is done: every read of a row and of the array that holds them, what the module's scans (`bound`, what
+// ranks the lines) are asked to go through, the texts the frame builds and their characters, and the characters the
+// window lays out. 2,000 rows and 60,000 have the same widest lines, so the same ones are laid out; each of their
+// frames costs the same, and none of them scans a thing, while taking the diff in does go through all the rows.
+#[test]
+fn yuzora_diff_a_frame_costs_the_same_whatever_the_number_of_the_diffs_rows() {
+    with_measured_font("yuzora_diff_a_frame_costs_the_same_whatever_the_number_of_the_diffs_rows", |cx| {
+        let mut costs = Vec::new();
+        for rows in [2_000, 60_000] {
+            let mut pane = DiffPane::mount(cx, wide_lines_then(rows), 1200., &Shared::default());
+            pane.redraw();
+            let (shown, scans) = (pane.reads("shown"), pane.scans("shown"));
+            assert!(shown.len() == 1 && shown[0] >= rows as f64 && scans[0] >= rows as f64, "{rows} rows: taking the diff in went through them: {shown:?} reads, {scans:?} scanned");
+            let frames = frame_costs(&pane);
+            assert!(frames.len() >= 4, "{rows} rows: frames were drawn with the diff in it: {frames:?}");
+            assert!(pane.notes.borrow().iter().any(|n| n[0] == "pending" && n[1].as_f64() == Some(1.)), "{rows} rows: some lines were laid out out of sight");
+            assert!(frames.iter().all(|f| f[1] == 0.), "{rows} rows: a frame scanned what the diff came in with: {frames:?}");
+            let most = |i: usize| frames.iter().map(|f| f[i]).fold(0., f64::max);
+            costs.push([most(0), most(1), most(2), pane.laid.iter().copied().max().unwrap_or(0) as f64]);
+            pane.close();
+        }
+        let (few, many) = (costs[0], costs[1]);
+        let names = ["row reads", "scans", "texts built", "characters laid out"];
+        for i in 0..4 {
+            assert!(many[i] <= few[i] * 1.05 + 50., "a frame of 60,000 rows costs {} {}, of 2,000 {}", many[i], names[i], few[i]);
+        }
+    });
+}
+
+// yuzora(v010): the lines are laid out in the font the rows are drawn in, because it is the cell's own box that is laid
+// out: in a window whose fonts differ by family (a sixth wider than JetBrains Mono's), the end of a line is
+// where the range ends. Laid out in another family, it was a sixth short of it, or past it.
+#[test]
+fn yuzora_diff_the_lines_are_measured_in_the_font_the_rows_are_drawn_in() {
+    with_measured_font("yuzora_diff_the_lines_are_measured_in_the_font_the_rows_are_drawn_in", |cx| {
+        let mut failures = Vec::new();
+        for (case, rows) in [
+            ("a line", json!([text_row(Some(&"a".repeat(200)), Some("b"))])),
+            ("a line cut into pieces", Value::Array(vec![row_in_pieces('a', &pieces_of(&[4, 7, 3, 9, 5, 8, 6], 400)), text_row(Some(&"a".repeat(380)), Some("b"))])),
+            ("a line in a script the table lists", json!([text_row(Some(&"\u{6f22}".repeat(100)), Some("b"))])),
+        ] {
+            let first = if case.contains("script") { "\u{6f22}" } else { "a" };
+            let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
+            let gap = pane.end_gap(first);
+            pane.close();
+            match gap {
+                Some(gap) if (gap - left_after_the_end()).abs() <= 1.5 => {}
+                other => failures.push(format!("{case}: {other:?} left after its end, when it is {}", left_after_the_end())),
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    });
+}
+
 /// A changed row whose left line is cut into pieces of `lengths` characters of `letter`, the way the word diff cuts a
 /// line (every other piece is a change), each piece drawn on its own.
 fn row_in_pieces(letter: char, lengths: &[usize]) -> Value {
@@ -1727,6 +1832,22 @@ fn yuzora_diff_text_in_a_script_the_table_does_not_list_scrolls_to_where_its_wid
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010): a diff read again (a mode or a context switched, a change to the file) is measured again, though its
+// widest lines are the ones it had, also when it is read while its lines are being laid out: the sizes the
+// measuring asks for are reported, not taken for the last measuring's. (Here the sizes the first batches are laid out
+// to are lost, so they stay in flight, and the diff is read again.)
+#[gpui::test]
+fn yuzora_diff_a_diff_read_again_while_its_lines_are_being_laid_out_is_measured_again(cx: &mut TestAppContext) {
+    let rows = Value::Array((0..5).map(|_| text_row(Some(&"\u{645}".repeat(150)), Some("b"))).collect());
+    let mut pane = DiffPane::mount_with(cx, rows, 1200., 1200., &Shared::default(), json!({"drop": 2}));
+    assert!(pane.pending(), "the batches are in flight");
+    pane.expects_pending = false;
+    pane.press(400., 10., 1);
+    let gap = pane.end_gap("\u{645}");
+    assert!(gap.is_some_and(|gap| (gap - left_after_the_end()).abs() <= 1.5), "{gap:?} left after the widest line's end, when it is {}", left_after_the_end());
+    pane.close();
 }
 
 // yuzora(v010): sideways wheels that come before the next frame are all counted: each moves the lines from where the
