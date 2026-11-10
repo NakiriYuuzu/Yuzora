@@ -877,14 +877,34 @@ impl DiffPane {
             .filter(|q| !q.background.is_transparent())
             .map(|q| {
                 let at = |v: f32| (v / scale) as f64;
-                (at(q.bounds.origin.x.as_f32()), at(q.bounds.size.width.as_f32()), at(q.bounds.origin.y.as_f32()))
+                (
+                    at(q.bounds.origin.x.as_f32()),
+                    at(q.bounds.size.width.as_f32()),
+                    at(q.bounds.origin.y.as_f32()),
+                )
             })
             .collect();
         let widest = quads.iter().map(|q| q.1).fold(0., f64::max);
-        let start = quads.iter().filter(|q| q.1 >= widest - 0.5).map(|q| q.0).fold(f64::INFINITY, f64::min);
-        let tints = quads.iter().filter(|q| q.1 > widest - 91. && q.1 < widest - 87.).count();
-        let word_end = quads.iter().filter(|q| q.2 >= COPY_HEADER && q.1 < 40.).map(|q| q.0 + q.1).fold(f64::NEG_INFINITY, f64::max);
-        (-start, widest, tints, self.wide as f64 / self.zoom as f64 - word_end)
+        let start = quads
+            .iter()
+            .filter(|q| q.1 >= widest - 0.5)
+            .map(|q| q.0)
+            .fold(f64::INFINITY, f64::min);
+        let tints = quads
+            .iter()
+            .filter(|q| q.1 > widest - 91. && q.1 < widest - 87.)
+            .count();
+        let word_end = quads
+            .iter()
+            .filter(|q| q.2 >= COPY_HEADER && q.1 < 40.)
+            .map(|q| q.0 + q.1)
+            .fold(f64::NEG_INFINITY, f64::max);
+        (
+            -start,
+            widest,
+            tints,
+            self.wide as f64 / self.zoom as f64 - word_end,
+        )
     }
 
     /// How far the lines scroll, from the thumb as the last frame painted it (width² / (width + reach)); none: no bar.
@@ -2330,7 +2350,9 @@ fn yuzora_diff_a_click_and_a_right_click_select_on_the_side_they_are_on_at_every
 // that is and how wide the box, and a highlighted word that ends the long lines says where they end: with nothing selected,
 // with a row, with rows to a Shift-click, with a right-click, and with the lines scrolled again.
 #[gpui::test]
-fn yuzora_diff_in_unified_a_selection_takes_no_room_from_how_far_the_lines_scroll(cx: &mut TestAppContext) {
+fn yuzora_diff_in_unified_a_selection_takes_no_room_from_how_far_the_lines_scroll(
+    cx: &mut TestAppContext,
+) {
     let long = format!("{}END", "w".repeat(297));
     let ending = json!([{"t": "w".repeat(297), "h": false}, {"t": "END", "h": true}]);
     let rows = json!([
@@ -2345,17 +2367,31 @@ fn yuzora_diff_in_unified_a_selection_takes_no_room_from_how_far_the_lines_scrol
     let mut pane = copy_pane(cx, diff, json!({"layout": "unified"}));
     pane.wheel(300., 200., -1e7, 0.);
     let (scrolled, wide, tints, gap) = pane.unified_extent();
-    assert!(scrolled > 1000. && wide > 2000., "the long lines scroll: {scrolled} of a box {wide} wide");
-    assert!(gap.is_finite() && gap > 0. && gap < 120., "the end of the long lines is in view, {gap}px from the edge");
+    assert!(
+        scrolled > 1000. && wide > 2000.,
+        "the long lines scroll: {scrolled} of a box {wide} wide"
+    );
+    assert!(
+        gap.is_finite() && gap > 0. && gap < 120.,
+        "the end of the long lines is in view, {gap}px from the edge"
+    );
     assert_eq!(tints, 0, "nothing is selected, nothing is tinted");
     let mut failures = Vec::new();
     type Do = fn(&mut DiffPane);
     // (what is done, the rows tinted after it)
     let scenarios: [(&str, Do, usize); 4] = [
         ("a row selected", |p| p.click(300., row_y(0), false), 1),
-        ("rows to a Shift-click", |p| p.click(300., row_y(4), true), 5),
+        (
+            "rows to a Shift-click",
+            |p| p.click(300., row_y(4), true),
+            5,
+        ),
         ("a right-click", |p| p.right_press(300., row_y(2)), 5),
-        ("the lines scrolled again", |p| p.wheel(300., 200., -1e7, 0.), 5),
+        (
+            "the lines scrolled again",
+            |p| p.wheel(300., 200., -1e7, 0.),
+            5,
+        ),
     ];
     for (what, act, marked) in scenarios {
         act(&mut pane);
@@ -3436,7 +3472,9 @@ fn yuzora_diff_a_diff_read_again_after_it_settled_keeps_its_offset_and_measures_
 /// 20,000 changed rows whose left lines (20 to 59 letters) fit a side, and a last one of `widest` letters: the rows
 /// are ranked in several slices, and the widest line is not in the first.
 fn wide_at_the_end(widest: usize) -> Value {
-    let mut rows: Vec<Value> = (0..20_000).map(|i| text_row(Some(&"a".repeat(20 + i % 40)), Some("b"))).collect();
+    let mut rows: Vec<Value> = (0..20_000)
+        .map(|i| text_row(Some(&"a".repeat(20 + i % 40)), Some("b")))
+        .collect();
     rows.push(text_row(Some(&"a".repeat(widest)), Some("b")));
     Value::Array(rows)
 }
@@ -3452,21 +3490,46 @@ fn view_of(rows: Value) -> Value {
 // brought within it for as many frames as there were slices, then not given back (6 slices: 13,270px of offset, 0 for six
 // frames, 0 for good). Counted in frames and pixels.
 #[gpui::test]
-fn yuzora_diff_a_diff_of_many_slices_read_again_keeps_its_offset_in_every_frame(cx: &mut TestAppContext) {
+fn yuzora_diff_a_diff_of_many_slices_read_again_keeps_its_offset_in_every_frame(
+    cx: &mut TestAppContext,
+) {
     let mut pane = DiffPane::mount(cx, wide_at_the_end(2000), 1200., &Shared::default());
-    assert!(pane.reads("ranked").len() >= 3, "the rows are ranked in several slices: {:?}", pane.reads("ranked"));
+    assert!(
+        pane.reads("ranked").len() >= 3,
+        "the rows are ranked in several slices: {:?}",
+        pane.reads("ranked")
+    );
     pane.wheel(100., 100., -1e7, 0.);
     let before = pane.drawn_since(0).pop().expect("a frame");
     let thumb = pane.thumb().expect("a bar");
-    assert!(before.0 > 10_000. && (before.0 - before.1).abs() < 1., "scrolled to the end: {before:?}");
+    assert!(
+        before.0 > 10_000. && (before.0 - before.1).abs() < 1.,
+        "scrolled to the end: {before:?}"
+    );
     let mark = pane.mark();
     pane.press(400., 10., 1);
     let frames = pane.drawn_since(mark);
-    assert!(frames.len() >= 5, "the diff was ranked again over several frames: {frames:?}");
-    let short: Vec<_> = frames.iter().filter(|(offset, _)| *offset < before.0 - 1.).collect();
-    assert!(short.is_empty(), "frames drew the lines short of where they were ({} px): {short:?}", before.0);
-    let past: Vec<_> = frames.iter().filter(|(offset, reach)| offset > &(reach + 0.5)).collect();
-    assert!(past.is_empty(), "frames drew the lines past the end of their range: {past:?}");
+    assert!(
+        frames.len() >= 5,
+        "the diff was ranked again over several frames: {frames:?}"
+    );
+    let short: Vec<_> = frames
+        .iter()
+        .filter(|(offset, _)| *offset < before.0 - 1.)
+        .collect();
+    assert!(
+        short.is_empty(),
+        "frames drew the lines short of where they were ({} px): {short:?}",
+        before.0
+    );
+    let past: Vec<_> = frames
+        .iter()
+        .filter(|(offset, reach)| offset > &(reach + 0.5))
+        .collect();
+    assert!(
+        past.is_empty(),
+        "frames drew the lines past the end of their range: {past:?}"
+    );
     let after = pane.thumb().expect("a bar");
     near(after.0, thumb.0, "the thumb is where it was");
     pane.close();
@@ -3476,8 +3539,17 @@ fn yuzora_diff_a_diff_of_many_slices_read_again_keeps_its_offset_in_every_frame(
 // 0 for the frames in which the range is not known and come back. (A key reads the diff again with the button down: a press
 // would end the drag.)
 #[gpui::test]
-fn yuzora_diff_a_held_thumb_does_not_take_the_lines_to_the_start_when_the_diff_is_read_again(cx: &mut TestAppContext) {
-    let mut pane = DiffPane::mount_diff(cx, Diff::of(wide_at_the_end(2000)), 1200., 1200., &Shared::default(), json!({"real": true}));
+fn yuzora_diff_a_held_thumb_does_not_take_the_lines_to_the_start_when_the_diff_is_read_again(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = DiffPane::mount_diff(
+        cx,
+        Diff::of(wide_at_the_end(2000)),
+        1200.,
+        1200.,
+        &Shared::default(),
+        json!({"real": true}),
+    );
     pane.click(TEXT_LEFT, row_y(2), false);
     let bar = pane.high as f64 - 4.;
     let (start, long) = pane.thumb().expect("a bar");
@@ -3485,23 +3557,42 @@ fn yuzora_diff_a_held_thumb_does_not_take_the_lines_to_the_start_when_the_diff_i
     pane.press(grab, bar, 1);
     pane.drag(grab + 1100., bar);
     let before = pane.drawn_since(0).pop().expect("a frame");
-    assert!(before.0 > 10_000., "the thumb dragged to the end: {before:?}");
+    assert!(
+        before.0 > 10_000.,
+        "the thumb dragged to the end: {before:?}"
+    );
     let mark = pane.mark();
     pane.keys("f11");
     let frames = pane.drawn_since(mark);
-    assert!(frames.len() >= 5, "the diff was ranked again over several frames: {frames:?}");
-    let short: Vec<_> = frames.iter().filter(|(offset, _)| *offset < before.0 * 0.99).collect();
-    assert!(short.is_empty(), "frames drew the lines short of where the thumb holds them ({} px): {short:?}", before.0);
+    assert!(
+        frames.len() >= 5,
+        "the diff was ranked again over several frames: {frames:?}"
+    );
+    let short: Vec<_> = frames
+        .iter()
+        .filter(|(offset, _)| *offset < before.0 * 0.99)
+        .collect();
+    assert!(
+        short.is_empty(),
+        "frames drew the lines short of where the thumb holds them ({} px): {short:?}",
+        before.0
+    );
     pane.release(grab + 1100., bar);
     let (end, _) = pane.thumb().expect("a bar");
-    near(end, start + 1100., "and the thumb is at the end of its track");
+    near(
+        end,
+        start + 1100.,
+        "and the thumb is at the end of its track",
+    );
     pane.close();
 }
 
 // yuzora(v010-git-diff-fu): what is read again is narrower, and the offset is brought within the new range once that is known: not
 // before (while the rows are ranked the range is a floor, and the old one holds), and then for good.
 #[gpui::test]
-fn yuzora_diff_a_narrower_diff_read_again_brings_the_offset_within_its_range_once_it_is_known(cx: &mut TestAppContext) {
+fn yuzora_diff_a_narrower_diff_read_again_brings_the_offset_within_its_range_once_it_is_known(
+    cx: &mut TestAppContext,
+) {
     let mut pane = DiffPane::mount(cx, wide_at_the_end(2000), 1200., &Shared::default());
     pane.wheel(100., 100., -1e7, 0.);
     let before = pane.drawn_since(0).pop().expect("a frame");
@@ -3510,9 +3601,20 @@ fn yuzora_diff_a_narrower_diff_read_again_brings_the_offset_within_its_range_onc
     pane.press(400., 10., 1);
     let frames = pane.drawn_since(mark);
     let wanted = 300. * 6.9 + 6. + 12. - 555.5;
-    let past: Vec<_> = frames.iter().filter(|(offset, reach)| offset > &(reach + 0.5)).collect();
-    assert!(past.is_empty(), "frames drew the lines past the end of their range: {past:?}");
-    assert!(frames.iter().any(|(offset, _)| *offset > wanted + 100. && *offset > before.0 - 1.), "the old offset held while the range was not known: {frames:?}");
+    let past: Vec<_> = frames
+        .iter()
+        .filter(|(offset, reach)| offset > &(reach + 0.5))
+        .collect();
+    assert!(
+        past.is_empty(),
+        "frames drew the lines past the end of their range: {past:?}"
+    );
+    assert!(
+        frames
+            .iter()
+            .any(|(offset, _)| *offset > wanted + 100. && *offset > before.0 - 1.),
+        "the old offset held while the range was not known: {frames:?}"
+    );
     let last = frames.last().copied().expect("a frame");
     near(last.1, wanted, "the range of the new diff");
     near(last.0, wanted, "and the offset is at its end");
@@ -3692,7 +3794,7 @@ fn yuzora_diff_a_frame_the_engine_cuts_off_is_followed_by_a_smaller_batch_and_th
 // yuzora(v010): a line that a frame cannot lay out even alone (a `cut_render` under the cost of any line of the left
 // side: each of the four is cut, the right side's short lines are not) is passed over, at its upper bound, like a line
 // that is too long to be laid out: the range is never short of a line that is drawn, and the diff does not build frames
-// for ever.
+// for ever. (v010-git-diff-fu: it is cut twice before it is passed over, not once: a frame cut once is no verdict on the line.)
 #[gpui::test]
 fn yuzora_diff_a_line_the_engine_cuts_off_even_alone_is_passed_over_at_its_bound(
     cx: &mut TestAppContext,
@@ -3719,8 +3821,8 @@ fn yuzora_diff_a_line_the_engine_cuts_off_even_alone_is_passed_over_at_its_bound
     pane.close();
     let drawn = 150. * 6.9 + 6. + 12. - 555.5;
     assert!(
-        (4..=6).contains(&cuts),
-        "frames the engine cut off: one for each line"
+        (8..=10).contains(&cuts),
+        "frames the engine cut off: two for each line, which is asked for once more before it is passed over"
     );
     assert!(
         range.is_some_and(|r| r >= drawn - 1.5),
@@ -3775,17 +3877,41 @@ fn yuzora_diff_the_frame_the_engine_cuts_off_after_the_last_report_is_built_agai
 // bound for good: five lines of 150 Hebrew letters scrolled 2,569px, and 497.5 reach their end (a `cut_first` prop: the first
 // frame with a batch is cut, once). The line is laid out again, and is passed over only if it is cut again alone.
 #[gpui::test]
-fn yuzora_diff_a_frame_cut_off_once_does_not_leave_its_line_at_its_upper_bound(cx: &mut TestAppContext) {
-    let rows = Value::Array((0..5).map(|_| text_row(Some(&"\u{5d0}".repeat(150)), Some("b"))).collect());
-    let mut pane = DiffPane::mount_with(cx, rows, 1200., 1200., &Shared::default(), json!({"cut_first": true}));
+fn yuzora_diff_a_frame_cut_off_once_does_not_leave_its_line_at_its_upper_bound(
+    cx: &mut TestAppContext,
+) {
+    let rows = Value::Array(
+        (0..5)
+            .map(|_| text_row(Some(&"\u{5d0}".repeat(150)), Some("b")))
+            .collect(),
+    );
+    let mut pane = DiffPane::mount_with(
+        cx,
+        rows,
+        1200.,
+        1200.,
+        &Shared::default(),
+        json!({"cut_first": true}),
+    );
     pane.settle_through_cuts(400);
-    let (cuts, range, quiet) = (pane.cut("frame", "rendered"), pane.ranges().last().copied(), pane.builds_in(10));
+    let (cuts, range, quiet) = (
+        pane.cut("frame", "rendered"),
+        pane.ranges().last().copied(),
+        pane.builds_in(10),
+    );
     let gap = pane.end_gap("\u{5d0}");
     pane.close();
     let wanted = 150. * 6.9 + 6. + 12. - 555.5;
     assert!((1..=2).contains(&cuts), "frames the engine cut off: one by the test, and one more if this machine is slow enough to cut another");
-    assert!(range.is_some_and(|r| (r - wanted).abs() <= 3.), "the lines scroll {range:?}px, and the widest needs {wanted}");
-    assert!(gap.is_some_and(|g| (g - left_after_the_end()).abs() <= 1.5), "{gap:?} left after the widest line's end, when it is {}", left_after_the_end());
+    assert!(
+        range.is_some_and(|r| (r - wanted).abs() <= 3.),
+        "the lines scroll {range:?}px, and the widest needs {wanted}"
+    );
+    assert!(
+        gap.is_some_and(|g| (g - left_after_the_end()).abs() <= 1.5),
+        "{gap:?} left after the widest line's end, when it is {}",
+        left_after_the_end()
+    );
     assert_eq!(quiet, 0, "frames were built after the lines were laid out");
 }
 
@@ -3794,15 +3920,33 @@ fn yuzora_diff_a_frame_cut_off_once_does_not_leave_its_line_at_its_upper_bound(c
 // right one (150 Hebrew letters, 230) is not the cause. The right was taken at its upper bound with the left (2,569px of range,
 // when the left line needs 1,532.5).
 #[gpui::test]
-fn yuzora_diff_a_frame_is_cut_by_the_costlier_side_and_the_other_sides_line_is_still_laid_out(cx: &mut TestAppContext) {
-    let rows = Value::Array(vec![text_row(Some(&"a".repeat(300)), Some(&"\u{5d0}".repeat(150)))]);
-    let mut pane = DiffPane::mount_with(cx, rows, 1200., 1200., &Shared::default(), json!({"cut_render": 300}));
+fn yuzora_diff_a_frame_is_cut_by_the_costlier_side_and_the_other_sides_line_is_still_laid_out(
+    cx: &mut TestAppContext,
+) {
+    let rows = Value::Array(vec![text_row(
+        Some(&"a".repeat(300)),
+        Some(&"\u{5d0}".repeat(150)),
+    )]);
+    let mut pane = DiffPane::mount_with(
+        cx,
+        rows,
+        1200.,
+        1200.,
+        &Shared::default(),
+        json!({"cut_render": 300}),
+    );
     pane.settle_through_cuts(400);
     let (range, quiet) = (pane.ranges().last().copied(), pane.builds_in(10));
     pane.close();
     let wanted = 300. * 6.9 + 6. + 12. - 555.5;
-    assert!(range.is_some_and(|r| (r - wanted).abs() <= 3.), "the lines scroll {range:?}px, and the widest needs {wanted}");
-    assert_eq!(quiet, 0, "frames were built after the lines were passed over");
+    assert!(
+        range.is_some_and(|r| (r - wanted).abs() <= 3.),
+        "the lines scroll {range:?}px, and the widest needs {wanted}"
+    );
+    assert_eq!(
+        quiet, 0,
+        "frames were built after the lines were passed over"
+    );
 }
 
 // yuzora(v010-git-diff-fu): a slice the engine cuts off once does not make every slice after it small. One that stopped at 3,000
@@ -3810,23 +3954,78 @@ fn yuzora_diff_a_frame_is_cut_by_the_costlier_side_and_the_other_sides_line_is_s
 // each. The slice grows back after a slice that is not cut, to half what was asked for when it was cut and not past it, so
 // a size that was cut is not asked for again (a `stall_slice` prop cuts the first slice that goes 3,000 units in).
 #[gpui::test]
-fn yuzora_diff_a_slice_cut_off_once_grows_back_but_not_to_the_size_that_was_cut(cx: &mut TestAppContext) {
+fn yuzora_diff_a_slice_cut_off_once_grows_back_but_not_to_the_size_that_was_cut(
+    cx: &mut TestAppContext,
+) {
     let mut rows = match added_lines(20_000) {
         Value::Array(rows) => rows,
         _ => unreachable!(),
     };
     rows.push(json!({"k": "~", "h": 0, "r": 20_001, "ri": 20_000, "rt": "w".repeat(400)}));
-    let mut pane = DiffPane::mount_with(cx, Value::Array(rows), 1200., 1200., &Shared::default(), json!({"stall_slice": 3_000}));
+    let mut pane = DiffPane::mount_with(
+        cx,
+        Value::Array(rows),
+        1200.,
+        1200.,
+        &Shared::default(),
+        json!({"stall_slice": 3_000}),
+    );
     pane.settle_through_cuts(120);
-    let (cuts, slices, range, quiet) = (pane.cut("slice", "ranked"), pane.rows_ranked("ranked"), pane.ranges().last().copied(), pane.builds_in(10));
+    let (cuts, slices, range, quiet) = (
+        pane.cut("slice", "ranked"),
+        pane.rows_ranked("ranked"),
+        pane.ranges().last().copied(),
+        pane.builds_in(10),
+    );
     pane.close();
     let most = slices.iter().copied().fold(0., f64::max);
     let wanted = 400. * 6.9 + 6. + 12. - 555.5;
     assert!((1..=2).contains(&cuts), "slices the engine cut off: one by the test, and one more if this machine is slow enough to cut another");
-    assert!(range.is_some_and(|r| (r - wanted).abs() <= 1.5), "the lines scroll {range:?}px, and the widest needs {wanted}");
-    assert!(slices.len() <= 40, "{} slices to rank 20,001 rows, when 4 do without a cut", slices.len());
-    assert!(most >= 1_000., "no slice grew back: the largest ranked {most} rows");
+    assert!(
+        range.is_some_and(|r| (r - wanted).abs() <= 1.5),
+        "the lines scroll {range:?}px, and the widest needs {wanted}"
+    );
+    assert!(
+        slices.len() <= 40,
+        "{} slices to rank 20,001 rows, when 4 do without a cut",
+        slices.len()
+    );
+    assert!(
+        most >= 1_000.,
+        "no slice grew back: the largest ranked {most} rows"
+    );
     assert!(most <= 3_200., "a slice ranked {most} rows, which is past half of what was asked for when one was cut (2,900 or so)");
+    assert_eq!(quiet, 0, "frames were built after the diff was measured");
+}
+
+// yuzora(v010-git-diff-fu): a row that a slice is cut off at before it has done a row (a `stall_slice` of one unit: the machine
+// stops for a moment at the first row) is read again, not taken at its upper bound for good. The row is 300,000 letters, past
+// what is laid out, so the range is its bound: 3 cells a letter when it was given up on, 1 when it is read.
+#[gpui::test]
+fn yuzora_diff_a_row_cut_off_alone_once_is_read_again_and_not_taken_at_its_upper_bound(
+    cx: &mut TestAppContext,
+) {
+    let mut rows = vec![text_row(Some(&"a".repeat(300_000)), Some("b"))];
+    rows.extend((0..5).map(|_| text_row(Some("a short line"), Some("b"))));
+    let mut pane = DiffPane::mount_with(
+        cx,
+        Value::Array(rows),
+        1200.,
+        1200.,
+        &Shared::default(),
+        json!({"stall_slice": 1}),
+    );
+    pane.settle_through_cuts(400);
+    let (cuts, range, quiet) = (
+        pane.cut("slice", "ranked"),
+        pane.ranges().last().copied(),
+        pane.builds_in(10),
+    );
+    pane.close();
+    let wanted = 300_000. * 6.9 + 6. + 12. - 555.5;
+    assert!((1..=2).contains(&cuts), "slices the engine cut off: one by the test, and one more if this machine is slow enough to cut another");
+    // The window's text system adds glyphs in f32, 0.06% over at this size: the bound is 1 cell a letter, not 3.
+    assert!(range.is_some_and(|r| r >= wanted - 1.5 && r <= wanted * 1.002), "the lines scroll {range:?}px, and the line needs {wanted} (three times that when it is taken at three cells a letter)");
     assert_eq!(quiet, 0, "frames were built after the diff was measured");
 }
 
@@ -3834,17 +4033,41 @@ fn yuzora_diff_a_slice_cut_off_once_grows_back_but_not_to_the_size_that_was_cut(
 // frame whose batch holds more than 8 lines) the batches grow back, not to the cost that was cut. 2,000 lines of Hebrew, all
 // of which are laid out, were 9 to a frame for good, 220 frames.
 #[gpui::test]
-fn yuzora_diff_a_batch_cut_off_once_grows_back_and_the_lines_are_laid_out_in_a_few_frames(cx: &mut TestAppContext) {
-    let rows = Value::Array((0..2000).map(|i| text_row(Some(&"\u{5d0}".repeat(150 - i % 51)), Some("b"))).collect());
-    let mut pane = DiffPane::mount_with(cx, rows, 1200., 1200., &Shared::default(), json!({"cut_big": 8}));
+fn yuzora_diff_a_batch_cut_off_once_grows_back_and_the_lines_are_laid_out_in_a_few_frames(
+    cx: &mut TestAppContext,
+) {
+    let rows = Value::Array(
+        (0..2000)
+            .map(|i| text_row(Some(&"\u{5d0}".repeat(150 - i % 51)), Some("b")))
+            .collect(),
+    );
+    let mut pane = DiffPane::mount_with(
+        cx,
+        rows,
+        1200.,
+        1200.,
+        &Shared::default(),
+        json!({"cut_big": 8}),
+    );
     let built = pane.settle_through_cuts(400);
-    let (cuts, batches, range, quiet) = (pane.cut("frame", "rendered"), pane.batches(), pane.ranges().last().copied(), pane.builds_in(10));
+    let (cuts, batches, range, quiet) = (
+        pane.cut("frame", "rendered"),
+        pane.batches(),
+        pane.ranges().last().copied(),
+        pane.builds_in(10),
+    );
     pane.close();
     let wanted = 150. * 6.9 + 6. + 12. - 555.5;
     assert!((1..=2).contains(&cuts), "frames the engine cut off: one by the test, and one more if this machine is slow enough to cut another");
-    assert!(range.is_some_and(|r| (r - wanted).abs() <= 3.), "the lines scroll {range:?}px, and the widest needs {wanted}");
+    assert!(
+        range.is_some_and(|r| (r - wanted).abs() <= 3.),
+        "the lines scroll {range:?}px, and the widest needs {wanted}"
+    );
     assert!(batches <= 60, "{batches} batches to lay out 2,000 lines");
-    assert!(built <= 100, "{built} frames were built to lay out 2,000 lines");
+    assert!(
+        built <= 100,
+        "{built} frames were built to lay out 2,000 lines"
+    );
     assert_eq!(quiet, 0, "frames were built after the lines were laid out");
 }
 

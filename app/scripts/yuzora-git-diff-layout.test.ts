@@ -11,9 +11,9 @@ const fonts = JSON.parse(await readFile(new URL("./fixtures/yuzora-git-diff-font
 };
 
 type Rank = { keys: Float64Array; base: number; rows: object[]; top: number };
-type Fit = { l: Rank; r: Rank; at: number; count: number; done: boolean; rows: object[]; slice: number; hurt: number; trying: { left: number; at: number; slice: number } | null };
+type Fit = { l: Rank; r: Rank; at: number; count: number; done: boolean; rows: object[]; slice: number; top: number; hurt: number; retry: number; trying: { left: number; at: number; slice: number } | null };
 type Gauge = { key: string; l: Side; r: Side };
-type Side = { left: number | undefined; got: number; blind: number; rounds: number };
+type Side = { left: number | undefined; got: number; blind: number; rounds: number; frame: number; top: number; alone: number; cuts: number; trying: { from: number; lines: object[]; cost: number } | null };
 type Pane = {
   fit: Fit;
   gauge: Gauge | null;
@@ -23,17 +23,20 @@ type Pane = {
   batch(name: string): { from: number; lines: object[]; cost: number };
   measured(g: Gauge, name: string, batch: object, size: { width: number }, cx: { notify(): void }): void;
   span(name: string): number;
+  blame(g: Gauge): void;
+  cutBatch(name: string, cause: boolean): void;
 };
 const zoomed = { zoom: 1 };
-const { ratioOf, bound, ranking, scan, cutSlice, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW } = (() => {
+const { ratioOf, bound, ranking, scan, cutSlice, regrow, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW } = (() => {
   const body = src.replace(/^import [\s\S]*?;\n/gm, "").replace("export default class GitDiff", "class GitDiff");
-  return new Function("View", "settings", `${body}; return { ratioOf, bound, ranking, scan, cutSlice, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW };`)(class {}, () => zoomed);
+  return new Function("View", "settings", `${body}; return { ratioOf, bound, ranking, scan, cutSlice, regrow, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW };`)(class {}, () => zoomed);
 })() as {
   ratioOf: (v: unknown) => number;
   bound: (text: string, meter: { left: number }) => number;
   ranking: (rows: object[]) => Fit;
   scan: (fit: Fit, meter: { left: number }) => void;
   cutSlice: (fit: Fit) => void;
+  regrow: (fit: Fit) => void;
   entry: (rank: Rank, at: number) => { cells: number; r: Record<string, unknown> };
   cost: (chars: number, pieces: number) => number;
   GitDiff: { prototype: object };
@@ -407,15 +410,19 @@ test("a slice cut off anywhere is gone on from without a row lost, and every lin
   }
 });
 
-test("a slice that was cut off is followed by half of what it got done, and a row it got nowhere with is taken at its bound", () => {
+test("a slice that was cut off is followed by half of what it got done, and a row it got nowhere with is tried once more, then taken at its bound", () => {
   const fit = ranking(Array.from({ length: 50 }, () => row("a".repeat(10), "b")));
   fit.at = 20;
   fit.trying = { left: SLICE - 600000, at: 5, slice: SLICE };
   cutSlice(fit);
-  expect([fit.slice, fit.hurt, fit.trying]).toEqual([300000, -1, null]);
+  expect([fit.slice, fit.top, fit.hurt, fit.retry, fit.trying]).toEqual([300000, SLICE / 2, -1, -1, null]);
+  // Nowhere with the row at 20: not given up on at the first cut, only at the second, whatever the slice.
   fit.trying = { left: SLICE - 50, at: 20, slice: 300000 };
   cutSlice(fit);
-  expect([fit.slice, fit.hurt]).toEqual([300000, 20]);
+  expect([fit.slice, fit.top, fit.hurt, fit.retry]).toEqual([300000, SLICE / 2, -1, 20]);
+  fit.trying = { left: SLICE - 50, at: 20, slice: 300000 };
+  cutSlice(fit);
+  expect([fit.slice, fit.top, fit.hurt]).toEqual([300000, SLICE / 2, 20]);
   const hurt = ranking([row("a".repeat(10), "b"), row("é".repeat(30), "é".repeat(30)), row("a".repeat(10), "b")]);
   hurt.hurt = 1;
   scan(hurt, plenty());
@@ -423,6 +430,108 @@ test("a slice that was cut off is followed by half of what it got done, and a ro
   expect(cells("l")).toContainEqual([WORST * 30, 30]);
   expect(cells("r")).toContainEqual([WORST * 30, 30]);
   expect(cells("l")).toContainEqual([10, 10]);
+});
+
+// A machine is simulated in units: it cuts a slice off past `capacity` units (a standing limit), or once, at `stall` units into
+// the first slice that goes so far (a machine that stops for a moment). Every size the ranking asked for, and what was cut.
+function rankingOn(rows: object[], { capacity = Infinity, stall = Infinity }: { capacity?: number; stall?: number }) {
+  const fit = ranking(rows), asked: number[] = [], cutAt: number[] = [], cut = new Error("cut");
+  let stalled = false;
+  for (let calls = 0; !fit.done; calls++) {
+    expect(calls).toBeLessThan(5000);
+    if (fit.trying) cutSlice(fit);
+    const start = fit.slice, meter = (fit.trying = { left: start, at: fit.at, slice: start });
+    asked.push(start);
+    const watched = {
+      get left() { return meter.left; },
+      set left(v: number) {
+        meter.left = v;
+        if (start - v > capacity || (!stalled && start - v > stall && (stalled = true))) { cutAt.push(start); throw cut; }
+      },
+    };
+    try {
+      scan(fit, watched);
+      fit.trying = null;
+      regrow(fit);
+    } catch (e) {
+      if (e !== cut) throw e;
+    }
+  }
+  return { fit, asked, cutAt };
+}
+
+test("a slice that was cut off once grows back, and never to the size that was cut: half of it is the most from then on", () => {
+  const rows = Array.from({ length: 20000 }, (_, i) => row("a".repeat(10 + (i % 60)), "b"));
+  const clean = rankingOn(rows, {});
+  expect(clean.asked.length).toBeLessThanOrEqual(6);
+  expect(clean.cutAt).toEqual([]);
+  // Stopped for a moment 3,000 units in: the slice that follows is half of that, and the ones after it double.
+  const stopped = rankingOn(rows, { stall: 3000 });
+  expect(stopped.cutAt).toEqual([SLICE]);
+  expect(stopped.asked.slice(0, 4).map((n) => n < SLICE / 100)).toEqual([false, true, true, true]);
+  expect(stopped.asked[2]).toBe(stopped.asked[1] * 2);
+  expect(Math.max(...stopped.asked.slice(1))).toBe(SLICE / 2);
+  expect(stopped.asked.length).toBeLessThanOrEqual(40);
+  expect(Array.from(stopped.fit.l.keys)).toEqual(Array.from(clean.fit.l.keys));
+  // A machine that cannot do more than 300,000 units in an event: the sizes asked for come down to what it can do and stay
+  // there, a few cuts in all, and none is asked for again once it has been cut.
+  const slow = rankingOn(rows, { capacity: 300000 });
+  expect(slow.cutAt.length).toBeLessThanOrEqual(4);
+  slow.cutAt.forEach((cutSize, k) => {
+    const later = slow.asked.slice(slow.asked.indexOf(cutSize, k) + 1);
+    expect(Math.max(...later)).toBeLessThanOrEqual(cutSize / 2);
+  });
+  expect(Math.max(...slow.asked.slice(slow.asked.length / 2))).toBeLessThanOrEqual(300000);
+  expect(slow.asked.length).toBeLessThanOrEqual(200);
+  expect(Array.from(slow.fit.r.keys)).toEqual(Array.from(clean.fit.r.keys));
+});
+
+// The bookkeeping of a side's batches when the frame they were in was cut off.
+test("a batch cut off alone is asked for once more and then passed over, one cut with others is halved and grows back to half its frame", () => {
+  const rows = Array.from({ length: 400 }, (_, i) => row("א".repeat(150 - (i % 50)), "b"));
+  const open = () => {
+    const pane = Object.assign(Object.create(GitDiff.prototype), { fit: ranks(rows), gauge: null, unit: null }) as Pane;
+    const g = pane.gauged();
+    return { pane, g };
+  };
+  // A line alone: the first cut leaves it to be asked for again as it was, the second passes it over at its bound.
+  let { pane, g } = open();
+  const first = pane.batch("l");
+  expect(first.lines).toHaveLength(1);
+  g.l.trying = first;
+  pane.blame(g);
+  expect([g.l.trying, g.l.blind, g.l.left, g.l.cuts, g.l.alone]).toEqual([null, 0, first.from, 1, first.from]);
+  const again = pane.batch("l");
+  expect([again.from, again.lines.length]).toEqual([first.from, 1]);
+  g.l.trying = again;
+  pane.blame(g);
+  expect([g.l.blind, g.l.left, g.l.cuts]).toEqual([entry(pane.fit.l, first.from).cells, first.from - 1, 2]);
+  // Both sides had a batch: the costlier one is the cause, the other is asked for again as it was.
+  ({ pane, g } = open());
+  g.l.rounds = g.r.rounds = 3;
+  const cheap = { from: 3, lines: [{}, {}], cost: 100 }, dear = { from: 5, lines: [{}, {}, {}], cost: 900 };
+  g.l.trying = dear;
+  g.r.trying = cheap;
+  pane.blame(g);
+  expect([g.l.frame, g.l.top, g.l.cuts]).toEqual([450, FRAME / 2, 1]);
+  expect([g.r.frame, g.r.top, g.r.cuts, g.r.trying, g.r.alone]).toEqual([FRAME, FRAME, 1, null, -1]);
+  // Equal costs: both.
+  g.l.trying = { ...dear };
+  g.r.trying = { ...dear };
+  pane.blame(g);
+  expect([g.l.frame, g.r.frame]).toEqual([450, 450]);
+  // A batch that comes back doubles the frame, up to half of the frame that was cut and not past it.
+  ({ pane, g } = open());
+  g.l.trying = { from: 5, lines: [{}, {}, {}], cost: 900 };
+  pane.blame(g);
+  const cx = { notify() {}, timer: { after: () => ({ cancel() {} }) } };
+  const sizes: number[] = [];
+  for (let k = 0; k < 8; k++) {
+    g.l.left = 100 - k;
+    pane.measured(g, "l", { from: 100 - k, lines: [{}], cost: 1 }, { width: 10 }, cx);
+    sizes.push(g.l.frame);
+  }
+  expect(sizes).toEqual([900, 1800, 3600, 7200, 14400, FRAME / 2, FRAME / 2, FRAME / 2]);
 });
 
 test("the count of what is read sees every way a line can be read", () => {
