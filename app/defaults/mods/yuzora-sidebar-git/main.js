@@ -21,29 +21,35 @@ function findPane(mod, space) {
   return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
 }
 
-// Merge and rebase: the shown space's pane takes `fields` as a request (shared `key`, which it
-// follows when it renders) and is focused, else a tab of its own gets them as props.
+// A diff, merge or rebase pane is asked in shared `<key>.<space id>`, so a space's pane keeps what
+// its space asked for while another space asks for its own.
+function requestKey(key, space) {
+  return `${key}.${space}`;
+}
+
+// Merge and rebase: the shown space's pane is asked in its space's request and focused, else a tab
+// of its own gets the request as its props.
 function openRequested(key, mod, name, fields) {
   const space = shownSpace();
   if (!space) return;
-  const spec = { ...fields, space: space.id, at: Date.now() };
+  const spec = { ...fields, at: Date.now() };
   const pane = findPane(mod, space);
   if (pane) {
-    setShared(key, spec);
+    setShared(requestKey(key, space.id), spec);
     run("pane.focus", { pane: pane.pane });
   } else run("tab.new", { name, space: space.id, mod, props: spec });
 }
 
-// Log panes show one repo each and many can be open, so a graph pane is told by (space, repo
-// root, machine). A mod cannot read another pane's props: each graph pane says where it is in
-// shared state (yuzora-git-log), and the opener looks it up (yuzora-sidebar-git).
+// What each graph pane shows, by tab: { [tab id]: { space, root, on } }. A mod cannot read another
+// pane's props, so a graph pane says it here once its repo is open (yuzora-git-log) and the Git
+// sidebar looks it up (findLog). The place stays when the pane closes: the tab and its graph are
+// still there, a quit closes every pane, and after a restart a tab that is not shown has no pane
+// running to say it again. Writing drops the places of tabs that are gone, except a machine's: its
+// spaces are not listed until it is connected.
 const LOGS = "yuzora.git.logs";
-function logKey(space, root, on) {
-  return JSON.stringify([space, on ?? null, root]);
-}
 function findLog(space, root, on) {
-  const tab = shared(LOGS)?.[logKey(space, root, on)]?.tab;
-  return tab ? panes().find((p) => p.mod === "yuzora-git-log" && p.tab === tab) ?? null : null;
+  const logs = shared(LOGS) ?? {}, tabs = new Set(space.tabs.map((x) => x.id));
+  return panes().find((p) => p.mod === "yuzora-git-log" && tabs.has(p.tab) && logs[p.tab]?.root === root && (logs[p.tab].on ?? null) === (on ?? null)) ?? null;
 }
 // ---- end of the shared pane helpers ----
 
@@ -342,7 +348,7 @@ export default class SidebarGit extends View {
   openLog() {
     const repo = this.repo, space = shownSpace();
     if (!repo || !space) return;
-    const pane = findLog(space.id, repo.root, repo.machine);
+    const pane = findLog(space, repo.root, repo.machine);
     if (pane) run("pane.focus", { pane: pane.pane });
     else run("tab.new", { name: t("log.tab"), space: space.id, mod: "yuzora-git-log", props: { cwd: repo.root, on: repo.machine } });
   }
@@ -689,7 +695,7 @@ function showDiff(spec) {
   const s = gitSettings(), space = shownSpace();
   const pane = s.diffFollowPane !== false && findPane("yuzora-git-diff", space);
   if (pane) {
-    setShared("yuzora.git.diff", { ...spec, space: space.id });
+    setShared(requestKey("yuzora.git.diff", space.id), spec);
     return run("pane.focus", { pane: pane.pane });
   }
   if (s.diffOpenIn === "pane") return placeDiff(spec, s.diffKeepIn);

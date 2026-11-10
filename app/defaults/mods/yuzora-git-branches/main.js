@@ -21,15 +21,21 @@ function findPane(mod, space) {
   return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
 }
 
-// Merge and rebase: the shown space's pane takes `fields` as a request (shared `key`, which it
-// follows when it renders) and is focused, else a tab of its own gets them as props.
+// A diff, merge or rebase pane is asked in shared `<key>.<space id>`, so a space's pane keeps what
+// its space asked for while another space asks for its own.
+function requestKey(key, space) {
+  return `${key}.${space}`;
+}
+
+// Merge and rebase: the shown space's pane is asked in its space's request and focused, else a tab
+// of its own gets the request as its props.
 function openRequested(key, mod, name, fields) {
   const space = shownSpace();
   if (!space) return;
-  const spec = { ...fields, space: space.id, at: Date.now() };
+  const spec = { ...fields, at: Date.now() };
   const pane = findPane(mod, space);
   if (pane) {
-    setShared(key, spec);
+    setShared(requestKey(key, space.id), spec);
     run("pane.focus", { pane: pane.pane });
   } else run("tab.new", { name, space: space.id, mod, props: spec });
 }

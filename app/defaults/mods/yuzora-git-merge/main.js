@@ -17,10 +17,17 @@ import { open, status, changed, sequencer, conflictOpen, conflictResolve, confli
 // space. The functions down to the end of this block are the same in every Git mod that has
 // them (a mod cannot import another mod's files): scripts/yuzora-git-pane-reuse.test.ts keeps
 // them equal.
-// A request in shared state names the space it is for. A pane leaves another space's alone;
-// one with no space (an agent's) is for any.
-function forShown(request) {
-  return !request?.space || request.space === focused()?.space;
+// A diff, merge or rebase pane is asked in shared `<key>.<space id>`, so a space's pane keeps what
+// its space asked for while another space asks for its own.
+function requestKey(key, space) {
+  return `${key}.${space}`;
+}
+
+// What the shown space's pane is asked: its space's request, or the plain `<key>`, which names no
+// space (an agent's) and is for every pane. The newer one wins.
+function requested(key) {
+  const space = focused()?.space, mine = space ? shared(requestKey(key, space)) : null, any = shared(key);
+  return (mine?.at ?? 0) >= (any?.at ?? 0) ? mine ?? any : any;
 }
 // ---- end of the shared pane helpers ----
 
@@ -48,8 +55,10 @@ export default class GitMerge extends View {
     this.repo = null; this.st = null; this.error = null; this.note = null; this.busy = null;
     this.picked = new Set(); this.confirmAbort = false; this.labels = null; this.labelsKey = null;
     this.resetFile();
-    const p = props(), spec = p?.cwd ? p : shared(KEY);
-    if (spec?.cwd) this.start(spec, cx);
+    // A request is read when the pane is drawn: init runs before the app publishes the space the pane
+    // is first shown in, so it would read the space shown before.
+    const p = props();
+    if (p?.cwd) this.start(p, cx);
   }
 
   async close() {
@@ -614,9 +623,9 @@ export default class GitMerge extends View {
   }
 
   render(cx) {
-    // The sidebar opened this pane again (maybe on another file or repo).
-    const sh = shared(KEY);
-    if (sh?.cwd && (sh.at ?? 0) > this.at && forShown(sh)) this.start(sh, cx);
+    // The sidebar opened this pane again (maybe on another file or repo), or it has none yet.
+    const sh = requested(KEY);
+    if (sh?.cwd && (!this.spec || (sh.at ?? 0) > this.at)) this.start(sh, cx);
     const th = theme(), radius = (tokens().metrics ?? {}).pane_radius ?? 6;
     const frame = (...kids) => v_flex().id("merge").size_full().min_h(0).rounded(radius).overflow_hidden().bg(th.background).border_1().border_color(th.border)
       .text_color(th.foreground).text_size(12.5).track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx)).children(kids.filter(Boolean));

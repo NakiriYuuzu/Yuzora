@@ -24,36 +24,38 @@ function findPane(mod, space) {
   return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
 }
 
-// Merge and rebase: the shown space's pane takes `fields` as a request (shared `key`, which it
-// follows when it renders) and is focused, else a tab of its own gets them as props.
+// A diff, merge or rebase pane is asked in shared `<key>.<space id>`, so a space's pane keeps what
+// its space asked for while another space asks for its own.
+function requestKey(key, space) {
+  return `${key}.${space}`;
+}
+
+// Merge and rebase: the shown space's pane is asked in its space's request and focused, else a tab
+// of its own gets the request as its props.
 function openRequested(key, mod, name, fields) {
   const space = shownSpace();
   if (!space) return;
-  const spec = { ...fields, space: space.id, at: Date.now() };
+  const spec = { ...fields, at: Date.now() };
   const pane = findPane(mod, space);
   if (pane) {
-    setShared(key, spec);
+    setShared(requestKey(key, space.id), spec);
     run("pane.focus", { pane: pane.pane });
   } else run("tab.new", { name, space: space.id, mod, props: spec });
 }
 
-// Log panes show one repo each and many can be open, so a graph pane is told by (space, repo
-// root, machine). A mod cannot read another pane's props: each graph pane says where it is in
-// shared state (yuzora-git-log), and the opener looks it up (yuzora-sidebar-git).
+// What each graph pane shows, by tab: { [tab id]: { space, root, on } }. A mod cannot read another
+// pane's props, so a graph pane says it here once its repo is open (yuzora-git-log) and the Git
+// sidebar looks it up (findLog). The place stays when the pane closes: the tab and its graph are
+// still there, a quit closes every pane, and after a restart a tab that is not shown has no pane
+// running to say it again. Writing drops the places of tabs that are gone, except a machine's: its
+// spaces are not listed until it is connected.
 const LOGS = "yuzora.git.logs";
-function logKey(space, root, on) {
-  return JSON.stringify([space, on ?? null, root]);
-}
 function claimLog({ space, tab, root, on }) {
-  setShared(LOGS, { ...shared(LOGS), [logKey(space, root, on)]: { tab } });
-}
-
-// Only the pane that claimed it lets go: another one may have taken the place since.
-function releaseLog({ space, tab, root, on }) {
-  const logs = shared(LOGS), key = logKey(space, root, on);
-  if (logs?.[key]?.tab !== tab) return;
-  const { [key]: _gone, ...rest } = logs;
-  setShared(LOGS, rest);
+  const logs = shared(LOGS) ?? {}, place = { space, root, on: on ?? null };
+  if (JSON.stringify(logs[tab]) === JSON.stringify(place)) return;
+  const all = spaces(), ids = new Set(all.map((s) => s.id)), tabs = new Set(all.flatMap((s) => s.tabs.map((x) => x.id)));
+  const kept = Object.entries(logs).filter(([id, old]) => tabs.has(id) || (old?.space?.includes("/") && !ids.has(old.space)));
+  setShared(LOGS, { ...Object.fromEntries(kept), [tab]: place });
 }
 // ---- end of the shared pane helpers ----
 
@@ -129,7 +131,6 @@ export default class GitLog extends View {
   }
 
   async close() {
-    if (this.spot) releaseLog(this.spot);
     if (this.id != null) dropLog(this.id);
   }
 
@@ -161,6 +162,7 @@ export default class GitLog extends View {
     cx.spawn(async (cx) => {
       try {
         this.repo = await open(cwd, this.on);
+        this.claim();
         if (this.p.compare) await this.loadCompare();
         else this.openLog(cx);
       } catch (e) {
@@ -172,12 +174,12 @@ export default class GitLog extends View {
 
   // Without a repo in its props the pane takes the shown space's folder. That is read here and
   // not in init, which runs while the app is still switching to the space the pane is first
-  // drawn in, before it publishes that space. A graph pane (no filter, no compare) also says
-  // where it is, once, for the opener to find it again: a pane stays in its tab and a tab in
-  // its space.
+  // drawn in, before it publishes that space. A graph pane (no filter, no compare) also learns
+  // its tab here, and says which repo it shows once both are known: its repo comes from open,
+  // which can finish before or after the first draw.
   onScreen(cx) {
     const graph = !this.p.filter && !this.p.compare;
-    if (this.spot || !(graph || this.waiting)) return;
+    if (this.where || !(graph || this.waiting)) return;
     const space = shownSpace(), tab = space?.tabs.find((x) => x.active)?.id;
     if (!tab) return;
     if (this.waiting) {
@@ -185,10 +187,13 @@ export default class GitLog extends View {
       this.on = space.machine ?? null;
       this.begin(cx, space.folder);
     }
-    const root = this.p.cwd || this.repo?.root;
-    if (!graph || !root) return;
-    const spot = this.spot = { space: space.id, tab, root, on: this.on };
-    cx.spawn(async () => claimLog(spot));
+    if (!graph) return;
+    this.where = { space: space.id, tab };
+    cx.spawn(async () => this.claim());
+  }
+
+  claim() {
+    if (this.where && this.repo) claimLog({ ...this.where, root: this.repo.root, on: this.repo.machine });
   }
 
   // One filter box. Typing in some applies after a pause; Enter and leaving apply all.
@@ -848,7 +853,7 @@ function showDiff(spec) {
   const s = gitSettings(), space = shownSpace();
   const pane = s.diffFollowPane !== false && findPane("yuzora-git-diff", space);
   if (pane) {
-    setShared("yuzora.git.diff", { ...spec, space: space.id });
+    setShared(requestKey("yuzora.git.diff", space.id), spec);
     return run("pane.focus", { pane: pane.pane });
   }
   if (s.diffOpenIn === "pane") return placeDiff(spec, s.diffKeepIn);

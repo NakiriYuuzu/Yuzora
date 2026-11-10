@@ -27,21 +27,28 @@ function findPane(mod, space) {
   return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
 }
 
-// A request in shared state names the space it is for. A pane leaves another space's alone;
-// one with no space (an agent's) is for any.
-function forShown(request) {
-  return !request?.space || request.space === focused()?.space;
+// A diff, merge or rebase pane is asked in shared `<key>.<space id>`, so a space's pane keeps what
+// its space asked for while another space asks for its own.
+function requestKey(key, space) {
+  return `${key}.${space}`;
 }
 
-// Merge and rebase: the shown space's pane takes `fields` as a request (shared `key`, which it
-// follows when it renders) and is focused, else a tab of its own gets them as props.
+// What the shown space's pane is asked: its space's request, or the plain `<key>`, which names no
+// space (an agent's) and is for every pane. The newer one wins.
+function requested(key) {
+  const space = focused()?.space, mine = space ? shared(requestKey(key, space)) : null, any = shared(key);
+  return (mine?.at ?? 0) >= (any?.at ?? 0) ? mine ?? any : any;
+}
+
+// Merge and rebase: the shown space's pane is asked in its space's request and focused, else a tab
+// of its own gets the request as its props.
 function openRequested(key, mod, name, fields) {
   const space = shownSpace();
   if (!space) return;
-  const spec = { ...fields, space: space.id, at: Date.now() };
+  const spec = { ...fields, at: Date.now() };
   const pane = findPane(mod, space);
   if (pane) {
-    setShared(key, spec);
+    setShared(requestKey(key, space.id), spec);
     run("pane.focus", { pane: pane.pane });
   } else run("tab.new", { name, space: space.id, mod, props: spec });
 }
@@ -67,8 +74,10 @@ export default class GitRebase extends View {
     this.repo = null; this.st = null; this.error = null; this.note = null; this.result = null; this.busy = null;
     this.base = ""; this.todo = null; this.rows = []; this.loading = false; this.todoError = null; this.headOid = null; this.opKind = "";
     this.sel = 0; this.drag = null; this.dropAt = null; this.updateRefs = false; this.confirmAbort = false;
-    const p = props(), spec = p?.cwd ? p : shared(KEY);
-    if (spec?.cwd) this.begin(spec, cx);
+    // A request is read when the pane is drawn: init runs before the app publishes the space the pane
+    // is first shown in, so it would read the space shown before.
+    const p = props();
+    if (p?.cwd) this.begin(p, cx);
   }
 
   async close() {
@@ -515,9 +524,9 @@ export default class GitRebase extends View {
   }
 
   render(cx) {
-    // The sidebar or the log opened this pane again (maybe on another base or repo).
-    const sh = shared(KEY);
-    if (sh?.cwd && (sh.at ?? 0) > this.at && forShown(sh)) this.begin(sh, cx);
+    // The sidebar or the log opened this pane again (maybe on another base or repo), or it has none yet.
+    const sh = requested(KEY);
+    if (sh?.cwd && (!this.spec || (sh.at ?? 0) > this.at)) this.begin(sh, cx);
     const th = theme(), radius = (tokens().metrics ?? {}).pane_radius ?? 6;
     const frame = (...kids) => v_flex().id("rebase").size_full().min_h(0).rounded(radius).overflow_hidden().bg(th.background).border_1().border_color(th.border)
       .text_color(th.foreground).text_size(12.5).track_focus(this.handle)

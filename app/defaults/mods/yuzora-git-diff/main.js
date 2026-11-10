@@ -12,10 +12,17 @@ import { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard,
 // space. The functions down to the end of this block are the same in every Git mod that has
 // them (a mod cannot import another mod's files): scripts/yuzora-git-pane-reuse.test.ts keeps
 // them equal.
-// A request in shared state names the space it is for. A pane leaves another space's alone;
-// one with no space (an agent's) is for any.
-function forShown(request) {
-  return !request?.space || request.space === focused()?.space;
+// A diff, merge or rebase pane is asked in shared `<key>.<space id>`, so a space's pane keeps what
+// its space asked for while another space asks for its own.
+function requestKey(key, space) {
+  return `${key}.${space}`;
+}
+
+// What the shown space's pane is asked: its space's request, or the plain `<key>`, which names no
+// space (an agent's) and is for every pane. The newer one wins.
+function requested(key) {
+  const space = focused()?.space, mine = space ? shared(requestKey(key, space)) : null, any = shared(key);
+  return (mine?.at ?? 0) >= (any?.at ?? 0) ? mine ?? any : any;
 }
 // ---- end of the shared pane helpers ----
 
@@ -39,10 +46,11 @@ export default class GitDiff extends View {
 
   // The newest of the props and the shared request.
   wanted() {
-    const p = props() ?? {}, s = shared("yuzora.git.diff");
+    const p = props() ?? {};
     // In a modal, only what it was opened with.
     if (p.overlay) return p.path ? p : null;
-    return s?.path && (!p.path || (s.at ?? 0) >= (p.at ?? this.born ?? 0)) && forShown(s) ? s : p.path ? p : null;
+    const s = requested("yuzora.git.diff");
+    return s?.path && (!p.path || (s.at ?? 0) >= (p.at ?? this.born ?? 0)) ? s : p.path ? p : null;
   }
 
   follow(cx) {

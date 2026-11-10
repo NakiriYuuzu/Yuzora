@@ -21,6 +21,12 @@ function findPane(mod, space) {
   const tabs = new Set((space?.tabs ?? []).map((x) => x.id));
   return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
 }
+
+// A diff, merge or rebase pane is asked in shared `<key>.<space id>`, so a space's pane keeps what
+// its space asked for while another space asks for its own.
+function requestKey(key, space) {
+  return `${key}.${space}`;
+}
 // ---- end of the shared pane helpers ----
 
 const ROW = 18, CHAR = 7, NUM = 44, GUTTER = 250;
@@ -226,7 +232,7 @@ function showDiff(spec) {
   const s = gitSettings(), space = shownSpace();
   const pane = s.diffFollowPane !== false && findPane("yuzora-git-diff", space);
   if (pane) {
-    setShared("yuzora.git.diff", { ...spec, space: space.id });
+    setShared(requestKey("yuzora.git.diff", space.id), spec);
     return run("pane.focus", { pane: pane.pane });
   }
   if (s.diffOpenIn === "pane") return placeDiff(spec, s.diffKeepIn);
