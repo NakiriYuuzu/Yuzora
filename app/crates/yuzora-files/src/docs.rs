@@ -25,7 +25,8 @@ use gpui_base::input::{EditorState, InputEvent, Position, Rope};
 use yuzora_core::{HostObject, HostValue};
 
 use crate::editor::{self, CodeEditorOptions, Look};
-use crate::fsops::{self, Eol, Stamp, TextFile, WriteError};
+use crate::fsops::{self, Eol, Seen, Stamp, TextFile, WriteError};
+use crate::remote_write::posix_crc;
 use crate::highlight::{self, Lang};
 
 /// Files above this are not opened at all.
@@ -274,7 +275,7 @@ impl Facts {
             binary: false,
             too_large: false,
             not_utf8: false,
-            readonly: key.on.is_some(),
+            readonly: false,
             large: false,
         }
     }
@@ -288,7 +289,7 @@ impl Facts {
             binary: f.binary,
             too_large: f.too_large,
             not_utf8: f.not_utf8,
-            readonly: f.readonly || f.not_utf8 || key.on.is_some(),
+            readonly: f.readonly || f.not_utf8,
             large: f.size > highlight::MAX_HIGHLIGHT_BYTES as u64,
         }
     }
@@ -356,6 +357,8 @@ pub struct DocView {
     baseline: Rope,
     disk: Option<Stamp>,
     disk_hash: u64,
+    /// [`TextFile::crc`] of the same read: what a save on another machine is held to.
+    disk_crc: u32,
     /// The permission bits last seen ([`fsops::mode`]), here only.
     disk_mode: Option<u32>,
     /// What a check found on disk while there were unsaved changes.
@@ -429,19 +432,6 @@ pub(crate) async fn blocking<T: Send + 'static>(
     rx.await.ok()
 }
 
-/// The bytes `fsops::write_text` puts on disk, for the content hash.
-fn encoded(text: &str, eol: Eol, bom: bool) -> Vec<u8> {
-    let mut out = Vec::with_capacity(text.len() + 3);
-    if bom {
-        out.extend_from_slice(b"\xEF\xBB\xBF");
-    }
-    match eol {
-        Eol::Lf => out.extend_from_slice(text.as_bytes()),
-        Eol::Crlf => out.extend_from_slice(text.replace('\n', "\r\n").as_bytes()),
-    }
-    out
-}
-
 impl DocView {
     fn new(id: u64, key: DocKey) -> Self {
         let facts = Facts::new(&key);
@@ -456,6 +446,7 @@ impl DocView {
             baseline: Rope::new(),
             disk: None,
             disk_hash: 0,
+            disk_crc: 0,
             disk_mode: None,
             incoming: None,
             unconfirmed: None,
@@ -601,6 +592,7 @@ impl DocView {
         self.facts = Facts::from_file(&self.key, &file);
         self.disk = Some(file.stamp);
         self.disk_hash = file.hash;
+        self.disk_crc = file.crc;
         self.saw(file.stamp);
         if !self.facts.editable_text() || self.facts.large != large {
             self.state = None;
@@ -766,10 +758,6 @@ impl DocView {
             let _ = tx.send(Saved::error("not loaded"));
             return rx;
         };
-        if self.key.on.is_some() {
-            let _ = tx.send(Saved::error("remote"));
-            return rx;
-        }
         if self.facts.readonly {
             let _ = tx.send(Saved::error("readonly"));
             return rx;
@@ -783,14 +771,22 @@ impl DocView {
         let expected = if force {
             None
         } else {
-            self.disk.map(|stamp| (stamp, self.disk_hash))
+            self.disk.map(|stamp| Seen {
+                stamp,
+                hash: self.disk_hash,
+                crc: self.disk_crc,
+            })
         };
-        let (path, eol, bom) = (self.key.path.clone(), self.facts.eol, self.facts.bom);
+        let (path, on) = (self.key.path.clone(), self.key.on.clone());
+        let (eol, bom) = (self.facts.eol, self.facts.bom);
         self.saving = true;
         self.bump(cx);
         cx.spawn(async move |this, cx| {
-            let hash = fsops::content_hash(&encoded(&text, eol, bom));
-            let result = blocking(move || fsops::write_text(&path, &text, eol, bom, expected))
+            let bytes = fsops::encode_text(&text, eol, bom);
+            let (hash, crc) = (fsops::content_hash(&bytes), posix_crc(&bytes));
+            let result = blocking(move || {
+                fsops::write_on(&path, on.as_deref(), &text, eol, bom, expected)
+            })
                 .await
                 .unwrap_or_else(|| Err(WriteError::Io("could not start a worker".into())));
             let _ = this.update(cx, |doc, cx| {
@@ -799,6 +795,7 @@ impl DocView {
                     Ok(stamp) => {
                         doc.disk = Some(stamp);
                         doc.disk_hash = hash;
+                        doc.disk_crc = crc;
                         doc.saw(stamp);
                         doc.facts.size = stamp.len;
                         doc.baseline = rope;
@@ -824,7 +821,6 @@ impl DocView {
                             error: None,
                         }
                     }
-                    Err(WriteError::Remote) => Saved::error("remote"),
                     Err(WriteError::Refused(why)) => Saved::error(why.to_string()),
                     Err(WriteError::Io(e)) => Saved::error(e),
                 };
@@ -854,6 +850,7 @@ impl DocView {
         if let Some(file) = self.incoming.take() {
             self.disk = Some(file.stamp);
             self.disk_hash = file.hash;
+            self.disk_crc = file.crc;
         }
         self.conflict = false;
         self.bump(cx);
@@ -948,7 +945,7 @@ impl DocView {
     /// The permission bits on disk: whether the file can be written now.
     fn access_seen(&mut self, mode: u32, readonly: bool, cx: &mut Context<Self>) {
         self.disk_mode = Some(mode);
-        let readonly = readonly || self.facts.not_utf8 || self.key.on.is_some();
+        let readonly = readonly || self.facts.not_utf8;
         if readonly != self.facts.readonly {
             self.facts.readonly = readonly;
             self.sync_readonly(cx);
@@ -1389,8 +1386,11 @@ mod tests {
 
     #[test]
     fn encoded_matches_what_write_text_puts_on_disk() {
-        assert_eq!(encoded("a\nb", Eol::Lf, false), b"a\nb");
-        assert_eq!(encoded("a\nb", Eol::Crlf, true), b"\xEF\xBB\xBFa\r\nb");
+        assert_eq!(fsops::encode_text("a\nb", Eol::Lf, false), b"a\nb");
+        assert_eq!(
+            fsops::encode_text("a\nb", Eol::Crlf, true),
+            b"\xEF\xBB\xBFa\r\nb"
+        );
     }
 
     #[test]
@@ -1406,7 +1406,7 @@ mod tests {
             on: Some("lab".into()),
             path: "/x/a.md".into(),
         };
-        assert!(Facts::new(&remote).readonly);
+        assert!(!Facts::new(&remote).readonly);
     }
 
     /// A document with its editor drawn in a test window.
@@ -1673,7 +1673,7 @@ mod tests {
         assert!(futures::executor::block_on(saved).unwrap().ok);
         assert_eq!(
             std::fs::read(&path).unwrap(),
-            "\u{feff}more mine one\r\ntwo\r\n".as_bytes()
+            "\u{feff}mine more one\r\ntwo\r\n".as_bytes()
         );
     }
 
@@ -1714,7 +1714,7 @@ mod tests {
         let saved = view.update(cx, |doc, cx| doc.save(true, cx));
         cx.run_until_parked();
         assert!(futures::executor::block_on(saved).unwrap().ok);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "again mine one\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine again one\n");
         cx.update(|cx| assert!(!view.read(cx).deleted && !view.read(cx).dirty));
     }
 

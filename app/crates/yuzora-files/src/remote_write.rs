@@ -4,10 +4,11 @@
 //! file is still as it was read and swaps in a scratch file in one `mv`.
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use yuzora_core::remote::{ExecError, ExecOutput, ExecRequest, MAX_STDIN};
 
-use crate::fsops::{Seen, Stamp, WriteError};
+use crate::fsops::{self, Seen, Stamp, WriteError};
 
 /// The most a save to another machine carries at once.
 pub const MAX_BYTES: usize = MAX_STDIN;
@@ -99,8 +100,105 @@ pub fn posix_crc(bytes: &[u8]) -> u32 {
     !crc
 }
 
-/// What [`request`] runs.
-const WRITE_SCRIPT: &str = "exit 99";
+/// `sh` that finds the file `$1` really is (a link is written through, as it
+/// is here): `t`, and `d`, the folder a scratch file beside it goes in.
+macro_rules! resolve_links {
+    () => {
+        r#"nl='
+'
+t=$1 n=0
+while [ -L "$t" ]; do
+  n=$((n+1))
+  [ "$n" -le 40 ] || { echo 'too many levels of symbolic links' >&2; exit 1; }
+  l=$(readlink -- "$t" && echo x) || exit 1
+  l=${l%x}
+  l=${l%"$nl"}
+  case $t in */*) p=${t%/*} ;; *) p=. ;; esac
+  case $l in /*) t=$l ;; *) t=${p%/}/$l ;; esac
+done
+case $t in */*) d=${t%/*} ;; *) d=. ;; esac
+[ -n "$d" ] || d=/
+"#
+    };
+}
+pub(crate) use resolve_links;
+
+/// `$1` path, `$2` `cas` or `overwrite`, `$3 $4 $5` size, mtime (seconds) and
+/// `cksum` CRC the file was read with (`-` when overwriting), `$6` how many
+/// bytes arrive on stdin. Prints one line and exits 0:
+/// `saved SIZE MTIME`, `conflict SIZE MTIME`, `conflict gone`,
+/// `refused file|folder|owner|notfile`, or `refused stdin RECEIVED`. Any other
+/// end (a failed step, a signal) leaves the file as it was.
+///
+/// The new bytes go to a scratch file of the shape `fsops::is_scratch_name`
+/// accepts, beside the file and owner-only until it takes the file's mode and
+/// owner. Then, as the last step before the swap, the file is compared with
+/// what was read (stat and checksum) and a single `mv` swaps the scratch file
+/// in: a rename replaces the file whole or not at all.
+const WRITE_SCRIPT: &str = concat!(
+    r#"mode=$2 esize=$3 emtime=$4 ecrc=$5 want=$6
+om=$(umask)
+umask 077
+set -C
+tmp=
+trap '[ -z "$tmp" ] || rm -f -- "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+"#,
+    resolve_links!(),
+    r#"st() { stat -L -c '%s %Y %a %u %g' -- "$1" 2>/dev/null || stat -L -f '%z %m %Mp%Lp %u %g' -- "$1" 2>/dev/null; }
+check() {
+  now=$(st "$t") || { if [ -e "$t" ]; then echo "cannot read $t" >&2; exit 1; fi; echo 'conflict gone'; exit 0; }
+  set -- $now
+  cs=$1 cm=$2
+  [ "$cs $cm" = "$esize $emtime" ] || { echo "conflict $cs $cm"; exit 0; }
+  ck=$(cksum < "$t") || { echo "cannot read $t" >&2; exit 1; }
+  set -- $ck
+  [ "$1 $2" = "$ecrc $esize" ] || { echo "conflict $cs $cm"; exit 0; }
+}
+if [ -e "$t" ]; then
+  [ -f "$t" ] || { echo 'refused notfile'; exit 0; }
+  [ -w "$t" ] || { echo 'refused file'; exit 0; }
+  have=1
+else
+  have=0
+  [ "$mode" = cas ] && check
+fi
+[ -d "$d" ] && [ -w "$d" ] && [ -x "$d" ] || { echo 'refused folder'; exit 0; }
+id=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+case $id in ''|*[!0-9a-f]*) echo 'saving failed: no name for the scratch file' >&2; exit 1 ;; esac
+[ "${#id}" -eq 32 ] || { echo 'saving failed: no name for the scratch file' >&2; exit 1; }
+case $d in /) tmp=/.yuzora-save-$id ;; *) tmp=$d/.yuzora-save-$id ;; esac
+cat > "$tmp" || exit 1
+got=$(wc -c < "$tmp") || exit 1
+got=$((got))
+[ "$got" -eq "$want" ] || { echo "refused stdin $got"; exit 0; }
+if [ "$have" = 1 ]; then
+  meta=$(st "$t") || { [ -e "$t" ] && exit 1; have=0; }
+fi
+if [ "$have" = 1 ]; then
+  set -- $meta
+  md=$3 u=$4 g=$5
+  mine=$(st "$tmp") || exit 1
+  set -- $mine
+  if [ "$u $g" != "$4 $5" ]; then
+    chown "$u:$g" "$tmp" 2>/dev/null || { echo 'refused owner'; exit 0; }
+  fi
+else
+  md=$(printf '%o' $((0666 & ~0$om)))
+fi
+chmod "$md" "$tmp" || exit 1
+ts=$(st "$tmp") || exit 1
+set -- $ts
+size=$1 mtime=$2
+if [ "$mode" = cas ]; then check; fi
+mv -f -- "$tmp" "$t" || exit 1
+tmp=
+echo "saved $size $mtime"
+"#
+);
+
+/// Longest a save may run on the machine: 8 MiB over a slow link.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The request that saves `bytes` over `path` on `on` (`None`: here, through
 /// the same script, as the tests do).
@@ -110,19 +208,122 @@ pub(crate) fn request(
     expected: Option<&Seen>,
     on: Option<&str>,
 ) -> Result<ExecRequest, Refusal> {
-    let _ = (path, bytes, expected);
-    Ok(ExecRequest::new("sh", ["-c", WRITE_SCRIPT]).on(on))
+    if bytes.len() > MAX_BYTES {
+        return Err(Refusal::TooLarge {
+            bytes: bytes.len(),
+            limit: MAX_BYTES,
+        });
+    }
+    if !path.starts_with('/') || path.contains('\0') {
+        return Err(Refusal::BadPath);
+    }
+    let (mode, size, mtime, crc) = match expected {
+        Some(seen) => (
+            "cas",
+            seen.stamp.len.to_string(),
+            seen.stamp.mtime_ms.div_euclid(1000).to_string(),
+            seen.crc.to_string(),
+        ),
+        None => ("overwrite", "-".into(), "-".into(), "-".into()),
+    };
+    let arriving = bytes.len().to_string();
+    let args = [path, mode, &size, &mtime, &crc, &arriving];
+    Ok(fsops::sh_request(on, WRITE_SCRIPT, &args, WRITE_TIMEOUT, 64 << 10).stdin(bytes.to_vec()))
 }
 
-/// What the machine's answer means for the save.
+/// What the script said.
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    Saved(Stamp),
+    Conflict(Option<Stamp>),
+    Refused(Refusal),
+    /// Fewer bytes arrived on stdin than were sent.
+    Short(u64),
+}
+
+/// Reads the script's one line; anything but exactly a line of a known shape is `None`.
+fn parse_verdict(stdout: &[u8]) -> Option<Verdict> {
+    let line = std::str::from_utf8(stdout).ok()?.strip_suffix('\n')?;
+    let number = |s: &str| {
+        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse::<u64>().ok())?
+    };
+    let stamp = |size: &str, mtime: &str| {
+        let digits = mtime.strip_prefix('-').unwrap_or(mtime);
+        let secs: i64 = (number(digits)? <= i64::MAX as u64)
+            .then(|| mtime.parse().ok())
+            .flatten()?;
+        Some(Stamp {
+            len: number(size)?,
+            mtime_ms: secs.saturating_mul(1000),
+        })
+    };
+    match line.split(' ').collect::<Vec<_>>()[..] {
+        ["saved", size, mtime] => Some(Verdict::Saved(stamp(size, mtime)?)),
+        ["conflict", "gone"] => Some(Verdict::Conflict(None)),
+        ["conflict", size, mtime] => Some(Verdict::Conflict(Some(stamp(size, mtime)?))),
+        ["refused", "file"] => Some(Verdict::Refused(Refusal::FileNotWritable)),
+        ["refused", "folder"] => Some(Verdict::Refused(Refusal::FolderNotWritable)),
+        ["refused", "owner"] => Some(Verdict::Refused(Refusal::OtherOwner)),
+        ["refused", "notfile"] => Some(Verdict::Refused(Refusal::NotAFile)),
+        ["refused", "stdin", received] => Some(Verdict::Short(number(received)?)),
+        _ => None,
+    }
+}
+
+/// What `hc` itself said about a request it did not run, when that is a thing
+/// the person can act on. The words are hc's own: an `hc` without `--stdin`
+/// takes it for the program's name ("cannot start --stdin").
+fn refusal_in(message: &str, len: usize) -> Option<Refusal> {
+    if message.contains("--stdin") {
+        Some(Refusal::CoreTooOld)
+    } else if message.contains("piped in") {
+        Some(Refusal::TooLarge {
+            bytes: len,
+            limit: MAX_BYTES,
+        })
+    } else if message.starts_with("cannot start sh") {
+        Some(Refusal::NoShell)
+    } else {
+        None
+    }
+}
+
+/// What the machine's answer means for the save of `len` bytes.
 pub(crate) fn interpret(
     answer: Result<ExecOutput, ExecError>,
     path: &str,
     len: usize,
     on: Option<&str>,
 ) -> Result<Stamp, WriteError> {
-    let _ = (answer, path, len, on);
-    Err(WriteError::Remote)
+    let failed = |why: &dyn std::fmt::Display| {
+        let at = on.map(|m| format!(" on {m}")).unwrap_or_default();
+        WriteError::Io(format!("cannot write {path}{at}: {why}"))
+    };
+    let out = match answer {
+        Ok(out) => out,
+        Err(ExecError::Remote(m) | ExecError::Protocol(m)) => {
+            return Err(refusal_in(&m, len).map_or_else(|| failed(&m), WriteError::Refused));
+        }
+        Err(e @ ExecError::TimedOut { .. }) => {
+            return Err(failed(&format!(
+                "{e}. The file is the old one or the new one, never half of each: reload it to see which"
+            )));
+        }
+        Err(e) => return Err(failed(&e)),
+    };
+    if out.code != 0 {
+        return Err(failed(&fsops::failure(&out, "saving")));
+    }
+    match parse_verdict(&out.stdout) {
+        Some(Verdict::Saved(stamp)) if stamp.len == len as u64 => Ok(stamp),
+        Some(Verdict::Conflict(now)) => Err(WriteError::Conflict(now)),
+        Some(Verdict::Refused(why)) => Err(WriteError::Refused(why)),
+        Some(Verdict::Short(0)) if len > 0 => Err(WriteError::Refused(Refusal::CoreTooOld)),
+        Some(Verdict::Short(got)) => Err(failed(&format!("{got} of {len} bytes arrived"))),
+        _ => Err(failed(
+            &"the answer could not be read; the file may or may not have been saved",
+        )),
+    }
 }
 
 /// Saves `bytes` over the file `path` on `on`: only if it is still as
@@ -133,8 +334,8 @@ pub(crate) fn write_sh(
     expected: Option<&Seen>,
     on: Option<&str>,
 ) -> Result<Stamp, WriteError> {
-    let _ = (path, bytes, expected, on);
-    Err(WriteError::Remote)
+    let req = request(path, bytes, expected, on).map_err(WriteError::Refused)?;
+    interpret(fsops::run(req), path, bytes.len(), on)
 }
 
 /// A stand-in for `hc exec` that runs the program here, as the machine named
@@ -350,18 +551,22 @@ mod tests {
                 );
                 fs::set_permissions(&a, fs::Permissions::from_mode(0o640)).unwrap();
                 fs::set_permissions(&b, fs::Permissions::from_mode(0o640)).unwrap();
+                let read = fsops::read_text(&a, None, 1 << 20).unwrap();
                 let local =
-                    fsops::write_text(&a, text, eol, bom, Some((seen(&a).stamp, seen(&a).hash)))
-                        .unwrap();
+                    fsops::write_text(&a, text, eol, bom, Some((read.stamp, read.hash))).unwrap();
                 let remote =
                     fsops::write_on(&b, on.or(Some("lab")), text, eol, bom, Some(seen(&b)))
                         .unwrap();
+                let direct = write_sh(&b, &fsops::encode_text(text, eol, bom), None, on).unwrap();
                 assert_eq!(
                     fs::read(&a).unwrap(),
                     fs::read(&b).unwrap(),
                     "{text:?} {eol:?} {bom}"
                 );
-                assert_eq!((mode_of(&a), remote.len), (mode_of(&b), local.len));
+                assert_eq!(
+                    (mode_of(&a), remote.len, direct.len),
+                    (mode_of(&b), local.len, local.len)
+                );
             }
         }
     }
@@ -548,6 +753,46 @@ mod tests {
     }
 
     #[test]
+    fn the_file_is_replaced_whole_never_written_in_place() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let path = put(dir.path(), "f", &vec![b'a'; 4 << 20]);
+        let before = fs::metadata(&path).unwrap().ino();
+        assert!(write_sh(&path, &vec![b'b'; 4 << 20], None, None).is_ok());
+        assert_ne!(
+            fs::metadata(&path).unwrap().ino(),
+            before,
+            "a swap puts a new file in its place"
+        );
+        // Whoever reads it meanwhile sees the old bytes or the new, never a mix or a part.
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let (path, done) = (path.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut seen = std::collections::BTreeSet::new();
+                while !done.load(Ordering::Relaxed) {
+                    let bytes = fs::read(&path).unwrap();
+                    let whole = bytes.len() == 4 << 20 && bytes.iter().all(|b| *b == bytes[0]);
+                    assert!(
+                        whole,
+                        "read {} bytes, first {:?}",
+                        bytes.len(),
+                        bytes.first()
+                    );
+                    seen.insert(bytes[0]);
+                }
+                seen
+            })
+        };
+        for round in 0..12u8 {
+            let fill = if round % 2 == 0 { b'a' } else { b'b' };
+            assert!(write_sh(&path, &vec![fill; 4 << 20], None, None).is_ok());
+        }
+        done.store(true, Ordering::Relaxed);
+        assert!(!watcher.join().unwrap().is_empty());
+    }
+
+    #[test]
     fn a_save_that_is_cut_short_never_swaps_in_half_a_file() {
         let (_shims, path_env) = shimmed(&[("cat", "head -c 4")]);
         for on in WHERE {
@@ -599,7 +844,8 @@ mod tests {
 
     #[test]
     fn the_scratch_file_is_private_until_it_is_swapped_in_and_is_named_as_the_listing_expects() {
-        let record = "ls -l \"$(dirname \"$2\")\" > \"$YZ_LOG\"; mv \"$@\"";
+        let record =
+            "for last; do :; done; ls -la \"$(dirname \"$last\")\" > \"$YZ_LOG\"; mv \"$@\"";
         let (_shims, path_env) = shimmed(&[("mv", record)]);
         for on in WHERE {
             let dir = tempfile::tempdir().unwrap();
@@ -640,7 +886,7 @@ mod tests {
     fn the_scratch_file_is_owner_only_while_it_is_written() {
         let (_shims, path_env) = shimmed(&[(
             "cat",
-            "ls -l \"$(dirname \"$YZ_TARGET\")\" > \"$YZ_LOG\"; cat \"$@\"",
+            "ls -la \"$(dirname \"$YZ_TARGET\")\" > \"$YZ_LOG\"; cat \"$@\"",
         )]);
         for on in WHERE {
             let dir = tempfile::tempdir().unwrap();
@@ -1080,6 +1326,98 @@ mod tests {
                 "the folder a link's file is in is the one a save writes in"
             );
         }
-        assert!(fs::metadata(&mine).unwrap().uid() > 0 || is_root());
+    }
+
+    /// Run the script on a real machine or under another shell: `YZ_DUMP_DIR=/tmp/x cargo test -p
+    /// yuzora-files --lib -- --ignored dump_the_write_script`, then `sh -c "$(cat /tmp/x/write.sh)" sh PATH ...`.
+    #[test]
+    #[ignore = "writes the script to $YZ_DUMP_DIR"]
+    fn dump_the_write_script() {
+        let dir = std::env::var("YZ_DUMP_DIR").unwrap();
+        fs::write(format!("{dir}/write.sh"), WRITE_SCRIPT).unwrap();
+    }
+
+    /// Against a real hc, in a session and with a machine of its own (never the user's core):
+    /// `YZ_REAL_HC=/tmp/x/hcx YZ_REAL_MACHINE=lab cargo test -p yuzora-files --lib -- --ignored
+    /// --exact remote_write::tests::a_real_hc_saves_end_to_end`. With `YZ_REAL_HC_OLD=1` the hc is
+    /// one that does not know `--stdin` (a wrapper renames it), and only that is checked.
+    #[test]
+    #[ignore = "needs YZ_REAL_HC and YZ_REAL_MACHINE"]
+    fn a_real_hc_saves_end_to_end() {
+        let hc = std::path::PathBuf::from(std::env::var("YZ_REAL_HC").unwrap());
+        let machine = std::env::var("YZ_REAL_MACHINE").unwrap();
+        let on = Some(machine.as_str());
+        yuzora_core::remote::set_hc_program(move || hc.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let path = put(dir.path(), "real file.txt", b"old\n");
+        if std::env::var("YZ_REAL_HC_OLD").is_ok() {
+            let got = write_sh(&path, b"new", Some(&seen(&path)), on);
+            assert_eq!(got, Err(WriteError::Refused(Refusal::CoreTooOld)));
+            assert_eq!(fs::read(&path).unwrap(), b"old\n");
+            return;
+        }
+        let started = std::time::Instant::now();
+        let read = fsops::read_text(&path, on, 1 << 20).unwrap();
+        assert!(
+            !read.readonly && read.crc == posix_crc(b"old\n"),
+            "{read:?}"
+        );
+        let held = Seen {
+            stamp: read.stamp,
+            hash: read.hash,
+            crc: read.crc,
+        };
+        let saved = fsops::write_on(&path, on, "one\ntwo\n", Eol::Crlf, true, Some(held)).unwrap();
+        println!("read + save: {:?}", started.elapsed());
+        assert_eq!(fs::read(&path).unwrap(), b"\xef\xbb\xbfone\r\ntwo\r\n");
+        assert_eq!(saved, stamp_of(&path));
+        fs::write(&path, b"theirs, longer").unwrap();
+        let clash = fsops::write_on(&path, on, "mine", Eol::Lf, false, Some(held));
+        assert_eq!(clash, Err(WriteError::Conflict(Some(stamp_of(&path)))));
+        assert_eq!(fs::read(&path).unwrap(), b"theirs, longer");
+        let nul: &[u8] = b"a\0b\xff\r\n\x80";
+        assert!(write_sh(&path, nul, None, on).is_ok());
+        assert_eq!(fs::read(&path).unwrap(), nul);
+        let big = vec![b'b'; MAX_BYTES];
+        let started = std::time::Instant::now();
+        assert!(write_sh(&path, &big, None, on).is_ok());
+        println!("8 MiB save: {:?}", started.elapsed());
+        assert!(fs::read(&path).unwrap() == big);
+        let over = vec![b'b'; MAX_BYTES + 1];
+        let args = [
+            path.as_str(),
+            "overwrite",
+            "-",
+            "-",
+            "-",
+            &over.len().to_string(),
+        ];
+        let req =
+            fsops::sh_request(on, WRITE_SCRIPT, &args, WRITE_TIMEOUT, 64 << 10).stdin(over.clone());
+        let got = interpret(fsops::run(req), &path, over.len(), on);
+        assert_eq!(
+            got,
+            Err(WriteError::Refused(Refusal::TooLarge {
+                bytes: over.len(),
+                limit: MAX_BYTES
+            }))
+        );
+        assert!(
+            fs::read(&path).unwrap() == big,
+            "hc refused it: the file is as it was"
+        );
+        let folder = dir.path().join("a 'odd' \"dir\" $x");
+        fs::create_dir(&folder).unwrap();
+        let odd = put(&folder, "-n", b"old");
+        assert!(write_sh(&odd, b"new", Some(&seen(&odd)), on).is_ok());
+        assert_eq!(fs::read(&odd).unwrap(), b"new");
+        let none = dir.path().join("none").to_string_lossy().into_owned();
+        let missing = write_sh(&none, b"x", Some(&seen(&path)), on);
+        assert_eq!(missing, Err(WriteError::Conflict(None)));
+        assert!(
+            names(dir.path())
+                .iter()
+                .all(|n| !n.starts_with(".yuzora-save-"))
+        );
     }
 }

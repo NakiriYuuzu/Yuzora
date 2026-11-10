@@ -1238,7 +1238,9 @@ with these differences.
 - `yuzora:files` (types in `yuzora.d.ts`): `listDir`, `gitStatus`, `findFiles`,
   `grep`, `openDocument` / `documentState` / `saveDocument`, the native
   components `Editor`, `Markdown`, `ImageView`, and more.
-- Files on another machine can be browsed and opened, read-only in this version.
+- Files on another machine can be browsed, opened and saved (the file is replaced
+  whole, and a change made there since it was read is a conflict). Creating,
+  renaming and deleting there are not available yet.
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->

@@ -16,6 +16,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
 pub use crate::remote_write::Refusal;
+use crate::remote_write::{MAX_BYTES, posix_crc, resolve_links};
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -105,13 +106,21 @@ fi
 stat -L -c '%s %Y' -- "$1" 2>/dev/null || stat -L -f '%z %m' -- "$1""#;
 
 /// `$1` file, `$2` max+1, `$3` max. Exit 4 missing, 5 not a regular file.
-/// Prints `size mtime-seconds\n`, then up to `$2` bytes unless it is larger than `$3`.
-const READ_SCRIPT: &str = r#"[ -e "$1" ] || { echo "no such file" >&2; exit 4; }
+/// Prints `size mtime-seconds w|r\n` (`w`: a save can replace it: the file, the
+/// folder of the file a link names, and the owner, are all as a save needs),
+/// then up to `$2` bytes unless it is larger than `$3`.
+const READ_SCRIPT: &str = concat!(
+    r#"[ -e "$1" ] || { echo "no such file" >&2; exit 4; }
 [ -f "$1" ] || { echo "not a regular file" >&2; exit 5; }
 s=$(stat -L -c '%s %Y' -- "$1" 2>/dev/null || stat -L -f '%z %m' -- "$1") || exit 6
-printf '%s\n' "$s"
+"#,
+    resolve_links!(),
+    r#"w=r
+if [ -w "$t" ] && [ -w "$d" ] && [ -x "$d" ] && { [ -O "$t" ] || [ "$(id -u)" = 0 ]; }; then w=w; fi
+printf '%s %s\n' "$s" "$w"
 [ "${s%% *}" -gt "$3" ] && exit 0
-head -c "$2" -- "$1""#;
+head -c "$2" -- "$1""#
+);
 
 /// Changes to files on another machine wait for SFTP (lane L4).
 const REMOTE_READ_ONLY: &str = "files on another machine are read-only in this version";
@@ -193,8 +202,6 @@ pub struct TextFile {
 pub enum WriteError {
     /// The file changed (the current stamp, `None` when it is gone) since `expected`.
     Conflict(Option<Stamp>),
-    /// Saving to another machine is not supported (for the caller to return).
-    Remote,
     /// Nothing was written, for a reason the person can act on.
     Refused(Refusal),
     Io(String),
@@ -205,7 +212,6 @@ impl std::fmt::Display for WriteError {
         match self {
             WriteError::Conflict(Some(_)) => f.write_str("the file changed on disk"),
             WriteError::Conflict(None) => f.write_str("the file was removed from disk"),
-            WriteError::Remote => f.write_str("saving files on another machine is not supported"),
             WriteError::Refused(why) => why.fmt(f),
             WriteError::Io(e) => f.write_str(e),
         }
@@ -744,20 +750,23 @@ fn read_sh(path: &str, on: Option<&str>, max_bytes: u64) -> Result<TextFile, Str
         .iter()
         .position(|b| *b == b'\n')
         .ok_or_else(|| format!("cannot read {path}: no answer"))?;
-    let stamp = parse_stamp(&String::from_utf8_lossy(&out.stdout[..split]))
-        .ok_or_else(|| format!("cannot read the stat of {path}"))?;
+    let head = String::from_utf8_lossy(&out.stdout[..split]);
+    let stamp = parse_stamp(&head).ok_or_else(|| format!("cannot read the stat of {path}"))?;
+    // Read-only unless the script said a save can replace it (and a save fits
+    // what hc carries).
+    let readonly = head.split_whitespace().nth(2) != Some("w") || stamp.len > MAX_BYTES as u64;
     if stamp.len > max_bytes {
         return Ok(TextFile {
             too_large: true,
-            ..blank(stamp, true)
+            ..blank(stamp, readonly)
         });
     }
-    Ok(decode(
-        out.stdout[split + 1..].to_vec(),
-        stamp,
-        true,
-        max_bytes,
-    ))
+    let bytes = out.stdout[split + 1..].to_vec();
+    let crc = posix_crc(&bytes);
+    Ok(TextFile {
+        crc,
+        ..decode(bytes, stamp, readonly, max_bytes)
+    })
 }
 
 // ---- write ----
@@ -773,8 +782,8 @@ fn read_sh(path: &str, on: Option<&str>, max_bytes: u64) -> Result<TextFile, Str
 /// fsynced and renamed over the target, so a failed save leaves the old
 /// content; mode (and owner) are kept. When it cannot be swapped (see
 /// [`write_in_place`]) the old content is kept in a backup until the new one
-/// is complete. A symlink is written through. Another machine is the
-/// caller's to refuse ([`WriteError::Remote`]). Returns the new stamp.
+/// is complete. A symlink is written through. On another machine, see
+/// [`write_on`]. Returns the new stamp.
 pub fn write_text(
     path: &str,
     text: &str,
@@ -2118,13 +2127,13 @@ mod tests {
             assert_eq!(
                 TextFile {
                     stamp: local.stamp,
-                    readonly: false,
+                    crc: 0,
                     ..remote.clone()
                 },
                 local,
                 "{name}"
             );
-            assert!(remote.readonly);
+            assert_eq!(remote.crc, crate::remote_write::posix_crc(bytes), "{name}");
         }
         let f = put(&d, "big", &[b'x'; 50]);
         let large = read_sh(&f, None, 49).unwrap();
