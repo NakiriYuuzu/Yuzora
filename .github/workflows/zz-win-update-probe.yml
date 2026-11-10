@@ -1,0 +1,181 @@
+# One-off probe (branch spike/v010-win-update-probe, never merged): does the new app's
+# self-update (src/update.rs: swap the install folder, reopen) work on Windows?
+#
+# Nothing here changes the product. It builds the app the way app-package.yml does,
+# installs it with the real NSIS installer (/S), and looks at what yuzora.exe does when
+# it updates itself. No secret is read, no release is touched, nothing is published:
+# the update server is a local stand-in and its key is made on the spot.
+#
+#   A  lower-bound       a stand-in program (not Yuzora) swaps its own folder, three rounds
+#   B  installed-release the shipped build; update files staged by hand, startup swap + relaunch
+#   C  installed-testkey the same source with debug assertions (the only build that trusts a
+#                        test key): check, download, verify, stage and swap for real, and
+#                        with herdr-core installed, `yuzora do app.update` (Restart)
+#
+# Scripts and what they prove: app/scripts/yuzora/probe-win-update/. Results: the job
+# summary of each job, and the probe-* artifact (results.jsonl, raw outputs).
+name: Windows update probe
+
+on:
+  push:
+    branches: [spike/v010-win-update-probe]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+  ZIG_VERSION: 0.16.0
+  CARGO_INCREMENTAL: "0"
+  PROBE: app/scripts/yuzora/probe-win-update
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  lower-bound:
+    name: A lower bound
+    runs-on: windows-2022
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The self-test checks a signed fixture byte for byte.
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Probe self-test
+        run: python -I "$PROBE/selftest.py"
+      - name: Build the helper
+        run: mkdir -p out && rustc --edition 2021 -O -o out/winprobe.exe "$PROBE/winprobe.rs"
+      - name: Lower bound
+        timeout-minutes: 12
+        run: python "$PROBE/lower_bound.py" --probe out/winprobe.exe --out out/A --work "$RUNNER_TEMP/a"
+      - name: Results
+        if: always()
+        run: python "$PROBE/summarize.py" out/A
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: probe-A-lower-bound
+          path: out
+          retention-days: 14
+
+  installed-release:
+    name: B installed release build
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Windows build dependencies
+        run: |
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          if ! command -v makensis >/dev/null && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            choco install nsis --no-progress -y
+          fi
+      - name: Probe self-test
+        run: python -I "$PROBE/selftest.py"
+      - name: Build the helper
+        run: mkdir -p out && rustc --edition 2021 -O -o out/winprobe.exe "$PROBE/winprobe.rs"
+      - name: Build and pack (as shipped)
+        id: pack
+        timeout-minutes: 38
+        working-directory: app
+        run: scripts/yuzora/package
+      - name: Observe the installed app
+        if: steps.pack.outcome == 'success'
+        timeout-minutes: 20
+        env:
+          # Git Bash would turn /S into a drive path.
+          MSYS_NO_PATHCONV: "1"
+        run: python "$PROBE/observe.py" --flavor release --dist app/dist --probe out/winprobe.exe --out out/B-release --work "$RUNNER_TEMP/b" --budget 900
+      - name: Results
+        if: always()
+        run: python "$PROBE/summarize.py" out/B-release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: probe-B-installed-release
+          path: out
+          retention-days: 14
+
+  installed-testkey:
+    name: C installed test-key build
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Windows build dependencies
+        run: |
+          echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+          if ! command -v makensis >/dev/null && [ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            choco install nsis --no-progress -y
+          fi
+      - name: Probe self-test
+        run: python -I "$PROBE/selftest.py"
+      - name: Build the helper
+        run: mkdir -p out && rustc --edition 2021 -O -o out/winprobe.exe "$PROBE/winprobe.rs"
+      # update.rs `keys` trusts YUZORA_UPDATE_TEST_KEY only when debug assertions are on and
+      # HERDR_APP_RELEASE was not set at build time. The release profile with debug
+      # assertions is the smallest change from what ships; the package script then makes the
+      # same archive and installer around that program.
+      - name: Build and pack (test-key flavor)
+        id: pack
+        timeout-minutes: 38
+        working-directory: app
+        run: |
+          [ -z "${HERDR_APP_RELEASE:-}" ]
+          CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true cargo build --release --locked
+          YUZORA_PACKAGE_BIN=target/release/herdr-app.exe scripts/yuzora/package
+      - name: Observe the installed app
+        if: steps.pack.outcome == 'success'
+        timeout-minutes: 24
+        env:
+          MSYS_NO_PATHCONV: "1"
+        run: python "$PROBE/observe.py" --flavor testkey --dist app/dist --probe out/winprobe.exe --out out/C-testkey --work "$RUNNER_TEMP/c" --budget 1150
+      - name: Results
+        if: always()
+        run: python "$PROBE/summarize.py" out/C-testkey
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: probe-C-installed-testkey
+          path: out
+          retention-days: 14
