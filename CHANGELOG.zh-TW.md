@@ -2,7 +2,7 @@
 
 <samp><a href="CHANGELOG.md">English</a> · 繁體中文</samp>
 
-## [0.1.0-beta.4] - 2026-11-11
+## [0.1.0-beta.4] - 2026-11-10
 
 工具移到右側 dock，左側改用 Herdr 原生的 Spaces 與 Agents，並同步官方 herdr-app 到 v0.1.14。
 

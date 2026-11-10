@@ -1,7 +1,7 @@
 # Yuzora 更新說明
 
 <!-- yuzora(L7): CHANGELOG.md 裡 Yuzora 每一筆的繁體中文版，版本、### New／### Fixed 標題與項目數都要一樣（App 依標題判斷 Fixed）。這裡沒有的版本，App 會改顯示 CHANGELOG.md 的英文。 -->
-## [0.1.0-beta.4] - 2026-11-11
+## [0.1.0-beta.4] - 2026-11-10
 
 ### New
 - **右側 dock。** 有側邊 panel 的 layout（main，以及預設的 yuzora）會在 panel 旁多一條 40px 的模式列，放 Files、Git、Database、SSH；沒有 panel 的 layout（terminals、win98、自訂）則在右緣有抽屜，點模式就在 window 裡開啟。切換 Space 時，開著的模式保持不動；換 layout 也不會再讓 Yuzora 的功能消失。

@@ -2,7 +2,7 @@
 
 <samp>English · <a href="CHANGELOG.zh-TW.md">繁體中文</a></samp>
 
-## [0.1.0-beta.4] - 2026-11-11
+## [0.1.0-beta.4] - 2026-11-10
 
 The tools move to a right-hand dock, the left side becomes Herdr's own Spaces and Agents, and the official herdr-app is synced to v0.1.14.
 

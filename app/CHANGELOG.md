@@ -2,7 +2,7 @@
 
 <!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
 <!-- yuzora(L7): each Yuzora entry here has its Traditional Chinese twin in CHANGELOG.zh-TW.md: add a line to both. -->
-## [0.1.0-beta.4] - 2026-11-11
+## [0.1.0-beta.4] - 2026-11-10
 
 ### New
 - **Right-hand dock.** A layout with a side panel (main, and the default yuzora) gets a 40px mode bar next to the panel with Files, Git, Database and SSH. A layout without one (terminals, win98, your own) gets a drawer on the right edge, and a mode you click opens in a window. The open mode stays put when you switch Spaces, and changing the layout no longer makes Yuzora's tools disappear.
