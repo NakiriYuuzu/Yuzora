@@ -574,6 +574,28 @@ mod tests {
         assert_eq!(settings["forceWithLease"], true);
     }
 
+    // yuzora(v010): a script asks a loaded diff for lines (runs of one side) and a patch (hunks of a view).
+    #[test]
+    fn a_loaded_diff_answers_diff_text_and_diff_patch() {
+        let s = repo::testing::scratch();
+        s.commit("f.txt", "a\nb\n", "base");
+        s.write("f.txt", "a\n\tB\n");
+        let d = diffview::keep(diffview::DiffSession::load(s.repo.clone(), "f.txt".into(), None, diffview::Mode::Unstaged).unwrap());
+        let m = host_module();
+        let id = HostValue::Number(d.id as f64);
+        let text = |runs: Value| m.call("diffText", &HostArguments::new([id.clone(), to_host(&runs)]));
+        assert_eq!(text(json!([["l", 0, 1], ["r", 1, 2]])).unwrap(), HostValue::Str("a\n\tB".into()), "runs of either side, in order");
+        for bad in [json!([["x", 0, 1]]), json!([["l", 0]]), json!([["l", "0", 1]]), json!("l"), json!([["l", -1, 1]])] {
+            assert!(text(bad.clone()).is_err(), "{bad} is not a run");
+        }
+        assert!(m.is_async("diffPatch") && !m.is_async("diffText"));
+        let args = HostArguments::new([id.clone(), to_host(&json!([0])), HostValue::Str("none".into())]);
+        let patch = json_of(&crate::repo::tests::futures_lite_block(m.begin("diffPatch", &args).unwrap()).unwrap());
+        assert!(patch.as_str().unwrap().contains("@@ -1,2 +1,2 @@\n a\n-b\n+\tB\n"), "{patch}");
+        let none = HostArguments::new([id, to_host(&json!([])), HostValue::Null]);
+        assert_eq!(json_of(&crate::repo::tests::futures_lite_block(m.begin("diffPatch", &none).unwrap()).unwrap()), json!(""), "no hunk, no patch (and the whitespace may be left out)");
+    }
+
     // `repos` from a script: each repo's name, where it is and whether its folder is trusted
     // already (from the list: no git runs).
     #[cfg(unix)]

@@ -447,6 +447,7 @@ export default class Probed extends GitDiff {
     if (props().real) {
       root = root.child(div().id("t-unified").absolute().top(520).left(0).w(60).h(20).on_click((_e, cx) => { this.layout = "unified"; this.relayout(cx); }));
       root = root.child(div().id("t-other").absolute().top(520).left(70).w(60).h(20).on_click((_e, cx) => { setShared("yuzora.git.diff", { cwd: "/r", on: null, path: "other.ts", mode: "unstaged", at: 99 }); cx.notify(); }));
+      root = root.child(div().id("t-reload").absolute().top(520).left(140).w(60).h(20).on_click((_e, cx) => { cx.spawn((cx) => this.load(cx)); }));
     }
     return pane ? div().w(pane).h_full().child(root) : root;
   }
@@ -454,6 +455,7 @@ export default class Probed extends GitDiff {
 "#;
 
 /// What the pane is given: rows and hunks as the Rust side makes them, and the lines of both files.
+#[derive(Clone)]
 struct Diff {
     rows: Value,
     hunks: Value,
@@ -1174,11 +1176,12 @@ fn yuzora_diff_the_divider_and_the_pick_numbers_do_not_select(cx: &mut TestAppCo
 }
 
 // yuzora(v010): a selection names rows of the diff as it was: another layout and another file
-// leave none. (`t-unified` and `t-other` are the probe's own controls: what the layout pill does,
-// and another file asked for through the shared state.)
+// leave none, and neither does a diff read again. (`t-unified`, `t-other` and `t-reload` are the
+// probe's own controls: what the layout pill does, another file asked for through the shared
+// state, and the reload a change of the file brings.)
 #[gpui::test]
 fn yuzora_diff_the_selection_goes_with_the_rows_it_named(cx: &mut TestAppContext) {
-    for (control, what) in [(10., "another layout: the rows are others"), (100., "another file")] {
+    for (control, what) in [(10., "another layout: the rows are others"), (100., "another file"), (170., "a diff read again")] {
         let mut pane = DiffPane::mount_diff(cx, side_diff(), 1200., 1200., &Shared::default(), json!({"real": true}));
         pane.click(TEXT_LEFT, row_y(1), false);
         pane.keys("cmd-c");
@@ -1193,7 +1196,7 @@ fn yuzora_diff_the_selection_goes_with_the_rows_it_named(cx: &mut TestAppContext
 
 /// The menu a right-click on `(x, row)` asked for, as a popup of the diff opened with what it was given.
 fn menu_pane(cx: &mut TestAppContext, diff: Diff, press: &[(f64, usize, bool)]) -> (DiffPane, DiffPane) {
-    let mut pane = copy_pane(cx, diff, json!({}));
+    let mut pane = copy_pane(cx, diff.clone(), json!({}));
     for (i, (x, row, shift)) in press.iter().enumerate() {
         if i + 1 == press.len() {
             pane.right_press(*x, row_y(*row));
@@ -1206,7 +1209,7 @@ fn menu_pane(cx: &mut TestAppContext, diff: Diff, press: &[(f64, usize, bool)]) 
     let mut props = spec["props"].as_object().cloned().unwrap();
     props.insert("overlay".into(), json!("o1"));
     props.insert("real".into(), json!(true));
-    let menu = DiffPane::mount_diff(cx, side_diff(), 210., 210., &Shared::default(), Value::Object(props));
+    let menu = DiffPane::mount_diff(cx, diff, 210., 210., &Shared::default(), Value::Object(props));
     (pane, menu)
 }
 
@@ -1265,9 +1268,16 @@ fn yuzora_diff_the_patch_is_asked_for_every_hunk_the_selection_touches_and_a_fol
     ]);
     let mut diff = Diff::of(rows).files(&["a", "same", "b"], &["A", "same", "B"]);
     diff.hunks = json!([{"index": 0, "a": [0, 1], "b": [0, 1]}, {"index": 1, "a": [2, 3], "b": [2, 3]}]);
-    let (pane, mut menu) = menu_pane(cx, diff, &[(TEXT_LEFT, 0, false), (TEXT_LEFT, 2, true), (TEXT_LEFT, 1, false)]);
+    let (pane, mut menu) = menu_pane(cx, diff.clone(), &[(TEXT_LEFT, 0, false), (TEXT_LEFT, 2, true), (TEXT_LEFT, 1, false)]);
     menu.click(100., menu_y(2), false);
     assert_eq!(menu.noted("patch"), vec![json!(["patch", [0, 1], "none"])]);
+    pane.close();
+    menu.close();
+
+    // Copy hunk is the hunk under the pointer, not the first one the selection touches.
+    let (pane, mut menu) = menu_pane(cx, diff, &[(TEXT_LEFT, 0, false), (TEXT_LEFT, 2, true), (TEXT_LEFT, 2, false)]);
+    menu.click(100., menu_y(1), false);
+    assert_eq!(menu.clipboard().as_deref(), Some("B"), "the second hunk's new line");
     pane.close();
     menu.close();
 

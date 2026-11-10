@@ -1288,7 +1288,7 @@ exec 'REAL' "$@"
         let old = lines_of(20, |_| None);
         // A line changed, one far below it deleted, one added near that, the last changed.
         let new: String = (1..=20).flat_map(|i| match i {
-            2 => vec!["L2 changed\t".to_owned()],
+            2 => vec!["L2 changed\t".to_owned(), "and one more".to_owned()],
             10 => vec![],
             12 => vec![format!("l12\t"), "added after 12".to_owned()],
             20 => vec!["last".to_owned()],
@@ -1300,8 +1300,11 @@ exec 'REAL' "$@"
         let cs = diff::diff_lines(&ll, &rl, Whitespace::Exact);
         assert_eq!(cs.len(), 4, "{cs:?}");
         let all = d.patch(Whitespace::Exact, &[0, 1, 2, 3]);
-        assert!(all.starts_with("diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,5 +1,5 @@\n"), "{all}");
+        assert!(all.starts_with("diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1,5 +1,6 @@\n"), "{all}");
         assert_eq!(all.matches("\n@@ ").count(), 4 - 1, "the two hunks with two lines between them share one: {all}");
+        assert!(all.contains("\n@@ -7,9 +8,9 @@\n") && all.contains("\n@@ -17,4 +18,4 @@\n"), "the new side counts the line the first hunk added: {all}");
+        let (middle, last) = (d.patch(Whitespace::Exact, &[1, 2]), d.patch(Whitespace::Exact, &[3]));
+        assert!(middle.contains("\n@@ -7,9 +7,9 @@\n") && last.contains("\n@@ -17,4 +17,4 @@\n"), "without it, it counts nothing: {middle} {last}");
         applied(&s, &one, &all);
         assert_eq!(s.read("f.txt"), new, "every hunk in: the new text");
         for picked in [vec![0], vec![1, 2], vec![3], vec![0, 3], vec![2], vec![0, 1, 2]] {
