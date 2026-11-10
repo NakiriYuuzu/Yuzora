@@ -123,6 +123,115 @@ export default class P extends View {
   expect(keys({ "main.js": src })).toEqual(["P.name:focus_handle"]);
 });
 
+// A call written in a way that is one token off the plain one is still a call.
+test("an optional call is a call: this.go?.(cx), cx.notify?.() and a local closure", () => {
+  const head = `${HEAD}
+export default class P extends View {`;
+  const viaThis = `${head}
+  go(cx) { cx.notify(); }
+  render(cx) { this.go?.(cx); return div(); }
+}`;
+  const onCx = `${head}
+  render(cx) { cx.notify?.(); return div(); }
+}`;
+  const local = `${head}
+  render(cx) { const f = (cx) => cx.notify(); f?.(cx); return div(); }
+}`;
+  expect(keys({ "main.js": viaThis })).toEqual(["P.go:cx.notify"]);
+  expect(keys({ "main.js": onCx })).toEqual(["P.render:cx.notify"]);
+  expect(keys({ "main.js": local })).toEqual(["P.render/f:cx.notify"]);
+});
+
+test("reading a getter runs it", () => {
+  const src = `${HEAD}
+import { setShared } from "herdr";
+export default class P extends View {
+  get pick() { setShared("k", 1); return 1; }
+  set pick(v) { this.v = v; }
+  render(cx) { const n = this.pick; return div().child(String(n)); }
+}`;
+  expect(keys({ "main.js": src })).toEqual(["P.pick:setShared"]);
+});
+
+// What this reader does not follow must not read as "nothing": it is reported, with its place.
+const UNFOLLOWED: [string, string, string, number][] = [
+  ["bind", `const go = this.go.bind(this); go(cx);`, ".bind()", 3],
+  ["call", `const { go } = this; go.call(this, cx);`, ".call()", 3],
+  ["apply", `this.go.apply(this, [cx]);`, ".apply()", 3],
+  ["an alias of this", `const self = this; self.go(cx);`, "this as a value", 3],
+  ["destructuring this", `const { go } = this; go(cx);`, "this as a value", 3],
+  ["a computed member", `this["go"](cx);`, "a call of a computed callee", 3],
+  ["a computed callee", `({ a: () => cx.notify() })["a"]();`, "a call of a computed callee", 3],
+  ["a parenthesized callee", `(this.mode ? this.go : this.stay)(cx);`, "a call of a computed callee", 3],
+  ["a closure chosen by a condition", `const f = this.mode ? (cx) => cx.notify() : null; f?.(cx);`, "a call through a variable: f", 3],
+  ["a method that is not the class's", `this.cb(cx);`, "this.cb() is not a method of the class", 3],
+];
+
+for (const [name, body, form, line] of UNFOLLOWED) {
+  test(`${name} in a render is reported, not read as clean`, () => {
+    const src = `${HEAD}
+export default class P extends View {
+  render(cx) { ${body} return div(); }
+  go(cx) { cx.notify(); }
+  stay(cx) { return 1; }
+}`;
+    const report = scan({ "main.js": src });
+    expect(report.unsupported.map((u) => [u.where, u.form, u.line])).toContainEqual(["P.render", form, line]);
+  });
+}
+
+test("a await that is not always reached is reported, and one that always is is not", () => {
+  const sources = (await_: string) => `${HEAD}
+export default class P extends View {
+  render(cx) { this.go(cx, false); return div(); }
+  async go(cx, w) { ${await_} cx.notify(); }
+}`;
+  for (const cond of ["if (w) await job(1);", "if (w) { await job(1); }", "w && await job(1);", "w ? await job(1) : 0;", "while (w) { await job(1); }", "try { if (w) { await job(1); } } catch (e) {}", "switch (w) { case 1: await job(1); }"]) {
+    expect(scan({ "main.js": sources(cond) }).unsupported.map((u) => u.form)).toEqual(["a conditional await"]);
+  }
+  for (const always of ["await job(1);", "const x = await job(1);", "try { await job(1); } catch (e) {}", "for (;;) { await job(1); break; }"]) {
+    expect(scan({ "main.js": sources(always) }).unsupported).toEqual([]);
+    expect(keys({ "main.js": sources(always) })).toEqual([]);
+  }
+});
+
+test("a method that is called apply, call or bind on this, a template with two holes and an imported callback are plain", () => {
+  const src = `${HEAD}
+export default class P extends View {
+  apply(cx, a) { return a; }
+  render(cx) {
+    const text = \`a \${this.name()} b \${this.name()}\`;
+    this.apply(cx, 1);
+    return div().child(text);
+  }
+  name() { return "n"; }
+}`;
+  expect(scan({ "main.js": src }).unsupported).toEqual([]);
+});
+
+// The defect this pane had, put back in each way the scanner is able to see it.
+test("the Database table pane's defect, put back in any way a call can be written, is never read as clean", () => {
+  const real = readFileSync(join(root, "defaults/mods/yuzora-db-table/main.js"), "utf8");
+  expect(real).toContain("this.picked(cx);");
+  const clean = scanMod(modFrom("yuzora-db-table", { "main.js": real }));
+  expect(clean.findings).toEqual([]);
+  expect(clean.unsupported).toEqual([]);
+  const writings = [
+    "this.retarget(cx);",
+    "this.retarget?.(cx);",
+    "const self = this; self.retarget(cx);",
+    "const go = this.retarget.bind(this); go(cx);",
+    "const { retarget } = this; retarget.call(this, cx);",
+    'this["retarget"](cx);',
+    "(this.picked ? this.retarget : this.picked).call(this, cx);",
+    "const f = this.seq ? (cx) => this.retarget(cx) : null; f?.(cx);",
+  ];
+  for (const writing of writings) {
+    const report = scanMod(modFrom("yuzora-db-table", { "main.js": real.replace("this.picked(cx);", writing) }));
+    expect([writing, report.findings.length + report.unsupported.length > 0]).toEqual([writing, true]);
+  }
+});
+
 test("every Yuzora mod file is read whole, and every render is found", () => {
   const mods = yuzoraMods(root);
   expect(mods.length).toBeGreaterThan(40);
