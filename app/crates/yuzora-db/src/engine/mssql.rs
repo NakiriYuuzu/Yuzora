@@ -761,18 +761,27 @@ static NO_TEXT: Option<&str> = None;
 
 impl<'a> Param<'a> {
     /// `dates`: the columns that read a date from text by the session's `DATEFORMAT`.
-    fn of(column: &str, cell: &'a Cell, dates: &HashSet<String>) -> Self {
-        match cell {
+    fn of(column: &str, cell: &'a Cell, dates: &HashSet<String>) -> DbResult<Self> {
+        Ok(match cell {
             Cell::Null => Param::Null,
             Cell::Bool(b) => Param::Bool(*b),
             Cell::Int(i) => Param::Int(*i),
             Cell::Float(f) => Param::Float(*f),
-            Cell::Text(s) => match Some(s).filter(|_| dates.contains(column)).and_then(|s| iso_8601(s)) {
+            // Written year first, the server is not asked to read it: either it is
+            // exactly a date and a time that is sent in the one way every session
+            // reads, or it is not saved at all.
+            Cell::Text(s) if dates.contains(column) && starts_with_year(s) => match iso_8601(s) {
                 Some(iso) => Param::Text(Cow::Owned(iso)),
-                None => Param::Text(Cow::Borrowed(s)),
+                None => {
+                    return Err(DbError::NotEditable(crate::i18n::t(
+                        "edit.bad_date",
+                        &[("column", column.to_owned()), ("text", s.to_string())],
+                    )));
+                }
             },
+            Cell::Text(s) => Param::Text(Cow::Borrowed(s)),
             Cell::Bytes(b) => Param::Bytes(b),
-        }
+        })
     }
 
     fn sql(&self) -> &dyn ToSql {
@@ -787,62 +796,134 @@ impl<'a> Param<'a> {
     }
 }
 
-/// A date, or a date and a time, written the way the grid shows them (year
-/// first: `2024-01-06 10:00:00.5`, also `2024/1/6 10:00`) as `2024-01-06T10:00:00.5`.
-/// `datetime` and `smalldatetime` read the first by the session's `DATEFORMAT`
-/// (a day-first login stores January 6th as June 1st, or refuses the 13th), the
-/// second the same way under every one. Any other shape is the person's own
-/// and is read the way the session reads it.
-fn iso_8601(text: &str) -> Option<String> {
-    let text = text.trim();
-    let (date, time) = match text.split_once([' ', 'T']) {
-        Some((date, time)) => (date, Some(time.trim())),
-        None => (text, None),
-    };
-    fn number(part: &str, digits: std::ops::RangeInclusive<usize>) -> Option<&str> {
-        (digits.contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())).then_some(part)
-    }
-    let mut date = date.split(['-', '/', '.']);
-    let (year, month, day) = (number(date.next()?, 4..=4)?, number(date.next()?, 1..=2)?, number(date.next()?, 1..=2)?);
-    if date.next().is_some() {
-        return None;
-    }
-    let time = match time {
-        None => "00:00:00".to_owned(),
-        Some(time) => {
-            let (clock, fraction) = match time.split_once('.') {
-                Some((clock, fraction)) => (clock, Some(number(fraction, 1..=9)?)),
-                None => (time, None),
-            };
-            let mut clock = clock.split(':');
-            let hours = number(clock.next()?, 1..=2)?;
-            let minutes = number(clock.next()?, 2..=2)?;
-            let seconds = clock.next().map_or(Some("00"), |s| number(s, 2..=2))?;
-            if clock.next().is_some() {
-                return None;
-            }
-            match fraction {
-                Some(fraction) => format!("{hours:0>2}:{minutes}:{seconds}.{fraction}"),
-                None => format!("{hours:0>2}:{minutes}:{seconds}"),
-            }
-        }
-    };
-    Some(format!("{year}-{month:0>2}-{day:0>2}T{time}"))
+/// Whether `text` starts the way a date written year first does: four digits.
+fn starts_with_year(text: &str) -> bool {
+    text.trim_start().as_bytes().get(..4).is_some_and(|year| year.iter().all(u8::is_ascii_digit))
 }
 
-/// The columns of `table` (by name) that are `datetime` or `smalldatetime`:
-/// the two types that read a date from text by the session's `DATEFORMAT`
-/// (`date`, `datetime2` and `datetimeoffset` read the same text the same way
-/// under every one). A type made `FROM datetime` counts too.
-async fn day_order_columns(client: &mut Tds, database: &str, table: &ObjectRef) -> Result<HashSet<String>, TdsError> {
-    let sql = format!(
-        "SELECT c.name FROM {}.sys.columns c WHERE c.object_id = OBJECT_ID(@P1) \
-         AND TYPE_NAME(c.system_type_id) IN (N'datetime', N'smalldatetime')",
-        super::quote_ident(Engine::Mssql, database)
-    );
-    let name = super::qualified_in(Engine::Mssql, Some(database), table);
-    let rows = first_result(client, &sql, &[&name.as_str()]).await?;
-    rows.iter().map(|r| r.try_get::<&str, _>(0).map(|n| n.unwrap_or_default().to_owned())).collect()
+/// A date, or a date and a time, written year first (`2024-01-06 10:00:00.5`,
+/// `2024/1/6 2:30 PM`, `20240106`) as `2024-01-06T10:00:00.5`. `datetime` and
+/// `smalldatetime` read the first by the session's `DATEFORMAT` (a day-first
+/// login stores January 6th as June 1st), the second the same way under every
+/// one. `None` for anything that is not exactly such a date: what a clock
+/// shows only one reading of is converted, the rest is left for the person to
+/// write again.
+fn iso_8601(text: &str) -> Option<String> {
+    let text = text.trim();
+    let (date, rest) = text.split_at(text.find(|c: char| c.is_whitespace() || c == 'T').unwrap_or(text.len()));
+    let (year, month, day) = if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) {
+        (&date[..4], &date[4..6], &date[6..])
+    } else {
+        let separator = date.chars().nth(4).filter(|c| matches!(c, '-' | '/' | '.'))?;
+        let mut parts = date.split(separator);
+        let parts = (parts.next()?, parts.next()?, parts.next()?, parts.next());
+        if parts.3.is_some() {
+            return None;
+        }
+        (parts.0, parts.1, parts.2)
+    };
+    let (year, month, day) = (number(year, 4..=4)?, number(month, 1..=2)?, number(day, 1..=2)?);
+    chrono::NaiveDate::from_ymd_opt(i32::try_from(year).ok()?, month, day)?;
+    let time = match rest {
+        "" => "00:00:00".to_owned(),
+        _ => clock(rest.strip_prefix('T').unwrap_or_else(|| rest.trim_start()))?,
+    };
+    Some(format!("{year:04}-{month:02}-{day:02}T{time}"))
+}
+
+/// `14:30`, `14:30:15.5`, `2:30 PM`, `10AM` as `HH:MM:SS[.f]`. The minutes and
+/// seconds are two digits; a colon before the fraction (SQL Server reads the
+/// digits after it as milliseconds, not as a fraction), a zone and a clock that
+/// is neither 24-hour nor 12-hour with AM or PM are not read.
+fn clock(text: &str) -> Option<String> {
+    let (time, pm) = match text.len().checked_sub(2).and_then(|at| text.get(at..)) {
+        Some(tail) if tail.eq_ignore_ascii_case("am") => (text[..text.len() - 2].trim_end(), Some(false)),
+        Some(tail) if tail.eq_ignore_ascii_case("pm") => (text[..text.len() - 2].trim_end(), Some(true)),
+        _ => (text, None),
+    };
+    let (time, fraction) = match time.split_once('.') {
+        Some((time, fraction)) => (time, Some(fraction)),
+        None => (time, None),
+    };
+    let mut fields = time.split(':');
+    let hour = number(fields.next()?, 1..=2)?;
+    let minute = match fields.next() {
+        Some(m) => Some(number(m, 2..=2)?),
+        None => None,
+    };
+    let second = match fields.next() {
+        Some(s) => Some(number(s, 2..=2)?),
+        None => None,
+    };
+    if fields.next().is_some() || (fraction.is_some() && second.is_none()) {
+        return None;
+    }
+    let fraction = match fraction {
+        Some(f) if number_text(f, 1..=9) => Some(f),
+        Some(_) => return None,
+        None => None,
+    };
+    let hour = match pm {
+        Some(pm) if (1..=12).contains(&hour) => hour % 12 + if pm { 12 } else { 0 },
+        Some(_) => return None,
+        None if hour <= 23 && minute.is_some() => hour,
+        None => return None,
+    };
+    let (minute, second) = (minute.unwrap_or(0), second.unwrap_or(0));
+    if minute > 59 || second > 59 {
+        return None;
+    }
+    Some(match fraction {
+        Some(fraction) => format!("{hour:02}:{minute:02}:{second:02}.{fraction}"),
+        None => format!("{hour:02}:{minute:02}:{second:02}"),
+    })
+}
+
+fn number_text(part: &str, digits: std::ops::RangeInclusive<usize>) -> bool {
+    digits.contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn number(part: &str, digits: std::ops::RangeInclusive<usize>) -> Option<u32> {
+    number_text(part, digits).then(|| part.parse().ok()).flatten()
+}
+
+/// Which of `columns` of `table` are `datetime` or `smalldatetime`: the two
+/// types that read a date from text by the session's `DATEFORMAT` (`date`,
+/// `datetime2` and `datetimeoffset` read the same text the same way under every
+/// one). A type made `FROM datetime` is one. The server describes the columns
+/// of the table as the write names it, so a temporary table, a view or a
+/// synonym are answered the same way.
+async fn date_columns(
+    client: &mut Tds,
+    database: &str,
+    table: &ObjectRef,
+    columns: &[&str],
+) -> Result<HashSet<String>, TdsError> {
+    let list = columns.iter().map(|c| super::quote_ident(Engine::Mssql, c)).collect::<Vec<_>>().join(", ");
+    let sql = format!("SELECT TOP (0) {list} FROM {}", super::qualified_in(Engine::Mssql, Some(database), table));
+    let mut stream = client.simple_query(sql).await?;
+    let dates = stream
+        .columns()
+        .await?
+        .unwrap_or_default()
+        .iter()
+        .filter(|c| matches!(c.column_type(), ColumnType::Datetime | ColumnType::Datetimen | ColumnType::Datetime4))
+        .map(|c| c.name().to_owned())
+        .collect();
+    stream.into_results().await?;
+    Ok(dates)
+}
+
+/// The columns whose text the server could read a day-first date from: the ones
+/// that hold something written year first.
+fn year_first_columns<'a>(edits: &[&'a RowEdit]) -> Vec<&'a str> {
+    let mut columns: Vec<&str> = Vec::new();
+    for (column, cell) in edits.iter().flat_map(|e| e.changes.iter().chain(&e.key)) {
+        if matches!(cell, Cell::Text(s) if starts_with_year(s)) && !columns.contains(&column.as_str()) {
+            columns.push(column);
+        }
+    }
+    columns
 }
 
 /// `UPDATE [s].[t] SET [a] = @P1 WHERE [k] = @P2; SELECT ROWCOUNT_BIG();`:
@@ -875,14 +956,23 @@ async fn write_rows(
     commit: &CommitSent,
 ) -> Result<u64, (DbError, bool)> {
     let fail = |e: TdsError| (query_error(e.clone()), !fatal(&e));
+    // Everything that can be refused is refused before anything is sent.
+    let year_first = year_first_columns(edits);
+    let dates = if year_first.is_empty() {
+        HashSet::new()
+    } else {
+        date_columns(client, database, table, &year_first).await.map_err(fail)?
+    };
+    let all_params: Vec<Vec<Param<'_>>> = edits
+        .iter()
+        .map(|edit| edit.changes.iter().chain(&edit.key).map(|(n, c)| Param::of(n, c, &dates)).collect())
+        .collect::<DbResult<_>>()
+        .map_err(|e| (e, true))?;
     // The transaction commands are batches: run as an RPC (`execute`) the server
     // objects that the transaction count changed.
-    let dates = day_order_columns(client, database, table).await.map_err(fail)?;
     batch(client, "BEGIN TRANSACTION").await.map_err(fail)?;
     let mut written = 0;
-    for edit in edits {
-        let params: Vec<Param<'_>> =
-            edit.changes.iter().chain(&edit.key).map(|(n, c)| Param::of(n, c, &dates)).collect();
+    for (edit, params) in edits.iter().zip(&all_params) {
         let refs: Vec<&dyn ToSql> = params.iter().map(Param::sql).collect();
         let sql = update_sql(database, table, edit);
         let sets = client.query(sql, &refs).await.map_err(fail)?.into_results().await.map_err(fail)?;

@@ -20,6 +20,7 @@
     "failed": "The write-back failed",
     "connection_changed": "The connection's settings changed after this table was read: refresh the table, then edit again",
     "open_transaction": "The SQL tab left a transaction open on this connection: COMMIT or ROLLBACK it there, then write back",
+    "bad_date": "{column}: \"{text}\" can't be saved as a date and time. Write it year first, as 2024-01-31 14:30:00 (the seconds are optional), or with AM or PM after the time",
     "no_info": "Read-only: could not read the table's key ({error})",
     "null_key": "A row's primary key is NULL; it can't be found to update"
   },
