@@ -3190,6 +3190,46 @@ fn yuzora_diff_a_pointer_held_at_the_bottom_edge_of_a_list_with_a_bar_under_it_s
     pane.release(TEXT_LEFT, COPY_HEADER + list - 6.);
     pane.close();
 }
+
+// yuzora(v010-git-diff-fu-r2): the list scrolls with the clock and with nothing else. The macOS window sends the last drag move again
+// every 16 ms while the button is down, so moves of a held pointer in any number, with the clock still, scroll nothing; each tick
+// scrolls a row at the bottom edge, however many moves came between two ticks.
+#[gpui::test]
+fn yuzora_diff_moves_of_a_pointer_held_at_the_bottom_edge_scroll_nothing_the_clock_does(
+    cx: &mut TestAppContext,
+) {
+    let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
+    let bottom = pane.high as f64 - 8.;
+    pane.press(TEXT_LEFT, row_y(5), 1);
+    pane.drag(TEXT_LEFT, row_y(8));
+    for i in 0..60 {
+        pane.drag(TEXT_LEFT, bottom - (i % 2) as f64);
+    }
+    near(
+        scrolled_in_frame(&pane),
+        0.,
+        "60 moves at the edge, the clock still: the list stays",
+    );
+    pane.wait(1, 50);
+    let one = scrolled_in_frame(&pane);
+    assert!(
+        one > 0. && one <= ROW_H + 1.,
+        "one tick at the edge scrolls a row, not more: {one}"
+    );
+    for i in 0..4 {
+        for j in 0..15 {
+            pane.drag(TEXT_LEFT, bottom - ((i + j) % 2) as f64);
+        }
+        pane.wait(1, 50);
+    }
+    near(
+        scrolled_in_frame(&pane),
+        one + 4. * ROW_H,
+        "four ticks with fifteen moves between each: a row a tick",
+    );
+    pane.release(TEXT_LEFT, bottom);
+    pane.close();
+}
 // yuzora(v010-git-diff-fu): a drag while the rows are being ranked is not cut short by it, and does not stop it: the selection made
 // is there when the ranking is done, and the ranking goes on to its end whether the button is up or down (a `hold` prop stops
 // it after its first slice till F12).
