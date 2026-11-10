@@ -278,7 +278,13 @@ async fn open_lease(connection: &str, database: Option<&str>, owner: &str, usage
                 }
             });
         }
-        match async { Conn::connect(&spec?).await }.await {
+        match async {
+            let mut spec = spec?;
+            spec.for_table = is_table_owner(owner);
+            Conn::connect(&spec).await
+        }
+        .await
+        {
             Ok(conn) => {
                 let version = conn.server_version();
                 *guard = Some(conn);
@@ -308,8 +314,8 @@ async fn open_lease(connection: &str, database: Option<&str>, owner: &str, usage
 /// jobs and results forgotten, its connections closed.
 pub fn release_owner(owner: &str) {
     supersede(owner);
-    let count = count_owner(owner);
-    pool().retain(|(_, _, o), _| o != owner && *o != count);
+    let (count, table) = (count_owner(owner), table_owner(owner));
+    pool().retain(|(_, _, o), _| o != owner && *o != count && *o != table);
     results::release_owner(owner);
 }
 
@@ -442,7 +448,7 @@ thread_local! {
 
 /// While the guard lives, `job`'s Stop reaches what `stop` belongs to: the
 /// statement the job runs on the connection it holds. Take it once that lease
-/// is held and let it go before the lease is: a pane's connection also carries
+/// is held and let it go before the lease is: a table's connection also carries
 /// its write-back, which only its own Stop may end.
 struct Serving(JobId);
 
@@ -742,12 +748,10 @@ pub fn open_table(
         };
         let (engine, read_only) = (opened_with.engine, opened_with.read_only);
         let info = describe(&connection, database.as_deref(), &table).await;
-        let mut l = match lease(&connection, database.as_deref(), &owner).await {
+        let mut l = match lease(&connection, database.as_deref(), &table_owner(&owner)).await {
             Ok(l) => l,
             Err(e) => return finish_job(id, Err(e), &mut JobSink::new(id, &owner, "")),
         };
-        // In the database the pane's connection was opened in, whatever its
-        // SQL tab has `USE`d since (SQL Server).
         let home = l.conn().database().map(str::to_owned);
         // One row past the cap, so a capped table reads as truncated.
         let limit = max_rows() as u64 + 1;
@@ -755,8 +759,8 @@ pub fn open_table(
         let sql = engine::select_sql(engine, home.as_deref(), &table, order, limit);
         let mut sink = JobSink::for_table(id, &owner, &sql);
         let reading = serving(id, Stop::Statement(l.conn().canceller()));
-        let outcome = l.conn().execute(&sql, &mut sink).await;
-        // The pane's connection is free from here: the count and any write-back
+        let outcome = l.conn().execute(&format!("{}{sql}", engine::table_prelude(engine)), &mut sink).await;
+        // The table's connection is free from here: the count and any write-back
         // do not wait for each other, and the job's Stop is no longer for it.
         drop(reading);
         drop(l);
@@ -782,7 +786,7 @@ pub fn open_table(
                     connection: connection.clone(),
                     config: opened_with.clone(),
                     database: database.clone(),
-                    owner: owner.clone(),
+                    owner: table_owner(&owner),
                     table: table.clone(),
                     key,
                     read_only: info
@@ -823,7 +827,7 @@ pub fn open_table(
 /// `count(*)` of `table`. It has a connection of its own (leased under
 /// [`count_owner`], closed again right after), so a slow count holds nothing
 /// up. Where one more connection is not to be had (a limit on the login, a
-/// network blip) the pane's own does it, when work has no use for it: the
+/// network blip) the table's own does it, when work has no use for it: the
 /// total is worth that, and the connection is not failed for it.
 async fn count_rows(
     connection: &str,
@@ -840,14 +844,15 @@ async fn count_rows(
             pool().remove(&(connection.to_owned(), database.map(str::to_owned), counting));
             counted
         }
-        Err(_) => count_between(connection, database, owner, engine, table, job).await,
+        Err(_) => count_between(connection, database, &table_owner(owner), engine, table, job).await,
     }
 }
 
-/// Counts on the pane's own connection, in the time work leaves it. A save, a
-/// query or a read that asks for the connection meanwhile has it at once: the
-/// count is stopped (the person is waiting, the count only informs) and begins
-/// again after them.
+/// Counts on the table's own connection, in the time work leaves it. A save or
+/// a read that asks for the connection meanwhile has it at once: the count is
+/// stopped (the person is waiting, the count only informs) and begins again
+/// after them. A SQL tab's query is not that: it runs on the connection of its
+/// own.
 async fn count_between(
     connection: &str,
     database: Option<&str>,
@@ -991,6 +996,21 @@ pub fn count_owner(owner: &str) -> String {
     format!("{owner}:count")
 }
 
+/// The owner the connection that reads a table and writes it back is leased
+/// under. A pane's SQL tab runs the person's own scripts on `owner`'s
+/// connection, and whatever they leave there (a setting, a transaction, a
+/// temporary table) stays there: the table's rows are read and written by a
+/// connection that only this crate's own statements have run on.
+pub fn table_owner(owner: &str) -> String {
+    format!("{owner}{TABLE}")
+}
+
+const TABLE: &str = ":table";
+
+fn is_table_owner(owner: &str) -> bool {
+    owner.ends_with(TABLE)
+}
+
 /// Writes a result's pending edits in one transaction; on success they become
 /// its values.
 pub async fn write_back(result: ResultId) -> DbResult<u64> {
@@ -1129,6 +1149,29 @@ mod tests {
         supersede("stop-under-lock");
         assert_eq!(held, Some(true), "the stop was pressed without the jobs lock (None: not pressed at all)");
         assert!(count.0.subscribe().borrow().to_owned(), "the stop reached the count");
+    }
+
+    /// A count that borrowed the table's connection steps aside for work that
+    /// asks for that connection, and a SQL tab's query is not that: it asks for
+    /// the connection of its own.
+    #[test]
+    fn a_count_on_the_tables_connection_steps_aside_for_the_tables_work_and_not_for_the_sql_tabs() {
+        let key = |owner: String| ("stand-down-test".to_owned(), None, owner);
+        let tab = live(&key("stand-down-pane".to_owned()));
+        let table = live(&key(table_owner("stand-down-pane")));
+        let stand_down = StandDown::new();
+        let counting = table.borrow(stand_down.clone()).expect("nothing waits for the table's connection");
+        let tab_work = tab.want();
+        assert!(
+            !*stand_down.0.subscribe().borrow(),
+            "a SQL tab's query told the count on the table's connection to step aside"
+        );
+        assert!(!counting.stepped_aside());
+        let table_work = table.want();
+        assert!(*stand_down.0.subscribe().borrow(), "work for the table's connection did not");
+        assert!(counting.stepped_aside());
+        drop((tab_work, table_work, counting));
+        pool().retain(|(connection, _, _), _| connection != "stand-down-test");
     }
 
     #[test]

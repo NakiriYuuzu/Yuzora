@@ -5,6 +5,8 @@ use std::cmp::Ordering;
 
 use serde::Serialize;
 
+use crate::config::Engine;
+
 /// One value as the grid holds it. PostgreSQL rows arrive in the server's
 /// text format, so their cells are `Text` and the column says whether it is
 /// numeric; SQL Server and SQLite keep their native kinds.
@@ -277,6 +279,32 @@ pub fn is_numeric_type(type_name: &str) -> bool {
     )
 }
 
+/// Whether clearing a cell of a column of this type means NULL. An empty string is a value of
+/// the character types only; given to any other type the server either refuses it
+/// (PostgreSQL) or turns it into 0 or 1900-01-01 without a word (SQL Server), so a cleared cell
+/// of these is the NULL it says it is. The names are the ones the drivers report
+/// (`Column::type_name`); a type not named here, such as a domain over text or an array, keeps
+/// the empty string and the server's answer to it. SQLite has no such conversion: an empty
+/// string is as good a value in a column of any type.
+pub fn clears_to_null(engine: Engine, type_name: &str) -> bool {
+    let t = type_name.trim().to_ascii_lowercase();
+    let base = t.split('(').next().unwrap_or("").trim();
+    match engine {
+        Engine::Mssql => matches!(
+            base,
+            "bit" | "tinyint" | "smallint" | "int" | "bigint" | "real" | "float" | "decimal" | "money" | "smallmoney"
+                | "date" | "time" | "datetime" | "datetime2" | "smalldatetime" | "datetimeoffset" | "uniqueidentifier"
+        ),
+        Engine::Postgres => matches!(
+            base,
+            "int2" | "int4" | "int8" | "float4" | "float8" | "numeric" | "money" | "oid" | "bool" | "date" | "time"
+                | "timetz" | "timestamp" | "timestamptz" | "interval" | "uuid" | "inet" | "cidr" | "macaddr" | "macaddr8"
+                | "json" | "jsonb"
+        ),
+        Engine::Sqlite => false,
+    }
+}
+
 /// A schema-qualified object.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
 pub struct ObjectRef {
@@ -461,6 +489,25 @@ mod tests {
         let mut v = vec![Cell::text("3"), Cell::text("NaN"), Cell::text("1"), Cell::Null, Cell::text("2")];
         v.sort_by(|a, b| a.compare(b, true));
         assert_eq!(v, vec![Cell::Null, Cell::text("1"), Cell::text("2"), Cell::text("3"), Cell::text("NaN")]);
+    }
+
+    #[test]
+    fn only_a_type_that_has_no_empty_value_clears_to_null() {
+        for t in ["bit", "tinyint", "int", "bigint", "float", "real", "decimal(10,2)", "money", "smallmoney", "date", "time", "datetime", "datetime2", "smalldatetime", "datetimeoffset", "uniqueidentifier"] {
+            assert!(clears_to_null(Engine::Mssql, t), "{t}");
+        }
+        for t in ["varchar", "nvarchar", "char", "nchar", "text", "ntext", "xml", "varbinary", "binary", "image", "sql_variant", "udt", "null"] {
+            assert!(!clears_to_null(Engine::Mssql, t), "{t}");
+        }
+        for t in ["int2", "int4", "int8", "float4", "float8", "numeric", "money", "bool", "date", "time", "timetz", "timestamp", "timestamptz", "interval", "uuid", "inet", "cidr", "macaddr", "json", "jsonb"] {
+            assert!(clears_to_null(Engine::Postgres, t), "{t}");
+        }
+        for t in ["text", "varchar", "bpchar", "name", "char", "xml", "bytea", "bit", "varbit", "int4[]", "mood", "citext", ""] {
+            assert!(!clears_to_null(Engine::Postgres, t), "{t}");
+        }
+        for t in ["INTEGER", "TEXT", "DATETIME", "REAL", ""] {
+            assert!(!clears_to_null(Engine::Sqlite, t), "{t}");
+        }
     }
 
     #[test]
