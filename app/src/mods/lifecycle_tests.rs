@@ -413,7 +413,8 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
 // list: its cells report their widths (`cell`), its texts their width and what the pointer is
 // over (`text` and `over`: the text's first character, and the pointer's distance from where the
 // text starts), and a press picks the row it landed on, as the list's own click would, in the
-// body's text size. A `pane` prop puts the diff in a box that wide, so the pointer can leave it.
+// body's text size (a `real` prop leaves the clicks to the list). A `pane` prop puts the diff in a
+// box that wide, so the pointer can leave it.
 const DIFF_PROBE: &str = r#"
 import { note } from "fixture";
 export default class Probed extends GitDiff {
@@ -425,12 +426,16 @@ export default class Probed extends GitDiff {
     note("pick", side, index);
     super.toggleLine(h, side, index, cx);
   }
+  shade(...rest) {
+    const el = super.shade(...rest);
+    return this.probing ? el.id("probe-shade").on_size_change((s) => note("shade", s.width, s.height)) : el;
+  }
   segments(segs, text, ...rest) {
     const el = super.segments(segs, text, ...rest);
     return this.probing ? el.id(`probe-text-${text[0]}`).on_size_change((s) => note("text", text[0], s.width)).on_mouse_move((e) => note("over", text[0], e.local_position.x)) : el;
   }
   render(cx) {
-    let root = super.render(cx).on_mouse_down("left", (e, cx) => { if (e.position.y >= 28) this.clickRow(Math.floor((e.position.y - 28) / 20), cx); });
+    let root = props().real ? super.render(cx) : super.render(cx).on_mouse_down("left", (e, cx) => { if (e.position.y >= 28) this.clickRow(Math.floor((e.position.y - 28) / 20), cx); });
     const v = this.view, pane = props().pane;
     if (v && v.rows.length && this.layout !== "unified") {
       this.probing = true;
@@ -438,10 +443,34 @@ export default class Probed extends GitDiff {
       this.probing = false;
       root = root.child(div().absolute().top(300).left(0).w_full().text_size(11.5).child(row));
     }
+    if (props().real) root = root.child(div().id("t-unified").absolute().top(520).left(0).w(60).h(20).on_click((_e, cx) => { this.layout = "unified"; this.relayout(cx); }));
     return pane ? div().w(pane).h_full().child(root) : root;
   }
 }
 "#;
+
+/// What the pane is given: rows and hunks as the Rust side makes them, and the lines of both files.
+struct Diff {
+    rows: Value,
+    hunks: Value,
+    left: Vec<String>,
+    right: Vec<String>,
+    stageable: bool,
+}
+
+impl Diff {
+    /// Rows only: a hunk when any row has one, the lines not needed.
+    fn of(rows: Value) -> Self {
+        let hunks = usize::from(rows.as_array().is_some_and(|r| r.iter().any(|r| r.get("h").is_some())));
+        Diff { rows, hunks: json!(vec![json!({}); hunks]), left: Vec::new(), right: Vec::new(), stageable: true }
+    }
+
+    fn files(mut self, left: &[&str], right: &[&str]) -> Self {
+        self.left = left.iter().map(|l| l.to_string()).collect();
+        self.right = right.iter().map(|l| l.to_string()).collect();
+        self
+    }
+}
 
 struct DiffPane {
     visual: VisualTestContext,
@@ -459,16 +488,22 @@ impl DiffPane {
 
     /// The same in a window `wide` wide (more than `pane`: room to leave it), opened with `props` besides.
     fn mount_with(cx: &mut TestAppContext, rows: Value, pane: f32, wide: f32, shared: &Shared, props: Value) -> Self {
+        Self::mount_diff(cx, Diff::of(rows), pane, wide, shared, props)
+    }
+
+    /// A whole `diff`: besides its rows, the lines of both files that `diffText` hands back.
+    fn mount_diff(cx: &mut TestAppContext, diff: Diff, pane: f32, wide: f32, shared: &Shared, props: Value) -> Self {
         use gpui::{px, size};
+        let Diff { rows, hunks, left, right, stageable } = diff;
+        cx.update(gpui_shell::init);
         let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
         let class = "export default class GitDiff extends View {";
         assert_eq!(source.matches(class).count(), 1, "the diff mod no longer has: {class}");
         source = source.replacen(class, "class GitDiff extends View {", 1) + DIFF_PROBE;
         let fixture = Fixture::new(&source);
         let notes = Rc::new(RefCell::new(Vec::<Value>::new()));
-        let hunks = usize::from(rows.as_array().is_some_and(|r| r.iter().any(|r| r.get("h").is_some())));
         let theme = json!({"background": "#101010", "foreground": "#e0e0e0", "border": "#303030", "raised": "#202020", "dim": "#808080", "muted": "#a0a0a0", "accent": "#4080ff", "selected": "#304050", "hover": "#282828", "ansi1": "#f08a8a", "ansi2": "#86d17a"});
-        let view = json!({"id": "d1", "rows": rows, "hunks": vec![json!({}); hunks], "stageable": true, "add": 3, "del": 0, "leftExists": true, "rightExists": true});
+        let view = json!({"id": "d1", "rows": rows, "hunks": hunks, "stageable": stageable, "add": 3, "del": 0, "leftExists": true, "rightExists": true});
         let mut herdr = HostModule::new("herdr");
         let mut opened = json!({"cwd": "/r", "on": null, "path": "wide-new.ts", "mode": "unstaged", "at": 1});
         if wide > pane {
@@ -478,9 +513,25 @@ impl DiffPane {
         for (name, value) in [("theme", theme), ("props", opened), ("settings", json!({}))] {
             herdr = herdr.function(name, move |_| Ok(to_host(&value)));
         }
-        for name in ["run", "panes", "focused", "closeOverlay"] {
+        for name in ["run", "panes", "focused"] {
             herdr = herdr.function(name, |_| Ok(HostValue::Null));
         }
+        let told = notes.clone();
+        herdr = herdr.function("notify", move |a| {
+            let n = from_host(a.value(0)?);
+            told.borrow_mut().push(json!(["toast", n["title"], n["level"]]));
+            Ok(HostValue::Null)
+        });
+        let told = notes.clone();
+        herdr = herdr.function("openOverlay", move |a| {
+            told.borrow_mut().push(json!(["overlay", from_host(a.value(0)?)]));
+            Ok(HostValue::Str("o1".into()))
+        });
+        let told = notes.clone();
+        herdr = herdr.function("closeOverlay", move |a| {
+            told.borrow_mut().push(json!(["closed", a.string(0)?]));
+            Ok(HostValue::Null)
+        });
         let store = shared.clone();
         herdr = herdr.function("shared", move |a| Ok(store.borrow().get(a.string(0)?).map(to_host).unwrap_or(HostValue::Null)));
         let store = shared.clone();
@@ -496,6 +547,24 @@ impl DiffPane {
             git = git.function(name, |_| Ok(HostValue::Null));
         }
         git = git.async_function("changes", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
+        // As the Rust side answers: the lines of one side named by `[side, start, end)` runs, joined by `\n`.
+        let told = notes.clone();
+        git = git.function("diffText", move |a| {
+            let runs = from_host(a.value(1)?);
+            told.borrow_mut().push(json!(["text", runs]));
+            let mut lines: Vec<&str> = Vec::new();
+            for run in runs.as_array().expect("runs are an array") {
+                let (side, from, to) = (run[0].as_str().unwrap(), run[1].as_u64().unwrap() as usize, run[2].as_u64().unwrap() as usize);
+                lines.extend(if side == "l" { &left } else { &right }[from..to].iter().map(String::as_str));
+            }
+            Ok(HostValue::Str(lines.join("\n")))
+        });
+        let told = notes.clone();
+        git = git.async_function("diffPatch", move |a| {
+            let (hunks, whitespace) = (from_host(a.value(1)?), a.string(2)?.to_owned());
+            told.borrow_mut().push(json!(["patch", hunks, whitespace]));
+            Ok(std::future::ready(Ok::<_, gpui_shell::HostError>(HostValue::Str(format!("patch of {hunks} {whitespace}")))))
+        });
         let core = HostModule::new("yuzora:core")
             .function("t", |a| Ok(a.string(0)?.into()))
             .function("tokens", |_| Ok(to_host(&json!({"diff": {"added": "#86d17a", "removed": "#f08a8a", "added_bg": "#103010", "removed_bg": "#301010"}}))));
@@ -562,6 +631,34 @@ impl DiffPane {
     fn hover(&mut self, x: f64, y: f64) {
         self.visual.simulate_mouse_move(Self::at(x, y), None, gpui::Modifiers::none());
         self.settle();
+    }
+
+    /// A click, down and up where the list sees it (`shift`: with Shift held).
+    fn click(&mut self, x: f64, y: f64, shift: bool) {
+        let modifiers = gpui::Modifiers { shift, ..gpui::Modifiers::none() };
+        self.visual.simulate_event(gpui::MouseDownEvent { position: Self::at(x, y), modifiers, button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+        self.visual.simulate_event(gpui::MouseUpEvent { position: Self::at(x, y), modifiers, button: gpui::MouseButton::Left, click_count: 1 });
+        self.settle();
+    }
+
+    fn right_press(&mut self, x: f64, y: f64) {
+        self.visual.simulate_event(gpui::MouseDownEvent { position: Self::at(x, y), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Right, click_count: 1, first_mouse: false });
+        self.settle();
+    }
+
+    fn keys(&mut self, keystrokes: &str) {
+        self.visual.simulate_keystrokes(keystrokes);
+        self.settle();
+    }
+
+    /// The text on the clipboard of this test window (a platform clipboard of its own, not the system's).
+    fn clipboard(&self) -> Option<String> {
+        self.visual.read_from_clipboard().and_then(|item| item.text())
+    }
+
+    /// The notes of one kind, in order.
+    fn noted(&self, kind: &str) -> Vec<Value> {
+        self.notes.borrow().iter().filter(|n| n[0] == kind).cloned().collect()
     }
 
     /// A wheel or swipe of `dx`, `dy` pixels with the pointer at `x`, `y`.
@@ -890,6 +987,287 @@ fn yuzora_diff_unified_has_no_divider_and_picks_by_its_numbers(cx: &mut TestAppC
     pane.release(700., 100.);
     pane.press(600., 100., 2);
     assert!(shared.borrow().is_empty(), "nothing to drag or reset: {:?}", shared.borrow());
+    pane.close();
+}
+
+// yuzora(v010): copying from the Git diff. The pane is given the lines of both files by `diffText`,
+// as the Rust side answers, so what is on the clipboard is the file's own text: its tabs, its
+// trailing spaces, its wide characters, and none of the numbers or +/- the pane draws. A click
+// goes through the list as a person's does (`real`).
+const COPY_HEADER: f64 = 28.;
+const ROW_H: f64 = 20.;
+
+/// The middle of row `i`.
+fn row_y(i: usize) -> f64 {
+    COPY_HEADER + ROW_H * i as f64 + ROW_H / 2.
+}
+
+const TEXT_LEFT: f64 = 100.;
+/// In a 1200px pane the right side's text starts at 599.5 + 1 + 44 + 6.
+const TEXT_RIGHT: f64 = 680.;
+
+fn copy_pane(cx: &mut TestAppContext, diff: Diff, props: Value) -> DiffPane {
+    let mut props = props.as_object().cloned().unwrap_or_default();
+    props.insert("real".into(), json!(true));
+    DiffPane::mount_diff(cx, diff, 1200., 1200., &Shared::default(), Value::Object(props))
+}
+
+/// Side by side: an unchanged line, a changed one (tab, then wide characters), a deleted one with
+/// trailing spaces, three unchanged ones folded, and the last line.
+fn side_diff() -> Diff {
+    let rows = json!([
+        {"k": "=", "l": 1, "r": 1, "t": "fn main() {"},
+        {"k": "~", "h": 0, "l": 2, "li": 1, "lt": "    let a = 1;", "r": 2, "ri": 1, "rt": "    let a = 10; // \u{6F22}\u{5B57}"},
+        {"k": "~", "h": 0, "l": 3, "li": 2, "lt": "    let b = 2;  "},
+        {"k": "fold", "n": 3, "l": 4, "r": 3},
+        {"k": "=", "l": 7, "r": 6, "t": "}"},
+    ]);
+    let mut diff = Diff::of(rows).files(
+        &["fn main() {", "\tlet a = 1;", "    let b = 2;  ", "// 1", "// 2", "// 3", "}"],
+        &["fn main() {", "\tlet a = 10; // \u{6F22}\u{5B57}", "// 1", "// 2", "// 3", "}"],
+    );
+    diff.hunks = json!([{"index": 0, "a": [1, 3], "b": [1, 2]}]);
+    diff
+}
+
+/// Unified: an unchanged line, two deleted, one added, three unchanged ones folded, the last line.
+fn unified_diff() -> Diff {
+    let rows = json!([
+        {"k": "=", "l": 1, "r": 1, "t": "keep"},
+        {"k": "-", "h": 0, "l": 2, "li": 1, "t": "    old one"},
+        {"k": "-", "h": 0, "l": 3, "li": 2, "t": "old two"},
+        {"k": "+", "h": 0, "r": 2, "ri": 1, "t": "new one"},
+        {"k": "fold", "n": 3, "l": 4, "r": 3},
+        {"k": "=", "l": 7, "r": 6, "t": "tail"},
+    ]);
+    let mut diff = Diff::of(rows).files(
+        &["keep", "\told one", "old two", "f1", "f2", "f3", "tail"],
+        &["keep", "new one", "f1", "f2", "f3", "tail"],
+    );
+    diff.hunks = json!([{"index": 0, "a": [1, 3], "b": [1, 2]}]);
+    diff
+}
+
+#[gpui::test]
+fn yuzora_diff_cmd_c_copies_the_lines_selected_as_the_file_has_them(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, side_diff(), json!({}));
+    assert_eq!(pane.clipboard(), None, "a test window's clipboard starts empty");
+    pane.click(TEXT_LEFT, row_y(1), false);
+    pane.click(TEXT_LEFT, row_y(2), true);
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("\tlet a = 1;\n    let b = 2;  "), "the left side's lines 2 and 3: tab and trailing spaces kept, no numbers");
+    assert_eq!(pane.noted("toast").len(), 1, "a toast says so: {:?}", pane.noted("toast"));
+    pane.keys("ctrl-c");
+    assert_eq!(pane.noted("toast").len(), 2, "Ctrl+C copies too (Windows and Linux)");
+    pane.close();
+}
+
+// yuzora(v010): a selection belongs to the side it began on: the other side's lines are not
+// copied, a row that has no line on that side adds none, and a fold adds nothing.
+#[gpui::test]
+fn yuzora_diff_a_selection_copies_only_the_side_it_began_on(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, side_diff(), json!({}));
+    pane.click(TEXT_RIGHT, row_y(1), false);
+    pane.click(TEXT_LEFT, row_y(4), true);
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("\tlet a = 10; // \u{6F22}\u{5B57}\n}"), "the right side from row 2 to the last: the deleted row has no right line, the folded lines are left out");
+    assert_eq!(pane.noted("text").last().unwrap()[1], json!([["r", 1, 2], ["r", 5, 6]]));
+    pane.click(TEXT_LEFT, row_y(0), false);
+    pane.click(TEXT_RIGHT, row_y(2), true);
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("fn main() {\n\tlet a = 1;\n    let b = 2;  "), "begun on the left: the left side down to the row shift-clicked on the right");
+    pane.close();
+}
+
+#[gpui::test]
+fn yuzora_diff_unified_copies_the_lines_as_they_are_shown(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, unified_diff(), json!({"layout": "unified"}));
+    pane.click(300., row_y(0), false);
+    pane.click(300., row_y(5), true);
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("keep\n\told one\nold two\nnew one\ntail"), "deleted lines, then added ones, from their own side; the fold left out");
+    pane.close();
+}
+
+// yuzora(v010): a selection is where the rows are, not where the list is scrolled: scrolled away
+// from (the lines are not on screen) and back, it copies the same lines.
+#[gpui::test]
+fn yuzora_diff_a_selection_stays_when_scrolled_away_and_back(cx: &mut TestAppContext) {
+    let rows: Vec<Value> = (0..200).map(|i| json!({"k": "=", "l": i + 1, "r": i + 1, "t": format!("line {i}")})).collect();
+    let lines: Vec<String> = (0..200).map(|i| format!("line {i}")).collect();
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let mut pane = copy_pane(cx, Diff::of(json!(rows)).files(&refs, &refs), json!({}));
+    pane.click(TEXT_LEFT, row_y(3), false);
+    pane.click(TEXT_LEFT, row_y(5), true);
+    pane.wheel(300., 300., 0., -2500.);
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("line 3\nline 4\nline 5"), "copied from far below, lines that are not on screen included");
+    pane.wheel(300., 300., 0., 2500.);
+    pane.keys("cmd-c");
+    assert_eq!(pane.noted("toast").len(), 2);
+    pane.close();
+}
+
+// yuzora(v010): the selected rows are marked on the side they were selected on (the probe row is
+// row 1: a mark appears when it enters the selection and goes when the selection moves away).
+#[gpui::test]
+fn yuzora_diff_the_selected_rows_are_marked_on_their_side(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, side_diff(), json!({}));
+    let marks = |pane: &DiffPane| pane.noted("shade").len();
+    assert_eq!(marks(&pane), 0, "nothing selected, nothing marked");
+    pane.click(TEXT_LEFT, row_y(0), false);
+    assert_eq!(marks(&pane), 1, "row 1 selected on the left");
+    pane.click(TEXT_RIGHT, row_y(0), false);
+    assert_eq!(marks(&pane), 2, "the right side is marked, the left one is not (its mark went away)");
+    pane.click(TEXT_LEFT, row_y(0), false);
+    assert_eq!(marks(&pane), 3, "and the left one comes back as a new mark");
+    pane.click(TEXT_LEFT, row_y(2), false);
+    pane.click(TEXT_LEFT, row_y(0), false);
+    assert_eq!(marks(&pane), 4, "a mark on row 1 appeared once more only after the selection left it");
+    pane.close();
+}
+
+#[gpui::test]
+fn yuzora_diff_cmd_c_with_nothing_selected_copies_nothing(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, side_diff(), json!({}));
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard(), None, "the key does nothing here");
+    assert!(pane.noted("toast").is_empty(), "and says nothing");
+    pane.click(TEXT_LEFT, row_y(1), false);
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("\tlet a = 1;"), "with a row selected it copies");
+    pane.close();
+}
+
+// yuzora(v010): a press on the divider drags the divider and selects nothing; a press on the
+// numbers of a diff that can stage picks the line (nothing selected); where nothing can be
+// staged the numbers select the row.
+#[gpui::test]
+fn yuzora_diff_the_divider_and_the_pick_numbers_do_not_select(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, side_diff(), json!({}));
+    let divider = 599.5 + 0.5;
+    pane.press(divider, row_y(1), 1);
+    pane.drag(divider + 40., row_y(1));
+    pane.release(divider + 40., row_y(1));
+    pane.click(10., row_y(1), false);
+    assert_eq!(pane.noted("pick").len(), 1, "the numbers pick the line");
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard(), None, "the drag and the pick selected nothing");
+    pane.close();
+    let mut diff = side_diff();
+    diff.stageable = false;
+    let mut pane = copy_pane(cx, diff, json!({}));
+    pane.click(10., row_y(1), false);
+    assert!(pane.noted("pick").is_empty(), "nothing to pick in a diff that cannot stage");
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("\tlet a = 1;"), "the numbers select the row there");
+    pane.close();
+}
+
+// yuzora(v010): a selection names rows of the diff as it was: another layout and another file
+// leave none. (`t-unified` is the probe's own control for what the layout pill does.)
+#[gpui::test]
+fn yuzora_diff_the_selection_goes_with_the_rows_it_named(cx: &mut TestAppContext) {
+    let shared = Shared::default();
+    let mut pane = DiffPane::mount_diff(cx, side_diff(), 1200., 1200., &shared, json!({"real": true}));
+    pane.click(TEXT_LEFT, row_y(1), false);
+    pane.click(10., 530., false);
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard(), None, "another layout: the rows are others");
+    pane.close();
+
+    let mut pane = DiffPane::mount_diff(cx, side_diff(), 1200., 1200., &shared, json!({"real": true}));
+    pane.click(TEXT_LEFT, row_y(1), false);
+    shared.borrow_mut().insert("yuzora.git.diff".into(), json!({"cwd": "/r", "on": null, "path": "other.ts", "mode": "unstaged", "at": 99}));
+    pane.settle();
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard(), None, "another file");
+    pane.close();
+}
+
+/// The menu a right-click on `(x, row)` asked for, as a popup of the diff opened with what it was given.
+fn menu_pane(cx: &mut TestAppContext, diff: Diff, press: &[(f64, usize, bool)]) -> (DiffPane, DiffPane) {
+    let mut pane = copy_pane(cx, diff, json!({}));
+    for (i, (x, row, shift)) in press.iter().enumerate() {
+        if i + 1 == press.len() {
+            pane.right_press(*x, row_y(*row));
+        } else {
+            pane.click(*x, row_y(*row), *shift);
+        }
+    }
+    let spec = pane.noted("overlay").last().unwrap_or_else(|| panic!("no menu opened: {:?}", pane.notes.borrow()))[1].clone();
+    assert_eq!((spec["kind"].as_str(), spec["at"].as_str(), spec["mod"].as_str()), (Some("popup"), Some("pointer"), Some("yuzora-git-diff")));
+    let mut props = spec["props"].as_object().cloned().unwrap();
+    props.insert("overlay".into(), json!("o1"));
+    props.insert("real".into(), json!(true));
+    let menu = DiffPane::mount_diff(cx, side_diff(), 210., 210., &Shared::default(), Value::Object(props));
+    (pane, menu)
+}
+
+/// Where the menu's rows are: Copy, Copy hunk, Copy as patch.
+fn menu_y(item: usize) -> f64 {
+    4. + 28. * item as f64 + 14.
+}
+
+// yuzora(v010): a right-click on a row selects it (when it is not in the selection already) and
+// opens a menu of this mod's own: Copy the selection, Copy the hunk's new lines, Copy the
+// selection's hunks as a patch. Each puts its text on the clipboard once, says so, and closes.
+#[gpui::test]
+fn yuzora_diff_the_menu_copies_the_selection_the_hunk_and_a_patch(cx: &mut TestAppContext) {
+    let (pane, mut menu) = menu_pane(cx, side_diff(), &[(TEXT_LEFT, 2, false)]);
+    menu.click(100., menu_y(0), false);
+    assert_eq!(menu.clipboard().as_deref(), Some("    let b = 2;  "), "Copy: the row right-clicked, as the file has it");
+    assert_eq!(menu.noted("closed"), vec![json!(["closed", "o1"])], "and the menu closes");
+    menu.click(100., menu_y(1), false);
+    assert_eq!(menu.clipboard().as_deref(), Some("\tlet a = 10; // \u{6F22}\u{5B57}"), "Copy hunk: the hunk's lines as they are after the change");
+    menu.click(100., menu_y(2), false);
+    assert_eq!(menu.noted("patch"), vec![json!(["patch", [0], "none"])], "Copy as patch asks for the hunk the selection is in");
+    assert_eq!(menu.clipboard().as_deref(), Some("patch of [0] none"));
+    assert_eq!(menu.noted("toast").len(), 3, "one toast each: {:?}", menu.noted("toast"));
+    menu.close();
+    pane.close();
+}
+
+#[gpui::test]
+fn yuzora_diff_a_right_click_keeps_the_selection_it_is_in_and_replaces_the_one_it_is_not_in(cx: &mut TestAppContext) {
+    let (pane, mut menu) = menu_pane(cx, side_diff(), &[(TEXT_LEFT, 1, false), (TEXT_LEFT, 2, true), (TEXT_LEFT, 2, false)]);
+    menu.click(100., menu_y(0), false);
+    assert_eq!(menu.clipboard().as_deref(), Some("\tlet a = 1;\n    let b = 2;  "), "inside the selection: all of it");
+    pane.close();
+    menu.close();
+
+    let (pane, mut menu) = menu_pane(cx, side_diff(), &[(TEXT_LEFT, 1, false), (TEXT_LEFT, 2, true), (TEXT_LEFT, 4, false)]);
+    menu.click(100., menu_y(0), false);
+    assert_eq!(menu.clipboard().as_deref(), Some("}"), "outside it: that row only");
+    let (before, toasts) = (menu.clipboard(), menu.noted("toast").len());
+    menu.click(100., menu_y(1), false);
+    menu.click(100., menu_y(2), false);
+    assert_eq!((menu.clipboard(), menu.noted("toast").len()), (before, toasts), "no hunk on that row: Copy hunk and Copy as patch do nothing");
+    assert!(menu.noted("patch").is_empty());
+    pane.close();
+    menu.close();
+}
+
+// yuzora(v010): a selection across hunks copies the patch of each; a fold has no menu.
+#[gpui::test]
+fn yuzora_diff_the_patch_is_asked_for_every_hunk_the_selection_touches_and_a_fold_has_no_menu(cx: &mut TestAppContext) {
+    let rows = json!([
+        {"k": "~", "h": 0, "l": 1, "li": 0, "lt": "a", "r": 1, "ri": 0, "rt": "A"},
+        {"k": "=", "l": 2, "r": 2, "t": "same"},
+        {"k": "~", "h": 1, "l": 3, "li": 2, "lt": "b", "r": 3, "ri": 2, "rt": "B"},
+        {"k": "fold", "n": 4, "l": 4, "r": 4},
+    ]);
+    let mut diff = Diff::of(rows).files(&["a", "same", "b"], &["A", "same", "B"]);
+    diff.hunks = json!([{"index": 0, "a": [0, 1], "b": [0, 1]}, {"index": 1, "a": [2, 3], "b": [2, 3]}]);
+    let (pane, mut menu) = menu_pane(cx, diff, &[(TEXT_LEFT, 0, false), (TEXT_LEFT, 2, true), (TEXT_LEFT, 1, false)]);
+    menu.click(100., menu_y(2), false);
+    assert_eq!(menu.noted("patch"), vec![json!(["patch", [0, 1], "none"])]);
+    pane.close();
+    menu.close();
+
+    let mut pane = copy_pane(cx, side_diff(), json!({}));
+    pane.right_press(TEXT_LEFT, row_y(3));
+    assert!(pane.noted("overlay").is_empty(), "a fold opens no menu");
     pane.close();
 }
 
