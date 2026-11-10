@@ -738,27 +738,44 @@ const foundNames = (...paths: string[]) => ({ matches: paths.map(path => ({ path
 const foundIn = (path: string) => ({ available: true, hits: [{ path, line: 3, column: 1, text: "needle" }], truncated: false, skipped: false });
 
 for (const mode of ["name", "content"] as const) {
-  for (const drawn of [false, true]) {
-    test(`a ${mode} search started under the folder opens its hit under that folder, though git has named the repo's top by the time it answers${drawn ? " and the tree has been replaced" : ""}`, async () => {
-      const s = sidebar(two(SUB, "/b"));
-      await flush();
-      if (drawn) await s.answer(s.pending("list")[0], listing("README.md"));
-      s.world.query = "x";
-      s.view.searching = true;
-      s.view.searchMode = mode;
-      s.view.search(s.cx);
-      fireSearch(s);
-      await flush();
-      const asked = s.pending(mode === "name" ? "find" : "grep");
-      expect(asked.map(c => c.args[0])).toEqual([SUB]);
-      await s.answer(s.pending("git")[0], repo("/repo"));
-      if (drawn) await s.answer(s.pending("list").find(c => c.args[0] === "/repo")!, listing("README.md", "sub/"));
-      expect(s.view.here.root).toBe("/repo");
-      await s.answer(asked[0], mode === "name" ? foundNames("x.txt") : foundIn("x.txt"));
-      s.view.openResult(s.view.results[0].key);
-      expect(s.world.opened.map(o => o.path)).toEqual([`${SUB}/x.txt`]);
-    });
-  }
+  const start = async (drawn: boolean) => {
+    const s = sidebar(two(SUB, "/b"));
+    await flush();
+    if (drawn) await s.answer(s.pending("list")[0], listing("README.md"));
+    s.world.query = "x";
+    s.view.searching = true;
+    s.view.searchMode = mode;
+    s.view.search(s.cx);
+    fireSearch(s);
+    await flush();
+    const kind = mode === "name" ? "find" : "grep";
+    expect(s.pending(kind).map(c => c.args[0])).toEqual([SUB]);
+    return { s, kind, first: s.pending(kind)[0], found: (path: string) => (mode === "name" ? foundNames(path) : foundIn(path)) };
+  };
+
+  test(`a ${mode} search started under the folder opens its hit under that folder, though git has named the repo's top by the time it answers`, async () => {
+    const { s, first, found } = await start(false);
+    await s.answer(s.pending("git")[0], repo("/repo"));
+    expect(s.view.here.root).toBe("/repo");
+    await s.answer(first, found("x.txt"));
+    s.view.openResult(s.view.results[0].key);
+    expect(s.world.opened.map(o => o.path)).toEqual([`${SUB}/x.txt`]);
+  });
+
+  test(`a ${mode} search started under the folder is asked again under the repo's top once the tree is replaced, and its first answer is not used`, async () => {
+    const { s, kind, first, found } = await start(true);
+    await s.answer(s.pending("git")[0], repo("/repo"));
+    await s.answer(s.pending("list").find(c => c.args[0] === "/repo")!, listing("README.md", "sub/"));
+    expect(s.view.here.root).toBe("/repo");
+    fireSearch(s);
+    await flush();
+    await s.answer(first, found("x.txt"));
+    expect(s.view.results).toEqual([]);
+    expect(s.pending(kind).map(c => c.args[0])).toEqual(["/repo"]);
+    await s.answer(s.pending(kind)[0], found("x.txt"));
+    s.view.openResult(s.view.results[0].key);
+    expect(s.world.opened.map(o => o.path)).toEqual(["/repo/x.txt"]);
+  });
 }
 
 test("an open search runs again under the repo's top when a read of the timer's moves the root, though the folder is watched", async () => {

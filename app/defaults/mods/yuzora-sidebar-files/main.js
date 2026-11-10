@@ -106,11 +106,14 @@ export default class FilesSidebar extends View {
   reload(cx, timed = false, here = this.here) {
     if (!here?.cwd) return;
     cx.spawn(async cx => {
-      const read = await this.store.reload(here, () => { this.version++; cx.notify(); }, { timed });
-      if (!read?.ok || !this.current(here)) return;
-      // An open search follows the files too (the new root's, after a move).
-      if (this.searching && !(read.timed && this.watching === here)) this.search(cx, !read.timed);
-      this.watch(here, cx);
+      // Told as each read ends: reads that follow one another must not hold these back.
+      const settled = read => {
+        if (!read.ok || !this.current(here)) return;
+        // An open search follows the files too, and the new root's after a move, watched or not.
+        if (this.searching && (read.moved || !(read.timed && this.watching === here))) this.search(cx, !read.timed);
+        this.watch(here, cx);
+      };
+      await this.store.reload(here, () => { this.version++; cx.notify(); }, { timed, settled });
     });
   }
 
@@ -286,11 +289,13 @@ export default class FilesSidebar extends View {
     cx.timer.after(this.searchMode === "name" ? 60 : 250, cx => {
       if (seq !== this.searchSeq) return;
       cx.spawn(async cx => {
+        // The hits are paths under the root the search was made under, which the tree may leave while it runs.
+        const root = here.root;
         try {
           if (this.searchMode === "name") {
-            const found = await findFiles(here.root, query, { on: here.on, hidden: this.hidden, limit: 200, fresh });
+            const found = await findFiles(root, query, { on: here.on, hidden: this.hidden, limit: 200, fresh });
             if (seq !== this.searchSeq) return;
-            this.results = found.matches.map(f => ({ key: f.path, root: here.root, on: here.on, path: f.path }));
+            this.results = found.matches.map(f => ({ key: f.path, root, on: here.on, path: f.path }));
             const notes = [
               found.tooLong ? t("search.too_long") : found.matches.length ? null : t("search.none"),
               found.more ? t("search.truncated", { count: found.matches.length }) : null,
@@ -300,9 +305,9 @@ export default class FilesSidebar extends View {
             ].filter(Boolean);
             this.searchNote = notes.length ? notes.join(" ") : null;
           } else {
-            const found = await grep(here.root, query, { on: here.on, hidden: this.hidden, limit: 500 });
+            const found = await grep(root, query, { on: here.on, hidden: this.hidden, limit: 500 });
             if (seq !== this.searchSeq) return;
-            this.results = found.hits.map((h, i) => ({ key: `${i}:${h.path}:${h.line}`, root: here.root, on: here.on, path: h.path, line: h.line, column: h.column, text: h.text }));
+            this.results = found.hits.map((h, i) => ({ key: `${i}:${h.path}:${h.line}`, root, on: here.on, path: h.path, line: h.line, column: h.column, text: h.text }));
             const notes = !found.available ? [t("search.no_rg")] : [
               found.hits.length ? null : t("search.none"),
               found.truncated ? t("search.truncated", { count: found.hits.length }) : null,
