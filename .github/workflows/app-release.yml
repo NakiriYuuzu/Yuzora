@@ -147,7 +147,8 @@ jobs:
           # The release for $TAG, drafts included (only a token that can write sees drafts).
           release_json() {
             local found
-            found=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\")" | jq -s '.')
+            # A command substitution does not inherit set -e: without the return, a failed list would read as "no release".
+            found=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\")" | jq -s '.') || return 1
             [ "$(jq length <<<"$found")" -le 1 ] || { echo "::error::more than one release for $TAG" >&2; return 1; }
             jq '.[0] // empty' <<<"$found"
           }
