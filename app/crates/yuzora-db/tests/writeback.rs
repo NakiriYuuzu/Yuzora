@@ -1443,10 +1443,13 @@ fn a_stop_on_the_way_holds_back_only_its_own_connection(
     let mut lease = runtime::block_on(session::lease(id, None, stopped)).unwrap();
     lease.conn().canceller().cancel_in_background();
     drop(lease);
+    // A stop the server does not deal with in 5 s is given up on, and the connection with it
+    // (`CANCEL_WAIT`): from here to the release below has to take less than that.
+    let pressed = Instant::now();
 
     let (connection, alone) = (id.to_owned(), other.to_owned());
     let used =
-        within(Duration::from_secs(10), "the other connection, while a stop is on its way for this one", move || {
+        within(Duration::from_secs(4), "the other connection, while a stop is on its way for this one", move || {
             wait(session::start_query(&connection, None, &alone, "SELECT 1"))
         });
     assert_eq!(used.error, None, "{used:?}");
@@ -1466,7 +1469,9 @@ fn a_stop_on_the_way_holds_back_only_its_own_connection(
         relay.release();
         assert!(
             early.is_err(),
-            "the connection was handed to new work with a stop still on its way to the server: {early:?}"
+            "the connection was handed to new work with a stop still on its way to the server ({:?} after the stop; \
+             the server is given 5 s): {early:?}",
+            pressed.elapsed()
         );
         let (leased, heard) = outcome
             .recv_timeout(Duration::from_secs(10))
