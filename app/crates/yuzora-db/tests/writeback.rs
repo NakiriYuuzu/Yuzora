@@ -792,6 +792,19 @@ fn sqlite_a_table_that_cannot_be_described_shows_its_rows_read_only_and_says_why
     assert!(reason.contains("could not read the table's key") && reason.contains(&why), "{reason}");
 }
 
+/// A job whose connection is gone never gets as far as a description: the Structure tab is told what
+/// the job ends with, not that a driver failed.
+#[test]
+fn a_table_of_a_connection_that_is_gone_ends_with_the_reason_and_tells_the_structure_tab_the_same() {
+    LazyLock::force(&HOME);
+    let job =
+        session::open_table("wb-no-such-connection", None, "gone-pane@wb-no-such-connection", &table("", "t"), None);
+    let asked = runtime::block_on(session::table_info(job));
+    let ended = wait(job).error.expect("the job says why it could not start");
+    assert!(ended.contains("wb-no-such-connection"), "{ended}");
+    assert_eq!(asked.map(|_| ()).unwrap_err().to_string(), ended);
+}
+
 // ---------------------------------------------------------------- a refresh reads the key the table has now
 
 /// Nothing about a table is kept from one open to the next: a refresh asks
