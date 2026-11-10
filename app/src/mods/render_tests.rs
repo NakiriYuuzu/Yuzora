@@ -2322,6 +2322,8 @@ fn tokens_text_strong() -> String {
     yuzora_core::tokens::for_theme(false)["text"]["strong"].as_str().unwrap().to_owned()
 }
 
+// yuzora(v0.1.0 D1): from here to the end of the file, the Database table pane in a window: its toolbar in a
+// narrow pane, and the bar that asks about edits not written. None of it is upstream's.
 /// The Database table pane's toolbar with a job running (its Stop shows), whose clicks `note`.
 const DB_TOOLBAR: &str = r#"
 import Real from "./mods/yuzora-db-table/main.js";

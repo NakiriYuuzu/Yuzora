@@ -16,6 +16,8 @@ use yuzora_db::model::{Cell, ObjectRef};
 use yuzora_db::session::{self, JobId, JobState};
 use yuzora_db::{results, runtime};
 
+mod common;
+
 fn wait(job: JobId) -> JobState {
     let mut seen = 0;
     for _ in 0..400 {
@@ -229,7 +231,7 @@ fn a_pane_reads_edits_writes_back_caps_and_cancels() {
 /// pane's SQL tab `USE`s another database on the pane's connection, and the
 /// table it shows, counts and writes back stays the one it opened.
 fn sql_server_tables_stay_in_the_panes_database() {
-    if !std::env::var("YUZORA_DATABASE_TEST_ENGINES").is_ok_and(|v| v.split(',').any(|e| e.trim() == "mssql")) {
+    if !common::enabled("mssql") {
         eprintln!("skipped: mssql is not in YUZORA_DATABASE_TEST_ENGINES");
         return;
     }
