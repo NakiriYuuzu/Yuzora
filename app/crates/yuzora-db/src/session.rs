@@ -1111,6 +1111,59 @@ mod tests {
         });
     }
 
+    /// A Stop is made where it is pressed, not by a task that waits for a free
+    /// worker of the runtime: with both of them busy, SQLite's statement still ends.
+    #[test]
+    fn the_toolbars_stop_acts_where_it_is_pressed() {
+        let file = std::env::temp_dir().join(format!("yuzora-db-stop-now-{}.sqlite", std::process::id()));
+        std::fs::File::create(&file).unwrap();
+        let config = ConnectionConfig {
+            name: "stop-now".into(),
+            engine: config::Engine::Sqlite,
+            path: file.to_string_lossy().into_owned(),
+            ..ConnectionConfig::default()
+        };
+        let id = new_job("stop-now-test");
+        let ended = runtime::block_on(async {
+            let mut conn = Conn::connect(&ConnectSpec::new(config, None)).await.unwrap();
+            let _serving = serving(id, Stop::Statement(conn.canceller()));
+            let go = Arc::new(AtomicBool::new(false));
+            let busy = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            for _ in 0..2 {
+                let (go, busy) = (go.clone(), busy.clone());
+                runtime::spawn(async move {
+                    busy.fetch_add(1, Ordering::SeqCst);
+                    while !go.load(Ordering::SeqCst) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                });
+            }
+            while busy.load(Ordering::SeqCst) < 2 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let stop = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                cancel(id);
+            });
+            let release = go.clone();
+            let freed = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(1500));
+                release.store(true, Ordering::SeqCst);
+            });
+            let started = Instant::now();
+            let sql = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 200000000) SELECT count(*) FROM c";
+            let outcome = conn.execute(sql, &mut FirstCell { job: id, cell: None }).await;
+            let took = started.elapsed();
+            go.store(true, Ordering::SeqCst);
+            let _ = (stop.join(), freed.join());
+            (outcome, took)
+        });
+        supersede("stop-now-test");
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(ended.0, Err(DbError::Cancelled));
+        assert!(ended.1 < Duration::from_millis(1000), "the Stop waited for the runtime: {:?}", ended.1);
+    }
+
     #[test]
     fn a_job_whose_work_panics_ends_with_an_error() {
         let id = new_job("panic-test");

@@ -16,9 +16,11 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use futures_util::FutureExt;
 use yuzora_db::config::{ConnectionConfig, Engine, SslMode};
 use yuzora_db::engine::{Conn, ConnectSpec, RowSink};
 use yuzora_db::error::DbError;
@@ -1075,6 +1077,36 @@ fn postgres_a_stop_that_the_server_hears_late_is_not_felt_by_what_runs_after_it(
     }
 }
 
+/// Keeps the runtime's worker threads busy until dropped: a task spawned
+/// meanwhile cannot start.
+struct BusyWorkers(Arc<AtomicBool>);
+
+impl BusyWorkers {
+    fn new() -> Self {
+        let (go, busy) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+        for _ in 0..2 {
+            let (go, busy) = (go.clone(), busy.clone());
+            runtime::spawn(async move {
+                busy.fetch_add(1, Ordering::SeqCst);
+                let since = Instant::now();
+                while !go.load(Ordering::SeqCst) && since.elapsed() < Duration::from_secs(10) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            });
+        }
+        while busy.load(Ordering::SeqCst) < 2 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        BusyWorkers(go)
+    }
+}
+
+impl Drop for BusyWorkers {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 /// The connection is not handed to new work while a stop is on its way, and
 /// the stop counts as on its way from the moment it is pressed, not from when
 /// the task that sends it first gets to run.
@@ -1083,11 +1115,11 @@ fn postgres_a_stop_from_the_background_is_on_its_way_before_it_returns() {
     only_with!("postgres");
     run(async {
         let mut conn = pg().await;
+        let busy = BusyWorkers::new();
         conn.canceller().cancel_in_background();
-        assert!(
-            tokio::time::timeout(Duration::ZERO, conn.settled()).await.is_err(),
-            "the stop was not counted on its way when it returned"
-        );
+        let counted = conn.settled().now_or_never().is_none();
+        drop(busy);
+        assert!(counted, "the stop was not counted on its way when it returned");
         conn.settled().await;
         assert!(!conn.is_closed());
         assert_eq!(scalar(&mut conn, "SELECT 'after', pg_sleep(0.3)").await, "after");
