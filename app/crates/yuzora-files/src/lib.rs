@@ -1308,9 +1308,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
             const away = strip("s1");
             openFile("/r/a.rs", null); flush();
             const byClick = strip("s1");
-            run("pane.focus", { pane: "p1" }); flush();
-            openFile("/r/a.rs", null, { place: "side" }); flush();
-            return [away, byClick, strip("s1"), focus()];
+            return [away, byClick, focus()];
         "#,
         );
         assert_eq!(
@@ -1318,10 +1316,61 @@ return JSON.stringify([a, b, c, d]); }})()"#
             [
                 "[shell]* [editor /r/a.rs] [shell]",
                 "[shell] [editor /r/a.rs]* [shell]",
-                "[shell] [editor /r/a.rs]* [shell]",
                 "editor /r/a.rs"
             ]
         );
+    }
+
+    #[test]
+    fn open_to_the_side_splits_the_focused_pane_though_the_file_is_open_in_a_tab() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            for (const path of ["/r/a.rs", "/r/README.md", "/r/a.png"]) { openFile(path, null); flush(); }
+            run("pane.focus", { pane: "p1" }); flush();
+            for (const path of ["/r/a.rs", "/r/README.md", "/r/a.png"]) { openFile(path, null, { place: "side" }); flush(); out.push(focus()); }
+            out.push(strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "editor /r/a.rs",
+                "markdown /r/README.md",
+                "image /r/a.png",
+                "[shell, editor /r/a.rs, markdown /r/README.md, image /r/a.png]* [editor /r/a.rs] [markdown /r/README.md] [image /r/a.png] [shell]",
+            ]
+        );
+    }
+
+    #[test]
+    fn open_to_the_side_splits_though_the_file_waits_in_a_pane_not_started() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "a.rs", "yuzora-editor", { path: "/r/a.rs", on: null, opened: 1 });
+            restore("s1", "", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1 }, { beside: true });
+            openFile("/r/a.rs", null, { place: "side", line: 4 }); flush();
+            return [strip("s1"), JSON.stringify(given[focused().pane].line)];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            ["[shell, editor /r/a.rs, editor /r/b.rs]* [shell] [editor /r/a.rs]", "4"]
+        );
+    }
+
+    #[test]
+    fn open_to_the_side_with_no_pane_in_focus_opens_a_tab_though_the_file_is_open() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null); flush();
+            nobody = true; publish();
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            return [strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["[shell] [editor /r/a.rs] [editor /r/a.rs]* [shell]"]);
     }
 
     #[test]

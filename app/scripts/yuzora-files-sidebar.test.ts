@@ -1139,6 +1139,17 @@ for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null
     expect(opens(s).slice(1)).toEqual([["pane.split", { direction: "right", pane: "p1", mod: "yuzora-editor", props: props("/srv/a.txt", machine) }]]);
   });
 
+  test(`${where}: the menu opens a file to the side though a pane shows it already, and a click shows that pane`, async () => {
+    const s = await realSidebarAt(machine);
+    s.world.paneList.push({ pane: "p7", tab: "t7", mod: "yuzora-editor", started: true, props: { path: "/srv/a.txt", on: machine, opened: 1 } });
+    s.pressRight(s.frame(), A_ROW);
+    s.menuItems(s.world.menus[0].props.menu).find((i: any) => i?.label === "menu.open_side").run();
+    expect(s.world.runs).toEqual([["pane.split", { direction: "right", pane: "p1", mod: "yuzora-editor", props: props("/srv/a.txt", machine) }]]);
+    s.world.runs.length = 0;
+    s.press(s.frame(), A_ROW);
+    expect(s.world.runs).toEqual([["pane.focus", { pane: "p7" }]]);
+  });
+
   test(`${where}: an image opens to the side from the menu too`, async () => {
     const s = await realSidebarAt(machine);
     s.pressRight(s.frame(), 2);
