@@ -289,6 +289,18 @@ pub fn select_sql(
     }
 }
 
+/// Said ahead of a table's SELECT, in the same batch (a round trip of its own is not spent).
+/// A SQL Server login or server whose default opens a transaction at the first statement that
+/// touches a table would leave one open after the read, and a write-back does not run beside
+/// one. The connection a table is read and saved on is the app's alone (`session::table_owner`),
+/// no SQL tab on it can end that transaction, so the app says it does not want one.
+pub fn table_prelude(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Mssql => "SET IMPLICIT_TRANSACTIONS OFF; ",
+        _ => "",
+    }
+}
+
 /// `SELECT count(*)` of a table in `engine`'s quoting; `database` as for [`select_sql`].
 pub fn count_sql(engine: Engine, database: Option<&str>, table: &ObjectRef) -> String {
     let table = qualified_in(engine, database, table);

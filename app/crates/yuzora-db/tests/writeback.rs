@@ -1180,6 +1180,45 @@ fn postgres_a_connection_limit_does_not_fail_the_connection_or_hide_the_total() 
     session::disconnect(&limited);
 }
 
+/// A pane with a table open and a SQL tab is two connections where it used to be one. On a
+/// login that may have two (the sidebar's and the table's) the SQL tab is the one that finds
+/// no room: it says why, and the table goes on being read and saved.
+#[test]
+fn postgres_a_sql_tab_beside_a_table_with_no_connection_to_spare_says_why_and_leaves_the_table_alone() {
+    only_with!("postgres");
+    let maintenance = postgres_in("pg-maintenance-r2lim", "postgres");
+    run(&maintenance, "role", "DROP ROLE IF EXISTS yz_r2_lim");
+    run(&maintenance, "role", "CREATE ROLE yz_r2_lim LOGIN PASSWORD 'yz-r2-lim-pw' CONNECTION LIMIT 2");
+    let _role = PgRole { maintenance: maintenance.clone(), name: "yz_r2_lim" };
+    let scratch = PgScratchDatabase::new("yz_r2_limit");
+    let setup = scratch.connection();
+    run(&setup, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a'), (2, 'b'); GRANT SELECT, UPDATE ON t TO yz_r2_lim;");
+    let limited = save(
+        json!({"name": "pg-r2-limited", "engine": "postgres", "host": "127.0.0.1", "port": 55432,
+               "user": "yz_r2_lim", "database": "yz_r2_limit", "ssl": "prefer"}),
+        Some("yz-r2-lim-pw"),
+    );
+    let pane_owner = owner(&limited, "lim-pane");
+    let opened = wait(session::open_table(&limited, None, &pane_owner, &table("public", "t"), None));
+    assert_eq!(opened.error, None);
+    assert_eq!(session::status(&limited).state, session::State::Connected);
+
+    let tab = wait(session::start_query(&limited, None, &pane_owner, "SELECT 1"));
+    let said = tab.error.expect("a third connection is not allowed");
+    assert!(said.contains("too many connections"), "the SQL tab says why it has no connection: {said}");
+
+    // The SQL tab replaced the table's result (that is what running anything there does):
+    // the table is opened again, on the connection it already has, and saved.
+    let opened = wait(session::open_table(&limited, None, &pane_owner, &table("public", "t"), None));
+    assert_eq!(opened.error, None);
+    let set = results::get(opened.results[0].id).unwrap();
+    results::lock(&set).set_edit(0, 1, Cell::text("mine"));
+    assert_eq!(runtime::block_on(session::write_back_set(&set)), Ok(1), "the table is saved though the SQL tab found no room");
+    assert_eq!(first_row(&setup, "SELECT name FROM t WHERE id = 1"), ["mine"]);
+    session::release_owner(&pane_owner);
+    session::disconnect(&limited);
+}
+
 /// A login dropped when the test ends, whatever happened (declared before the
 /// database it was granted on, so it goes after it).
 struct PgRole {
@@ -2050,7 +2089,6 @@ fn mssql_a_date_the_column_rounds_is_found_again_by_the_next_write_back() {
 
 // ---------------------------------------------------------------- a connection that opens a transaction by itself
 
-/// The first value `sql` gives on the pane's own connection, as its SQL tab would run it.
 /// The first cell of what `sql` reads on the connection the table pane `pane` reads and writes by.
 fn pane_value(connection: &str, pane: &str, sql: &str) -> String {
     let state = wait(session::start_query(connection, None, &session::table_owner(&owner(connection, pane)), sql));
@@ -2385,6 +2423,31 @@ fn mssql_pane(id: &str, name: &str, tab: Option<&TabState>) -> Pane {
     let saved = attempt();
     let held = first_row(id, "SELECT short, CAST(tiny AS varchar(5)), CAST(LEN(big) AS varchar(10)), note FROM dbo.s WHERE id = 1");
     Pane { rows_read, long_cell, too_long, too_big, saved, held }
+}
+
+/// A server whose own default opens a transaction at the first statement that touches a table
+/// (`sp_configure 'user options'` with 2): the connection the table is read and saved on starts
+/// out that way, and there is no SQL tab on it to end the transaction its read opened. The
+/// table must still save, without a person having to do anything; the setting a person's SQL
+/// tab has is theirs and is not asked about.
+#[test]
+fn mssql_a_table_connection_that_opens_transactions_by_itself_still_saves() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_r2_impl");
+    let id = scratch.connection();
+    for (n, setting) in ["SET IMPLICIT_TRANSACTIONS ON", "SET ANSI_DEFAULTS ON"].into_iter().enumerate() {
+        run(&id, "setup", "DROP TABLE IF EXISTS dbo.i; CREATE TABLE dbo.i(id int PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.i VALUES (1, N'a'), (2, N'b');");
+        let name = format!("impl-{n}");
+        // What the server's default does to a connection that was just opened: the table's.
+        pane_value(&id, &name, setting);
+        assert_eq!(pane_value(&id, &name, "SELECT CAST(@@OPTIONS & 2 AS varchar(5))"), "2", "{setting}: the connection opens transactions by itself");
+        let pane = open(&id, &name, &table("dbo", "i"));
+        pane.edit(0, "v", Some("z"));
+        runtime::block_on(session::write_back_set(&pane.set)).unwrap_or_else(|e| panic!("{setting}: {e}"));
+        assert_eq!(first_row(&id, "SELECT v FROM dbo.i WHERE id = 1"), ["z"], "{setting}: another connection reads what was written");
+        assert_eq!(pane_value(&id, &name, "SELECT CAST(@@TRANCOUNT AS varchar(2))"), "0", "{setting}: nothing is left open on the table's connection");
+        session::release_owner(&pane.owner);
+    }
 }
 
 #[test]
