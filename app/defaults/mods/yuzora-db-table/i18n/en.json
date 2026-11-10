@@ -13,7 +13,7 @@
   "refresh_tip": "Read the rows again",
   "run_sql_over_read_tip": "Stop reading the table and run the SQL (the selection when there is one)",
   "sql_hint": "⌘↵ / Ctrl+Enter runs this SQL (the selection when there is one); the rows show under Data.",
-  "sql_over_read": "The table is still being read. Run stops that read first and then runs this SQL; Stop only stops the read.",
+  "sql_over_read": "The table is still being read. Run stops that read, then runs this SQL.",
   "sql_busy": "A statement is still running. Stop it first, then run again.",
   "done": "Done",
   "affected": "{count} rows affected",

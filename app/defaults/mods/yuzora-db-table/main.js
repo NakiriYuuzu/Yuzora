@@ -235,7 +235,7 @@ export default class DbTable extends View {
     return Boolean(this.state?.running);
   }
 
-  /** Run is there when nothing goes on, and in the SQL tab over a read of the table (see runSql). What is typed there does not redraw the toolbar, so Run cannot wait for it. */
+  /** Run is there when nothing goes on, and in the SQL tab over a read of the table (see runSql). Typing there does not run this render again (render_tests: the_database_table_pane_is_not_drawn_again_by_typing_in_its_sql_editor), so Run cannot wait for what is typed. */
   showsRun() {
     return !this.state?.running || (this.tab === "sql" && this.jobKind === "table");
   }
