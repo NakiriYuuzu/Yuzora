@@ -46,6 +46,13 @@ pub fn for_theme(light: bool) -> Value {
     t
 }
 
+/// The animation speeds (`motion` in tokens.json): `{ name: { duration, easing } }`, each what `transition(property, policy)`
+/// takes. A theme does not change them.
+pub fn motion() -> &'static Value {
+    static MOTION: OnceLock<Value> = OnceLock::new();
+    MOTION.get_or_init(|| for_theme(false)["motion"].clone())
+}
+
 fn merge(into: &mut Value, over: Value) {
     match (into, over) {
         (Value::Object(into), Value::Object(over)) => {

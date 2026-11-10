@@ -33,8 +33,10 @@ export function setLocale(choice: string): void;
 export function t(key: string, vars?: Record<string, string | number>): string;
 /** Another mod's text for key. */
 export function translate(mod: string, key: string, vars?: Record<string, string | number>): string;
-/** Design tokens a theme has no name for: diff, agents, space_badges, status shapes, metrics. For the theme showing: a light one gets its own text, diff and status colors. */
+/** Design tokens a theme has no name for: diff, agents, space_badges, status shapes, metrics, motion. For the theme showing: a light one gets its own text, diff and status colors. */
 export function tokens(): Record<string, any>;
+/** A named speed from tokens.json "motion", as `el.transition(property, policy)` takes it. A mod names one and writes no milliseconds; a name that is not one throws. */
+export function motion(name: "fast" | "base"): { duration: number; easing: "linear" | "ease-in" | "ease-out" | "ease-in-out" };
 /** Mods whose mod.json declares "yuzora": { "pane": {...} } (the + new pane menu). */
 export function panes(): PaneEntry[];
 /** Mods whose mod.json declares "yuzora": { "settings": {...} } (settings pages). */
@@ -118,6 +120,17 @@ pub fn module(mod_name: &str) -> HostModule {
         .function("t", move |a| Ok(crate::i18n::translate(&own, a.string(0)?, &pairs(&vars(a, 1))).into()))
         .function("translate", |a| Ok(crate::i18n::translate(a.string(0)?, a.string(1)?, &pairs(&vars(a, 2))).into()))
         .function("tokens", |_| Ok(to_host(&crate::tokens::tokens())))
+        .function("motion", |a| {
+            let name = a.string(0)?;
+            let all = crate::tokens::motion();
+            match all.get(name) {
+                Some(speed) => Ok(to_host(speed)),
+                None => {
+                    let known: Vec<_> = all.as_object().into_iter().flat_map(|o| o.keys().map(String::as_str)).collect();
+                    Err(error(format!("no motion named {name:?}; the names are {}", known.join(", "))))
+                }
+            }
+        })
         .function("panes", |_| Ok(to_host(&discovered().0)))
         .function("settingsPages", |_| Ok(to_host(&discovered().1)))
         .function("getSetting", |a| Ok(to_host(&crate::settings::section(a.string(0)?))))
