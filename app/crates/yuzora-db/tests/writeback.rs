@@ -1039,7 +1039,8 @@ fn tables_with_columns_of_their_own_stay_editable(connection: &str, schema: &str
             continue;
         }
         let pane = Opened { owner: pane_owner, id: summary.id, set: results::get(summary.id).expect("result") };
-        pane.edit(0, column, Some("changed"));
+        let value = format!("changed {n}");
+        pane.edit(0, column, Some(&value));
         match runtime::block_on(session::write_back_set(&pane.set)) {
             Ok(1) => {}
             other => failed.push(format!("{name}: the write-back came to {other:?}")),
@@ -1047,7 +1048,7 @@ fn tables_with_columns_of_their_own_stay_editable(connection: &str, schema: &str
         let again = open(connection, &format!("ordinary-pane-{n}"), &table(schema, name));
         let at = again.column(column);
         let shown = results::lock(&again.set).rows[0][at].display().into_owned();
-        if shown != "changed" {
+        if shown != value {
             failed.push(format!("{name}: {column} reads {shown:?} after the write-back"));
         }
         session::release_owner(&pane.owner);
@@ -1129,6 +1130,7 @@ fn postgres_tables_with_columns_of_their_own_stay_editable() {
             ("Mixed Case", "ünï"),
             ("plain", "v"),
             ("part", "v"),
+            ("part_1", "v"),
             ("base", "v"),
         ],
     );
