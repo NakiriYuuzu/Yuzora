@@ -238,16 +238,6 @@ impl Conn {
         each!(self, c => c.execute(sql, sink).await)
     }
 
-    /// [`execute`](Self::execute) for the rows of a table that are then edited
-    /// and written back: PostgreSQL prints them the way they are read again.
-    pub async fn read_table(&mut self, sql: &str, sink: &mut dyn RowSink) -> DbResult<()> {
-        match self {
-            Conn::Postgres(c) => c.read_table(sql, sink).await,
-            Conn::Mssql(c) => c.execute(sql, sink).await,
-            Conn::Sqlite(c) => c.execute(sql, sink).await,
-        }
-    }
-
     /// Writes `edits` to `table` in one transaction; every row must match
     /// exactly one row by its key, or nothing is written. Returns rows changed.
     pub async fn apply_edits(&mut self, table: &ObjectRef, edits: &[RowEdit]) -> DbResult<u64> {

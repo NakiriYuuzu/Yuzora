@@ -303,8 +303,8 @@ async fn open_lease(connection: &str, database: Option<&str>, owner: &str, usage
 /// jobs and results forgotten, its connections closed.
 pub fn release_owner(owner: &str) {
     supersede(owner);
-    let count = count_owner(owner);
-    pool().retain(|(_, _, o), _| o != owner && *o != count);
+    let (count, table) = (count_owner(owner), table_owner(owner));
+    pool().retain(|(_, _, o), _| o != owner && *o != count && *o != table);
     results::release_owner(owner);
 }
 
@@ -718,12 +718,10 @@ pub fn open_table(
         };
         let (engine, read_only) = (opened_with.engine, opened_with.read_only);
         let info = describe(&connection, database.as_deref(), &table).await;
-        let mut l = match lease(&connection, database.as_deref(), &owner).await {
+        let mut l = match lease(&connection, database.as_deref(), &table_owner(&owner)).await {
             Ok(l) => l,
             Err(e) => return finish_job(id, Err(e), &mut JobSink::new(id, &owner, "")),
         };
-        // In the database the pane's connection was opened in, whatever its
-        // SQL tab has `USE`d since (SQL Server).
         let home = l.conn().database().map(str::to_owned);
         // One row past the cap, so a capped table reads as truncated.
         let limit = max_rows() as u64 + 1;
@@ -731,7 +729,7 @@ pub fn open_table(
         let sql = engine::select_sql(engine, home.as_deref(), &table, order, limit);
         let mut sink = JobSink::for_table(id, &owner, &sql);
         let reading = serving(id, Stop::Statement(l.conn().canceller()));
-        let outcome = l.conn().read_table(&sql, &mut sink).await;
+        let outcome = l.conn().execute(&sql, &mut sink).await;
         // The pane's connection is free from here: the count and any write-back
         // do not wait for each other, and the job's Stop is no longer for it.
         drop(reading);
@@ -758,7 +756,7 @@ pub fn open_table(
                     connection: connection.clone(),
                     config: opened_with.clone(),
                     database: database.clone(),
-                    owner: owner.clone(),
+                    owner: table_owner(&owner),
                     table: table.clone(),
                     key,
                     read_only: info
@@ -816,7 +814,7 @@ async fn count_rows(
             pool().remove(&(connection.to_owned(), database.map(str::to_owned), counting));
             counted
         }
-        Err(_) => count_between(connection, database, owner, engine, table, job).await,
+        Err(_) => count_between(connection, database, &table_owner(owner), engine, table, job).await,
     }
 }
 
@@ -965,6 +963,15 @@ pub fn stop_write(result: ResultId) {
 /// The owner the connection of a table's `count(*)` is leased under.
 pub fn count_owner(owner: &str) -> String {
     format!("{owner}:count")
+}
+
+/// The owner the connection that reads a table and writes it back is leased
+/// under. A pane's SQL tab runs the person's own scripts on `owner`'s
+/// connection, and whatever they leave there (a setting, a transaction, a
+/// temporary table) stays there: the table's rows are read and written by a
+/// connection that only this crate's own statements have run on.
+pub fn table_owner(owner: &str) -> String {
+    format!("{owner}:table")
 }
 
 /// Writes a result's pending edits in one transaction; on success they become

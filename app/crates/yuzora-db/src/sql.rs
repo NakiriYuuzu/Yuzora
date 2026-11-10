@@ -203,15 +203,16 @@ pub fn key_mismatch(key: &[(String, Cell)], matched: u64) -> String {
     crate::i18n::t("engine.key_mismatch", &[("key", key.join(", ")), ("count", matched.to_string())])
 }
 
-/// Write-back refused: the connection is inside a transaction the SQL tab
-/// left open, which the write-back's own commit would get tangled in.
+/// Write-back refused: the connection is inside a transaction, which the
+/// write-back's own commit would get tangled in. Whose it is, is not said: it
+/// can hold changes of the person's that nothing has committed.
 pub fn open_transaction() -> crate::error::DbError {
     crate::error::DbError::NotEditable(crate::i18n::t("edit.open_transaction", &[]))
 }
 
 /// [`open_transaction`] on a SQL Server connection that opens one by itself
-/// (`IMPLICIT_TRANSACTIONS`): reading the table did, and COMMIT alone does not
-/// keep the next read from opening another.
+/// (`IMPLICIT_TRANSACTIONS`): COMMIT alone does not keep the next read from
+/// opening another.
 pub fn open_implicit_transaction() -> crate::error::DbError {
     crate::error::DbError::NotEditable(crate::i18n::t("edit.open_implicit_transaction", &[]))
 }
@@ -422,6 +423,18 @@ mod tests {
 
     fn texts(sql: &str, engine: Engine) -> Vec<String> {
         split(sql, engine).into_iter().map(|s| s.text).collect()
+    }
+
+    #[test]
+    fn a_refusal_for_an_open_transaction_does_not_say_whose_it_is() {
+        for words in ["edit.open_transaction", "edit.open_implicit_transaction"] {
+            let said = crate::i18n::t(words, &[]);
+            assert!(said.contains("nothing was written"), "{said}");
+            assert!(said.contains("COMMIT") && said.contains("ROLLBACK"), "{words}: the person decides, not the app: {said}");
+            assert!(!said.contains("SQL tab"), "{words}: the table's connection is not the SQL tab's: {said}");
+            assert!(!said.contains("left one open"), "{words}: reading the table is not known to have opened it: {said}");
+        }
+        assert!(crate::i18n::t("edit.open_implicit_transaction", &[]).contains("may hold changes that nobody committed"));
     }
 
     #[test]

@@ -371,7 +371,7 @@ fn sqlite_a_write_back_queued_behind_the_connection_shows_it_and_can_be_stopped(
     let pane = open(&id, "queued-pane", &table("", "people"));
     pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
 
-    let held = runtime::block_on(session::lease(&id, None, &pane.owner)).unwrap();
+    let held = runtime::block_on(session::lease(&id, None, &session::table_owner(&pane.owner))).unwrap();
     let rid = pane.id;
     let set = pane.set.clone();
     let writer = std::thread::spawn(move || runtime::block_on(session::write_back_set(&set)));
@@ -1134,7 +1134,7 @@ fn sqlite_a_count_without_a_connection_of_its_own_runs_on_the_panes_and_does_not
     let t = table("", "people");
     // The connections the read opens first are there: the count's is the only new one.
     runtime::block_on(session::describe(&id, None, &t)).unwrap();
-    drop(runtime::block_on(session::lease(&id, None, &pane_owner)).unwrap());
+    drop(runtime::block_on(session::lease(&id, None, &session::table_owner(&pane_owner))).unwrap());
     let moved = file.with_extension("moved");
     std::fs::rename(&file, &moved).unwrap();
 
@@ -1306,7 +1306,7 @@ fn postgres_a_stopped_write_back_cannot_be_felt_by_what_the_pane_runs_next() {
     runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
     let writer = writing_on_a_row_lock(&pane, &locker, "yz_wb_latecancel");
 
-    let next = session::start_query(&through, None, &pane.owner, "SELECT pg_sleep(2.5)");
+    let next = session::start_query(&through, None, &session::table_owner(&pane.owner), "SELECT pg_sleep(2.5)");
     results::lock(&pane.set).stop_write();
     runtime::block_on(locker.batch_execute("COMMIT")).unwrap();
     assert_eq!(
@@ -1355,7 +1355,7 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
         pane.edit(pane.row_where("id", "1"), "name", Some(&format!("mine-{round}")));
         runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
         let writer = writing_on_a_row_lock(&pane, &locker, "yz_wb_sweep");
-        let next = session::start_query(&id, None, &pane.owner, "SELECT pg_sleep(0.08)");
+        let next = session::start_query(&id, None, &session::table_owner(&pane.owner), "SELECT pg_sleep(0.08)");
         std::thread::sleep(Duration::from_millis(10));
 
         let spin = |micros: i64| {
@@ -1386,7 +1386,7 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
             state.error, None,
             "round {round} (offset {offset} µs): the Stop reached what ran after the write-back"
         );
-        let alive = wait(session::start_query(&id, None, &pane.owner, "SELECT 1"));
+        let alive = wait(session::start_query(&id, None, &session::table_owner(&pane.owner), "SELECT 1"));
         assert_eq!(alive.error, None, "round {round} (offset {offset} µs): the pane's connection is left broken");
         let name: String = runtime::block_on(locker.query_one("SELECT name FROM t WHERE id = 1", &[])).unwrap().get(0);
         if stop_first {
@@ -1422,7 +1422,7 @@ fn sqlite_a_write_back_stopped_while_it_waits_for_the_file_lock_writes_nothing_a
         within(Duration::from_secs(5), "the stopped write-back", move || writer.join().unwrap()),
         Err(DbError::Cancelled)
     );
-    let owner = pane.owner.clone();
+    let owner = session::table_owner(&pane.owner);
     let connection = id.clone();
     let state = within(Duration::from_secs(2), "the pane's connection after the stop", move || {
         wait(session::start_query(&connection, None, &owner, "select name from people"))
@@ -1526,7 +1526,7 @@ fn sqlite_a_count_that_borrowed_the_panes_connection_steps_aside_for_whoever_ask
     let pane_owner = owner(&id, "aside-pane");
     let t = table("", "slow");
     runtime::block_on(session::describe(&id, None, &t)).unwrap();
-    drop(runtime::block_on(session::lease(&id, None, &pane_owner)).unwrap());
+    drop(runtime::block_on(session::lease(&id, None, &session::table_owner(&pane_owner))).unwrap());
     let moved = file.with_extension("moved");
     std::fs::rename(&file, &moved).unwrap();
     let job = session::open_table(&id, None, &pane_owner, &t, None);
@@ -1536,7 +1536,7 @@ fn sqlite_a_count_that_borrowed_the_panes_connection_steps_aside_for_whoever_ask
     std::thread::sleep(Duration::from_millis(300));
     assert!(session::job_state(job).unwrap().running, "the count is running");
 
-    let (connection, pane) = (id.clone(), pane_owner.clone());
+    let (connection, pane) = (id.clone(), session::table_owner(&pane_owner));
     let asked = Instant::now();
     let lease = within(Duration::from_secs(5), "the pane's connection, while a count has it", move || {
         runtime::block_on(session::lease(&connection, None, &pane))
@@ -1659,7 +1659,7 @@ fn first_row_as(connection: &str, owner_name: &str, sql: &str) -> Vec<String> {
 }
 
 #[test]
-fn mssql_a_pane_whose_own_session_reads_dates_day_first_writes_the_dates_it_is_given() {
+fn mssql_a_sql_tab_that_reads_dates_day_first_does_not_change_the_dates_the_table_writes() {
     only_with!("mssql");
     let scratch = ScratchDatabase::new("yz_dt_pane");
     let id = scratch.connection();
@@ -2051,36 +2051,13 @@ fn mssql_a_date_the_column_rounds_is_found_again_by_the_next_write_back() {
 // ---------------------------------------------------------------- a connection that opens a transaction by itself
 
 /// The first value `sql` gives on the pane's own connection, as its SQL tab would run it.
+/// The first cell of what `sql` reads on the connection the table pane `pane` reads and writes by.
 fn pane_value(connection: &str, pane: &str, sql: &str) -> String {
-    first_row_as(connection, pane, sql).into_iter().next().unwrap_or_default()
-}
-
-#[test]
-fn mssql_a_pane_that_reads_with_implicit_transactions_says_what_to_turn_off_and_writes_once_it_is() {
-    only_with!("mssql");
-    let scratch = ScratchDatabase::new("yz_r1_impl");
-    let id = scratch.connection();
-    for (n, setting) in ["SET IMPLICIT_TRANSACTIONS ON", "SET ANSI_DEFAULTS ON"].into_iter().enumerate() {
-        run(&id, "setup", "DROP TABLE IF EXISTS dbo.i; CREATE TABLE dbo.i(id int PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.i VALUES (1, N'a'), (2, N'b');");
-        let name = format!("impl-{n}");
-        // Running the SQL tab replaces the pane's result: the table is read again afterwards, and that read opens the transaction.
-        run(&id, &name, setting);
-        let pane = open(&id, &name, &table("dbo", "i"));
-        pane.edit(0, "v", Some("z"));
-        let refused = runtime::block_on(session::write_back_set(&pane.set)).unwrap_err().to_string();
-        assert!(refused.contains("IMPLICIT_TRANSACTIONS") && refused.contains("COMMIT"), "{setting}: the refusal says why and what ends it: {refused}");
-        assert_eq!(results::lock(&pane.set).edits.len(), 1, "{setting}: the edit stays pending");
-        assert_eq!(first_row(&id, "SELECT v FROM dbo.i WHERE id = 1"), ["a"], "{setting}: nothing was written");
-
-        // What the refusal says: end it and turn the setting off in the SQL tab, then read the table again.
-        run(&id, &name, "COMMIT; SET IMPLICIT_TRANSACTIONS OFF");
-        let pane = open(&id, &name, &table("dbo", "i"));
-        pane.edit(0, "v", Some("z"));
-        runtime::block_on(session::write_back_set(&pane.set)).unwrap_or_else(|e| panic!("{setting}: after turning it off: {e}"));
-        assert_eq!(pane_value(&id, &name, "SELECT CAST(@@TRANCOUNT AS varchar(2))"), "0", "{setting}");
-        assert_eq!(first_row(&id, "SELECT v FROM dbo.i WHERE id = 1"), ["z"], "{setting}: another connection reads what was written");
-        session::release_owner(&pane.owner);
-    }
+    let state = wait(session::start_query(connection, None, &session::table_owner(&owner(connection, pane)), sql));
+    assert_eq!(state.error, None, "{sql}");
+    let set = results::get(state.results.last().expect("a result").id).expect("result");
+    let r = results::lock(&set);
+    r.rows.first().map(|row| row[0].display().into_owned()).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------- PostgreSQL: what the SQL tab does to the session
@@ -2164,7 +2141,7 @@ fn sqlite_a_write_back_leaves_no_transaction_open_and_another_connection_reads_i
     pane.edit(0, "v", Some("z"));
     runtime::block_on(session::write_back_set(&pane.set)).unwrap();
     // A second BEGIN is an error while one is open.
-    run(&id, "committed-pane", "BEGIN; ROLLBACK");
+    pane_value(&id, "committed-pane", "BEGIN; ROLLBACK");
     assert_eq!(first_row(&id, "SELECT v FROM t"), ["z"]);
 }
 
@@ -2489,7 +2466,7 @@ fn postgres_pane(id: &str, name: &str, tab: Option<&TabState>) -> Vec<String> {
     outcome.push(written);
     outcome.extend(first_row(
         id,
-        "SELECT octet_length(t)::text, (arr[2] IS NULL)::text, EXTRACT(epoch FROM iv)::text, to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), d::text, n::text FROM pg_s WHERE id = 1",
+        "SELECT octet_length(t)::text, (arr[2] IS NULL)::text, EXTRACT(epoch FROM iv)::bigint::text, to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), d::text, n::text FROM pg_s WHERE id = 1",
     ));
     outcome
 }
