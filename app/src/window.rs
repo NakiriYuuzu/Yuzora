@@ -289,7 +289,7 @@ struct Copy {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum OverlayKind {
+pub(crate) enum OverlayKind { // yuzora(motion): read by yuzora::motion
     Dialog,
     Popup,
     Toast,
@@ -330,6 +330,8 @@ struct Overlay {
     /// The app's own screen (a `frame-` mod: What's new, the welcome): only
     /// its own close ends it, never a layout switch.
     frame: bool,
+    /// When it was added: its arrival (yuzora::motion) runs from here. None: it has none (blocks and terminals).
+    entered: Option<Instant>, // yuzora(motion)
 }
 
 struct Drag {
@@ -3637,6 +3639,7 @@ impl AppWindow {
             place,
             key: key.clone(),
             frame: spec.get("mod").and_then(Value::as_str).is_some_and(|m| m.starts_with("frame-")),
+            entered: (!has_layout).then(|| cx.background_executor().now()), // yuzora(motion): on the clock the frames use, so tests can move it
         });
         if let Some(k) = &key {
             if spec.get("keep").and_then(Value::as_bool) == Some(true) {
@@ -4318,8 +4321,9 @@ impl AppWindow {
         }
     }
 
-    fn render_overlays(&self, viewport: Size<Pixels>, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_overlays(&self, viewport: Size<Pixels>, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> { // yuzora(motion): the window, to ask for the next frame
         let mut out = Vec::new();
+        let (now, reduce_motion) = (cx.background_executor().now(), cx.reduce_motion()); // yuzora(motion)
         let mut toast_y = 16.0;
         // Drawn last, so it stays clickable over an open dialog.
         let pill = self.render_update_pill(cx);
@@ -4353,13 +4357,17 @@ impl AppWindow {
                 .occlude()
                 .when(o.kind != OverlayKind::Window, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
                 .child(content);
+            // yuzora(motion): a new dialog, popup or toast fades in and settles; at rest this is `body` and 1.0
+            let arrival = crate::yuzora::motion::phase(o.kind, o.entered, now, reduce_motion);
+            let drawn_in = self.copies.get(&o.slot).and_then(|c| c.root.as_ref()).map(|r| r.read(cx).content().entity_id());
+            let body = arrival.apply(body, window, drawn_in);
             match o.kind {
                 OverlayKind::Window => out.push(self.render_window(o, body, viewport, cx)),
                 OverlayKind::Dialog => out.push(
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(hsla(0.0, 0.0, 0.0, 0.35))
+                        .bg(hsla(0.0, 0.0, 0.0, 0.35 * arrival.opacity)) // yuzora(motion): the dim layer fades in with the dialog
                         .occlude()
                         .flex()
                         .items_center()
@@ -4899,7 +4907,7 @@ impl Render for AppWindow {
         let focused = self.focused_path(window, cx);
         let tree = self.render_node(&self.chrome, &focused, None, cx);
         let tree = self.window_frame(tree, window, cx);
-        let overlays = self.render_overlays(window.viewport_size(), cx);
+        let overlays = self.render_overlays(window.viewport_size(), window, cx); // yuzora(motion)
         let tracker = self.float_tracker(cx);
         let win_tracker = self.window_tracker(cx);
         let pane_drag = self.pane_drag_layer(cx);

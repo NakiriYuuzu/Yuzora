@@ -46,13 +46,22 @@ fn arrival_mod(name: &str, js: &str) {
 }
 
 /// A window with the mods an arrival needs, showing a terminal pane (so what a pane does while an overlay arrives
-/// can be seen) and no overlay.
+/// can be seen), and nothing else on top of it: no "Updated to" pill, and none of the toasts a new window opens
+/// (the terminal that cannot start with no core), which would take the places the toasts under test come to.
 fn arrival_window(cx: &mut gpui::TestAppContext) -> (gpui::Entity<super::AppWindow>, &mut gpui::VisualTestContext) {
     arrival_mod("probe", ARRIVAL_PROBE);
     arrival_mod("typer", ARRIVAL_TYPER);
-    arrival_mod("toast", ARRIVAL_PROBE);
     cx.update(gpui_base::init);
     let (view, cx) = open_window(cx, "unused", "", serde_json::json!({ "id": "pane", "type": "block", "content": { "terminal": "t1" } }));
+    // The window installs the shipped `toast` mod over any of that name; a toast draws what is there when it opens.
+    arrival_mod("toast", ARRIVAL_PROBE);
+    cx.update(|window, cx| view.update(cx, |this, cx| {
+        this.update_success = false;
+        let open: Vec<String> = this.overlays.iter().map(|o| o.id.clone()).collect();
+        for id in open {
+            this.remove_overlay(&id, window, cx);
+        }
+    }));
     arrival_settle(cx);
     (view, cx)
 }
@@ -116,10 +125,9 @@ fn arrival_wide(quads: &[ArrivalQuad], w: f32) -> Option<ArrivalQuad> {
     quads.iter().find(|q| (q.2 - w).abs() < 0.01 && q.3 > 20.0).cloned()
 }
 
-/// The red button inside the probe.
+/// The red button inside the probe, in whatever share of its color it is painted.
 fn arrival_button(quads: &[ArrivalQuad]) -> Option<ArrivalQuad> {
-    let red: gpui::Background = gpui::rgb(0xff0000).into();
-    quads.iter().find(|q| (q.2 - 100.0).abs() < 0.01 && (q.3 - 40.0).abs() < 0.01 && q.4 == red).cloned()
+    quads.iter().find(|q| (q.2 - 100.0).abs() < 0.01 && (q.3 - 40.0).abs() < 0.01 && !q.4.is_transparent()).cloned()
 }
 
 /// The dim layer behind a dialog, as the window has always drawn it.
@@ -181,7 +189,8 @@ fn overlay_arrival_shapes(cx: &mut gpui::TestAppContext) {
         let want = (case.rests_at)(viewport);
         arrival_near(body.0, want.0, 0.5, &format!("{} rests at x", case.id));
         arrival_near(body.1, want.1, 0.5, &format!("{} rests at y", case.id));
-        assert!(arrival_button(&rest).is_some(), "{}: its mod is painted at rest", case.id);
+        let red: gpui::Background = gpui::rgb(0xff0000).into();
+        assert_eq!(arrival_button(&rest).map(|q| q.4), Some(red), "{}: its mod is painted at rest, in full color", case.id);
         arrival_close(&view, cx, case.id);
 
         arrival_set_reduce_motion(cx, false);
@@ -200,7 +209,6 @@ fn overlay_arrival_shapes(cx: &mut gpui::TestAppContext) {
         let body_mid = arrival_wide(&mid, case.body_width).unwrap_or_else(|| panic!("{}: no body half way", case.id));
         assert_eq!(body_mid.4, body.4.opacity(f), "{}: the body is the eased share of its color half way", case.id);
         let button_mid = arrival_button(&mid).unwrap_or_else(|| panic!("{}: no mod content half way", case.id));
-        let red: gpui::Background = gpui::rgb(0xff0000).into();
         assert_eq!(button_mid.4, red.opacity(f), "{}: what a mod draws fades with its overlay, whatever its views cached", case.id);
         let rest_button = arrival_button(&rest).unwrap();
         assert_eq!(button_mid.0, rest_button.0, "{}: it drops straight", case.id);
