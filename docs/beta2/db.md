@@ -145,6 +145,10 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 
 結構分頁的 DDL 是用系統目錄重建的近似結果：PostgreSQL 與 SQL Server 不含 storage options、partitioning、owner。view、procedure、function 取自資料庫本身保存的定義（`pg_get_viewdef`、`OBJECT_DEFINITION`），SQLite 取自 `sqlite_schema.sql`。
 
+## CI 驗什麼
+
+PostgreSQL 與 SQL Server 的測試沒有 fixture 時會跳過並算通過，所以 `app-ci.yml` 的 `database-integration` job（納入 `App (build · test)`）在 Linux x86-64 起 `tests/database/docker-compose.yml`（含 `mssql` profile），以 `YUZORA_DATABASE_TEST_ENGINES=sqlite,postgres,mssql` 跑 `cargo test --locked -p yuzora-db`：寫回、停止、catalog 與 grid 讀取都對真的 PostgreSQL 16 與 SQL Server 2022 執行。該 job 另設 `YUZORA_DATABASE_REQUIRE_ENGINES=postgres,mssql`：被要求的引擎不在 `TEST_ENGINES` 裡時，測試直接失敗而不是跳過（`tests/common/mod.rs`）；fixture 連不上則測試本身的連線失敗。`#[ignore]` 的效能量測不在 CI 跑。本機不設這兩個變數時行為不變。
+
 ## 效能
 
 量測方式：debug build 的測試 binary，`cargo test -p yuzora-db --test engines -- --ignored --nocapture --test-threads=1`。fixture 是 `tests/database/docker-compose.yml`。資料經過 `RowSink` 收集，這也是 grid 讀資料的同一條路徑。

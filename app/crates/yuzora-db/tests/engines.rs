@@ -25,15 +25,13 @@ use yuzora_db::error::DbError;
 use yuzora_db::model::{Cell, Column, ObjectKind, ObjectRef, RowEdit};
 use yuzora_db::runtime;
 
+mod common;
+use common::enabled;
+
 // ---------------------------------------------------------------- helpers
 
 fn run<T>(work: impl Future<Output = T>) -> T {
     runtime::block_on(work)
-}
-
-fn enabled(engine: &str) -> bool {
-    std::env::var("YUZORA_DATABASE_TEST_ENGINES")
-        .is_ok_and(|v| v.split(',').any(|e| e.trim().eq_ignore_ascii_case(engine)))
 }
 
 /// Ends the test early, passing, when `engine` is not selected.
