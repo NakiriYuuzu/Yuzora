@@ -16,7 +16,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agents, layout, run, theme, shared, setShared, props, placement, spaces, openOverlay, closeOverlay, nextCommand } from "herdr";
-import { t, tokens, session } from "yuzora:core";
+import { t, tokens, session, motion } from "yuzora:core";
 import { startup } from "yuzora:settings";
 
 const STACK = "yuzora-sidebar";
@@ -31,6 +31,7 @@ const LAST = "yuzora.dock.last"; // the mode the toggle command shows again
 const OPEN = "yuzora.dock.open"; // the drawer's window now: { id, mode, session }; the window's header sets it, clears it on closing
 const COLORS = "yuzora.space.colors", SPACE_COLORS = "space.colors";
 const WINDOW_W = 380;
+const BUTTON = 34, GAP = 2; // the bar's mode buttons: the selection slides by one of each
 const STARTED = "yuzora.startup.applied"; // session() of the run whose startup mode was applied: once per run
 const HONORED = "yuzora.startup.honored"; // settings > General shows its "When Yuzora opens" choice only once something applies it
 
@@ -171,17 +172,23 @@ export default class Modebar extends View {
     const shown = this.shownMode();
     const button = (mode) => {
       const on = shown === mode, badge = badgeText(shared(`yuzora.badge.${mode}`));
-      return div().id(`dock-${mode}`).relative().w(34).h(34).flex().flex_none().items_center().justify_center().rounded(6)
-        .bg(on ? th.selected : th.chrome).text_color(on ? tk.text.strong : th.muted)
-        .when(on, (el) => el.border_r(2).border_color(th.foreground))
+      return div().id(`dock-${mode}`).relative().w(BUTTON).h(BUTTON).flex().flex_none().items_center().justify_center().rounded(6)
+        .text_color(on ? tk.text.strong : th.muted)
         .when(!on, (el) => el.hover((s) => s.bg(th.hover).text_color(th.foreground)))
         .tooltip(badge ? `${t(`mode.${mode}`)} · ${badge}` : t(`mode.${mode}`))
         .on_click(() => this.pickBar(mode))
         .child(modeIcon(mode))
         .when(Boolean(badge), (el) => el.child(badgeChip(th, tk, badge)));
     };
-    return v_flex().id("root").size_full().py(6).gap(2).items_center().bg(th.chrome).border_l(1).border_color(th.border)
-      .children(DOCK_MODES.map(button));
+    // One selection under the buttons (which have no background of their own), sliding between them. It is there
+    // while a mode is shown and not at all when the panel is closed, so opening or closing the panel is not a slide.
+    const at = DOCK_MODES.indexOf(shown);
+    const selection = div().id("dock-selection").absolute().left(0).top(at * (BUTTON + GAP)).w(BUTTON).h(BUTTON).rounded(6)
+      .bg(th.selected).border_r(2).border_color(th.foreground).transition("top", motion("base"));
+    return v_flex().id("root").size_full().py(6).items_center().bg(th.chrome).border_l(1).border_color(th.border)
+      .child(div().relative().w(BUTTON)
+        .when(at >= 0, (el) => el.child(selection))
+        .child(v_flex().gap(GAP).children(DOCK_MODES.map(button))));
   }
 
   // ---- the drawer -----------------------------------------------------------------
