@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { archiveName, channelOf, checkVersion, downloadsFor, tauriManifest, yuzoraManifest } from "./manifest";
+import { TARGETS, UNLISTED_TARGETS, archiveName, channelOf, checkVersion, downloadsFor, listedTargets, parseCli, tauriManifest, unlistedTargets, yuzoraManifest } from "./manifest";
 
 function dist(files: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), "yuzora-manifest-"));
@@ -60,6 +60,73 @@ describe("yuzora-update.json", () => {
   test("a test server's downloads", () => {
     const doc = yuzoraManifest(dist({ [archiveName("0.1.0", "linux-x86_64")]: "x" }), "0.1.0", downloadsFor("0.1.0", "http://127.0.0.1:8/R/download/v0.1.0/")) as any;
     expect(doc.targets["linux-x86_64"].url).toBe("http://127.0.0.1:8/R/download/v0.1.0/yuzora-0.1.0-linux-x86_64.tar.gz");
+  });
+});
+
+describe("yuzora-update.json without some targets", () => {
+  const all = (version: string) => Object.fromEntries(["macos-aarch64", "windows-x86_64", "linux-x86_64", "linux-aarch64"].map((t) => [archiveName(version, t), t]));
+
+  test("lists every target by default and leaves out the excluded ones", () => {
+    const dir = dist({ ...all("0.1.0"), "changelog.md": "en" });
+    const full = yuzoraManifest(dir, "0.1.0") as any;
+    expect(Object.keys(full.targets)).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64", "windows-x86_64"]);
+    const doc = yuzoraManifest(dir, "0.1.0", downloadsFor("0.1.0", undefined), when, ["windows-x86_64"]) as any;
+    expect(Object.keys(doc.targets)).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64"]);
+    expect(JSON.stringify(doc)).not.toContain("windows");
+    expect(doc.notes.url).toEndWith("/v0.1.0/changelog.md");
+  });
+
+  test("the excluded target's archive is still in the folder, for the release to upload", () => {
+    const dir = dist(all("0.1.0"));
+    yuzoraManifest(dir, "0.1.0", downloadsFor("0.1.0", undefined), when, ["windows-x86_64"]);
+    expect(readFileSync(join(dir, archiveName("0.1.0", "windows-x86_64")), "utf8")).toBe("windows-x86_64");
+  });
+
+  test("a target Yuzora does not ship, or nothing left to offer, is an error", () => {
+    const dir = dist(all("0.1.0"));
+    expect(() => yuzoraManifest(dir, "0.1.0", downloadsFor("0.1.0", undefined), when, ["macos-x86_64"])).toThrow("not a target Yuzora ships");
+    expect(() => yuzoraManifest(dir, "0.1.0", downloadsFor("0.1.0", undefined), when, ["macos-aarch64", "windows-x86_64", "linux-x86_64", "linux-aarch64"])).toThrow("besides the excluded");
+  });
+
+  test("the same inputs write the same bytes once pub_date is pinned", () => {
+    const dir = dist({ ...all("0.1.0"), "changelog.md": "en" });
+    const write = () => JSON.stringify(yuzoraManifest(dir, "0.1.0", downloadsFor("0.1.0", undefined), new Date("2026-11-12T03:04:05Z"), ["windows-x86_64"]));
+    expect(write()).toBe(write());
+    expect(write()).toContain('"pub_date":"2026-11-12T03:04:05Z"');
+  });
+
+  test("the command line", () => {
+    expect(parseCli(["yuzora", "dist"])).toMatchObject({ kind: "yuzora", dir: "dist", exclude: [] });
+    const cli = parseCli(["yuzora", "dist", "--exclude", "windows-x86_64, linux-aarch64", "--pub-date", "2026-11-12T03:04:05Z"]);
+    expect(cli.exclude).toEqual(["windows-x86_64", "linux-aarch64"]);
+    expect(cli.date.toISOString()).toBe("2026-11-12T03:04:05.000Z");
+    expect(() => parseCli(["yuzora"])).toThrow("usage");
+    expect(() => parseCli(["other", "dist"])).toThrow("usage");
+    expect(() => parseCli(["tauri", "dist", "--exclude", "windows-x86_64"])).toThrow("--exclude is for the yuzora manifest");
+    expect(() => parseCli(["yuzora", "dist", "--pub-date", "tomorrow-ish"])).toThrow("is not a date");
+  });
+});
+
+describe("which targets a version's manifest lists", () => {
+  test("0.1.0 leaves Windows out and lists the other three, in the order the app ships them", () => {
+    expect(unlistedTargets("0.1.0")).toEqual(["windows-x86_64"]);
+    expect(listedTargets("0.1.0")).toEqual(["macos-aarch64", "linux-x86_64", "linux-aarch64"]);
+  });
+
+  test("a version that has no row lists every target", () => {
+    for (const version of ["0.1.1", "0.2.0", "0.1.0-beta.4"]) {
+      expect(unlistedTargets(version), version).toEqual([]);
+      expect(listedTargets(version), version).toEqual(["macos-aarch64", "windows-x86_64", "linux-x86_64", "linux-aarch64"]);
+    }
+  });
+
+  test("every row names targets Yuzora ships, once each, and leaves at least one listed", () => {
+    for (const [version, targets] of Object.entries(UNLISTED_TARGETS)) {
+      checkVersion(version);
+      expect(new Set(targets).size, version).toBe(targets.length);
+      for (const target of targets) expect(TARGETS, version).toContain(target);
+      expect(listedTargets(version).length, version).toBeGreaterThan(0);
+    }
   });
 });
 

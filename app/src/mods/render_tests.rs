@@ -98,7 +98,8 @@ struct Calls {
 
 fn updates(app: &str, core: &str) -> Value {
     json!({
-        "app": {"version":"0.1.0", "updates":app != "source", "ready": (app == "ready").then_some("0.1.1")},
+        // yuzora(win-update): "stuck" is an update whose swap failed, and "failure" the reason Settings > Updates shows for it.
+        "app": {"version":"0.1.0", "updates":app != "source", "ready": matches!(app, "ready" | "stuck").then_some("0.1.1"), "failure": (app == "stuck").then(|| crate::yuzora::release::update::swap_failure_text(true, "(os error 32)"))},
         "core": {"version":"0.1.5", "ready":(core == "ready").then_some("0.1.6"), "managed":(core == "managed").then_some("homebrew"), "error":(core == "error").then_some("offline"), "updating":core == "updating"},
         "checked":1700000000, "checks":app != "source", "checking":false
     })
@@ -770,6 +771,123 @@ fn settings_sections_and_updates(cx: &mut TestAppContext) {
         assert!(tree.contains(if checking { "Checking" } else if succeeded { "Up to date" } else { "Check your connection" }), "check status missing: {tree}");
     }
     eprintln!("27 settings cases, each twice: {:?}", start.elapsed());
+}
+
+// yuzora(win-update): the whole reason a swap failed is a paragraph in Settings › Updates; the toast that points there holds a line.
+/// The lines of `tree` above `at` that enclose it, nearest first.
+fn enclosing(tree: &str, at: usize) -> Vec<&str> {
+    let lines: Vec<&str> = tree.lines().collect();
+    let depth = |l: &str| l.len() - l.trim_start().len();
+    let mut out = Vec::new();
+    let mut want = depth(lines[at]);
+    for line in lines[..at].iter().rev() {
+        if depth(line) < want {
+            out.push(*line);
+            want = depth(line);
+        }
+    }
+    out
+}
+
+const CLIPS: [&str; 4] = [
+    "truncate",
+    "whitespace_nowrap",
+    "text_ellipsis",
+    "overflow_hidden",
+];
+
+#[gpui::test]
+fn a_failed_swap_is_explained_in_full_under_settings_updates(cx: &mut TestAppContext) {
+    shell_init(cx);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("updates");
+    let reason = crate::yuzora::release::update::swap_failure_text(true, "(os error 32)");
+    assert!(
+        reason.len() > 250,
+        "the reason is a paragraph, far past one toast line: {reason}"
+    );
+    let tree = describe(
+        cx,
+        &staged,
+        "frame/settings",
+        true,
+        p.clone(),
+        updates("stuck", "current"),
+        None,
+    )
+    .unwrap();
+    assert!(
+        tree.contains("st-app-update-failure") && tree.contains("st-app-update"),
+        "Restart stays, and the reason sits with it: {tree}"
+    );
+    let at = tree
+        .lines()
+        .position(|l| l.trim() == format!("text {reason:?}"))
+        .unwrap_or_else(|| panic!("the whole reason as one piece of text: {tree}"));
+    let lines: Vec<&str> = tree.lines().collect();
+    for line in std::iter::once(lines[at - 1]).chain(enclosing(&tree, at)) {
+        assert!(
+            CLIPS.iter().all(|clip| !line.contains(clip)),
+            "the reason is cut off by {line}"
+        );
+    }
+    // The harness has no catalog for the frame (it prints the key), so look the heading up where the app does.
+    assert!(tree.contains("text \"updates.failed\""), "{tree}");
+    let catalog: Value =
+        serde_json::from_str(include_str!("../../defaults/frame/settings/i18n/en.json")).unwrap();
+    assert!(
+        catalog["updates"]["failed"]
+            .as_str()
+            .is_some_and(|heading| heading.contains("could not be installed"))
+    );
+    let none = describe(
+        cx,
+        &staged,
+        "frame/settings",
+        true,
+        p,
+        updates("ready", "current"),
+        None,
+    )
+    .unwrap();
+    assert!(
+        !none.contains("st-app-update-failure") && !none.contains("another program"),
+        "nothing failed: nothing to explain: {none}"
+    );
+}
+
+#[gpui::test]
+fn the_toast_for_a_failed_swap_shows_its_title_and_body_whole(cx: &mut TestAppContext) {
+    shell_init(cx);
+    let staged = Staged::new();
+    for busy in [true, false] {
+        let toast = crate::yuzora::release::update::toast_of(busy);
+        let mut note = toast["notification"].clone();
+        note["overlay"] = json!("o1");
+        let (title, body) = (
+            note["title"].as_str().unwrap().to_owned(),
+            note["body"].as_str().unwrap().to_owned(),
+        );
+        let tree = describe(
+            cx,
+            &staged,
+            "mods/toast",
+            true,
+            note,
+            updates("stuck", "current"),
+            None,
+        )
+        .unwrap();
+        for text in [&title, &body] {
+            assert!(tree.contains(&format!("text {text:?}")), "{text}: {tree}");
+        }
+        assert_eq!(
+            tree.matches(".truncate").count(),
+            2,
+            "the toast truncates one line each, so each line has to fit it (update.rs checks their width): {tree}"
+        );
+    }
 }
 
 #[gpui::test]
@@ -1737,36 +1855,96 @@ impl gpui::Render for Mounted {
 struct Scenario {
     visual: gpui::VisualTestContext,
     notes: Rc<RefCell<Vec<Vec<Value>>>>,
-    _calls: Rc<RefCell<Calls>>,
+    calls: Rc<RefCell<Calls>>,
+    runtime: Rc<ShellRuntime>,
+    root: gpui::Entity<gpui_shell::ShellRoot>,
 }
 
 impl Scenario {
     /// `source` replaces the staged main.js; it may `import { note } from "probe"`.
     fn mount(cx: &mut TestAppContext, staged: &Staged, source: &str, width: f32, height: f32) -> Self {
+        Self::mount_with_props(cx, staged, source, props(), width, height)
+    }
+
+    /// `mount` with the `props()` the mod reads being `props`.
+    fn mount_with_props(
+        cx: &mut TestAppContext,
+        staged: &Staged,
+        source: &str,
+        props: Value,
+        width: f32,
+        height: f32,
+    ) -> Self {
         use std::ops::Deref;
         let calls = Rc::new(RefCell::new(Calls::default()));
         let notes: Rc<RefCell<Vec<Vec<Value>>>> = Rc::default();
         let sink = notes.clone();
         let policy = Policy::new()
             .with_storage_path(staged.0.join("store-scenario.json"))
-            .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
-            .with_host_module(module(fixture(false, props(), updates("current", "current")), calls.clone()))
+            .with_capabilities(
+                Capabilities::new()
+                    .storage(true)
+                    .read_roots([staged.0.clone()]),
+            )
+            .with_host_module(module(
+                fixture(false, props, updates("current", "current")),
+                calls.clone(),
+            ))
             .unwrap();
         let policy = crate::yuzora::with_modules(policy, "")
             .with_host_module(HostModule::new("probe").function("note", move |a| {
-                sink.borrow_mut().push((0..8).map_while(|i| a.get(i)).map(from_host).collect());
+                sink.borrow_mut()
+                    .push((0..8).map_while(|i| a.get(i)).map(from_host).collect());
                 Ok(HostValue::Null)
             }))
             .unwrap();
         gpui_shell::policy::set_default(policy);
         std::fs::write(staged.0.join("main.js"), source).unwrap();
         let runtime = ShellRuntime::new_isolated().unwrap();
-        let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&staged.0, window, cx).unwrap()));
+        let window =
+            cx.add_window(|window, cx| Mounted(runtime.try_load(&staged.0, window, cx).unwrap()));
+        let root = window
+            .read_with(cx, |mounted, _| mounted.0.clone())
+            .unwrap();
         let visual = gpui::VisualTestContext::from_window(*window.deref(), cx);
         visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
-        let mut scenario = Self { visual, notes, _calls: calls };
+        let mut scenario = Self {
+            visual,
+            notes,
+            calls,
+            runtime,
+            root,
+        };
         scenario.settle();
         scenario
+    }
+
+    /// What another mod copy does with `setShared`, then the window drawing every mod again, as it does for a change of shared state.
+    fn share(&mut self, key: &str, value: Value) {
+        self.put(key, value);
+        self.frame();
+        self.settle();
+    }
+
+    fn put(&self, key: &str, value: Value) {
+        self.calls.borrow_mut().shared.insert(key.into(), value);
+    }
+
+    /// One frame of every mod, and nothing run that the frame left behind (a timer, a task).
+    fn frame(&mut self) {
+        let (runtime, root) = (self.runtime.clone(), self.root.clone());
+        self.visual.update(|window, cx| {
+            runtime.refresh(&root, cx).unwrap();
+            window.draw(cx).clear(cx);
+        });
+    }
+
+    /// The clock moving on: what a mod left for a timer (`cx.timer.after`) runs, then the frames it asked for are drawn.
+    fn tick(&mut self, millis: u64) {
+        self.visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(millis));
+        self.settle();
     }
 
     fn settle(&mut self) {
@@ -2628,4 +2806,691 @@ fn the_database_table_pane_answers_a_save_in_flight_with_keep_waiting_or_stop_sa
     assert!(s.last("stop").is_some(), "Stop saving did not stop the save");
     assert!(saving.unwrap().is_stopped(), "Stop saving did not reach the save");
     assert!(!shown(&s).2 && s.last("load").is_none(), "Stop saving reloads nothing and closes the bar");
+}
+
+// The sidebar reuses a table pane that is open in the tab: it leaves the pick in shared state ({key, target, seq}), which
+// a pane can only see from a frame. The pane must not start the load in that frame: the engine refuses `cx.notify()`
+// there, and a load that began before it threw never got its task, so the pane stayed on "Loading…".
+const DB_OPEN: &str = "yuzora.db.open";
+
+/// The Database table pane, `note`ing what is felt from outside: the error a frame ended in, what it showed (the
+/// connection it is for, whether it is loading, its error, whether the bar asks about edits) and each load it made
+/// (`probe` leaves the loads and the bar's answers out, to find where the answers are).
+fn db_reuse_source(edited: Option<u64>, probe: bool) -> String {
+    let start = edited.map_or_else(String::new, |id| {
+        format!(
+            r#"
+    this.target = {{ connection: "gone-a", database: null, schema: "public", name: "first", kind: "table" }};
+    this.state = {{ id: 1, running: false, version: 1, elapsedMs: 0, error: null, cancelled: false,
+      results: [{{ id: {id}, statement: "select * from first", columns: 2, rows: 1, edits: 1 }}] }};"#
+        )
+    });
+    format!(
+        r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import {{ note }} from "probe";
+const PROBE = {probe};
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    super.init(p, cx);{start}
+    if (PROBE) {{
+      let confirm = null;
+      Object.defineProperty(this, "confirm", {{
+        get() {{ return confirm; }},
+        set(v) {{ if (v === null) note("closed"); else confirm = v; }},
+        configurable: true,
+      }});
+    }}
+  }}
+  load(cx, order) {{ note("load", this.target.connection); if (!PROBE) super.load(cx, order); }}
+  render(cx) {{
+    try {{
+      const tree = super.render(cx);
+      note("shown", this.target?.connection ?? null, this.state === null ? "loading" : "settled", this.state?.error ?? null, this.confirm !== null);
+      return tree;
+    }} catch (e) {{
+      note("render-error", String(e?.message ?? e));
+      throw e;
+    }}
+  }}
+}}
+"#
+    )
+}
+
+fn db_table(connection: &str) -> Value {
+    json!({"connection": connection, "database": null, "schema": "public", "name": "next", "kind": "table"})
+}
+
+fn db_pick(key: &str, connection: &str, seq: u64) -> Value {
+    json!({"key": key, "target": db_table(connection), "seq": seq})
+}
+
+/// A pane's own key: the grid and the editors of a pane are kept by it, so no two panes of a test share one.
+fn db_key() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "dbt-reuse-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn db_pane_props(key: &str) -> Value {
+    json!({"key": key, "connection": "gone-a", "database": null, "schema": "public", "name": "first", "kind": "table"})
+}
+
+/// A result of the pane with one edited cell, the way `db_confirm` makes it.
+fn db_edited_result(owner: &str) -> u64 {
+    use yuzora_db::{
+        model::{Cell, Column},
+        results,
+    };
+    let set = results::create(owner, "select * from first");
+    let mut r = results::lock(&set);
+    r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
+    r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+    r.complete = true;
+    r.edits.insert((0, 1), Cell::text("x"));
+    r.id
+}
+
+/// What the pane showed last: `(connection, "loading" | "settled", error, bar up)`.
+fn db_now(s: &Scenario) -> (String, String, Option<String>, bool) {
+    let n = s.last("shown").expect("the pane drew a frame");
+    (
+        n[1].as_str().unwrap().to_owned(),
+        n[2].as_str().unwrap().to_owned(),
+        n[3].as_str().map(str::to_owned),
+        n[4].as_bool().unwrap(),
+    )
+}
+
+fn db_frame_errors(s: &Scenario) -> Vec<String> {
+    s.notes
+        .borrow()
+        .iter()
+        .filter(|n| n.first() == Some(&json!("render-error")))
+        .map(|n| n[1].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// The connection of each load the pane made, in order.
+fn db_loads(s: &Scenario) -> Vec<String> {
+    s.notes
+        .borrow()
+        .iter()
+        .filter(|n| n.first() == Some(&json!("load")))
+        .map(|n| n[1].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Waits for the pane to show what reading `connection` ended in: that connection does not exist, so the table is
+/// an error naming it (the read runs on the database runtime's threads and wakes the pane from there).
+fn db_settles_on(s: &mut Scenario, connection: &str) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(5) {
+        s.settle();
+        let (shown, state, error, _) = db_now(s);
+        if shown == connection
+            && state == "settled"
+            && error.is_some_and(|e| e.contains(connection))
+        {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    false
+}
+
+// Bug (acceptance, SQL Server): a table in the sidebar, picked while the tab's table pane shows another, ended in
+// "cx.notify() is not allowed during the `render` phase" and left the pane on its old table; picked twice in a row it
+// left the pane on "Loading…" for good.
+#[gpui::test]
+fn the_database_table_pane_follows_the_sidebar_to_another_table(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let key = db_key();
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(None, false),
+        db_pane_props(&key),
+        320.0,
+        400.0,
+    );
+    assert!(
+        db_settles_on(&mut s, "gone-a"),
+        "the pane never showed its own table: {:?}",
+        db_now(&s)
+    );
+    for (seq, connection) in [(2, "gone-b"), (3, "gone-c")] {
+        s.share(DB_OPEN, db_pick(&key, connection, seq));
+        s.tick(50);
+        assert_eq!(
+            db_frame_errors(&s),
+            Vec::<String>::new(),
+            "a frame failed when the sidebar picked {connection}"
+        );
+        assert!(
+            db_settles_on(&mut s, connection),
+            "the pane never showed {connection}: {:?}",
+            db_now(&s)
+        );
+    }
+    s.tick(50);
+    assert_eq!(
+        db_loads(&s),
+        ["gone-a", "gone-b", "gone-c"],
+        "each pick loads once, and drawing again loads nothing"
+    );
+}
+
+// The second click of a double click: the pane the first one opened is still reading its own table when the pick comes.
+// The pane ends on the pick, and what the table it left was still reading does not reach it.
+#[gpui::test]
+fn the_database_table_pane_follows_a_pick_that_comes_while_it_is_still_loading(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let key = db_key();
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(None, false),
+        db_pane_props(&key),
+        320.0,
+        400.0,
+    );
+    s.share(DB_OPEN, db_pick(&key, "gone-b", 2));
+    s.tick(50);
+    assert_eq!(
+        db_frame_errors(&s),
+        Vec::<String>::new(),
+        "a frame failed when the pick came while the pane was loading"
+    );
+    assert!(
+        db_settles_on(&mut s, "gone-b"),
+        "the pane never showed the pick: {:?}",
+        db_now(&s)
+    );
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    s.tick(50);
+    let (shown, _, error, _) = db_now(&s);
+    assert!(
+        shown == "gone-b" && error.is_some_and(|e| e.contains("gone-b")),
+        "the first table's read reached the pane after the pick"
+    );
+    assert_eq!(db_loads(&s), ["gone-a", "gone-b"]);
+}
+
+// Two picks, each seen by a frame, before the pane gets to the first: the pane goes to the second, and the first is
+// never read.
+#[gpui::test]
+fn the_database_table_pane_follows_the_last_of_two_quick_picks(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let key = db_key();
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(None, false),
+        db_pane_props(&key),
+        320.0,
+        400.0,
+    );
+    assert!(db_settles_on(&mut s, "gone-a"), "{:?}", db_now(&s));
+    s.put(DB_OPEN, db_pick(&key, "gone-b", 2));
+    s.frame();
+    s.put(DB_OPEN, db_pick(&key, "gone-c", 3));
+    s.frame();
+    s.tick(50);
+    assert_eq!(db_frame_errors(&s), Vec::<String>::new());
+    assert!(
+        db_settles_on(&mut s, "gone-c"),
+        "the pane did not end on the last pick: {:?}",
+        db_now(&s)
+    );
+    assert_eq!(
+        db_loads(&s),
+        ["gone-a", "gone-c"],
+        "the first pick was read though the second had come"
+    );
+}
+
+// A pick over a result with an unwritten edit asks first, in the frame after the pick, and changes nothing until it is
+// answered: Keep editing leaves the table as it was, Discard and go on reads the picked one.
+#[gpui::test]
+fn the_database_table_pane_asks_before_the_sidebar_replaces_unwritten_edits(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 228.0_f32;
+    let (probe, discard_key, keep_key) = (db_key(), db_key(), db_key());
+    let mut p = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(Some(db_edited_result(&probe)), true),
+        json!({"key": probe}),
+        width,
+        400.0,
+    );
+    p.share(DB_OPEN, db_pick(&probe, "gone-b", 2));
+    p.tick(50);
+    let at = clickables(&mut p, &["load"], width, 240.0);
+    let keep = clickable_only(&mut p, "closed", "load", width, 240.0);
+    let (Some(discard), Some(keep)) = (at[0], keep) else {
+        panic!("{width}px: the bar's answers can't both be pressed: {at:?} {keep:?}")
+    };
+    drop(p);
+
+    let id = db_edited_result(&discard_key);
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(Some(id), false),
+        json!({"key": discard_key}),
+        width,
+        400.0,
+    );
+    assert_eq!(db_now(&s), ("gone-a".into(), "settled".into(), None, false));
+    s.share(DB_OPEN, db_pick(&discard_key, "gone-b", 2));
+    s.tick(50);
+    assert_eq!(
+        db_frame_errors(&s),
+        Vec::<String>::new(),
+        "a frame failed when the sidebar picked over an edit"
+    );
+    assert_eq!(
+        db_now(&s),
+        ("gone-a".into(), "settled".into(), None, true),
+        "the bar asks and the table stays"
+    );
+    assert!(
+        db_loads(&s).is_empty(),
+        "the pick was read before it was answered"
+    );
+    press(&mut s, discard);
+    assert!(
+        db_settles_on(&mut s, "gone-b"),
+        "Discard and go on did not read the picked table: {:?}",
+        db_now(&s)
+    );
+    assert_eq!(db_loads(&s), ["gone-b"]);
+
+    let id = db_edited_result(&keep_key);
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_reuse_source(Some(id), false),
+        json!({"key": keep_key}),
+        width,
+        400.0,
+    );
+    s.share(DB_OPEN, db_pick(&keep_key, "gone-b", 2));
+    s.tick(50);
+    press(&mut s, keep);
+    s.tick(50);
+    assert_eq!(
+        db_now(&s),
+        ("gone-a".into(), "settled".into(), None, false),
+        "Keep editing leaves the table as it was"
+    );
+    assert!(
+        db_loads(&s).is_empty(),
+        "Keep editing read the picked table"
+    );
+    assert_eq!(
+        yuzora_db::results::get(id).map(|set| yuzora_db::results::lock(&set).edits.len()),
+        Some(1)
+    );
+}
+
+// Run in the SQL tab while the pane's job is still going. A read of the table can be stuck behind a transaction the
+// SQL tab left open (BEGIN; UPDATE …): the Run that would end it did nothing, and nothing said why.
+
+/// The Database table pane on its SQL tab with a job going that never reports (`running`: `"table"` is its read of
+/// the table, `"sql"` a statement of the person's), `COMMIT` in the editor, noting what it shows (the tab, whether a
+/// job goes, its error, whether the bar asks about edits), the SQL tab's hint, and every job it watches and Stop.
+/// `finder`: Run only notes that it was pressed, so looking for it (a click on every spot) starts nothing.
+fn db_busy_source(running: &str, edited: Option<u64>, finder: bool) -> String {
+    let run_body = if finder { "" } else { "super.run(cx);" };
+    let results = edited.map_or_else(
+        || "[]".to_owned(),
+        |id| {
+            format!(
+                r#"[{{ id: {id}, statement: "select * from first", columns: 2, rows: 1, edits: 1 }}]"#
+            )
+        },
+    );
+    format!(
+        r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import {{ note }} from "probe";
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    super.init(p, cx);
+    this.target = {{ connection: "gone-a", database: null, schema: "public", name: "first", kind: "table" }};
+    this.tab = "sql";
+    this.sql = "COMMIT";
+    this.jobId = 41;
+    this.jobKind = "{running}";
+    this.state = {{ id: 41, running: true, version: 1, elapsedMs: 0, error: null, cancelled: false, results: {results} }};
+  }}
+  watch(cx, id, kind) {{ note("watch", kind ?? null); super.watch(cx, id, kind); }}
+  run(cx) {{ note("run"); {run_body} }}
+  stop() {{ note("stop"); }}
+  sqlHint() {{ const hint = super.sqlHint?.() ?? null; note("hint", hint); return hint; }}
+  render(cx) {{
+    try {{
+      const tree = super.render(cx);
+      const s = this.state;
+      note("shown", this.tab, s === null ? "loading" : s.running ? "running" : "settled", s?.error ?? null, this.confirm !== null);
+      return tree;
+    }} catch (e) {{
+      note("render-error", String(e?.message ?? e));
+      throw e;
+    }}
+  }}
+}}
+"#
+    )
+}
+
+/// What the pane showed last: `(tab, "loading" | "running" | "settled", error, bar up)`.
+fn db_busy_now(s: &Scenario) -> (String, String, Option<String>, bool) {
+    let n = s.last("shown").expect("the pane drew a frame");
+    (
+        n[1].as_str().unwrap().to_owned(),
+        n[2].as_str().unwrap().to_owned(),
+        n[3].as_str().map(str::to_owned),
+        n[4].as_bool().unwrap(),
+    )
+}
+
+/// The jobs the pane watched, by kind, in order.
+fn db_watched(s: &Scenario) -> Vec<Value> {
+    s.notes
+        .borrow()
+        .iter()
+        .filter(|n| n.first() == Some(&json!("watch")))
+        .map(|n| n[1].clone())
+        .collect()
+}
+
+/// Where Run is, found on a pane of its own: finding a button means clicking everywhere, and Run starts the SQL.
+fn db_find_run(
+    cx: &mut TestAppContext,
+    staged: &Staged,
+    running: &str,
+    edited: Option<u64>,
+    width: f32,
+) -> Option<(f32, f32, f32, f32)> {
+    let mut finder = Scenario::mount_with_props(
+        cx,
+        staged,
+        &db_busy_source(running, edited, true),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    clickable(&mut finder, "run", width, 100.0)
+}
+
+fn db_hint(s: &Scenario) -> String {
+    s.last("hint")
+        .and_then(|n| n[1].as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+// The way out of a stuck table: Run on the SQL tab ends the read that waits and runs the COMMIT.
+#[gpui::test]
+fn the_database_table_pane_runs_the_sql_tab_over_a_table_read_that_is_still_going(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_busy_source("table", None, false),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    assert_eq!(db_busy_now(&s).1, "running");
+    let hint = db_hint(&s);
+    let run = db_find_run(cx, &staged, "table", None, width)
+        .expect("Run can't be pressed on the SQL tab while the table is being read");
+    press(&mut s, run);
+    let started = Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(5) {
+        s.settle();
+        if db_busy_now(&s).1 == "settled" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let (tab, phase, error, _) = db_busy_now(&s);
+    assert_eq!(
+        (tab.as_str(), phase.as_str()),
+        ("data", "settled"),
+        "the SQL did not run"
+    );
+    assert!(
+        error.is_some_and(|e| e.contains("gone-a")),
+        "what showed is not the SQL's answer"
+    );
+    assert_eq!(db_watched(&s), [json!("sql")]);
+    assert!(
+        s.last("stop").is_none(),
+        "Run asked the person to Stop first"
+    );
+    assert_eq!(
+        hint, "sql_over_read",
+        "the SQL tab does not say what Run does to the read"
+    );
+}
+
+// A statement of the person's own is not stopped by another Run: the toolbar offers Stop, and the SQL tab says so.
+#[gpui::test]
+fn the_database_table_pane_says_why_run_waits_for_a_statement_that_is_still_going(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_busy_source("sql", None, false),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    assert!(
+        db_hint(&s) == "sql_busy",
+        "the SQL tab does not say why Run waits: {:?}",
+        db_hint(&s)
+    );
+    assert!(
+        clickable(&mut s, "run", width, 100.0).is_none(),
+        "Run is offered while a statement goes"
+    );
+    let stop = clickable(&mut s, "stop", width, 100.0).expect("Stop can't be pressed");
+    press(&mut s, stop);
+    assert!(s.last("stop").is_some());
+    assert!(db_watched(&s).is_empty());
+}
+
+// Edits being written when Run is pressed: the bar offers to wait or to stop saving, and Run neither stops the read
+// nor the save, nor starts the SQL.
+#[gpui::test]
+fn the_database_table_pane_does_not_run_the_sql_tab_over_a_save_in_flight(cx: &mut TestAppContext) {
+    use yuzora_db::{
+        model::{Cell, Column},
+        results::{self, WriteState, WriteStop},
+    };
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let key = db_key();
+    let set = results::create(&key, "select * from first");
+    let saving = WriteStop::new();
+    let id = {
+        let mut r = results::lock(&set);
+        r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
+        r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+        r.complete = true;
+        r.edits.insert((0, 1), Cell::text("x"));
+        r.write = WriteState::Writing(saving.clone());
+        r.id
+    };
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_busy_source("table", Some(id), false),
+        json!({"key": key}),
+        width,
+        400.0,
+    );
+    let run = db_find_run(cx, &staged, "table", Some(id), width)
+        .expect("Run can't be pressed on the SQL tab while the table is being read");
+    press(&mut s, run);
+    s.tick(50);
+    assert_eq!(
+        db_busy_now(&s),
+        ("sql".into(), "running".into(), None, true),
+        "Run asks about the save and leaves the read"
+    );
+    assert!(db_watched(&s).is_empty(), "the SQL was started");
+    assert!(s.last("stop").is_none());
+    assert!(!saving.is_stopped(), "Run stopped the save");
+    assert_eq!(
+        results::get(id).map(|set| results::lock(&set).edits.len()),
+        Some(1)
+    );
+}
+
+/// `db_busy_source` with nothing typed in the SQL editor.
+fn db_empty_sql_source(running: &str, finder: bool) -> String {
+    let source = db_busy_source(running, None, finder);
+    let typed = r#"this.sql = "COMMIT";"#;
+    assert!(source.contains(typed));
+    source.replace(typed, r#"this.sql = "";"#)
+}
+
+// The editor is empty while the table is read: Run has nothing to run and does nothing, so Stop is what lets the
+// person out of the read. The toolbar can't tell what is typed (typing does not redraw it), so Stop stays beside Run.
+#[gpui::test]
+fn the_database_table_pane_offers_stop_on_the_sql_tab_while_the_table_is_read(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 320.0_f32;
+    let mut finder = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_empty_sql_source("table", true),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    let stop = clickable(&mut finder, "stop", width, 100.0)
+        .expect("Stop can't be pressed on the SQL tab while the table is read");
+    let run = clickable(&mut finder, "run", width, 100.0).expect("Run can't be pressed");
+    let mut s = Scenario::mount_with_props(
+        cx,
+        &staged,
+        &db_empty_sql_source("table", false),
+        json!({"key": db_key()}),
+        width,
+        400.0,
+    );
+    press(&mut s, run);
+    s.tick(50);
+    assert!(s.last("run").is_some(), "Run was not pressed");
+    assert!(db_watched(&s).is_empty(), "Run started something");
+    assert!(s.last("stop").is_none());
+    assert_eq!(db_busy_now(&s).1, "running", "Run ended the read");
+    press(&mut s, stop);
+    assert!(s.last("stop").is_some(), "Stop did not stop the read");
+}
+
+// Why the SQL tab keeps Stop beside Run instead of showing one for an empty editor and the other for a typed one:
+// what is typed does not draw the pane's JS again, so a toolbar that waited for it would show what was true before.
+// Run (⌘↵) is how the text typed is read back here: outside a script call nothing can ask the editor.
+#[gpui::test]
+fn the_database_table_pane_is_not_drawn_again_by_typing_in_its_sql_editor(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let source = db_empty_sql_source("table", true)
+        .replace(
+            r#"import { note } from "probe";"#,
+            r#"import { note } from "probe"; import { editorText } from "yuzora:db";"#,
+        )
+        .replace(
+            r#"stop() { note("stop"); }"#,
+            r#"stop() { note("stop"); } runSql(cx) { note("typed", editorText(this.key + ":sql")?.text ?? null); }"#,
+        );
+    assert!(source.contains("typed"));
+    let mut s = Scenario::mount_with_props(cx, &staged, &source, json!({"key": db_key()}), 320.0, 400.0);
+    let drawn = |s: &Scenario| {
+        s.notes
+            .borrow()
+            .iter()
+            .filter(|n| n.first() == Some(&json!("shown")))
+            .count()
+    };
+    let idle = drawn(&s);
+    s.settle();
+    assert_eq!(drawn(&s), idle, "a window frame draws the pane's JS again");
+    s.click(100.0, 200.0);
+    let before = drawn(&s);
+    s.visual.simulate_input("select 1");
+    s.settle();
+    assert_eq!(drawn(&s), before, "typing draws the pane's JS again");
+    // The shortcut a person presses on this system: the hint says "⌘↵ / Ctrl+Enter".
+    s.visual.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-enter" } else { "ctrl-enter" });
+    s.settle();
+    assert_eq!(
+        s.last("typed").map(|n| n[1].clone()),
+        Some(json!("select 1")),
+        "nothing typed reached the editor"
+    );
+}
+
+// The dock leaves a table pane 110 to 230 px: Stop and Run both stay in it on the SQL tab while the table is read.
+#[gpui::test]
+fn the_database_table_panes_stop_and_run_stay_inside_a_narrow_pane_while_the_table_is_read(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for width in [110.0_f32, 150.0, 240.0] {
+        let mut s = Scenario::mount_with_props(
+            cx,
+            &staged,
+            &db_empty_sql_source("table", true),
+            json!({"key": db_key()}),
+            width,
+            400.0,
+        );
+        let boxes = clickables(&mut s, &["stop", "run"], width, 160.0);
+        answers_inside(width, &boxes, &["stop", "run"]);
+    }
 }

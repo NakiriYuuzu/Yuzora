@@ -1171,7 +1171,7 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
             return Err(changed());
         }
         let canceller = l.conn().canceller();
-        canceller.write_back_starts();
+        canceller.write_back_starts(&stop);
         *engine_stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(canceller);
         l.conn().apply_edits(&target.table, &edits).await
     });

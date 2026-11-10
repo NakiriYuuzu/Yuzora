@@ -187,6 +187,19 @@ jobs:
             echo "release_notes_b64=${RELEASE_NOTES_B64}"
           } >> "$GITHUB_OUTPUT"
 
+      # The herdr-based app in app/ is released by app-release.yml. A version
+      # string that reaches this workflow from a tree that carries it would
+      # build and publish the Tauri app over it, so a release that would be
+      # built stops here, before a tag or a build exists.
+      - name: Refuse a Tauri release from a tree that carries app/
+        if: steps.release.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          if [ -f app/Cargo.toml ]; then
+            echo "::error::this commit carries the herdr-based app in app/, which app-release.yml releases; release.yml no longer builds or publishes the Tauri app, so package.json's version must stay the already published one"
+            exit 1
+          fi
+
       - name: Verify tag and product versions
         run: >-
           GITHUB_REF_NAME="${{ steps.release.outputs.tag_name }}"
