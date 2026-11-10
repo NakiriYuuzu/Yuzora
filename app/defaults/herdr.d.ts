@@ -185,9 +185,12 @@ export function agents(): AgentInfo[];
 export interface PaneInfo {
   pane: string;
   /** null for a mod pane (`pane.split {mod}`): then `mod` names it, and only
-   *  pane, mod, tab, title, focused and zoomed are set. */
+   *  pane, mod, props, tab, title, focused and zoomed are set. */
   terminal: string | null;
   mod?: string;
+  /** The props a mod pane was given (`tab.new {mod, props}`, `pane.split {mod, props}`), as the layout keeps
+   *  them. Listed for a pane in a tab not shown since the app started too, though its mod has not started. */
+  props?: any;
   tab: string;
   /** The terminal's title (what the program set), or the mod's name. */
   title: string;

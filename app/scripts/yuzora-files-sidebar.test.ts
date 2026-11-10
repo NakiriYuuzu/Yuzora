@@ -99,7 +99,7 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     trash: (path: string) => ask("make", ["trash", path]), reveal: () => { if (world.revealError) throw world.revealError; }, copyText() {}, findFiles() {}, grep() {}, unsavedCount: () => 0,
     openFile: (path: string, on: string | null) => world.opened.push({ path, on: on ?? null, space: active() }), moved: (...args: any[]) => world.moved.push(args),
     kindOf: (path: string) => (/\.(png|svg)$/i.test(path) ? "image" : /\.md$/i.test(path) ? "markdown" : "text"),
-    documentFor: () => null, focusDocument() {}, revealLine() {},
+    documentFor: () => null, paneDocument: () => null, notePane() {}, focusDocument() {}, revealLine() {},
     fileIcon: () => ({ icon: "file", color: "dim" }),
     localStorage: { getItem: () => null, setItem() {} },
   };
