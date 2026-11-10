@@ -52,6 +52,10 @@ const GRAB = 5, BAR = 8, REST = 18;
 const WIDEST = 4, LAYOUT = 1 << 18, LOOK = 4e6, LINE = 1 << 20, TOLL = 200, SLOW = 25, SORT = 1 << 16, WORST = 3;
 // The width of a run of this over its length is what a cell takes in the font.
 const RULER = "W".repeat(32);
+// Every length this pane writes is multiplied by the zoom, and what comes back, the size an element reports,
+// where a pointer is and how far a wheel went, is in window pixels. The pane keeps and works out lengths in
+// the unit it writes; this is where what comes back is turned into it, wherever it is read.
+const unzoom = (px) => px / (Number(settings().zoom) || 1);
 
 export default class GitDiff extends View {
   init(_props, cx) {
@@ -62,7 +66,7 @@ export default class GitDiff extends View {
     this.context = Number(p.context ?? s.diffContext ?? 3);
     this.view = null; this.error = null; this.busy = false; this.note = null;
     this.sel = {}; this.hunk = 0; this.askDiscard = null;
-    this.scrollX = 0; this.textW = { l: 0, r: 0 }; this.cellW = 0; this.drag = null; this.fit = null;
+    this.scrollX = 0; this.textW = { l: 0, r: 0 }; this.cellW = 0; this.rowsPx = 0; this.drag = null; this.fit = null;
     this.scroll = VirtualListScrollHandle.new();
     this.handle = cx.focus_handle();
     // Props without `at` (an agent's tab.new) date from now, not from 1970.
@@ -191,6 +195,12 @@ export default class GitDiff extends View {
     this.hunk = r.h; cx.notify();
   }
 
+  // The width the rows are laid out in. It is kept as the box reported it, in window pixels: a new zoom changes
+  // what it is in the unit of the pane without the box having changed size to report.
+  get rowsWidth() {
+    return unzoom(this.rowsPx);
+  }
+
   // The left side's share of the width: the one kept, or the one being dragged.
   ratio() {
     return this.drag?.kind === "split" ? this.drag.ratio : ratioOf(shared(SPLIT));
@@ -226,8 +236,14 @@ export default class GitDiff extends View {
   wheel(e, cx) {
     const lay = this.lay;
     if (!lay || Math.abs(e.delta.x) <= Math.abs(e.delta.y)) return;
-    const at = Math.max(lay.sx - e.delta.x, 0);
+    const at = Math.max(lay.sx - unzoom(e.delta.x), 0);
     if (at !== this.scrollX) { this.scrollX = at; cx.notify(); }
+  }
+
+  // Where a press landed in the rows, across, for [`clickRow`] to tell a line's number from its text.
+  pressed(e) {
+    const x = e.local_position?.x;
+    this.downX = x == null ? null : unzoom(x);
   }
 
   // The drag in progress follows the pointer: the divider by the share of the width it moved, the bar
@@ -236,10 +252,10 @@ export default class GitDiff extends View {
     const d = this.drag, lay = this.lay;
     if (!d || !lay) return;
     if (d.kind === "split") {
-      const ratio = ratioOf(d.from + (x - d.x) / Math.max(1, lay.width - 1));
+      const ratio = ratioOf(d.from + unzoom(x - d.x) / Math.max(1, lay.width - 1));
       if (ratio !== d.ratio) { d.ratio = ratio; cx.notify(); }
     } else {
-      const at = Math.max(d.from + (x - d.x) * d.per, 0);
+      const at = Math.max(d.from + unzoom(x - d.x) * d.per, 0);
       if (at !== this.scrollX) { this.scrollX = at; cx.notify(); }
     }
   }
@@ -380,10 +396,10 @@ export default class GitDiff extends View {
     if (!fit?.l) return div();
     const hidden = () => v_flex().absolute().top(0).left(0).h(0).overflow_hidden();
     const side = (name) => hidden()
-      .on_size_change((size, cx) => { if (Math.abs(size.width - this.textW[name]) > 0.5) { this.textW[name] = size.width; cx.notify(); } })
+      .on_size_change((size, cx) => { const w = unzoom(size.width); if (Math.abs(w - this.textW[name]) > 0.5) { this.textW[name] = w; cx.notify(); } })
       .children(fit[name].show.map((text) => div().whitespace_nowrap().child(text)));
     const ruler = hidden()
-      .on_size_change((size, cx) => { if (Math.abs(size.width / RULER.length - this.cellW) > 0.01) { this.cellW = size.width / RULER.length; cx.notify(); } })
+      .on_size_change((size, cx) => { const w = unzoom(size.width) / RULER.length; if (Math.abs(w - this.cellW) > 0.01) { this.cellW = w; cx.notify(); } })
       .child(div().whitespace_nowrap().child(RULER));
     return div().child(side("l")).child(side("r")).child(ruler);
   }
@@ -399,8 +415,8 @@ export default class GitDiff extends View {
     this.lay = { ratio, width, reach, sx: this.scrollX, l: ratio * 100, r: (1 - ratio) * 100 };
     return div().flex_1().min_h(0).relative().overflow_hidden().font_family(mono).text_size(11.5)
       .child(div().id("diff-rows-box").size_full().pb(reach > 0 ? BAR : 0)
-        .on_size_change((size, cx) => { if (Math.abs(size.width - (this.rowsWidth ?? -1)) > 0.5) { this.rowsWidth = size.width; cx.notify(); } })
-        .on_mouse_down("left", (e) => { this.downX = e.local_position?.x ?? null; })
+        .on_size_change((size, cx) => { if (Math.abs(size.width - this.rowsPx) > 0.5) { this.rowsPx = size.width; cx.notify(); } })
+        .on_mouse_down("left", (e) => this.pressed(e))
         .on_scroll_wheel((e, cx) => this.wheel(e, cx))
         .child(this.rowList(v, th, d, 0)))
       .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().top(0).left(0).right(0).bottom(reach > 0 ? BAR : 0))
@@ -485,8 +501,8 @@ export default class GitDiff extends View {
       body = div().flex_1().min_h(0).relative().font_family(mono).text_size(11.5)
         .child(div().id("diff-x").size_full().overflow_x_scrollbar()
           .child(div().id("diff-rows-box").w_full().min_w(GUTTER * 2 + 14 + width).h_full()
-            .on_size_change((size) => { this.rowsWidth = size.width; })
-            .on_mouse_down("left", (e) => { this.downX = e.local_position?.x ?? null; })
+            .on_size_change((size) => { this.rowsPx = size.width; })
+            .on_mouse_down("left", (e) => this.pressed(e))
             .child(this.rowList(v, th, d, width))))
         .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().inset_0());
     } else body = this.sideBody(v, th, d, mono);

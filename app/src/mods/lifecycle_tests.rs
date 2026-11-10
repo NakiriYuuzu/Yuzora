@@ -1366,13 +1366,12 @@ fn yuzora_diff_the_sideways_scroll_ends_where_the_longest_line_does_at_every_zoo
             let (z, mark) = (zoom as f64, format!("{case} at zoom {zoom}"));
             let (Some(gap), Some(far)) = (gap, far) else { failures.push(format!("{mark}: scrolled to the end, no line is left in sight")); continue };
             let travel = home - far;
-            let unit = gap / z;
-            let first = *at_one.get_or_insert(unit);
+            let first = *at_one.get_or_insert(gap);
             if zoom == 1. && !(0. ..30.).contains(&gap) {
                 failures.push(format!("{mark}: the widest line ends {gap} short of its cell's edge"));
             }
-            if (unit - first).abs() > 1.5 / z {
-                failures.push(format!("{mark}: {gap} left after the end, {unit} of a pixel at zoom 1 when it is {first} there"));
+            if (gap - first * z).abs() > 3. {
+                failures.push(format!("{mark}: {gap} left after the end, when it is {first} at zoom 1"));
             }
             let Some((start, long)) = bar else { failures.push(format!("{mark}: no bar at home")); continue };
             let Some((end_start, end_long)) = thumb else { failures.push(format!("{mark}: no bar at the end")); continue };
@@ -1393,7 +1392,9 @@ fn yuzora_diff_the_sideways_scroll_ends_where_the_longest_line_does_at_every_zoo
 
 // yuzora(v010): a zoom set while the diff is open is in the frame after it: the offset that was kept is brought
 // within the room there is at the new zoom, and the thumb is where the lines are, without waiting for the sizes
-// the new zoom makes to be reported.
+// the new zoom makes to be reported. Scrolled to the end at 2, each smaller zoom has room for more of the
+// line at once, so the offset is the farthest there is; each larger one has room for less, and the offset
+// stays what it was, the thumb within the track.
 #[gpui::test]
 fn yuzora_diff_a_zoom_set_while_it_is_open_holds_from_the_next_frame(cx: &mut TestAppContext) {
     if !alone("yuzora_diff_a_zoom_set_while_it_is_open_holds_from_the_next_frame") {
@@ -1406,9 +1407,7 @@ fn yuzora_diff_a_zoom_set_while_it_is_open_holds_from_the_next_frame(cx: &mut Te
         pane.close();
         let mut pane = DiffPane::zoomed(cx, longest_first(rest), 2., json!({}));
         pane.wheel(100., 100., -100000., 0.);
-        let mut room = f64::MAX;
-        // Each zoom to the one after it: the room for the lines shrinks (the kept offset is more than there is), then grows.
-        for zoom in [1.5, 1., 0.8, 1.2, 2., 1.5] {
+        for (zoom, smaller) in [(1.5, true), (1., true), (0.8, true), (1.2, false), (2., false), (1.5, false)] {
             pane.set_zoom(zoom);
             let next = pane.thumb();
             pane.settle();
@@ -1418,15 +1417,17 @@ fn yuzora_diff_a_zoom_set_while_it_is_open_holds_from_the_next_frame(cx: &mut Te
                 (Some(a), Some(b)) if (a.0 - b.0).abs() <= 2. && (a.1 - b.1).abs() <= 2. => {}
                 (a, b) => failures.push(format!("{mark}: the next frame has the thumb at {a:?}, once the sizes are reported at {b:?}")),
             }
-            let z = zoom as f64;
-            let gap = pane.start_of("a").map(|start| pane.width("l") - (start + pane.text_width("a")));
-            match gap {
-                None => failures.push(format!("{mark}: no line is in sight")),
-                Some(gap) if gap < -1.5 => failures.push(format!("{mark}: the widest line ends {} past its cell's edge", -gap)),
-                Some(gap) if zoom < 2. && z < room && (gap - base * z).abs() > 2. => failures.push(format!("{mark}: {gap} left after the end, when the offset is the farthest it can be: {}", base * z)),
-                Some(_) => {}
+            if settled.is_none_or(|(start, long)| start + long > 1200. + 1.5) {
+                failures.push(format!("{mark}: the thumb is {settled:?} on a track of 1200"));
             }
-            room = room.min(z);
+            let gap = pane.start_of("a").map(|start| pane.width("l") - (start + pane.text_width("a")));
+            let farthest = base * zoom as f64;
+            match gap {
+                Some(gap) if gap < farthest - 3. && smaller => failures.push(format!("{mark}: {gap} left after the end, and the farthest the lines go leaves {farthest}")),
+                Some(gap) if gap > farthest + 3. => failures.push(format!("{mark}: {gap} left after the end, and the farthest the lines go leaves {farthest}")),
+                None if smaller => failures.push(format!("{mark}: no line is in sight")),
+                _ => {}
+            }
         }
         pane.close();
     }
