@@ -2795,6 +2795,26 @@ fn the_database_table_pane_follows_the_sidebar_to_another_table(cx: &mut TestApp
     assert_eq!(db_loads(&s), ["gone-a", "gone-b", "gone-c"], "each pick loads once, and drawing again loads nothing");
 }
 
+// The second click of a double click: the pane the first one opened is still reading its own table when the pick comes.
+// The pane ends on the pick, and what the table it left was still reading does not reach it.
+#[gpui::test]
+fn the_database_table_pane_follows_a_pick_that_comes_while_it_is_still_loading(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let key = db_key();
+    let mut s = Scenario::mount_with_props(cx, &staged, &db_reuse_source(None, false), db_pane_props(&key), 320.0, 400.0);
+    s.share(DB_OPEN, db_pick(&key, "gone-b", 2));
+    s.tick(50);
+    assert_eq!(db_frame_errors(&s), Vec::<String>::new(), "a frame failed when the pick came while the pane was loading");
+    assert!(db_settles_on(&mut s, "gone-b"), "the pane never showed the pick: {:?}", db_now(&s));
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    s.tick(50);
+    let (shown, _, error, _) = db_now(&s);
+    assert!(shown == "gone-b" && error.is_some_and(|e| e.contains("gone-b")), "the first table's read reached the pane after the pick");
+    assert_eq!(db_loads(&s), ["gone-a", "gone-b"]);
+}
+
 // Two picks, each seen by a frame, before the pane gets to the first: the pane goes to the second, and the first is
 // never read.
 #[gpui::test]
