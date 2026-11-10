@@ -572,6 +572,33 @@ fn mssql_a_trigger_that_returns_rows_does_not_hide_the_row_count() {
     assert_eq!(first_row(&id, "SELECT v FROM dbo.t"), ["zz"]);
 }
 
+/// The driver can't decode some column types (CLR types, sql_variant). Opening
+/// such a table must end with that said, not leave the pane loading for ever.
+#[test]
+fn mssql_a_table_with_a_column_the_driver_cannot_read_ends_with_an_error() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_wb_types");
+    let id = scratch.connection();
+    run(
+        &id,
+        "setup",
+        "CREATE TABLE dbo.geo(id int PRIMARY KEY, g geography, v nvarchar(10)); INSERT INTO dbo.geo VALUES (1, geography::Point(1, 1, 4326), N'a');
+         CREATE TABLE dbo.tree(id int PRIMARY KEY, h hierarchyid); INSERT INTO dbo.tree VALUES (1, hierarchyid::Parse('/1/'));
+         CREATE TABLE dbo.sv(id int PRIMARY KEY, x sql_variant); INSERT INTO dbo.sv VALUES (1, CAST(5 AS int));",
+    );
+    for (name, what) in [("geo", "geography"), ("tree", "hierarchyid"), ("sv", "sql_variant")] {
+        let connection = id.clone();
+        let t = table("dbo", name);
+        let state = within(Duration::from_secs(20), &format!("opening the table with {what}"), move || {
+            wait(session::open_table(&connection, None, &owner(&connection, &format!("types-{name}")), &t, None))
+        });
+        let error = state.error.unwrap_or_else(|| panic!("{what}: the job ended without saying it can't read the table"));
+        assert!(error.contains("unsupported column type"), "{what}: {error}");
+    }
+    // The connection is still good for what the driver can read.
+    assert_eq!(first_row(&id, "SELECT CAST(id AS varchar(5)) FROM dbo.geo"), ["1"]);
+}
+
 // ---------------------------------------------------------------- the column types, through the session
 
 /// What a case expects of its write-back.
