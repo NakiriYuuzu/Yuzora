@@ -422,28 +422,76 @@ return JSON.stringify({ failed, healed: panel(a).fresh });
 }
 
 #[test]
-fn a_repo_above_the_folder_is_listed_from_its_top_once_git_says_so() {
+fn a_repo_above_the_folder_is_listed_from_its_top_as_soon_as_git_says_so_and_replaces_the_tree_when_that_is_listed() {
     let got = run(r#"
 const h = host(), store = createStore(h.io);
 const a = store.enter(loc("/repo/sub"));
-const run = store.reload(a, () => {});
+const drawn = [];
+const run = store.reload(a, () => drawn.push(panel(a).kind));
 await flush();
-const provisional = h.pending("list")[0];
+h.answer(h.pending("list")[0], listing("lib/", "README.md"));
+await flush();
+a.open.add("lib");
+a.selected = "lib";
+const provisional = h.pending("list").length;
 h.answer(h.pending("git")[0], repo("/repo"));
 await flush();
-h.answer(provisional, listing("wrong.txt"));
-await flush();
-const roots = h.calls.list.map(c => c.root);
-const between = panel(a).kind;
-h.answer(h.pending("list")[0], listing("right.txt"));
+const between = { kind: panel(a).kind, root: a.tree.root, rows: names(a), open: [...a.open], selected: a.selected, asked: h.calls.list.map(c => `${c.root}|${c.folder}`), unanswered: h.pending("list").map(c => c.root) };
+h.answer(h.pending("list").find(c => c.root === "/repo"), listing("lib/", "sub/"));
 await run;
-return JSON.stringify({ roots, between, root: a.root, rows: names(a), treeRoot: a.tree.root });
+const was = store.listed(a, "/repo/sub/README.md");
+const dir = store.listed(a, "/repo/sub/lib");
+const never = store.listed(a, "/repo/sub/other.txt");
+return JSON.stringify({ provisional, between, after: { root: a.root, treeRoot: a.tree.root, rows: names(a), open: [...a.open], selected: a.selected }, drawn, was, dir, never });
 "#);
-    assert_eq!(got["roots"], serde_json::json!(["/repo/sub", "/repo"]));
-    assert_eq!(got["between"], "empty");
+    assert_eq!(got["provisional"], 0);
+    assert_eq!(
+        got["between"],
+        serde_json::json!({
+            "kind": "showing", "root": "/repo/sub", "rows": ["lib", "README.md"], "open": ["lib"], "selected": "lib",
+            "asked": ["/repo/sub|", "/repo|"], "unanswered": ["/repo"]
+        })
+    );
+    assert_eq!(
+        got["after"],
+        serde_json::json!({ "root": "/repo", "treeRoot": "/repo", "rows": ["lib", "sub"], "open": [], "selected": null })
+    );
+    assert!(!got["drawn"].as_array().unwrap().iter().any(|k| k == "empty"));
+    assert_eq!(
+        got["was"],
+        serde_json::json!({ "root": "/repo/sub", "rel": "README.md", "name": "README.md", "dir": false })
+    );
+    assert_eq!(got["dir"]["dir"], true);
+    assert_eq!(got["never"], serde_json::Value::Null);
+}
+
+#[test]
+fn the_repos_top_is_listed_without_waiting_for_the_lists_of_the_root_git_leaves() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/repo/sub"));
+a.open.add("a"); a.open.add("b");
+const run = store.reload(a, () => {});
+await flush();
+h.answer(h.pending("list").find(c => c.folder === ""), listing("a/", "b/"));
+await flush();
+const waiting = h.pending("list").map(c => `${c.root}|${c.folder}`).sort();
+h.answer(h.pending("git")[0], repo("/repo"));
+await flush();
+const asked = h.pending("list").map(c => `${c.root}|${c.folder}`).sort();
+for (const c of h.pending("list")) h.answer(c, listing("x.txt"));
+await run;
+return JSON.stringify({ waiting, asked, root: a.root });
+"#);
+    assert_eq!(
+        got["waiting"],
+        serde_json::json!(["/repo/sub|a", "/repo/sub|b"])
+    );
+    assert_eq!(
+        got["asked"],
+        serde_json::json!(["/repo/sub|a", "/repo/sub|b", "/repo|"])
+    );
     assert_eq!(got["root"], "/repo");
-    assert_eq!(got["rows"], serde_json::json!(["right.txt"]));
-    assert_eq!(got["treeRoot"], "/repo");
 }
 
 #[test]
@@ -533,9 +581,7 @@ await load(store, h, a, { git: repo("/repo"), "": tree });
 const answered = { root: a.root, rows: names(a), note: info(a).gitFailed };
 await load(store, h, a, { git: { git: null, failed: "git timed out" }, "": tree });
 const failedAgain = { root: a.root, rows: names(a) };
-await load(store, h, a, { git: { git: null, failed: null }, "": tree });
-const notARepo = { root: a.root, rows: names(a) };
-return JSON.stringify({ failed, answered, failedAgain, notARepo });
+return JSON.stringify({ failed, answered, failedAgain });
 "#);
     assert_eq!(
         got["failed"],
@@ -549,10 +595,88 @@ return JSON.stringify({ failed, answered, failedAgain, notARepo });
         got["failedAgain"],
         serde_json::json!({ "root": "/repo", "rows": ["sub", "top.txt"] })
     );
+}
+
+#[test]
+fn a_root_git_has_named_survives_one_answer_of_not_a_repo_and_goes_on_the_second_in_a_row() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/repo/sub"));
+const tree = c => c.root === "/repo" ? listing("lib/", "top.txt") : listing("inner.txt");
+const none = { git: null, failed: null };
+await load(store, h, a, { git: repo("/repo"), "": tree });
+a.open.add("lib");
+a.selected = "lib";
+await load(store, h, a, { git: none, "": tree });
+const once = { root: a.root, open: [...a.open], selected: a.selected, git: a.git.top };
+await load(store, h, a, { git: repo("/repo"), "": tree });
+await load(store, h, a, { git: none, "": tree });
+const separate = { root: a.root, open: [...a.open] };
+await load(store, h, a, { git: none, "": tree });
+const twice = { root: a.root, rows: names(a), open: [...a.open], selected: a.selected };
+await load(store, h, a, { git: none, "": tree });
+const still = a.root;
+await load(store, h, a, { git: repo("/repo"), "": tree });
+return JSON.stringify({ once, separate, twice, still, back: a.root });
+"#);
     assert_eq!(
-        got["notARepo"],
-        serde_json::json!({ "root": "/repo/sub", "rows": ["inner.txt"] })
+        got["once"],
+        serde_json::json!({ "root": "/repo", "open": ["lib"], "selected": "lib", "git": null })
     );
+    assert_eq!(
+        got["separate"],
+        serde_json::json!({ "root": "/repo", "open": ["lib"] })
+    );
+    assert_eq!(
+        got["twice"],
+        serde_json::json!({ "root": "/repo/sub", "rows": ["inner.txt"], "open": [], "selected": null })
+    );
+    assert_eq!(got["still"], "/repo/sub");
+    assert_eq!(got["back"], "/repo");
+}
+
+#[test]
+fn a_folder_that_git_spells_another_way_is_the_same_folder_and_keeps_its_tree() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const out = {};
+for (const [name, cwd, top] of [["windows", "C:\\work\\app", "C:/work/app"], ["drive", "c:/work/app/", "C:/work/app"], ["private", "/tmp/x/app", "/private/tmp/x/app"], ["slash", "/srv/app/", "/srv/app"]]) {
+  const a = store.enter(loc(cwd, name));
+  a.open.add("lib");
+  const shown = [];
+  const answers = { git: repo(top), "": c => listing("lib/", "x.txt"), lib: listing("y.txt") };
+  await load(store, h, a, answers);
+  const tree = a.tree;
+  const folders = tree.folders;
+  await load(store, h, a, { ...answers, "": () => listing("lib/", "x.txt") });
+  const run = store.reload(a, n => shown.push(panel(a).kind));
+  await flush();
+  for (const c of h.pending("git")) h.answer(c, repo(top));
+  for (const c of h.pending("list")) h.answer(c, c.folder === "lib" ? listing("y.txt") : listing("lib/", "x.txt"));
+  await run;
+  out[name] = { root: a.root, treeRoot: a.tree.root, open: [...a.open], sameFolders: a.tree.folders === folders, rows: names(a), next: a.next ?? null, kinds: [...new Set(shown)], was: store.listed(a, `${cwd.replace(/[\\/]+$/, "").replace(/\\/g, "/")}/x.txt`)?.name ?? null };
+}
+const other = store.enter(loc("/repo/sub", "other"));
+await load(store, h, other, { git: repo("/repo"), "": c => c.root === "/repo" ? listing("sub/") : listing("inner.txt") });
+out.other = { root: other.root, rows: names(other) };
+return JSON.stringify(out);
+"#);
+    for (name, root) in [
+        ("windows", "C:/work/app"),
+        ("drive", "C:/work/app"),
+        ("private", "/private/tmp/x/app"),
+        ("slash", "/srv/app"),
+    ] {
+        let one = &got[name];
+        assert_eq!(one["root"], root, "{name}");
+        assert_eq!(one["treeRoot"], root, "{name}");
+        assert_eq!(one["open"], serde_json::json!(["lib"]), "{name}");
+        assert_eq!(one["sameFolders"], true, "{name}");
+        assert_eq!(one["rows"], serde_json::json!(["lib", "x.txt"]), "{name}");
+        assert_eq!(one["next"], serde_json::Value::Null, "{name}");
+        assert!(!one["kinds"].as_array().unwrap().iter().any(|k| k == "empty"), "{name}");
+    }
+    assert_eq!(got["other"], serde_json::json!({ "root": "/repo", "rows": ["sub"] }));
 }
 
 #[test]
@@ -852,4 +976,25 @@ return JSON.stringify({ during, open: [...a.open], error: a.error, rows: names(a
     assert_eq!(got["open"], serde_json::json!(["docs"]));
     assert_eq!(got["error"], serde_json::Value::Null);
     assert_eq!(got["rows"], serde_json::json!(["docs"]));
+}
+
+#[test]
+fn a_root_the_tree_was_drawn_from_is_still_the_trees_after_it_moved() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/repo/sub"));
+const run = store.reload(a, () => {});
+await flush();
+h.answer(h.pending("list")[0], listing("x.txt"));
+await flush();
+h.answer(h.pending("git")[0], repo("/repo"));
+await flush();
+const during = ["/repo/sub", "/repo", "/elsewhere"].map(r => store.owns(a, r));
+h.answer(h.pending("list")[0], listing("sub/"));
+await run;
+const after = ["/repo/sub", "/repo", "/elsewhere"].map(r => store.owns(a, r));
+return JSON.stringify({ during, after });
+"#);
+    assert_eq!(got["during"], serde_json::json!([true, true, false]));
+    assert_eq!(got["after"], serde_json::json!([true, true, false]));
 }

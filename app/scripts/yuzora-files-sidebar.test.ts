@@ -30,7 +30,7 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
   const world = {
     spaces,
     toasts: [] as any[], opened: [] as { path: string; on: string | null; space: string }[], log: [] as string[], lists: [] as { id: string; count: number }[],
-    query: "", keys: [] as string[], onClick: null as any, onSecondary: null as any, menus: [] as any[],
+    query: "", keys: [] as string[], onClick: null as any, onSecondary: null as any, menus: [] as any[], shared: new Map<string, any>(),
     timers: [] as { ms: number; fn: () => void; fired: boolean }[],
     calls: { list: [] as Call[], git: [] as Call[], stat: [] as Call[], watch: [] as Call[] },
   };
@@ -64,7 +64,7 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
     InputState: { new: () => input }, Input: { new: maker }, Scrollbar: { vertical: maker },
     spaces: () => world.spaces, panes: () => [], focused: () => null, theme: () => new Proxy({}, { get: () => "#000000" }),
     run() {}, home: () => "/home/me", props: () => null, openOverlay: (o: any) => world.menus.push(o), closeOverlay() {},
-    shared: () => null, setShared() {}, notify: (n: any) => world.toasts.push(n), watchFolder: (path: string) => ask("watch", [path]),
+    shared: (key: string) => world.shared.get(key) ?? null, setShared: (key: string, value: any) => world.shared.set(key, value), notify: (n: any) => world.toasts.push(n), watchFolder: (path: string) => ask("watch", [path]),
     window: () => ({ platform: "macos" }),
     t: (key: string, vars?: object) => (vars ? `${key} ${JSON.stringify(vars)}` : key), tokens: () => ({}),
     listDir: (path: string, options: object) => ask("list", [path, options]),
@@ -98,6 +98,10 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
   const fireTimers = (atLeast = 1000) => {
     for (const t of world.timers) if (!t.fired && t.ms >= atLeast) { t.fired = true; t.fn(); }
   };
+  // The timers of a click's check that are due within `ms`: later ones are not yet.
+  const fireWithin = (ms: number) => {
+    for (const t of world.timers) if (!t.fired && t.ms >= 1000 && t.ms <= ms) { t.fired = true; t.fn(); }
+  };
   // Answers whatever is asked of the host until nothing is: root and folders from `folders`, git with `git`.
   const settle = async (folders: Record<string, any>, git: any) => {
     for (let turn = 0; turn < 20; turn++) {
@@ -112,7 +116,7 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
     throw new Error("the host is still being asked");
   };
   const show = (space: string) => { for (const s of world.spaces) s.active = s.id === space; };
-  return { view, cx, world, pending, answer, fail, frame, press, pressRight, fireTimers, settle, show };
+  return { view, cx, world, pending, answer, fail, frame, press, pressRight, fireTimers, fireWithin, settle, show };
 }
 
 const A = { "/a": listing("src/", "x.txt", "gone.txt"), "/a/src": listing("a.js") };
@@ -253,18 +257,86 @@ test("a file that is gone is dropped from the tree it was in, not from the tree 
   expect(s.frame().texts).toContain("README.md");
 });
 
-test("a click from the frame drawn before the root moved lands on no row of the new root", async () => {
+test("the tree drawn from the folder stays on screen, and can be clicked, until the repo's top has been listed", async () => {
+  const { s, drawn } = await provisional();
+  await s.answer(s.pending("git")[0], repo("/repo"));
+  const between = s.frame();
+  expect(between.texts).not.toContain("empty.loading");
+  expect(between.texts).toContain("README.md");
+  expect(between.keys).toEqual(drawn.keys);
+  s.press(between, 0);
+  await flush();
+  await s.answer(s.pending("stat")[0], { len: 1, mtime_ms: 1 });
+  expect(s.world.opened.map(o => o.path)).toEqual([`${SUB}/README.md`]);
+  await s.answer(s.pending("list").find(c => c.args[0] === "/repo")!, listing("README.md", "sub/"));
+  const after = s.frame();
+  expect(after.texts).not.toContain("empty.loading");
+  expect(after.keys).toEqual(["/repo/README.md", "/repo/sub"]);
+});
+
+test("a click from the frame drawn before the root moved opens the file it was drawn for", async () => {
   const { s, drawn } = await provisional();
   await s.answer(s.pending("git")[0], repo("/repo"));
   await s.answer(s.pending("list").find(c => c.args[0] === "/repo")!, listing("README.md", "sub/"));
   const moved = s.frame();
   expect(moved.keys).not.toEqual(drawn.keys);
   s.press(drawn, 0);
-  s.pressRight(drawn, 0);
   await flush();
+  expect(s.pending("stat").map(c => c.args[0])).toEqual([`${SUB}/README.md`]);
   expect(s.world.opened).toEqual([]);
+  await s.answer(s.pending("stat")[0], { len: 1, mtime_ms: 1 });
+  expect(s.world.opened.map(o => o.path)).toEqual([`${SUB}/README.md`]);
+});
+
+test("a click from the old frame on a file that is gone is told so, and a click on a path never listed does nothing", async () => {
+  const { s, drawn } = await provisional();
+  await s.answer(s.pending("git")[0], repo("/repo"));
+  await s.answer(s.pending("list").find(c => c.args[0] === "/repo")!, listing("README.md", "sub/"));
+  s.frame();
+  s.press(drawn, 0);
+  await flush();
+  await s.answer(s.pending("stat")[0], null);
+  expect(s.world.opened).toEqual([]);
+  expect(s.world.toasts.map(n => n.title)).toEqual(['error.gone {"name":"README.md"}']);
+  s.world.onClick("/repo/sub/never-listed.txt", s.cx);
+  await flush();
   expect(s.pending("stat")).toHaveLength(0);
-  expect(s.world.menus).toEqual([]);
+});
+
+test("a right click from the old frame opens the popup for the file it was drawn for", async () => {
+  const { s, drawn } = await provisional();
+  await s.answer(s.pending("git")[0], repo("/repo"));
+  await s.answer(s.pending("list").find(c => c.args[0] === "/repo")!, listing("README.md", "sub/"));
+  s.frame();
+  s.pressRight(drawn, 0);
+  expect(s.world.menus).toHaveLength(1);
+  expect(s.world.menus[0].props.menu).toMatchObject({ abs: `${SUB}/README.md`, root: SUB, dir: false });
+});
+
+test("a folder selected in the tree drawn from the folder is not a folder of the repo's top", async () => {
+  const s = sidebar(two(SUB, "/b"));
+  await flush();
+  await s.answer(s.pending("list")[0], listing("lib/", "README.md"));
+  s.press(s.frame(), 0);
+  await flush();
+  expect(s.view.selectedDir()).toBe(`${SUB}/lib`);
+  await s.answer(s.pending("git")[0], repo("/repo"));
+  for (const c of s.pending("list")) await s.answer(c, c.args[0] === "/repo" ? listing("lib/", "sub/") : listing("x.js"));
+  s.frame();
+  expect(s.view.here.selected).toBeNull();
+  expect(s.view.selectedDir()).toBe("/repo");
+});
+
+test("a popup opened on the tree drawn from the folder still gets its new file after the root has moved", async () => {
+  const { s, drawn } = await provisional();
+  s.pressRight(drawn, 0);
+  const menu = s.world.menus[0].props.menu;
+  await s.answer(s.pending("git")[0], repo("/repo"));
+  await s.answer(s.pending("list").find(c => c.args[0] === "/repo")!, listing("README.md", "sub/"));
+  s.world.shared.set("yuzora.files.request", { action: "new-file", root: menu.root, seq: 7, dir: SUB });
+  s.frame();
+  expect(s.view.edit).toMatchObject({ kind: "new-file", dir: SUB });
+  expect(s.world.toasts).toEqual([]);
 });
 
 test("the popup menu is for the file of the row it was opened on, under the root that row was drawn from", async () => {
@@ -352,6 +424,61 @@ test("a check that fails is not an answer that the file is there or gone: the fi
   expect(s.world.opened).toEqual([{ path: "/a/x.txt", on: "m1", space: "s1" }]);
   expect(s.world.toasts).toEqual([]);
   expect(s.frame().texts).toContain("x.txt");
+});
+
+test("a click waits at most 1.5 seconds for the check of the file", async () => {
+  const { s, back } = await revalidating(two("/a", "/b", "m1"));
+  s.press(back, X);
+  await flush();
+  s.fireWithin(1499);
+  await flush();
+  expect(s.world.opened).toEqual([]);
+  s.fireWithin(1500);
+  await flush();
+  expect(s.world.opened.map(o => o.path)).toEqual(["/a/x.txt"]);
+});
+
+test("a tree whose last read failed is checked before a click opens a file, as a tree being read is", async () => {
+  const s = sidebar(two("/a", "/b", "m1"));
+  await s.settle(A, repo("/a"));
+  s.view.reload(s.cx, true);
+  await flush();
+  for (const c of s.pending("list")) await s.fail(c, new Error("offline"));
+  await s.answer(s.pending("git")[0], repo("/a"));
+  const stale = s.frame();
+  expect(stale.texts).toContain("offline");
+  s.press(stale, GONE);
+  await flush();
+  expect(s.world.opened).toEqual([]);
+  expect(s.pending("stat").map(c => c.args[0])).toEqual(["/a/gone.txt"]);
+  await s.answer(s.pending("stat")[0], null);
+  expect(s.world.toasts.map(n => n.title)).toEqual(['error.gone {"name":"gone.txt"}']);
+});
+
+test("files open in the order they were clicked, whichever check answers first", async () => {
+  const { s, back } = await revalidating();
+  s.press(back, X);
+  s.press(back, GONE);
+  await flush();
+  const [first, second] = s.pending("stat");
+  await s.answer(second, { len: 1, mtime_ms: 1 });
+  expect(s.world.opened).toEqual([]);
+  await s.answer(first, { len: 1, mtime_ms: 1 });
+  expect(s.world.opened.map(o => o.path)).toEqual(["/a/x.txt", "/a/gone.txt"]);
+});
+
+test("a file clicked after the tree is up to date still opens after the one whose check is slow", async () => {
+  const { s, back } = await revalidating(two("/a", "/b", "m1"));
+  s.press(back, X);
+  await flush();
+  await s.settle(A, repo("/a"));
+  const fresh = s.frame();
+  s.press(fresh, GONE);
+  await flush();
+  expect(s.world.opened).toEqual([]);
+  s.fireTimers();
+  await flush();
+  expect(s.world.opened.map(o => o.path)).toEqual(["/a/x.txt", "/a/gone.txt"]);
 });
 
 // Reads that are asked for while one is running are not lost.
