@@ -534,8 +534,9 @@ jobs:
         run: |
           set -euo pipefail
           cd app/scripts/yuzora/verify-manifest
-          cargo test --locked
-          cargo build --locked --release
+          # The repository's .cargo/config.toml sends every build to src-tauri/target; this one stays here.
+          cargo test --locked --target-dir "$PWD/target"
+          cargo build --locked --release --target-dir "$PWD/target"
           verify=$PWD/target/release/verify-manifest
           cd "$GITHUB_WORKSPACE"
           [ -s signed/yuzora-update.json.sig ] || { echo "::error::there is no signature to check"; exit 1; }

@@ -95,6 +95,8 @@ describe("who can do what", () => {
   test("the checks of the manifest use the app's own code, and nothing trusts a test key", () => {
     const verify = runs(workflow.jobs["verify-manifest"]);
     expect(verify).toContain("cd app/scripts/yuzora/verify-manifest");
+    // The repository's cargo config sends builds to src-tauri/target: the binary is run from its own.
+    expect(verify).toContain('cargo build --locked --release --target-dir "$PWD/target"');
     expect(verify).toContain("--targets");
     for (const file of readdirSync(WORKFLOWS)) expect(readFileSync(join(WORKFLOWS, file), "utf8"), file).not.toContain("--extra-key");
   });
