@@ -102,6 +102,10 @@ impl Render for Pane {
 }
 
 fn window<'a>(cx: &'a mut TestAppContext, id: &str, result: u64, width: f32, height: f32) -> &'a mut VisualTestContext {
+    // A write-back runs on the database runtime's own threads and wakes the grid's
+    // watcher task from there. gpui's test scheduler calls that nondeterminism
+    // unless the test says it is mixing real I/O in.
+    cx.executor().allow_parking();
     cx.update(gpui_base::init);
     let id = id.to_owned();
     let (_, cx) = cx.add_window_view(move |_, _| Pane { id, result, width, height });
@@ -186,12 +190,14 @@ fn a_value_the_database_refuses_shows_why_when_saved_from_the_editor(cx: &mut Te
     settle(cx);
     cx.simulate_keystrokes(save_keys());
     until("the refusal never showed", || results::lock(&set).write_failure().is_some());
-    settle(cx);
+    until("the reason never reached the screen", || {
+        settle(cx);
+        cx.debug_bounds("grid-message-open").is_some()
+    });
     let r = results::lock(&set);
     assert!(r.write_failure().is_some_and(|m| m.contains("INTEGER")), "{:?}", r.write);
     assert_eq!(r.edits.len(), 1, "the edit stays pending");
     drop(r);
-    assert!(cx.debug_bounds("grid-message-open").is_some(), "the reason is on screen, not only in the state");
     assert_eq!(rows(&connection, "select n from counts"), [["5"]]);
 }
 
