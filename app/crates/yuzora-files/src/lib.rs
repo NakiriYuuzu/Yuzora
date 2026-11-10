@@ -926,8 +926,82 @@ return JSON.stringify([a, b, c, d]); }})()"#
         );
     }
 
-    #[test]
-    fn a_renamed_image_is_shown_in_the_same_place_under_its_new_path() {
+    /// A fake Herdr that follows window.rs. `run` only queues a command; `flush()` applies the queue and
+    /// publishes what `panes()`, `spaces()` and `focused()` read, as the window does a moment after a mod
+    /// asked. `tab.new` selects the new tab (after the selected one) and its Space, a split focuses inside its
+    /// own tab, `pane.focus` selects the pane's tab and Space. A focused editor notes its pane on its document,
+    /// as `doc-pane.js` does. `strip(space)` is the tab strip with the panes in each tab and `*` on the
+    /// selected tab, `focus()` the pane that has the keys.
+    const HERDR_WORLD: &str = r##"
+        const world = [
+          { id: "s1", machine: null, active: true, selected: "t1", tabs: [
+            { id: "t1", name: "", focus: "p1", panes: [{ pane: "p1", mod: null }] },
+            { id: "t2", name: "build", focus: "p2", panes: [{ pane: "p2", mod: null }] } ] },
+          { id: "s2", machine: "lab", active: false, selected: "t3", tabs: [
+            { id: "t3", name: "", focus: "p3", panes: [{ pane: "p3", mod: null }] } ] },
+        ];
+        const given = {}, queue = [], noted = {}, revealed = [];
+        let serial = 10, snapshot = null, nobody = false;
+        const shown = () => world.find(s => s.active);
+        const tabShown = () => shown().tabs.find(t => t.id === shown().selected);
+        const tabOf = pane => world.flatMap(s => s.tabs).find(t => t.panes.some(p => p.pane === pane));
+        const select = tab => {
+          const s = world.find(x => x.tabs.includes(tab));
+          s.selected = tab.id;
+          for (const x of world) x.active = x === s;
+        };
+        function apply(name, a) {
+          if (name === "tab.new") {
+            const s = a.space ? world.find(x => x.id === a.space) : shown(), pane = `p${++serial}`;
+            const tab = { id: `t${serial}`, name: a.name ?? "", focus: pane, panes: [{ pane, mod: a.mod ?? null }] };
+            s.tabs.splice(s.tabs.findIndex(t => t.id === s.selected) + 1, 0, tab);
+            given[pane] = a.props;
+            select(tab);
+          } else if (name === "pane.split") {
+            const target = a.pane ?? tabShown().focus, tab = tabOf(target), pane = `p${++serial}`;
+            tab.panes.splice(tab.panes.findIndex(p => p.pane === target) + 1, 0, { pane, mod: a.mod ?? null });
+            given[pane] = a.props;
+            tab.focus = pane;
+          } else if (name === "pane.close") {
+            const tab = tabOf(a.pane);
+            tab.panes = tab.panes.filter(p => p.pane !== a.pane);
+            if (tab.focus === a.pane) tab.focus = tab.panes[0].pane;
+          } else if (name === "pane.focus") {
+            const tab = tabOf(a.pane);
+            tab.focus = a.pane;
+            select(tab);
+          } else throw new Error(name);
+        }
+        function publish() {
+          const tab = tabShown(), here = tab.panes.find(p => p.pane === tab.focus), at = given[here.pane];
+          if (at?.path && (here.mod === "yuzora-editor" || here.mod === "yuzora-markdown")) noted[`${at.on ?? ""}\0${at.path}`] = here.pane;
+          snapshot = {
+            spaces: world.map(s => ({ id: s.id, machine: s.machine, active: s.active, tabs: s.tabs.map(t => ({ id: t.id, name: t.name, active: s.selected === t.id })) })),
+            panes: world.flatMap(s => s.tabs.flatMap(t => t.panes.map(p => ({ pane: p.pane, mod: p.mod ?? undefined, tab: t.id })))),
+            focused: { space: shown().id, tab: tab.id, pane: nobody ? null : tab.focus },
+          };
+        }
+        publish();
+        const flush = () => { while (queue.length) apply(...queue.shift()); publish(); };
+        const run = (name, args) => { queue.push([name, args]); };
+        const spaces = () => snapshot.spaces, panes = () => snapshot.panes, focused = () => snapshot.focused;
+        const kindOf = p => (/\.png$/.test(p) ? "image" : /\.md$/.test(p) ? "markdown" : "text");
+        const documentFor = (path, o) => { const pane = noted[`${o?.on ?? ""}\0${path}`]; return pane ? { doc: 1, pane } : null; };
+        const focusDocument = () => {};
+        const revealLine = (doc, line, column) => revealed.push([line, column]);
+        const show = id => { for (const s of world) s.active = s.id === id; publish(); };
+        const label = p => (p.mod === null ? "shell" : `${p.mod.replace(/^yuzora-(files-)?/, "")} ${given[p.pane].path}`);
+        const strip = id => {
+          const s = world.find(x => x.id === id);
+          return s.tabs.map(t => `[${t.panes.map(label).join(", ")}]${s.selected === t.id ? "*" : ""}`).join(" ");
+        };
+        const names = id => world.find(x => x.id === id).tabs.map(t => t.name || "-").join(" ");
+        const focus = () => { const t = tabShown(); return label(t.panes.find(p => p.pane === t.focus)); };
+        const paneOf = path => panes().find(p => given[p.pane]?.path === path).pane;
+    "##;
+
+    /// Runs `body` against open.js as shipped and `HERDR_WORLD`; `body` returns what it saw.
+    fn in_the_open(body: &str) -> Vec<String> {
         let paths = include_str!("../../../defaults/mods/yuzora-sidebar-files/paths.js")
             .replace("export const", "const");
         let open = include_str!("../../../defaults/mods/yuzora-sidebar-files/open.js")
@@ -936,65 +1010,259 @@ return JSON.stringify([a, b, c, d]); }})()"#
             .collect::<Vec<_>>()
             .join("\n")
             .replace("export function", "function");
-        // A fake Herdr: one row of panes, the focused one, a split's props.
-        let fake = r#"
-            let all = [{ pane: "p1", mod: "yuzora-editor" }], focus = "p1", n = 1;
-            const given = {};
-            const panes = () => all.map(p => ({ ...p }));
-            const focused = () => ({ pane: focus });
-            const run = (name, a) => {
-              if (name === "pane.split") {
-                const id = `p${++n}`;
-                all.splice(all.findIndex(p => p.pane === a.pane) + 1, 0, { pane: id, mod: a.mod });
-                given[id] = a.props; focus = id;
-              } else if (name === "pane.close") {
-                all = all.filter(p => p.pane !== a.pane);
-                if (focus === a.pane) focus = all[0]?.pane ?? null;
-              } else if (name === "pane.focus") focus = a.pane;
-              else throw new Error(name);
-            };
-            const kindOf = p => (p.endsWith(".png") ? "image" : "text");
-            const documentFor = () => null, focusDocument = () => {}, revealLine = () => {};
-            const shown = () => [all.map(p => (p.mod === "yuzora-files-image" ? given[p.pane].path : p.mod)), focus];
-        "#;
-        let body = r#"
-            const out = [];
-            openFile("/r/a.png", null);
-            run("pane.focus", { pane: "p1" });
-            moved("/r/a.png", "/r/b.png");
-            out.push(shown());
-            // Opening the new name finds that pane.
-            openFile("/r/b.png", null);
-            out.push(shown());
-            run("pane.focus", { pane: "p1" });
-            openFile("/r/img/c.png", null);
-            moved("/r/im", "/r/x");
-            moved("/r/img", "/r/pics");
-            out.push(shown());
-            // A pane closed meanwhile is not opened again.
-            run("pane.close", { pane: "p3" });
-            moved("/r/b.png", "/r/d.png");
-            out.push(shown());
-            return JSON.stringify(out);
-        "#;
-        let script = ["(() => {", &paths, fake, &open, body, "})()"].join("\n");
+        let script = ["(() => {", &paths, HERDR_WORLD, &open, body, "})()"].join("\n");
         let runtime = quickjs::Runtime::new().unwrap();
         let context = quickjs::Context::full(&runtime).unwrap();
-        let out: String = context.with(|ctx| ctx.eval(script).unwrap());
-        let got: Vec<(Vec<String>, String)> = serde_json::from_str(&out).unwrap();
-        let step = |panes: &[&str], focus: &str| {
-            (
-                panes.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
-                focus.to_owned(),
-            )
-        };
+        context.with(|ctx| match ctx.eval::<Vec<String>, _>(script) {
+            Ok(seen) => seen,
+            Err(error) => panic!("{error}: {:?}", ctx.catch()),
+        })
+    }
+
+    #[test]
+    fn a_file_opens_in_a_tab_of_its_own_after_the_one_shown() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/src/a.rs", null);
+            flush();
+            return [strip("s1"), names("s1"), focus()];
+        "#,
+        );
         assert_eq!(
-            got,
+            seen,
             [
-                step(&["yuzora-editor", "/r/b.png"], "p1"),
-                step(&["yuzora-editor", "/r/b.png"], "p3"),
-                step(&["yuzora-editor", "/r/pics/c.png", "/r/b.png"], "p5"),
-                step(&["yuzora-editor", "/r/pics/c.png"], "p5"),
+                "[shell] [editor /r/src/a.rs]* [shell]",
+                "- a.rs build",
+                "editor /r/src/a.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn each_kind_of_file_opens_in_its_own_pane_alone_in_the_new_tab() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            for (const path of ["/r/a.rs", "/r/README.md", "/r/a.png"]) { openFile(path, null); flush(); out.push(focus()); }
+            out.push(strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "editor /r/a.rs",
+                "markdown /r/README.md",
+                "image /r/a.png",
+                "[shell] [editor /r/a.rs] [markdown /r/README.md] [image /r/a.png]* [shell]"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_opened_to_the_side_splits_the_tab_shown() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null, { place: "side" });
+            flush();
+            return [strip("s1"), names("s1"), focus()];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell, editor /r/a.rs]* [shell]",
+                "- build",
+                "editor /r/a.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_already_open_is_shown_where_it_is_and_not_opened_again() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            const away = strip("s1");
+            openFile("/r/a.rs", null); flush();
+            const byClick = strip("s1");
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            return [away, byClick, strip("s1"), focus()];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [editor /r/a.rs] [shell]",
+                "[shell] [editor /r/a.rs]* [shell]",
+                "[shell] [editor /r/a.rs]* [shell]",
+                "editor /r/a.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_open_beside_a_shell_is_shown_there_by_a_click() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.rs", null); flush();
+            return [strip("s1"), focus()];
+        "#,
+        );
+        assert_eq!(seen, ["[shell, editor /r/a.rs]* [shell]", "editor /r/a.rs"]);
+    }
+
+    #[test]
+    fn a_line_is_kept_in_a_new_tab_and_shown_in_one_already_open() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null, { line: 12, column: 3 }); flush();
+            const props = given[focused().pane];
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.rs", null, { line: 40 }); flush();
+            return [`${props.line}:${props.column}`, typeof props.opened, JSON.stringify(revealed), strip("s1")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "12:3",
+                "number",
+                "[[40,1]]",
+                "[shell] [editor /r/a.rs]* [shell]"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_of_a_remote_space_opens_in_a_tab_of_that_space() {
+        let seen = in_the_open(
+            r#"
+            show("s2");
+            openFile("/srv/a.rs", "lab"); flush();
+            const props = given[focused().pane];
+            return [strip("s1"), strip("s2"), `${props.on}:${props.path}`, shown().id];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [shell]",
+                "[shell] [editor /srv/a.rs]*",
+                "lab:/srv/a.rs",
+                "s2"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_opens_in_the_space_it_was_asked_in_though_another_is_shown_when_the_command_runs() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null);
+            show("s2");
+            flush();
+            return [strip("s1"), strip("s2")];
+        "#,
+        );
+        assert_eq!(seen, ["[shell] [editor /r/a.rs]* [shell]", "[shell]*"]);
+    }
+
+    #[test]
+    fn a_place_that_is_not_known_opens_nothing() {
+        let seen = in_the_open(
+            r#"
+            let said = "";
+            try { openFile("/r/a.rs", null, { place: "elsewhere" }); } catch (e) { said = String(e.message); }
+            flush();
+            return [said, strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["unknown place: elsewhere", "[shell]* [shell]"]);
+    }
+
+    #[test]
+    fn with_no_pane_focused_the_side_is_a_tab() {
+        let seen = in_the_open(
+            r#"
+            nobody = true; publish();
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            return [strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["[shell] [editor /r/a.rs]* [shell]"]);
+    }
+
+    #[test]
+    fn an_image_open_in_a_tab_is_shown_by_a_second_click() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.png", null); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.png", null); flush();
+            return [strip("s1"), names("s1"), focus()];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            ["[shell] [image /r/a.png]* [shell]", "- a.png build", "image /r/a.png"]
+        );
+    }
+
+    #[test]
+    fn a_renamed_image_is_shown_in_the_same_place_under_its_new_path() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            openFile("/r/a.png", null, { place: "side" }); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            moved("/r/a.png", "/r/b.png", null); flush();
+            out.push(strip("s1") + " " + focus());
+            // Opening the new name finds that pane.
+            openFile("/r/b.png", null); flush();
+            out.push(strip("s1") + " " + focus());
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/img/c.png", null, { place: "side" }); flush();
+            moved("/r/im", "/r/x", null); moved("/r/img", "/r/pics", null); flush();
+            out.push(strip("s1") + " " + focus());
+            // A pane closed meanwhile is not opened again.
+            run("pane.close", { pane: paneOf("/r/b.png") }); flush();
+            moved("/r/b.png", "/r/d.png", null); flush();
+            out.push(strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell, image /r/b.png]* [shell] shell",
+                "[shell, image /r/b.png]* [shell] image /r/b.png",
+                "[shell, image /r/pics/c.png, image /r/b.png]* [shell] image /r/pics/c.png",
+                "[shell, image /r/pics/c.png]* [shell]",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_renamed_image_in_a_tab_not_shown_is_found_by_its_own_pane() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.png", null); flush();
+            openFile("/r/c.png", null); flush();
+            moved("/r/a.png", "/r/b.png", null); flush();
+            openFile("/r/b.png", null); flush();
+            return [strip("s1"), focus()];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell] [image /r/b.png]* [image /r/c.png] [shell]",
+                "image /r/b.png"
             ]
         );
     }

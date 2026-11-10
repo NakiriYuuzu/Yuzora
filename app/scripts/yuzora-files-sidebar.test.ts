@@ -5,9 +5,11 @@ import { test, expect } from "bun:test";
 import { readFile } from "node:fs/promises";
 
 const dir = new URL("../defaults/mods/yuzora-sidebar-files/", import.meta.url);
-const [main, tree, gitState, paths] = await Promise.all(["main.js", "tree-state.js", "git-state.js", "paths.js"].map(f => readFile(new URL(f, dir), "utf8")));
-const code = (s: string) => s.replace(/^import [\s\S]*?;\n/gm, "").replace(/^export default class/m, "class").replace(/^export (?=async function|function|const|class)/gm, "");
+const [main, tree, gitState, paths, open] = await Promise.all(["main.js", "tree-state.js", "git-state.js", "paths.js", "open.js"].map(f => readFile(new URL(f, dir), "utf8")));
+const code = (s: string) => s.replace(/^import [\s\S]*?;\n/gm, "").replace(/^export \{[^}]*\} from [^;]*;\n/gm, "").replace(/^export default class/m, "class").replace(/^export (?=async function|function|const|class)/gm, "");
 const source = [paths, gitState, tree, main].map(code).join("\n");
+// The sidebar with open.js as shipped, over a stub Herdr that records the commands it is told to run.
+const sourceWithOpen = [paths, gitState, tree, open, main].map(code).join("\n");
 
 type Call = { args: any[]; resolve: (v: any) => void; reject: (e: any) => void; answered: boolean };
 const waiting = (): [Call, Promise<any>] => {
@@ -25,8 +27,9 @@ const two = (a: string, b: string, machine: string | null = null) => [
   { id: "s2", active: false, folder: b, machine },
 ];
 
-// A sidebar whose host is the test's: every listing, git status and stat waits to be answered.
-function sidebar(spaces: any[] = two("/a", "/b")) {
+// A sidebar whose host is the test's: every listing, git status and stat waits to be answered. `real`: files are
+// opened by open.js itself (what it runs is in `world.runs`) instead of a stub that notes the Space shown.
+function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
   const world = {
     spaces,
     toasts: [] as any[], opened: [] as { path: string; on: string | null; space: string }[], log: [] as string[], lists: [] as { id: string; count: number }[],
@@ -34,6 +37,7 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
     timers: [] as { ms: number; fn: () => void; fired: boolean }[],
     calls: { list: [] as Call[], git: [] as Call[], stat: [] as Call[], watch: [] as Call[], make: [] as Call[] },
     name: "", props: null as any, clicks: new Map<string, any>(), moved: [] as any[][],
+    runs: [] as [string, any][], paneList: [] as any[], focus: null as any,
   };
   const active = () => world.spaces.find(s => s.active)?.id;
   const ask = (kind: "list" | "git" | "stat" | "watch" | "make", args: any[]) => {
@@ -72,8 +76,8 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
       return chain;
     },
     InputState: { new: makeInput }, Input: { new: maker }, Scrollbar: { vertical: maker },
-    spaces: () => world.spaces, panes: () => [], focused: () => null, theme: () => new Proxy({}, { get: () => "#000000" }),
-    run() {}, home: () => "/home/me", props: () => world.props, openOverlay: (o: any) => world.menus.push(o), closeOverlay() {},
+    spaces: () => world.spaces, panes: () => world.paneList, focused: () => world.focus, theme: () => new Proxy({}, { get: () => "#000000" }),
+    run: (name: string, args: any) => { world.runs.push([name, args]); }, home: () => "/home/me", props: () => world.props, openOverlay: (o: any) => world.menus.push(o), closeOverlay() {},
     shared: (key: string) => world.shared.get(key) ?? null, setShared: (key: string, value: any) => world.shared.set(key, value), notify: (n: any) => world.toasts.push(n), watchFolder: (path: string) => ask("watch", [path]),
     window: () => ({ platform: "macos" }),
     t: (key: string, vars?: object) => (vars ? `${key} ${JSON.stringify(vars)}` : key), tokens: () => ({}),
@@ -85,10 +89,17 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
     rename: (from: string, to: string, options: object) => ask("make", ["rename", from, to, options]),
     trash() {}, reveal() {}, copyText() {}, findFiles() {}, grep() {}, unsavedCount: () => 0,
     openFile: (path: string, on: string | null) => world.opened.push({ path, on: on ?? null, space: active() }), moved: (...args: any[]) => world.moved.push(args),
+    kindOf: (path: string) => (/\.(png|svg)$/i.test(path) ? "image" : /\.md$/i.test(path) ? "markdown" : "text"),
+    documentFor: () => null, focusDocument() {}, revealLine() {},
     fileIcon: () => ({ icon: "file", color: "dim" }),
     localStorage: { getItem: () => null, setItem() {} },
   };
-  const { FilesSidebar: View, menuItems } = new Function(...Object.keys(stubs), `${source}\nreturn { FilesSidebar, menuItems };`)(...Object.values(stubs));
+  if (real) {
+    delete stubs.openFile; delete stubs.moved;
+    world.paneList = [{ pane: "p1", tab: "t1" }];
+    world.focus = { space: active(), tab: "t1", pane: "p1" };
+  }
+  const { FilesSidebar: View, menuItems } = new Function(...Object.keys(stubs), `${real ? sourceWithOpen : source}\nreturn { FilesSidebar, menuItems };`)(...Object.values(stubs));
   const cx: any = {
     spawn: (fn: (cx: any) => Promise<any>) => { fn(cx); }, notify() {},
     timer: { every() {}, after: (ms: number, fn: () => void) => { world.timers.push({ ms, fn, fired: false }); } },
@@ -819,4 +830,77 @@ test("a name made in a folder of the tree drawn from the folder is made there, w
   expect(makes(s)).toEqual([["createFile", `${SUB}/lib/n.txt`, { on: "lab" }]]);
   await s.answer(s.pending("make")[0], null);
   expect(s.world.opened).toEqual([{ path: `${SUB}/lib/n.txt`, on: "lab", space: "s1" }]);
+});
+
+// Where a file opens: a tab of its own, unless the menu says to the side.
+
+const props = (path: string, on: string | null = null, more = {}) => ({ path, on, opened: expect.any(Number), ...more });
+const tabFor = (space: string, path: string, on: string | null = null, more = {}) =>
+  ["tab.new", { name: path.split("/").pop(), space, mod: "yuzora-editor", props: props(path, on, more) }];
+const opens = (s: ReturnType<typeof sidebar>) => s.world.runs.filter(([name]) => name === "tab.new" || name === "pane.split");
+
+async function realSidebarAt(machine: string | null, folder = "/srv") {
+  const s = sidebar(spacesAt(folder, machine), true);
+  await s.settle({ [folder]: listing("src/", "a.txt", "pic.png") }, repo(folder));
+  return s;
+}
+
+test("a click on a file opens it in a tab of its own, in the Space it was clicked in", async () => {
+  const s = sidebar(two("/a", "/b"), true);
+  await s.settle(A, repo("/a"));
+  s.press(s.frame(), X);
+  expect(opens(s)).toEqual([tabFor("s1", "/a/x.txt")]);
+});
+
+test("a click on an image opens it in a tab of its own", async () => {
+  const s = await realSidebarAt(null);
+  s.press(s.frame(), 2);
+  expect(opens(s)).toEqual([["tab.new", { name: "pic.png", space: "s1", mod: "yuzora-files-image", props: props("/srv/pic.png") }]]);
+});
+
+test("a search hit opens in a tab of its own at its line", async () => {
+  const s = sidebar(two("/a", "/b"), true);
+  await s.settle(A, repo("/a"));
+  s.view.results = [{ key: "k", root: "/a", on: null, path: "x.txt", line: 7, column: 2, text: "needle" }];
+  s.view.openResult("k");
+  expect(opens(s)).toEqual([tabFor("s1", "/a/x.txt", null, { line: 7, column: 2 })]);
+});
+
+for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null]] as const) {
+  test(`${where}: a file made from the toolbar opens in a tab of its own`, async () => {
+    const s = await realSidebarAt(machine);
+    s.view.startEdit("new-file", null, s.view.selectedDir(), s.cx);
+    await submit(s, "n.txt");
+    await s.answer(s.pending("make")[0], null);
+    expect(opens(s)).toEqual([tabFor("s1", "/srv/n.txt", machine)]);
+  });
+
+  test(`${where}: the menu of a file opens it in a tab, or to the side of the pane that has focus`, async () => {
+    const s = await realSidebarAt(machine);
+    s.pressRight(s.frame(), A_ROW);
+    const items = s.menuItems(s.world.menus[0].props.menu);
+    const labels = items.filter((i: any) => i).map((i: any) => i.label);
+    expect(labels.slice(0, 3)).toEqual(["menu.open", "menu.open_side", "menu.terminal"]);
+    expect(items.find((i: any) => i?.label === "menu.open_side").enabled).not.toBe(false);
+    items.find((i: any) => i?.label === "menu.open").run();
+    expect(opens(s)).toEqual([tabFor("s1", "/srv/a.txt", machine)]);
+    items.find((i: any) => i?.label === "menu.open_side").run();
+    expect(opens(s).slice(1)).toEqual([["pane.split", { direction: "right", pane: "p1", mod: "yuzora-editor", props: props("/srv/a.txt", machine) }]]);
+  });
+
+  test(`${where}: an image opens to the side from the menu too`, async () => {
+    const s = await realSidebarAt(machine);
+    s.pressRight(s.frame(), 2);
+    s.menuItems(s.world.menus[0].props.menu).find((i: any) => i?.label === "menu.open_side").run();
+    expect(opens(s)).toEqual([["pane.split", { direction: "right", pane: "p1", mod: "yuzora-files-image", props: props("/srv/pic.png", machine) }]]);
+  });
+}
+
+test("the menu of a folder has no Open and no Open to the Side", async () => {
+  const s = await realSidebarAt(null);
+  s.pressRight(s.frame(), SRC_ROW);
+  const labels = s.menuItems(s.world.menus[0].props.menu).filter((i: any) => i).map((i: any) => i.label);
+  expect(labels).not.toContain("menu.open");
+  expect(labels).not.toContain("menu.open_side");
+  expect(labels).toContain("menu.terminal");
 });
