@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { archiveName, channelOf, checkVersion, downloadsFor, parseCli, tauriManifest, yuzoraManifest } from "./manifest";
+import { TARGETS, UNLISTED_TARGETS, archiveName, channelOf, checkVersion, downloadsFor, listedTargets, parseCli, tauriManifest, unlistedTargets, yuzoraManifest } from "./manifest";
 
 function dist(files: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), "yuzora-manifest-"));
@@ -104,6 +104,29 @@ describe("yuzora-update.json without some targets", () => {
     expect(() => parseCli(["other", "dist"])).toThrow("usage");
     expect(() => parseCli(["tauri", "dist", "--exclude", "windows-x86_64"])).toThrow("--exclude is for the yuzora manifest");
     expect(() => parseCli(["yuzora", "dist", "--pub-date", "tomorrow-ish"])).toThrow("is not a date");
+  });
+});
+
+describe("which targets a version's manifest lists", () => {
+  test("0.1.0 leaves Windows out and lists the other three, in the order the app ships them", () => {
+    expect(unlistedTargets("0.1.0")).toEqual(["windows-x86_64"]);
+    expect(listedTargets("0.1.0")).toEqual(["macos-aarch64", "linux-x86_64", "linux-aarch64"]);
+  });
+
+  test("a version that has no row lists every target", () => {
+    for (const version of ["0.1.1", "0.2.0", "0.1.0-beta.4"]) {
+      expect(unlistedTargets(version), version).toEqual([]);
+      expect(listedTargets(version), version).toEqual(["macos-aarch64", "windows-x86_64", "linux-x86_64", "linux-aarch64"]);
+    }
+  });
+
+  test("every row names targets Yuzora ships, once each, and leaves at least one listed", () => {
+    for (const [version, targets] of Object.entries(UNLISTED_TARGETS)) {
+      checkVersion(version);
+      expect(new Set(targets).size, version).toBe(targets.length);
+      for (const target of targets) expect(TARGETS, version).toContain(target);
+      expect(listedTargets(version).length, version).toBeGreaterThan(0);
+    }
   });
 });
 

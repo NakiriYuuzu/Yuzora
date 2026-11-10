@@ -38,6 +38,15 @@ describe("who can do what", () => {
     expect(planStep.env!.VERSION).toBe("${{ inputs.version }}");
   });
 
+  test("which targets the manifest lists is not a dispatch input: the repository's table decides, for the build and for the check", () => {
+    expect(Object.keys(workflow.on.workflow_dispatch.inputs).sort()).toEqual(["downloads_base", "package_run_id", "stage", "version"]);
+    const planStep = workflow.jobs.plan.steps.find((s) => s.name === "Check the inputs, the run and the tag")!;
+    expect(Object.keys(planStep.env!).sort()).toEqual(["DOWNLOADS_BASE", "GH_TOKEN", "PACKAGE_RUN_ID", "STAGE", "VERSION"]);
+    const verify = workflow.jobs["verify-manifest"];
+    expect(verify.env).toEqual({ STAGE: "${{ needs.plan.outputs.stage }}", VERSION: "${{ needs.plan.outputs.version }}", DOWNLOADS: "${{ needs.plan.outputs.downloads }}" });
+    expect(runs(verify)).toContain('import { listedTargets } from "./app/scripts/yuzora/manifest.ts"; console.log(listedTargets(process.env.VERSION ?? "").join(","))');
+  });
+
   test("no job that writes can start in a dry run", () => {
     const stages: Record<string, string> = { draft: "draft", publish: "publish", "upload-manifest": "manifest", latest: "latest" };
     expect(writers().map(([name]) => name).sort()).toEqual(Object.keys(stages).sort());

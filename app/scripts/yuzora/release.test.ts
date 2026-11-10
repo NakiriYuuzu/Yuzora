@@ -11,7 +11,7 @@ const good = { STAGE: "draft", VERSION: "0.1.0", PACKAGE_RUN_ID: "42" };
 
 describe("inputs", () => {
   test("a stable release with the accepted run", () => {
-    expect(parseInputs(good)).toEqual({ stage: "draft", version: "0.1.0", runId: "42", exclude: [], downloads: GITHUB_DOWNLOADS });
+    expect(parseInputs(good)).toEqual({ stage: "draft", version: "0.1.0", runId: "42", downloads: GITHUB_DOWNLOADS });
   });
 
   test("anything but a known stage, a plain version, or a numeric run id is refused", () => {
@@ -35,10 +35,8 @@ describe("inputs", () => {
     expect(parseInputs({ ...good, DOWNLOADS_BASE: "http://127.0.0.1:1/x" }).downloads).toBe(GITHUB_DOWNLOADS);
   });
 
-  test("excluded targets are Yuzora's own, once each", () => {
-    expect(parseInputs({ ...good, EXCLUDE_TARGETS: "windows-x86_64, linux-aarch64" }).exclude).toEqual(["windows-x86_64", "linux-aarch64"]);
-    expect(() => parseInputs({ ...good, EXCLUDE_TARGETS: "macos-x86_64" })).toThrow("not a target Yuzora ships");
-    expect(() => parseInputs({ ...good, EXCLUDE_TARGETS: "windows-x86_64,windows-x86_64" })).toThrow("excluded twice");
+  test("no input says which targets the manifest leaves out: that is the version's row in manifest.ts", () => {
+    expect(parseInputs({ ...good, EXCLUDE_TARGETS: "linux-aarch64" })).toEqual(parseInputs(good));
   });
 });
 
@@ -205,9 +203,27 @@ describe("plan, against a fake gh and a throwaway repository", () => {
     accepted();
     expect(() => plan(env({ STAGE: "publish" }))).toThrow("run the draft stage first");
     reply("repos/NakiriYuuzu/Yuzora/git/ref/tags/v0.1.0", 200, { object: { type: "commit", sha } });
-    const out = plan(env({ STAGE: "manifest", EXCLUDE_TARGETS: "windows-x86_64" }));
+    const out = plan(env({ STAGE: "manifest" }));
     expect(out).toMatchObject({ stage: "manifest", exclude: "windows-x86_64" });
     expect(out.notes).toBeUndefined();
+  });
+
+  test("0.1.0 never lists Windows, whatever the dispatch says and at whichever stage", () => {
+    accepted();
+    reply("repos/NakiriYuuzu/Yuzora/git/ref/tags/v0.1.0", 200, { object: { type: "commit", sha } });
+    for (const stage of ["draft", "publish", "manifest", "latest"]) {
+      for (const EXCLUDE_TARGETS of [undefined, "", "linux-aarch64", "windows-x86_64"]) {
+        const out = plan(env({ STAGE: stage, ...(EXCLUDE_TARGETS === undefined ? {} : { EXCLUDE_TARGETS }) }));
+        expect(out.exclude, `${stage} with ${EXCLUDE_TARGETS}`).toBe("windows-x86_64");
+      }
+    }
+    const dry = plan(env({ STAGE: "dry-run", PACKAGE_RUN_ID: "", GITHUB_SHA: sha }));
+    expect(dry.exclude).toBe("windows-x86_64");
+  });
+
+  test("a version with no row leaves nothing out", () => {
+    const out = plan(env({ STAGE: "dry-run", PACKAGE_RUN_ID: "", VERSION: "0.2.0", GITHUB_SHA: sha }));
+    expect(out.exclude).toBe("");
   });
 
   test("a commit that is not on main, a version Cargo.toml does not have, or a missing run are refused", () => {
