@@ -1414,8 +1414,10 @@ mod tests {
     }
 
     /// Runs the rest of the test as an app on Windows, whatever system it is on.
+    #[cfg(unix)]
     struct AsWindows;
 
+    #[cfg(unix)]
     impl AsWindows {
         fn new() -> Self {
             FORCED_WINDOWS.with(|forced| forced.set(Some(true)));
@@ -1423,6 +1425,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl Drop for AsWindows {
         fn drop(&mut self) {
             FORCED_WINDOWS.with(|forced| forced.set(None));
