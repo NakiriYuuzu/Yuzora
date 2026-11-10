@@ -1629,6 +1629,36 @@ impl Drop for DropFixtureTable {
 }
 
 #[test]
+fn mssql_a_trigger_that_leaves_a_transaction_open_fails_the_write_back_instead_of_losing_it() {
+    only_with!("mssql");
+    let name = format!("yz_r1_trg_{}", std::process::id());
+    let _cleanup = DropFixtureTable(name.clone());
+    let t = ms_object("dbo", &name);
+    run(async {
+        let mut setup = ms_sa("yuzora_p8").await;
+        query(
+            &mut setup,
+            &format!(
+                "IF OBJECT_ID(N'dbo.{name}') IS NOT NULL DROP TABLE dbo.{name}; \
+                 CREATE TABLE dbo.{name} (id int PRIMARY KEY, v nvarchar(10)); \
+                 INSERT INTO dbo.{name} VALUES (1, N'a')"
+            ),
+        )
+        .await
+        .unwrap();
+        // The trigger's BEGIN is never ended: the write-back's COMMIT only counts down, and the server says so.
+        query(&mut setup, &format!("CREATE TRIGGER dbo.{name}_t ON dbo.{name} AFTER UPDATE AS BEGIN SET NOCOUNT ON; BEGIN TRANSACTION; END"))
+            .await
+            .unwrap();
+        let mut conn = ms_sa("yuzora_p8").await;
+        let failed = query_error(conn.apply_edits(&t, &[one_edit("z")]).await.expect_err("a write-back the server will drop is not one that succeeded"));
+        assert!(failed.contains("Msg 266"), "{failed}");
+        assert_eq!(scalar(&mut conn, "SELECT @@TRANCOUNT").await, "0", "rolled back, not left open");
+        assert_eq!(scalar(&mut setup, &format!("SELECT v FROM dbo.{name} WHERE id = 1")).await, "a", "nothing was written");
+    });
+}
+
+#[test]
 fn mssql_a_write_back_on_a_connection_that_opens_transactions_by_itself_is_committed_or_refused() {
     only_with!("mssql");
     let name = format!("yz_r1_impl_{}", std::process::id());
