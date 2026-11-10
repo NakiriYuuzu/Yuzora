@@ -11,14 +11,13 @@ const fonts = JSON.parse(await readFile(new URL("./fixtures/yuzora-git-diff-font
 };
 
 type Fit = { show: string[]; rest: number };
-const { ratioOf, bound, widest, LOOK, LINE, LAYOUT, WORST } = (() => {
+const { ratioOf, bound, widest, LINE, LAYOUT, WORST } = (() => {
   const body = src.replace(/^import [\s\S]*?;\n/gm, "").replace("export default class GitDiff", "class GitDiff");
-  return new Function("View", `${body}; return { ratioOf, bound, widest, LOOK, LINE, LAYOUT, WORST };`)(class {});
+  return new Function("View", `${body}; return { ratioOf, bound, widest, LINE, LAYOUT, WORST };`)(class {});
 })() as {
   ratioOf: (v: unknown) => number;
   bound: (text: string, meter: { left: number }) => number;
   widest: (rows: object[]) => { l: Fit; r: Fit };
-  LOOK: number;
   LINE: number;
   LAYOUT: number;
   WORST: number;
@@ -85,6 +84,15 @@ test("with only ASCII the lines that are not laid out can take no more than the 
   expect(l.rest).toBeGreaterThanOrEqual(sorted[4]);
 });
 
+test("a line that could not beat the few that are laid out still counts, at what it can take at most", () => {
+  // Fifty lightning bolts take three cells each at most and one in the font; fifty Chinese characters take
+  // 83. A line of 50 is not read for what the few take at most (150), and is no less wide than they are.
+  const few = Array.from({ length: 4 }, () => "\u26a1".repeat(50));
+  const { l } = widest([...few, "\u6f22".repeat(50)].map((t) => row(t)));
+  expect(l.show).toEqual(few);
+  expect(l.rest).toBeGreaterThanOrEqual(truly("\u6f22".repeat(50)));
+});
+
 test("an unchanged row counts on both sides, a side that has no line counts on none", () => {
   const rows = [{ k: "=", t: "same line" }, row("only on the left"), row(undefined, "only right is a longer line")];
   const { l, r } = widest(rows);
@@ -118,7 +126,7 @@ test("how much of a diff is read does not depend on how big it is", () => {
   // Thirty lines of 2,000,000 characters, then a hundred thousand more: 66,000,000 characters in all.
   const rows = [...Array.from({ length: 30 }, () => row("a".repeat(2e6) + "é")), ...Array.from({ length: 1e5 }, () => row("short line of text"))];
   const { out, read } = reading(() => widest(rows));
-  expect(read).toBeLessThanOrEqual(LOOK + LINE);
+  expect(read).toBeLessThanOrEqual(6e6);
   // Nothing was read of what came after, and it is taken at its worst: three cells a character.
   expect(out.l.rest).toBeGreaterThanOrEqual(2e6);
 });
@@ -132,8 +140,11 @@ test("the room left for lines that are not laid out is never less than the font 
   const failures: string[] = [];
   for (let trial = 0; trial < 400; trial++) {
     // Each line leans on one kind of character or another, so that lines of different kinds meet.
+    // Half the trials have lines of one character each, so that lines of one kind meet lines of another.
+    const uniform = trial % 2 === 1;
     const lines = Array.from({ length: 1 + Math.floor(next() * 40) }, () => {
       const lean = next(), length = Math.floor(next() * 300);
+      if (uniform) return pick(next()).repeat(length);
       return Array.from({ length }, () => pick(next() < lean ? next() : 0)).join("");
     });
     const { l } = widest(lines.map((t) => row(t)));

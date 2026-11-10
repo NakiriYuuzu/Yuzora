@@ -415,8 +415,9 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
 // text starts), and a press picks the row it landed on, as the list's own click would, in the
 // body's text size (a `real` prop leaves that out: the list's own click picks the row). A press in the
 // header's empty part loads the view again (`relayout`). `rendered` is noted when a frame was
-// drawn whole, and `list` is how tall the rows' list is. A `pane` prop puts the diff in a box that
-// wide, so the pointer can leave it.
+// drawn whole, `shown` how many times the rows' properties were read in taking the diff in and `work`
+// in a frame (the rows are proxies that count), and `list` how tall the rows' list is. A `pane` prop
+// puts the diff in a box that wide, so the pointer can leave it.
 const DIFF_PROBE: &str = r#"
 import { note } from "fixture";
 export default class Probed extends GitDiff {
@@ -435,8 +436,17 @@ export default class Probed extends GitDiff {
   rowList(...rest) {
     return div().size_full().on_size_change((s) => note("list", s.height)).child(super.rowList(...rest));
   }
+  show(view) {
+    const touched = this.touched = { n: 0 };
+    const rows = view.rows.map((r) => new Proxy(r, { get(t, k, rc) { touched.n++; return Reflect.get(t, k, rc); } }));
+    super.show({ ...view, rows });
+    note("shown", touched.n);
+  }
   render(cx) {
-    let root = super.render(cx).on_mouse_down("left", (e, cx) => {
+    const before = this.touched?.n ?? 0;
+    let root = super.render(cx);
+    note("work", (this.touched?.n ?? 0) - before);
+    root = root.on_mouse_down("left", (e, cx) => {
       if (e.position.y < 28) { if (this.view) this.relayout(cx); }
       else if (!props().real) this.clickRow(Math.floor((e.position.y - 28) / 20), cx);
     });
@@ -557,6 +567,11 @@ impl DiffPane {
     /// The frames drawn whole, in order: the view each showed and its error.
     fn rendered(&self) -> Vec<(Value, Value)> {
         self.notes.borrow().iter().filter(|n| n[0] == "rendered").map(|n| (n[1].clone(), n[2].clone())).collect()
+    }
+
+    /// How many times the rows' properties were read (taking the diff in, and in each frame).
+    fn reads(&self, what: &str) -> Vec<f64> {
+        self.notes.borrow().iter().filter(|n| n[0] == what).map(|n| n[1].as_f64().unwrap()).collect()
     }
 
     /// How tall the rows' list was laid out last.
@@ -974,6 +989,7 @@ fn yuzora_diff_long_lines_with_wide_characters_open_and_keep_drawing(cx: &mut Te
         ("1,000,000 characters and an \u{e9}".into(), json!([text_row(None, Some(&format!("{}\u{e9}", "a".repeat(1_000_000))))])),
         ("4,000,000 characters and an \u{e9}".into(), json!([text_row(None, Some(&format!("{}\u{e9}", "a".repeat(4_000_000))))])),
         ("4,000,000 wide characters".into(), json!([text_row(Some(&"\u{6f22}".repeat(4_000_000)), None)])),
+        ("100 lines of 60,000 wide characters".into(), Value::Array((0..100).map(|_| text_row(Some(&"\u{6f22}".repeat(60_000)), None)).collect())),
         ("3,000 lines with wide characters".into(), Value::Array((0..3000).map(|i| text_row(Some(&format!("{} \u{6f22}\u{5b57} {i}", "word ".repeat(8 + i % 24))), Some(&format!("{} \u{1f600}", "word ".repeat(10 + i % 20))))).collect())),
     ];
     for file in ["docs/html/v0.0.16-workbench-verification-2026-09-22.html", "patches/@xterm%2Fxterm@6.0.0.patch", "docs/html/assets/herdr-e2e-20260923/native-transcripts.json"] {
@@ -999,6 +1015,24 @@ fn yuzora_diff_long_lines_with_wide_characters_open_and_keep_drawing(cx: &mut Te
         pane.close();
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// yuzora(v010): a frame goes through none of the diff's rows: what the pane needs of them all is worked
+// out when they arrive, so what a frame costs does not grow with the diff (it has 50 ms). Counted
+// (reads of the rows' properties) rather than timed, so a slow machine does not change it.
+#[gpui::test]
+fn yuzora_diff_a_frame_does_not_go_through_the_diffs_rows(cx: &mut TestAppContext) {
+    let side = Value::Array((0..3000).map(|i| text_row(Some(&format!("{} \u{6f22}\u{5b57} {i}", "word ".repeat(8 + i % 24))), Some(&"word ".repeat(10 + i % 20)))).collect());
+    let unified = Value::Array((0..3000).map(|i| json!({"k": "+", "h": 0, "r": i + 1, "ri": i, "t": format!("{} \u{6f22}", "word ".repeat(8 + i % 24))})).collect());
+    for (case, rows, props) in [("side by side", side, json!({})), ("unified", unified, json!({"layout": "unified"}))] {
+        let mut pane = DiffPane::mount_with(cx, rows, 1200., 1200., &Shared::default(), props);
+        pane.redraw();
+        let (shown, frames) = (pane.reads("shown"), pane.reads("work"));
+        assert!(shown.len() == 1 && shown[0] >= 3000., "{case}: taking the diff in went through its rows: {shown:?}");
+        assert!(frames.len() >= 2, "{case}: a frame was drawn with the diff in it: {frames:?}");
+        assert!(frames.iter().all(|reads| *reads < 3000.), "{case}: a frame went through the rows: {frames:?}");
+        pane.close();
+    }
 }
 
 // yuzora(v010): an ordinary diff (thousands of lines, a few with wide characters) scrolls sideways
@@ -1190,8 +1224,8 @@ fn yuzora_diff_the_longest_lines_tail_scrolls_into_view_in_the_font_that_draws_i
             ("180 ASCII beside 4 of 100 Chinese", "a", text_row(Some(&"a".repeat(180)), Some("b")), "\u{6f22}".repeat(100)),
             ("40 check marks beside 4 of 170 ASCII", "|", text_row(Some(&"| \u{2705} ".repeat(40)), Some("b")), "a".repeat(170)),
             ("160 ASCII beside 4 of 100 Korean", "a", text_row(Some(&"a".repeat(160)), Some("b")), "\u{d55c}".repeat(100)),
-            ("100 Chinese beside 4 of 150 ASCII", "\u{6f22}", text_row(Some(&"\u{6f22}".repeat(100)), Some("b")), "a".repeat(150)),
-            ("100 emoji beside 4 of 150 ASCII", "\u{1f600}", text_row(Some(&"\u{1f600}".repeat(100)), Some("b")), "a".repeat(150)),
+            ("100 Chinese beside 4 of 160 ASCII", "\u{6f22}", text_row(Some(&"\u{6f22}".repeat(100)), Some("b")), "a".repeat(160)),
+            ("100 emoji beside 4 of 205 ASCII", "\u{1f600}", text_row(Some(&"\u{1f600}".repeat(100)), Some("b")), "a".repeat(205)),
         ];
         let mut failures = Vec::new();
         for (case, first, longest, others) in cases {
