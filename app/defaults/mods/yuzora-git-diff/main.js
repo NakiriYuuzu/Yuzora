@@ -14,6 +14,13 @@ const SPLIT = "yuzora.git.diff.split", SPLIT_MIN = 0.15, SPLIT_MAX = 0.85;
 // The grab area over the divider, the bar below the lines when they scroll sideways, and the room left
 // after the widest line: the indent (6) and some more.
 const GRAB = 5, BAR = 8, REST = 18;
+// How [`widest`] finds how wide the lines are, without laying them all out: the lines of each side laid
+// out out of sight (and the longest it lays out), the characters it reads in all, in one line, each line's toll
+// in them, what each character that is not ASCII costs more, how many of those a line may have to be told
+// apart by kind, and the most cells a UTF-16 unit takes.
+const WIDEST = 4, LAYOUT = 1 << 18, LOOK = 4e6, LINE = 1 << 20, TOLL = 200, SLOW = 25, SORT = 1 << 16, WORST = 3;
+// The width of a run of this over its length is what a cell takes in the font.
+const RULER = "W".repeat(32);
 
 export default class GitDiff extends View {
   init(_props, cx) {
@@ -24,7 +31,7 @@ export default class GitDiff extends View {
     this.context = Number(p.context ?? s.diffContext ?? 3);
     this.view = null; this.error = null; this.busy = false; this.note = null;
     this.sel = {}; this.hunk = 0; this.askDiscard = null;
-    this.scrollX = 0; this.textW = { l: 0, r: 0 }; this.drag = null;
+    this.scrollX = 0; this.textW = { l: 0, r: 0 }; this.cellW = 0; this.drag = null; this.fit = null;
     this.scroll = VirtualListScrollHandle.new();
     this.handle = cx.focus_handle();
     // Props without `at` (an agent's tab.new) date from now, not from 1970.
@@ -45,7 +52,7 @@ export default class GitDiff extends View {
     this.spec = spec;
     this.loop = (this.loop ?? 0) + 1;
     const loop = this.loop;
-    this.view = null; this.error = null; this.sel = {}; this.hunk = 0; this.note = null; this.scrollX = 0;
+    this.view = null; this.fit = null; this.error = null; this.sel = {}; this.hunk = 0; this.note = null; this.scrollX = 0;
     // Called from render too: the state above is what this frame draws, so no notify here.
     if (!spec) return;
     cx.spawn(async (cx) => {
@@ -74,7 +81,7 @@ export default class GitDiff extends View {
       const { id } = await diffOpen(this.repo.id, { path: spec.path, orig: spec.orig ?? null, mode: spec.mode ?? "unstaged", rev: spec.rev, to: spec.to ?? null });
       const view = await diffView(id, { layout: this.layout, context: this.context, whitespace: this.whitespace });
       if (this.loop !== loop) return;
-      this.view = view; this.error = null;
+      this.show(view); this.error = null;
       // Selections name lines of the old diff: drop the ones that moved.
       const keep = {};
       for (const [h, s] of Object.entries(this.sel)) if (view.hunks[h]) keep[h] = s;
@@ -95,7 +102,7 @@ export default class GitDiff extends View {
   relayout(cx) {
     if (!this.view) return;
     cx.spawn(async (cx) => {
-      try { this.view = await diffView(this.view.id, { layout: this.layout, context: this.context, whitespace: this.whitespace }); this.sel = {}; }
+      try { this.show(await diffView(this.view.id, { layout: this.layout, context: this.context, whitespace: this.whitespace })); this.sel = {}; }
       catch (e) { this.error = String(e); }
       cx.notify();
     });
@@ -157,10 +164,20 @@ export default class GitDiff extends View {
     return this.drag?.kind === "split" ? this.drag.ratio : ratioOf(shared(SPLIT));
   }
 
-  // The widest lines of each side ([`widest`]), worked out once per view.
-  candidates() {
-    if (this.candidatesOf !== this.view) { this.candidatesOf = this.view; this.candidatesWere = widest(this.view.rows); }
-    return this.candidatesWere;
+  // A diff's rows come in here: what the pane needs of them to draw, which takes reading all of their
+  // lines, is worked out now, once, not in each frame. Both are kept only when it is all done, so a
+  // failure leaves the diff that is on show as it was.
+  show(view) {
+    const fit = this.layout === "unified"
+      ? { longest: Math.min(2000, view.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0)) }
+      : widest(view.rows);
+    this.view = view; this.fit = fit;
+  }
+
+  // What the widest line of a side takes: those laid out as the font draws them, or what the lines that
+  // were not could take at most, whichever is more.
+  span(side) {
+    return Math.max(this.textW[side], (this.fit?.[side]?.rest ?? 0) * this.cellW);
   }
 
   // How far the lines can scroll sideways: the most the widest line of either side reaches past its
@@ -168,7 +185,7 @@ export default class GitDiff extends View {
   reach(ratio) {
     const w = this.rowsWidth ?? 0, left = (w - 1) * ratio;
     if (!w) return 0;
-    return Math.max(0, this.textW.l + REST - (left - GUTTER), this.textW.r + REST - (w - 1 - left - GUTTER));
+    return Math.max(0, this.span("l") + REST - (left - GUTTER), this.span("r") + REST - (w - 1 - left - GUTTER));
   }
 
   // A sideways swipe or wheel moves every line the same distance; the frame keeps it within [`reach`].
@@ -324,14 +341,19 @@ export default class GitDiff extends View {
         }));
   }
 
-  // The widest line of each side, laid out out of sight: how wide the font that draws it makes it
-  // is how far the sides scroll. Only the widest few by [`cells`] are laid out, not every line.
+  // The lines [`widest`] chose, laid out out of sight: how wide the font that draws them makes them is
+  // how far the sides scroll. So is a run of ruler, which says what a cell is for the lines that were not.
   probes() {
-    const c = this.candidates();
-    const side = (name) => v_flex().absolute().top(0).left(0).h(0).overflow_hidden()
+    const fit = this.fit;
+    if (!fit?.l) return div();
+    const hidden = () => v_flex().absolute().top(0).left(0).h(0).overflow_hidden();
+    const side = (name) => hidden()
       .on_size_change((size, cx) => { if (Math.abs(size.width - this.textW[name]) > 0.5) { this.textW[name] = size.width; cx.notify(); } })
-      .children(c[name].map((text) => div().whitespace_nowrap().child(text)));
-    return div().child(side("l")).child(side("r"));
+      .children(fit[name].show.map((text) => div().whitespace_nowrap().child(text)));
+    const ruler = hidden()
+      .on_size_change((size, cx) => { if (Math.abs(size.width / RULER.length - this.cellW) > 0.01) { this.cellW = size.width / RULER.length; cx.notify(); } })
+      .child(div().whitespace_nowrap().child(RULER));
+    return div().child(side("l")).child(side("r")).child(ruler);
   }
 
   // Side by side: the sides share the width by one ratio whatever their lines hold, each clipping its
@@ -423,8 +445,7 @@ export default class GitDiff extends View {
     else if (v.binary) body = div().p(16).text_color(th.dim).child(t("binary"));
     else if (v.identical || !v.rows.length) body = div().p(16).text_color(th.dim).child(!v.leftExists && !v.rightExists ? t("missing") : v.modes ? t("modes", { from: v.modes[0], to: v.modes[1] }) : t("identical"));
     else if (this.layout === "unified") {
-      const longest = Math.min(2000, v.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0));
-      const width = longest * CHAR + 24;
+      const width = (this.fit?.longest ?? 0) * CHAR + 24;
       body = div().flex_1().min_h(0).relative().font_family(mono).text_size(11.5)
         .child(div().id("diff-x").size_full().overflow_x_scrollbar()
           .child(div().id("diff-rows-box").w_full().min_w(GUTTER * 2 + 14 + width).h_full()
@@ -453,39 +474,64 @@ function ratioOf(v) {
   return typeof v === "number" && Number.isFinite(v) ? Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, v)) : 0.5;
 }
 
-// What a character takes in a monospace font, in cells: a wide one (CJK, full width, emoji) takes two.
-function wide(c) {
-  return c >= 0x1100 && (c <= 0x115f || c >= 0x2e80 && c <= 0xa4cf && c !== 0x303f || c >= 0xac00 && c <= 0xd7a3 || c >= 0xf900 && c <= 0xfaff
-    || c >= 0xfe30 && c <= 0xfe6f || c >= 0xff00 && c <= 0xff60 || c >= 0xffe0 && c <= 0xffe6 || c >= 0x1f300 && c <= 0x1faff || c >= 0x20000 && c <= 0x3fffd);
+// What a UTF-16 unit of a line takes at most, in cells (the width of an ASCII character), from what
+// JetBrains Mono and what the system falls back to for the rest draw (scripts/fixtures/yuzora-git-diff-font-widths.json,
+// held to by yuzora-git-diff-layout.test.ts): Latin, Greek, Cyrillic, punctuation, arrows and box drawing take 1;
+// Chinese, Japanese, full width 1.67 and Korean 1.44; a symbol drawn as an emoji 2.17, and one past U+FFFF is two
+// units. Each is rounded up with some to spare, and what is not listed is taken at [`WORST`].
+const ASCII = /[\0-\x7f]+/g;
+const NARROW = /[^\x80-\u058f\u2000-\u206f\u2190-\u22ff\u2500-\u259f]+/g;
+const WIDE = /[^\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]+/g;
+const PAIR = /[^\ud800-\udfff]+/g;
+
+// The cells a line takes at most, reading as much of it as `meter` has left to give: a line it reads
+// only the first [`LINE`] characters of has the rest taken at [`WORST`], and one it has nothing left
+// for is taken at [`WORST`] whole, as is every character that is not ASCII in a line with more than
+// [`SORT`] of them. The reading costs what [`TOLL`] and [`SLOW`] say, taken from the meter.
+function bound(s, meter) {
+  const n = s.length, read = Math.min(n, LINE, Math.max(meter.left, 0));
+  if (!read) return WORST * n;
+  const head = read < n ? s.slice(0, read) : s;
+  const other = head.replace(ASCII, "");
+  meter.left -= TOLL + read + SLOW * other.length;
+  let cells = read - other.length + WORST * (n - read);
+  if (other.length > SORT) return cells + WORST * other.length;
+  if (other.length) {
+    const count = (re) => other.replace(re, "").length;
+    const narrow = count(NARROW), wide = count(WIDE), pair = count(PAIR);
+    cells += 1.25 * narrow + 2 * wide + 1.5 * pair + WORST * (other.length - narrow - wide - pair);
+  }
+  return cells;
 }
 
-function cells(text) {
-  let n = 0;
-  for (const ch of text) n += wide(ch.codePointAt(0)) ? 2 : 1;
-  return n;
-}
-
-// The few lines of each side that take the most cells, widest first. Only a guess at which is
-// widest in the font that draws them (not every font gives a wide character two cells), so the
-// few are laid out and measured ([`GitDiff.probes`]); tabs are spaces by now.
-const WIDEST = 4;
+// For each side, the lines to lay out ([`GitDiff.probes`]: the few that may be widest, by what
+// [`bound`] says they take at most) and `rest`, the most that any other line may take, in cells. The
+// widest line is among the ones laid out or no wider than `rest`, whatever the font. Each line is read
+// once for the whole diff and within what [`LOOK`] allows; tabs are spaces by now.
 function widest(rows) {
-  const pick = (text) => {
+  const meter = { left: LOOK };
+  const side = (text) => {
     const best = [];
+    let rest = 0;
     for (const r of rows) {
       const s = text(r);
-      // No more than two cells a character: a line this short cannot beat the last of the few.
-      if (!s || best.length === WIDEST && s.length * 2 <= best[WIDEST - 1][0]) continue;
-      const n = /[^\0-\x7f]/.test(s) ? cells(s) : s.length;
-      if (best.length < WIDEST || n > best[WIDEST - 1][0]) {
-        best.push([n, s]);
-        best.sort((a, b) => b[0] - a[0]);
-        best.length = Math.min(best.length, WIDEST);
-      }
+      if (!s) continue;
+      // A line that cannot take more than the last of the few is not read.
+      const worst = WORST * s.length;
+      if (best.length === WIDEST && worst <= best[WIDEST - 1][0]) { if (worst > rest) rest = worst; continue; }
+      const b = bound(s, meter);
+      if (best.length < WIDEST || b > best[WIDEST - 1][0]) {
+        best.push([b, s]);
+        best.sort((x, y) => y[0] - x[0]);
+        if (best.length > WIDEST) { const out = best.pop()[0]; if (out > rest) rest = out; }
+      } else if (b > rest) rest = b;
     }
-    return best.map((b) => b[1]);
+    // One too long to lay out is among the lines that are not.
+    const show = [];
+    for (const [b, s] of best) { if (s.length <= LAYOUT) show.push(s); else if (b > rest) rest = b; }
+    return { show, rest };
   };
-  return { l: pick((r) => r.lt ?? r.t), r: pick((r) => r.rt ?? r.t) };
+  return { l: side((r) => r.lt ?? r.t), r: side((r) => r.rt ?? r.t) };
 }
 
 // Whether changed paths may touch the diff's file: the file, the one it was renamed from, a
