@@ -14,6 +14,7 @@
 pub(crate) mod channel;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod cli_link;
+pub(crate) mod cwd;
 pub(crate) mod manifest;
 pub(crate) mod notes;
 pub(crate) mod update;
@@ -32,10 +33,51 @@ pub const PACKAGE_LIST: &str = "yuzora.package";
 /// folder (and removes the old one), so a package unpacked over a folder
 /// with other files in it never updates itself; cargo's target/ has no list.
 pub fn is_install(dir: &Path) -> bool {
-    let Ok(list) = std::fs::read_to_string(dir.join(PACKAGE_LIST)) else { return false };
+    match strays(dir) {
+        Some(strays) if strays.is_empty() => true,
+        Some(strays) => {
+            // Asked once per run (`update::root` keeps the answer): the person who put a file there has no other way to learn why updates are off.
+            let shown: Vec<&str> = strays.iter().take(5).map(String::as_str).collect();
+            tracing::warn!(
+                "update: {} has files that are not in {PACKAGE_LIST} ({}{}), so this install does not update itself; an update replaces the whole folder. Move them out to turn updates on",
+                dir.display(),
+                shown.join(", "),
+                if strays.len() > shown.len() {
+                    ", …"
+                } else {
+                    ""
+                }
+            );
+            false
+        }
+        None => false,
+    }
+}
+
+/// What is in `dir` that its package list does not name. None: no list (or an empty one), or the folder cannot be read.
+fn strays(dir: &Path) -> Option<Vec<String>> {
+    let list = std::fs::read_to_string(dir.join(PACKAGE_LIST)).ok()?;
     let names: std::collections::HashSet<&str> = list.lines().filter(|name| !name.is_empty()).collect();
-    let Ok(entries) = std::fs::read_dir(dir) else { return false };
-    !names.is_empty() && entries.into_iter().all(|entry| entry.ok().is_some_and(|e| e.file_name().to_str().is_some_and(|n| n == PACKAGE_LIST || names.contains(n))))
+    if names.is_empty() {
+        return None;
+    }
+    let mut strays = Vec::new();
+    for entry in std::fs::read_dir(dir).ok()? {
+        match entry {
+            Ok(entry) => {
+                let name = entry.file_name();
+                if name
+                    .to_str()
+                    .is_none_or(|n| n != PACKAGE_LIST && !names.contains(n))
+                {
+                    strays.push(name.to_string_lossy().into_owned());
+                }
+            }
+            Err(e) => strays.push(format!("(an entry that cannot be read: {e})")),
+        }
+    }
+    strays.sort();
+    Some(strays)
 }
 
 /// The program in an installed or unpacked app (`app`: the bundle or folder).
@@ -128,7 +170,9 @@ mod tests {
         assert!(is_install(&dir));
         std::fs::write(dir.join("notes.txt"), "someone's").unwrap();
         assert!(!is_install(&dir), "unpacked over someone's folder");
+        assert_eq!(strays(&dir), Some(vec!["notes.txt".to_owned()]), "the file that switches updates off is named");
         std::fs::remove_file(dir.join("notes.txt")).unwrap();
+        assert_eq!(strays(&dir), Some(vec![]));
         std::fs::write(dir.join(PACKAGE_LIST), "\n").unwrap();
         assert!(!is_install(&dir), "an empty list");
         std::fs::remove_dir_all(dir).unwrap();
