@@ -48,8 +48,10 @@ const GRAB = 5, BAR = 8, REST = 12;
 // diff. [`scan`] goes through the rows SLICE units of work at a time (a row costs STEP, and reading a line TOLL besides
 // its length, and SLOW more for each character that is not ASCII): taking the diff in does the first slice, and a frame
 // that finds the rest not done asks, out of sight, for the next. It works out what each line can take at most, in cells
-// ([`bound`], reading LINE characters of a line at most), and puts the lines in the order of that, widest first; a line
-// that three cells a character cannot make as wide as the FEW widest read so far is not read. Then each frame lays out
+// ([`bound`], reading LINE characters of a line at most), and puts the lines in the order of that, widest first (once
+// all the rows are ranked, natively, a side at a time, ORDER units a line; a side whose turn comes with the slice used
+// up waits for the next one); a line that three cells a character cannot make as wide as the FEW widest read so far is
+// not read. Then each frame lays out
 // the first lines in that order, out of sight, in the box the rows draw them in ([`GitDiff.probes`]): one a side in the
 // first, GROW times as many as in the one before after it, and never more than FRAME in all, counted as [`cost`] says. A
 // line that costs more than FRAME by itself is laid out alone, a side to a frame, up to LAYOUT characters or TEXTS
@@ -57,7 +59,7 @@ const GRAB = 5, BAR = 8, REST = 12;
 // be wider, the most the widest of them can take at most. A piece of a line is rounded up to a pixel of the window,
 // which is at most HALF a cell for each piece but the first.
 const GROW = 4, FRAME = 1 << 15, LAYOUT = 1 << 18, TEXTS = 1 << 12;
-const SLICE = 2e6, STEP = 100, TOLL = 200, SLOW = 25, LINE = 1 << 20, SORT = 1 << 16, FEW = 4, WORST = 3, HALF = 0.5;
+const SLICE = 2e6, ORDER = 6, STEP = 100, TOLL = 200, SLOW = 25, LINE = 1 << 20, SORT = 1 << 16, FEW = 4, WORST = 3, HALF = 0.5;
 // The width of a run of this over its length is what a cell takes in the font. The layout rounds that width up
 // to a pixel, which on a cell is the less the longer the run.
 const RULER = "W".repeat(1 << 16);
@@ -707,8 +709,9 @@ function ranking(rows) {
   return { rows, count, base, at: 0, done: false, l: side(), r: side() };
 }
 
-// Ranks the rows from where `fit` left off until `meter` has nothing left, and sorts the lines when all the rows have
-// been. A line is read in full if it can beat the FEW widest read so far, else it is taken at three cells a unit.
+// Ranks the rows from where `fit` left off until `meter` has nothing left, and puts the lines of a side in order when all
+// the rows have been (a side whose turn comes with the meter used up is left for the next call).
+// A line is read in full if it can beat the FEW widest read so far, else it is taken at three cells a unit.
 function scan(fit, meter) {
   const { rows, count, base, l, r } = fit;
   while (fit.at < count && meter.left > 0) {
@@ -732,10 +735,14 @@ function scan(fit, meter) {
       if (cells > r.top) r.top = cells;
     }
   }
-  if (fit.at === count && !fit.done) {
-    l.keys = l.keys.subarray(0, l.n).sort();
-    r.keys = r.keys.subarray(0, r.n).sort();
-    fit.done = true;
+  if (fit.at === count) {
+    for (const side of [l, r]) {
+      if (side.sorted || meter.left <= 0) continue;
+      side.keys = side.keys.subarray(0, side.n).sort();
+      side.sorted = true;
+      meter.left -= ORDER * side.n;
+    }
+    fit.done = l.sorted && r.sorted;
   }
 }
 

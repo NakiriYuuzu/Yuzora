@@ -346,6 +346,26 @@ test("the rows are ranked a slice at a time, no slice goes through more than its
   expect(ranksInSlices([]).fit.done).toBe(true);
 });
 
+test("putting a side's lines in order is work of the slice: with the slice used up the other side waits for the next, and a small diff is done in its first", () => {
+  const rows = Array.from({ length: 4e5 }, (_, i) => row("a".repeat(8 + (i % 5)), "b".repeat(8 + (i % 7))));
+  const fit = ranking(rows);
+  const ordered = () => [fit.l, fit.r].filter((side) => (side as { sorted?: boolean }).sorted).length;
+  let calls = 0, most = 0;
+  while (!fit.done) {
+    const before = ordered();
+    scan(fit, { left: SLICE });
+    most = Math.max(most, ordered() - before);
+    calls++;
+  }
+  expect(most).toBe(1);
+  expect(calls).toBeGreaterThan(5);
+  expect(Array.from(fit.l.keys)).toEqual(Array.from(ranks(rows).l.keys));
+  expect(Array.from(fit.r.keys)).toEqual(Array.from(ranks(rows).r.keys));
+  const small = ranking(Array.from({ length: 100 }, () => row("a", "b")));
+  scan(small, { left: SLICE });
+  expect(small.done).toBe(true);
+});
+
 test("the count of what is read sees every way a line can be read", () => {
   const line = "abc".repeat(1000);
   expect(reading(() => line.split("")).read).toBe(3000);
