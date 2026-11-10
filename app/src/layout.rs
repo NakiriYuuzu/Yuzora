@@ -381,6 +381,9 @@ pub struct Node {
     /// Dragging this node moves the window; a double-click maximizes it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub window_drag: bool,
+    // yuzora(dock): root only, `{"dock": "auto" | "drawer" | "off"}` (src/yuzora/dock.rs); kept so a rewrite of the file doesn't drop it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub yuzora: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -418,6 +421,7 @@ impl Node {
             preview: None,
             terminal_menu: None,
             window_drag: false,
+            yuzora: None, // yuzora(dock)
         }
     }
 
