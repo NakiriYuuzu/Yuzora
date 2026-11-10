@@ -651,7 +651,9 @@ impl PgConn {
             }
             written += 1;
         }
-        self.canceller.commit.mark();
+        if !self.canceller.commit.mark() {
+            return Err(DbError::Cancelled);
+        }
         tx.commit().await.map_err(query_error)?;
         Ok(written)
     }

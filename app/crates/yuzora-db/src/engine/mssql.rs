@@ -837,7 +837,9 @@ async fn write_rows(
         }
         written += 1;
     }
-    commit.mark();
+    if !commit.mark() {
+        return Err((DbError::Cancelled, true));
+    }
     batch(client, "COMMIT TRANSACTION").await.map_err(fail)?;
     Ok(written)
 }
