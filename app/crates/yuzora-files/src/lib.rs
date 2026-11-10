@@ -1127,7 +1127,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
           { id: "s3", machine: null, active: false, selected: "t4", tabs: [
             { id: "t4", name: "", focus: "p4", panes: [{ pane: "p4", mod: null }] } ] },
         ];
-        const given = {}, queue = [], revealed = [], docs = new Map(), opens = {}, started = new Set();
+        const given = {}, queue = [], revealed = [], focusedDocs = [], docs = new Map(), opens = {}, started = new Set();
         let serial = 10, docs_made = 0, snapshot = null, nobody = false;
         const shown = () => world.find(s => s.active);
         const tabShown = () => shown().tabs.find(t => t.id === shown().selected);
@@ -1193,7 +1193,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
         const documentFor = (path, o) => { const d = docs.get(keyOf(path, o?.on)); return d ? { doc: d.id, pane: d.pane } : null; };
         const paneDocument = pane => { for (const [key, d] of docs) if (d.pane === pane) return { path: key.split("\0")[1] }; return null; };
         const notePane = (doc, pane) => { for (const d of docs.values()) if (d.id === doc) d.pane = pane; };
-        const focusDocument = () => {};
+        const focusDocument = doc => focusedDocs.push(doc);
         const revealLine = (doc, line, column) => revealed.push([line, column]);
         const show = id => { for (const s of world) s.active = s.id === id; publish(); };
         const restore = (space, name, mod, props, { beside = false, pane = null } = {}) => {
@@ -1472,6 +1472,21 @@ return JSON.stringify([a, b, c, d]); }})()"#
         "#,
         );
         assert_eq!(seen, ["false", "true", "[]", "[shell] [editor /r/a.rs]*", "5"]);
+    }
+
+    #[test]
+    fn a_pane_not_started_is_shown_without_the_focus_of_a_document_it_does_not_hold() {
+        let seen = in_the_open(
+            r#"
+            const at = { path: "/r/a.rs", on: null, opened: 1 };
+            const other = restore("s1", "", "yuzora-editor", at, { beside: true });
+            const waiting = restore("s3", "a.rs", "yuzora-editor", at);
+            show("s3");
+            openFile("/r/a.rs", null); flush();
+            return [String(focused().pane === waiting), JSON.stringify(focusedDocs), strip("s3")];
+        "#,
+        );
+        assert_eq!(seen, ["true", "[]", "[shell] [editor /r/a.rs]*"]);
     }
 
     #[test]

@@ -14,6 +14,12 @@ const FILE_MODS = [...DOC_MODS, MOD.image];
 // A mod pane's props name its file (the layout keeps them, so a pane restored from it has them too).
 const holds = (p, path, on) => p.props?.path === path && (p.props.on ?? null) === (on ?? null);
 
+// The panes of the Space shown: a file a pane of another Space shows is opened again here, not shown there.
+function shownPanes() {
+  const tabs = new Set((spaces().find(s => s.active)?.tabs ?? []).map(t => t.id));
+  return panes().filter(p => tabs.has(p.tab));
+}
+
 /**
  * The pane showing a document, and the document if it is open. The pane its document was last seen in, which
  * follows a rename; else a pane whose props name the file and that no document claims, one that has started ahead
@@ -21,7 +27,7 @@ const holds = (p, path, on) => p.props?.path === path && (p.props.on ?? null) ==
  */
 function docPane(path, on) {
   const open = documentFor(path, { on });
-  const all = panes();
+  const all = shownPanes();
   const seen = open?.pane && all.find(p => p.pane === open.pane);
   if (seen) return { pane: seen, doc: open.doc };
   const mine = all.filter(p => DOC_MODS.includes(p.mod) && holds(p, path, on) && !paneDocument(p.pane));
@@ -31,12 +37,12 @@ function docPane(path, on) {
 
 // An image has no document: its pane is the one whose props name it.
 function imagePane(path, on) {
-  const there = panes().find(p => p.mod === MOD.image && holds(p, path, on));
+  const there = shownPanes().find(p => p.mod === MOD.image && holds(p, path, on));
   return there ? { pane: there, doc: null } : null;
 }
 
 /**
- * Opens a file: shows the pane (or tab) already showing it, else opens a new tab of the Space shown
+ * Opens a file: shows the pane (or tab) of the Space shown that already shows it, else opens a new tab of that Space
  * (`place` "tab", the default). `place` "side" always splits the focused pane to the right, though the file is
  * open (a tab when no pane has focus).
  * `at`: {line, column}. A line asked of a pane that has not started has no document to go to, and the pane
