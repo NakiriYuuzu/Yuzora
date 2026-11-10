@@ -1592,6 +1592,34 @@ return JSON.stringify([a, b, c, d]); }})()"#
     }
 
     #[test]
+    fn the_keys_stay_with_the_pane_that_had_them_when_two_panes_of_a_folder_are_replaced() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            openFile("/r/d/a.png", null); flush(); openFile("/r/d/b.png", null, { place: "side" }); flush();
+            const had = paneOf("/r/d/a.png");
+            run("pane.focus", { pane: had }); flush();
+            rename("/r/d", "/r/e"); moved("/r/d", "/r/e", null); flush();
+            out.push(strip("s1"), focus());
+            // The same with the other pane in focus.
+            run("pane.focus", { pane: paneOf("/r/e/b.png") }); flush();
+            moved("/r/e", "/r/f", null); flush();
+            out.push(strip("s1"), focus());
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell] [image /r/e/a.png, image /r/e/b.png]* [shell]",
+                "image /r/e/a.png",
+                "[shell] [image /r/f/a.png, image /r/f/b.png]* [shell]",
+                "image /r/f/b.png",
+            ]
+        );
+    }
+
+    #[test]
     fn a_file_whose_pane_was_closed_is_opened_again() {
         let seen = in_the_open(
             r#"
