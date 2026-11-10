@@ -757,7 +757,10 @@ fn sqlite_the_description_is_the_one_the_job_that_reads_the_rows_got() {
     assert_eq!(runtime::block_on(session::table_info(job)).unwrap(), info, "asked again once the job is over");
 
     let missing = session::open_table(&id, None, &pane_owner, &table("", "nobody"), None);
-    assert!(runtime::block_on(session::table_info(missing)).is_err(), "a table that is not there has no description");
+    match runtime::block_on(session::table_info(missing)) {
+        Err(DbError::NotFound(why)) => assert!(why.contains("nobody"), "the engine's own reason: {why}"),
+        other => panic!("a table that is not there has no description, and says why: {other:?}"),
+    }
     wait(missing);
 
     session::open_table(&id, None, &pane_owner, &table("", "people"), None);
@@ -766,6 +769,27 @@ fn sqlite_the_description_is_the_one_the_job_that_reads_the_rows_got() {
         "a job the pane moved on from is gone"
     );
     assert!(matches!(runtime::block_on(session::table_info(u64::MAX)), Err(DbError::NotFound(_))));
+}
+
+/// The rows of a table the engine reads but cannot describe (SQLite's own catalog has no row for
+/// itself) show, read-only, and the reason is the engine's own: the one the Structure tab is given.
+#[test]
+fn sqlite_a_table_that_cannot_be_described_shows_its_rows_read_only_and_says_why_in_both_places() {
+    let (id, _) = sqlite_connection("wb-info-failed");
+    run(&id, "setup", "create table people(id integer primary key); insert into people values (1);");
+    let job = session::open_table(&id, None, &owner(&id, "info-failed-pane"), &table("", "sqlite_master"), None);
+    let asked = runtime::block_on(session::table_info(job));
+    let state = wait(job);
+    assert_eq!(state.error, None);
+    let summary = &state.results[0];
+    assert!(summary.rows > 0 && summary.complete, "the rows of a table that cannot be described show: {summary:?}");
+    assert!(!summary.editable);
+    let why = match asked {
+        Err(DbError::NotFound(why)) if why.contains("sqlite_master") => why,
+        other => panic!("the Structure tab was not told why: {other:?}"),
+    };
+    let reason = results::lock(&results::get(summary.id).unwrap()).read_only_reason().expect("a reason");
+    assert!(reason.contains("could not read the table's key") && reason.contains(&why), "{reason}");
 }
 
 // ---------------------------------------------------------------- a refresh reads the key the table has now

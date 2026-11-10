@@ -1267,6 +1267,45 @@ mod tests {
         pool().retain(|(connection, _, _), _| connection != "stand-down-test");
     }
 
+    /// What a job waits for before it settles editing: the description once it is in (even if a
+    /// Stop came after), nothing once a Stop comes first, and the words for a reader that is gone.
+    #[test]
+    fn the_wait_for_a_description_ends_with_the_description_a_stop_or_the_reader_gone() {
+        let boom = || Arc::new(Err(DbError::NotFound("boom".into())));
+        runtime::block_on(async {
+            let patience = Duration::from_secs(5);
+
+            let (tx, mut rx) = tokio::sync::watch::channel::<Option<Info>>(None);
+            let halt = StandDown::new();
+            tx.send(Some(boom())).unwrap();
+            halt.call();
+            let got =
+                tokio::time::timeout(patience, described(&mut rx, &halt)).await.expect("a description that is in");
+            assert_eq!(got.as_deref(), Some(&Err(DbError::NotFound("boom".into()))), "what is in comes before a stop");
+
+            let (_held, mut rx) = tokio::sync::watch::channel::<Option<Info>>(None);
+            let halt = StandDown::new();
+            let (got, _) =
+                futures_util::future::join(tokio::time::timeout(patience, described(&mut rx, &halt)), async {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    halt.call();
+                })
+                .await;
+            assert_eq!(got.expect("a stop ends the wait"), None);
+
+            let (tx, mut rx) = tokio::sync::watch::channel::<Option<Info>>(None);
+            drop(tx);
+            let got = tokio::time::timeout(patience, described(&mut rx, &StandDown::new()))
+                .await
+                .expect("a reader that is gone");
+            assert_eq!(
+                got.as_deref(),
+                Some(&Err(DbError::Io(crate::i18n::t("error.job_panicked", &[])))),
+                "the task that was to read it is gone"
+            );
+        });
+    }
+
     #[test]
     fn the_engine_is_told_to_stop_while_the_work_still_holds_the_connection() {
         runtime::block_on(async {
