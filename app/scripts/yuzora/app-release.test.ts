@@ -25,18 +25,20 @@ const writers = () => jobs().filter(([, job]) => job.permissions?.contents === "
 const checksOut = (job: Job) => job.steps.some((s) => s.uses?.startsWith("actions/checkout@"));
 
 describe("who can do what", () => {
-  test("it starts by hand, or by a push to a throwaway release-dryrun branch, and nothing else", () => {
-    expect(Object.keys(workflow.on).sort()).toEqual(["push", "workflow_dispatch"]);
-    expect(workflow.on.push).toEqual({ branches: ["release-dryrun/**"] });
+  test("it starts by hand and nothing else: no push, so no branch can start a run by being pushed", () => {
+    expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
     expect(workflow.permissions).toEqual({ contents: "read" });
     expect(workflow.on.workflow_dispatch.inputs.stage.options).toEqual(["dry-run", "draft", "publish", "manifest", "latest"]);
+    expect(text).not.toContain("event_name");
   });
 
-  test("a push is always the dry run, so no job that writes can start from one", () => {
-    const plan = workflow.jobs.plan;
-    const planStep = plan.steps.find((s) => s.name === "Check the inputs, the run and the tag")!;
-    expect(planStep.env!.STAGE).toBe("${{ github.event_name == 'push' && 'dry-run' || inputs.stage }}");
-    expect(planStep.env!.EXCLUDE_TARGETS).toContain("github.event_name == 'push'");
+  test("a dry run takes its stage and version from the dispatch, like every other stage", () => {
+    const planStep = workflow.jobs.plan.steps.find((s) => s.name === "Check the inputs, the run and the tag")!;
+    expect(planStep.env!.STAGE).toBe("${{ inputs.stage }}");
+    expect(planStep.env!.VERSION).toBe("${{ inputs.version }}");
+  });
+
+  test("no job that writes can start in a dry run", () => {
     const stages: Record<string, string> = { draft: "draft", publish: "publish", "upload-manifest": "manifest", latest: "latest" };
     expect(writers().map(([name]) => name).sort()).toEqual(Object.keys(stages).sort());
     for (const [name, job] of writers()) {
