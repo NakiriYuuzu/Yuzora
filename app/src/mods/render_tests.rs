@@ -3303,9 +3303,75 @@ fn the_database_table_pane_offers_stop_on_the_sql_tab_while_the_table_is_read(
     );
     press(&mut s, run);
     s.tick(50);
+    assert!(s.last("run").is_some(), "Run was not pressed");
     assert!(db_watched(&s).is_empty(), "Run started something");
     assert!(s.last("stop").is_none());
     assert_eq!(db_busy_now(&s).1, "running", "Run ended the read");
     press(&mut s, stop);
     assert!(s.last("stop").is_some(), "Stop did not stop the read");
+}
+
+// Why the SQL tab keeps Stop beside Run instead of showing one for an empty editor and the other for a typed one:
+// what is typed does not draw the pane's JS again, so a toolbar that waited for it would show what was true before.
+// Run (⌘↵) is how the text typed is read back here: outside a script call nothing can ask the editor.
+#[gpui::test]
+fn the_database_table_pane_is_not_drawn_again_by_typing_in_its_sql_editor(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let source = db_empty_sql_source("table", true)
+        .replace(
+            r#"import { note } from "probe";"#,
+            r#"import { note } from "probe"; import { editorText } from "yuzora:db";"#,
+        )
+        .replace(
+            r#"stop() { note("stop"); }"#,
+            r#"stop() { note("stop"); } runSql(cx) { note("typed", editorText(this.key + ":sql")?.text ?? null); }"#,
+        );
+    assert!(source.contains("typed"));
+    let mut s = Scenario::mount_with_props(cx, &staged, &source, json!({"key": db_key()}), 320.0, 400.0);
+    let drawn = |s: &Scenario| {
+        s.notes
+            .borrow()
+            .iter()
+            .filter(|n| n.first() == Some(&json!("shown")))
+            .count()
+    };
+    let idle = drawn(&s);
+    s.settle();
+    assert_eq!(drawn(&s), idle, "a window frame draws the pane's JS again");
+    s.click(100.0, 200.0);
+    let before = drawn(&s);
+    s.visual.simulate_input("select 1");
+    s.settle();
+    assert_eq!(drawn(&s), before, "typing draws the pane's JS again");
+    s.visual.simulate_keystrokes("cmd-enter");
+    s.settle();
+    assert_eq!(
+        s.last("typed").map(|n| n[1].clone()),
+        Some(json!("select 1")),
+        "nothing typed reached the editor"
+    );
+}
+
+// The dock leaves a table pane 110 to 230 px: Stop and Run both stay in it on the SQL tab while the table is read.
+#[gpui::test]
+fn the_database_table_panes_stop_and_run_stay_inside_a_narrow_pane_while_the_table_is_read(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for width in [110.0_f32, 150.0, 240.0] {
+        let mut s = Scenario::mount_with_props(
+            cx,
+            &staged,
+            &db_empty_sql_source("table", true),
+            json!({"key": db_key()}),
+            width,
+            400.0,
+        );
+        let boxes = clickables(&mut s, &["stop", "run"], width, 160.0);
+        answers_inside(width, &boxes, &["stop", "run"]);
+    }
 }
