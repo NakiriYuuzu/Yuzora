@@ -5,6 +5,11 @@ use super::*;
 use gpui::{Entity, VisualTestContext};
 use gpui_shell::ShellRoot;
 use std::ops::Deref;
+use std::sync::{Mutex, MutexGuard};
+
+// The zoom is one value for the whole process (`gpui_shell::set_pixel_scale`), so a test that reads exact
+// pixels owns it while its rig lives: the other tests of this file wait, and the zoom is 1 again when it is gone.
+static ZOOM: Mutex<()> = Mutex::new(());
 
 /// What a mod's view is mounted with: the props and `layout()` it is given, the shared values and queued commands
 /// it starts with, the window's size.
@@ -15,11 +20,12 @@ struct Opts {
     commands: Vec<&'static str>,
     perf: Value,
     size: (f32, f32),
+    zoom: f32,
 }
 
 impl Opts {
     fn new(size: (f32, f32)) -> Self {
-        Self { props: Value::Null, layout: Value::Null, shared: vec![], commands: vec![], perf: Value::Null, size }
+        Self { props: Value::Null, layout: Value::Null, shared: vec![], commands: vec![], perf: Value::Null, size, zoom: 1.0 }
     }
 }
 
@@ -31,6 +37,14 @@ struct Rig {
     layout: Rc<RefCell<Value>>,
     perf: Rc<RefCell<Value>>,
     calls: Rc<RefCell<Calls>>,
+    settings: Rc<RefCell<Value>>,
+    _zoom: MutexGuard<'static, ()>,
+}
+
+impl Drop for Rig {
+    fn drop(&mut self) {
+        gpui_shell::set_pixel_scale(1.0);
+    }
 }
 
 /// `yuzora:perf` with a state the test sets: the real one samples processes on a thread of its own.
@@ -63,6 +77,8 @@ fn shipped(name: &str) -> String {
 
 impl Rig {
     fn mount(cx: &mut TestAppContext, staged: &Staged, main: &str, o: Opts) -> Self {
+        let zoom = ZOOM.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        gpui_shell::set_pixel_scale(o.zoom);
         let calls = Rc::new(RefCell::new(Calls::default()));
         // "When Yuzora opens" is applied once per run by the first dock: as if that was done, so what the person
         // set never reaches these copies.
@@ -79,8 +95,13 @@ impl Rig {
         }
         let layout = Rc::new(RefCell::new(values["layout"].clone()));
         let perf = Rc::new(RefCell::new(o.perf));
-        let seen = layout.clone();
-        let herdr = module(values, calls.clone()).function("layout", move |_| Ok(to_host(&seen.borrow())));
+        let mut person = values["settings"].clone();
+        person["zoom"] = json!(o.zoom);
+        let settings = Rc::new(RefCell::new(person));
+        let (seen, person) = (layout.clone(), settings.clone());
+        let herdr = module(values, calls.clone())
+            .function("layout", move |_| Ok(to_host(&seen.borrow())))
+            .function("settings", move |_| Ok(to_host(&person.borrow())));
         let mut policy = Policy::new()
             .with_storage_path(staged.0.join("store-motion.json"))
             .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
@@ -101,7 +122,7 @@ impl Rig {
         });
         let visual = VisualTestContext::from_window(*window.deref(), cx);
         visual.simulate_resize(gpui::size(gpui::px(o.size.0), gpui::px(o.size.1)));
-        let mut rig = Self { visual, runtime, root: mounted.unwrap(), layout, perf, calls };
+        let mut rig = Self { visual, runtime, root: mounted.unwrap(), layout, perf, calls, settings, _zoom: zoom };
         rig.settle();
         rig
     }
@@ -136,6 +157,13 @@ impl Rig {
     fn refresh(&mut self) {
         self.visual.update(|_, cx| self.runtime.refresh(&self.root, cx).unwrap());
         self.draw();
+    }
+
+    /// The person changes the zoom: the pixel lengths scale and the mod, which reads `settings()`, renders again.
+    fn set_zoom(&mut self, zoom: f32) {
+        gpui_shell::set_pixel_scale(zoom);
+        self.settings.borrow_mut()["zoom"] = json!(zoom);
+        self.refresh();
     }
 
     fn set_layout(&mut self, layout: Value) {
@@ -226,8 +254,13 @@ impl Rig {
         self.visual.simulate_event(gpui::MouseUpEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1 });
         self.draw();
     }
-}
 
+    fn hover(&mut self, x: f32, y: f32) {
+        let position = gpui::point(gpui::px(x), gpui::px(y));
+        self.visual.simulate_event(gpui::MouseMoveEvent { position, modifiers: gpui::Modifiers::default(), pressed_button: None });
+        self.draw();
+    }
+}
 
 fn bar_layout(shown: Option<&str>) -> Value {
     let closed = dock_layout(include_str!("../../../defaults/layouts/main.json"));
@@ -305,7 +338,7 @@ fn the_mode_bar_selection_jumps_when_the_system_asks_for_less_motion(cx: &mut Te
     rig.done();
 }
 
-// The selection sits under the buttons: a press reaches the button it is over, selected or not.
+// The selection takes no press of its own: one over it reaches the button, selected or not.
 #[gpui::test]
 fn the_mode_bar_buttons_take_presses_over_the_selection(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
@@ -319,6 +352,105 @@ fn the_mode_bar_buttons_take_presses_over_the_selection(cx: &mut TestAppContext)
     assert_eq!(rig.runs(), select_and_show("git"), "another mode opens");
     rig.click(x, top + 17.0);
     assert_eq!(rig.runs().last(), Some(&json!(["layout.hide", {"id": "panel"}])), "the mode shown closes the panel");
+    rig.done();
+}
+
+// Every zoom the person can pick: tenths from ZOOM_MIN to ZOOM_MAX (settings.rs).
+fn zoom_levels() -> impl Iterator<Item = f32> {
+    (5..=30).map(|tenth| tenth as f32 / 10.0)
+}
+
+/// A mode bar wide enough for its buttons at any zoom.
+fn wide_bar(cx: &mut TestAppContext, staged: &Staged, shown: Option<&str>, zoom: f32) -> Rig {
+    let mut o = Opts::new((120.0, 600.0));
+    o.props = json!({"dock": "bar"});
+    o.layout = bar_layout(shown);
+    o.zoom = zoom;
+    Rig::mount(cx, staged, &shipped("yuzora-modebar"), o)
+}
+
+/// Where button `at` is drawn: the box its hover color fills while the pointer is over it, which is the one thing a
+/// button paints of its own. A mode that is shown is not hovered, so another is shown while this reads.
+fn button_box(rig: &mut Rig, at: usize, zoom: f32) -> (f32, f32, f32, f32) {
+    let other = DOCK_MODES[(at + 1) % DOCK_MODES.len()];
+    rig.set_layout(bar_layout(Some(other)));
+    rig.advance(300);
+    rig.hover(60.0, (6.0 + at as f32 * 36.0 + 17.0) * zoom);
+    let hover = theme_color("hover");
+    let found: Vec<_> = rig.quads().into_iter().filter(|q| q.4 == hover).collect();
+    assert_eq!(found.len(), 1, "the button under the pointer is the one that is hovered (zoom {zoom})");
+    (found[0].0, found[0].1, found[0].2, found[0].3)
+}
+
+fn selection_box(rig: &mut Rig, mode: &str) -> (f32, f32, f32, f32) {
+    rig.set_layout(bar_layout(Some(mode)));
+    rig.advance(300);
+    let selected = theme_color("selected");
+    let found: Vec<_> = rig.quads().into_iter().filter(|q| q.4 == selected).collect();
+    assert_eq!(found.len(), 1, "one mode is selected");
+    (found[0].0, found[0].1, found[0].2, found[0].3)
+}
+
+// The selection is where the button it selects is, to the pixel: buttons and the gap between them are rounded one
+// by one by the layout, so the selection cannot be a position worked out once.
+#[gpui::test]
+fn the_mode_bar_selection_is_exactly_on_its_button_at_every_zoom(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut rig = wide_bar(cx, &staged, Some("files"), 1.0);
+    for zoom in zoom_levels() {
+        rig.set_zoom(zoom);
+        for (at, mode) in DOCK_MODES.iter().enumerate() {
+            let button = button_box(&mut rig, at, zoom);
+            let selection = selection_box(&mut rig, mode);
+            let same = |a: f32, b: f32| (a - b).abs() < 0.01;
+            assert!(
+                same(button.0, selection.0) && same(button.1, selection.1) && same(button.2, selection.2) && same(button.3, selection.3),
+                "zoom {zoom}, {mode}: the button is {button:?}, the selection {selection:?}"
+            );
+        }
+    }
+    rig.done();
+}
+
+// The badge of the mode shown is painted on its button, so it must be painted after (over) the selection.
+#[gpui::test]
+fn the_mode_bar_selection_is_painted_under_the_button(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut o = Opts::new((44.0, 300.0));
+    o.props = json!({"dock": "bar"});
+    o.layout = bar_layout(Some("files"));
+    o.shared = vec![("yuzora.badge.files", json!(3))];
+    let mut rig = Rig::mount(cx, &staged, &shipped("yuzora-modebar"), o);
+    let tokens: Value = serde_json::from_str(include_str!("../../../defaults/yuzora/tokens.json")).unwrap();
+    let chip: gpui::Background = gpui::rgb(u32::from_str_radix(tokens["status"]["done"]["color"].as_str().unwrap().trim_start_matches('#'), 16).unwrap()).into();
+    let (selected, chips) = rig.visual.update(|window, _| {
+        let quads = window.painted_quads();
+        let order = |background: gpui::Background| quads.iter().filter(|q| q.background == background).map(|q| q.order).collect::<Vec<_>>();
+        (order(theme_color("selected")), order(chip))
+    });
+    assert_eq!((selected.len(), chips.len()), (1, 1), "the selection and the badge of the mode shown are painted");
+    assert!(chips[0] > selected[0], "the selection (order {}) is painted over the badge (order {})", selected[0], chips[0]);
+    rig.done();
+}
+
+// A new zoom moves every button at once, and so the selection with them: only picking another mode slides it.
+#[gpui::test]
+fn the_mode_bar_selection_does_not_slide_when_the_zoom_changes(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut rig = wide_bar(cx, &staged, Some("ssh"), 1.0);
+    let renders = rig.script_renders();
+    rig.set_zoom(1.5);
+    assert_eq!(rig.script_renders(), renders + 1, "the zoom is one render");
+    let now = selection_box(&mut rig, "ssh");
+    rig.set_zoom(1.2);
+    let at = rig.quads().into_iter().find(|q| q.4 == theme_color("selected")).map(|q| (q.0, q.1, q.2, q.3)).unwrap();
+    assert_eq!(rig.pending_frames(), 0, "nothing is left to animate");
+    rig.advance(300);
+    let rest = rig.quads().into_iter().find(|q| q.4 == theme_color("selected")).map(|q| (q.0, q.1, q.2, q.3)).unwrap();
+    assert_eq!(at, rest, "straight to the new zoom (it was {now:?} at 1.5)");
     rig.done();
 }
 
@@ -386,14 +518,44 @@ fn the_resource_bars_follow_a_new_sample_by_category(cx: &mut TestAppContext) {
     rig.done();
 }
 
+// A new zoom resizes the track, and a bar is its share of it from that frame on: only a new sample moves a bar.
+#[gpui::test]
+fn the_resource_bars_do_not_slide_when_the_zoom_changes(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut o = Opts::new((1300.0, 1400.0));
+    o.commands = vec!["toggle"];
+    o.perf = perf_state(500.0, 300.0, 200.0);
+    let mut rig = Rig::mount(cx, &staged, &shipped("yuzora-perf"), o);
+    let fills = |rig: &mut Rig| {
+        let fill = theme_color("dim");
+        let mut widths: Vec<_> = rig.quads().into_iter().filter(|q| q.4 == fill && q.3 > 2.0 && q.3 < 5.0 * 3.0).collect();
+        widths.sort_by(|a, b| a.1.total_cmp(&b.1));
+        widths.into_iter().map(|q| q.2).collect::<Vec<_>>()
+    };
+    let before = fills(&mut rig);
+    assert_eq!(before.len(), 3, "the details are open and have three bars");
+    rig.set_zoom(1.5);
+    let at = fills(&mut rig);
+    assert_eq!(rig.pending_frames(), 0, "nothing is left to animate");
+    rig.advance(300);
+    assert_eq!(at, fills(&mut rig), "straight to the new zoom");
+    assert!(at[0] > before[0] * 1.4, "and it is the new zoom: {at:?} from {before:?}");
+    rig.done();
+}
+
 fn settings_page(cx: &mut TestAppContext, staged: &Staged) -> Rig {
     Rig::mount(cx, staged, &shipped("yuzora-settings-general"), Opts::new((760.0, 900.0)))
 }
 
 /// The knob (16 px) and the track (36 px) of the first switch on the page.
 fn first_switch(rig: &mut Rig) -> ((f32, f32), (f32, f32)) {
-    let track = rig.sized(36.0, 20.0);
-    let knob = rig.sized(16.0, 16.0);
+    first_switch_at(rig, 1.0)
+}
+
+fn first_switch_at(rig: &mut Rig, zoom: f32) -> ((f32, f32), (f32, f32)) {
+    let track = rig.sized(36.0 * zoom, 20.0 * zoom);
+    let knob = rig.sized(16.0 * zoom, 16.0 * zoom);
     let (t, k) = (track.first().expect("a switch"), knob.first().expect("its knob"));
     ((t.0, t.1), (k.0, k.1))
 }
@@ -419,6 +581,22 @@ fn a_settings_switch_slides_its_knob(cx: &mut TestAppContext) {
     rig.done();
     let tree = describe(cx, &staged, "mods/yuzora-settings-general", false, props(), updates("current", "current"), None).unwrap();
     assert!(tree.contains(":transition(left, 120ms, 0ms, ease-out)"), "{tree}");
+}
+
+// A new zoom moves the knob with the switch; only a press slides it.
+#[gpui::test]
+fn a_settings_switch_does_not_slide_when_the_zoom_changes(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut rig = Rig::mount(cx, &staged, &shipped("yuzora-settings-general"), Opts::new((1200.0, 2400.0)));
+    let before = first_switch(&mut rig);
+    rig.set_zoom(1.5);
+    let at = first_switch_at(&mut rig, 1.5);
+    assert_eq!(rig.pending_frames(), 0, "nothing is left to animate");
+    rig.advance(300);
+    assert_eq!(at, first_switch_at(&mut rig, 1.5), "straight to the new zoom");
+    assert!(at.1.0 != before.1.0 || at.0.0 != before.0.0, "and it is the new zoom");
+    rig.done();
 }
 
 #[gpui::test]
