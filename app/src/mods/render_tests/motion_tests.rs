@@ -149,6 +149,11 @@ impl Rig {
         assert!(calls.unexpected.is_empty(), "{:?}", calls.unexpected);
     }
 
+    /// The commands the mod ran, as `[name, args]`.
+    fn runs(&self) -> Vec<Value> {
+        self.calls.borrow().effects.iter().filter(|(name, _)| name == "run").map(|(_, args)| json!(args)).collect()
+    }
+
     fn script_renders(&self) -> u64 {
         self.runtime.read_metrics().script_renders()
     }
@@ -297,6 +302,23 @@ fn the_mode_bar_selection_jumps_when_the_system_asks_for_less_motion(cx: &mut Te
     rig.set_layout(bar_layout(Some("ssh")));
     assert_eq!(selection(&mut rig), Some(first + 108.0), "straight to the mode picked");
     assert_eq!(rig.pending_frames(), 0);
+    rig.done();
+}
+
+// The selection sits under the buttons: a press reaches the button it is over, selected or not.
+#[gpui::test]
+fn the_mode_bar_buttons_take_presses_over_the_selection(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut rig = bar(cx, &staged, Some("files"));
+    let (x, top) = {
+        let q = rig.sized(34.0, 34.0).into_iter().find(|q| q.4 == theme_color("selected")).unwrap();
+        (q.0 + 17.0, q.1)
+    };
+    rig.click(x, top + 36.0 + 17.0);
+    assert_eq!(rig.runs(), select_and_show("git"), "another mode opens");
+    rig.click(x, top + 17.0);
+    assert_eq!(rig.runs().last(), Some(&json!(["layout.hide", {"id": "panel"}])), "the mode shown closes the panel");
     rig.done();
 }
 
