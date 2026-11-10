@@ -632,6 +632,7 @@ fn git_sidebar_module(state: Rc<GitSidebar>, props: Value, fails: &'static [(&'s
     let s = state.clone();
     module = module.async_function("status", move |a| {
         let root = a.string(0)?.to_owned();
+        // yuzora(v0.1.0 E1 r1): which repos were read, for the test of an arrival for a place left.
         s.effects.borrow_mut().push(("status".into(), json!(root)));
         let n = match root.as_str() { "/sp/a" => 1, "/sp/b/c" => 2, "/sp/r" => 3, "/sp/ALIAS" => 4, _ => 0 };
         let unstaged: Vec<Value> = (0..n).map(|i| json!({"path": format!("f{i}"), "kind": "M", "add": 1, "del": 0, "binary": false})).collect();

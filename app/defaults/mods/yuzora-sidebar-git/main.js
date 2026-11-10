@@ -441,9 +441,10 @@ export default class SidebarGit extends View {
     cx.notify();
   }
 
-  // The one action that deletes works from what git says now, not from what was read before: a repo's first read after the
-  // person left it may be its cache from before (its watcher let go, or it is on a machine), and the list asked about
-  // may be older still. Discards `asked` if git still lists it as the kind of change the question named.
+  // The actions that delete (the confirm box's Yes, the file menu's Discard) work from what git says now, not from what was
+  // read before: a repo's first read after the person left it may be its cache from before (its watcher let go, or it is
+  // on a machine), and the list asked about may be older still. Discards `asked` if git still lists it as the kind of
+  // change the question named.
   async discardAsked(repo, asked) {
     const now = await status(repo.id, { force: true });
     const file = [...(now.unstaged ?? []), ...(now.untracked ?? [])].find((f) => f.path === asked.path);
@@ -615,7 +616,7 @@ export default class SidebarGit extends View {
     if (!it || !v.repo) return;
     v.selected = key; cx.notify();
     openOverlay({ mod: "yuzora-sidebar-git", kind: "popup", at: "pointer", width: 230, height: 230,
-      props: { menu: { cwd: v.repo.root, on: v.repo.machine, section: it.section, path: it.f.path, orig: it.f.orig ?? null } } });
+      props: { menu: { cwd: v.repo.root, on: v.repo.machine, section: it.section, path: it.f.path, orig: it.f.orig ?? null, kind: it.f.kind } } });
   }
 
   // The clickable parts of a frame drawn for `v`: each is named for its repo (a press on one repo's control and a release
@@ -664,7 +665,7 @@ export default class SidebarGit extends View {
     cx.spawn(async (cx) => {
       try {
         const repo = await open(m.cwd, m.on ?? null);
-        const out = id === "stage" ? await stage(repo.id, [m.path]) : id === "unstage" ? await unstage(repo.id, [m.path]) : await discard(repo.id, [m.path]);
+        const out = id === "stage" ? await stage(repo.id, [m.path]) : id === "unstage" ? await unstage(repo.id, [m.path]) : await this.discardAsked(repo, { path: m.path, kind: m.kind });
         if (out && out.ok === false) { this.note = out.output || t("failed"); cx.notify(); return; }
         close();
       } catch (e) { this.note = String(e); cx.notify(); }

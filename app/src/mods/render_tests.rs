@@ -2057,7 +2057,7 @@ export default class Scenario extends Real {{
     super.init(p, cx);
     this.v.st = {{ conflicts: [], staged: [], unstaged: [], untracked: [], counts: {{ total: 1 }} }};
     this.v.st["{section}" === "unstaged" ? "unstaged" : "{section}"].push(file);
-    this.v.confirmed = true;
+    this.v.confirmed = true; // yuzora(v0.1.0 E1 r1): a view made by hand counts as read, as a click on its buttons needs
   }}
   act() {{ this.acted = true; }}
   openDiff() {{ this.diffed = true; }}
