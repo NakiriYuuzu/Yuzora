@@ -1256,8 +1256,10 @@ fn mssql_a_login_that_cannot_see_the_type_of_a_column_still_edits_and_saves_the_
         &full,
         "setup",
         "CREATE TYPE dbo.Code FROM nvarchar(10) NOT NULL;\nGO\nCREATE TYPE dbo.Amount FROM decimal(9, 2) NULL;\nGO\n\
-         CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, code dbo.Code, amt dbo.Amount, v nvarchar(10) NOT NULL DEFAULT N'x');
-         INSERT INTO dbo.t (id, code, amt, v) VALUES (1, N'c1', 1.5, N'a'), (2, N'c2', 2.5, N'b');",
+         CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, code dbo.Code, amt dbo.Amount, v nvarchar(10) NOT NULL DEFAULT N'x',
+             CONSTRAINT ck_amt CHECK (amt > 0));
+         INSERT INTO dbo.t (id, code, amt, v) VALUES (1, N'c1', 1.5, N'a'), (2, N'c2', 2.5, N'b');\nGO\n\
+         CREATE VIEW dbo.vw AS SELECT id, v FROM dbo.t",
     );
     let limited = login.connection();
     let t = table("dbo", "t");
@@ -1282,6 +1284,11 @@ fn mssql_a_login_that_cannot_see_the_type_of_a_column_still_edits_and_saves_the_
     assert_eq!(seen.key_columns(), ["id"]);
     assert!(seen.ddl.contains("[code] nvarchar(10) NOT NULL"), "{}", seen.ddl);
     assert!(seen.ddl.contains("[amt] decimal(9,2) NULL"), "{}", seen.ddl);
+
+    // What the login may not see (the CHECK's text, the view's body) is empty in its Structure tab, not an error.
+    assert!(seen.ddl.contains("CONSTRAINT [ck_amt] CHECK"), "{}", seen.ddl);
+    let view = described(&limited, &table("dbo", "vw"));
+    assert_eq!((column_names(&view), view.ddl.as_str()), (vec!["id", "v"], ""));
 }
 
 /// How a column is computed is not something the login may see, that it is computed is: the
