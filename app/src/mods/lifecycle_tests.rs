@@ -412,8 +412,8 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
 // hold no handlers and report no sizes, so `Probed` lays the first row out once more below the
 // list: its cells report their widths (`cell`), its texts their width and what the pointer is
 // over (`text` and `over`: the text's first character, and the pointer's distance from where the
-// text starts), and a press picks the row it landed on, as the list's own click would. A `pane`
-// prop puts the diff in a box that wide, so the pointer can leave it.
+// text starts), and a press picks the row it landed on, as the list's own click would, in the
+// body's text size. A `pane` prop puts the diff in a box that wide, so the pointer can leave it.
 const DIFF_PROBE: &str = r#"
 import { note } from "fixture";
 export default class Probed extends GitDiff {
@@ -436,7 +436,7 @@ export default class Probed extends GitDiff {
       this.probing = true;
       const row = this.row(v.rows[0], 0, theme(), tokens().diff ?? {}, 0, this.widths?.());
       this.probing = false;
-      root = root.child(div().absolute().top(300).left(0).w_full().child(row));
+      root = root.child(div().absolute().top(300).left(0).w_full().text_size(11.5).child(row));
     }
     return pane ? div().w(pane).h_full().child(root) : root;
   }
@@ -623,19 +623,25 @@ fn yuzora_diff_sides_share_the_width_evenly_whatever_the_lines(cx: &mut TestAppC
 }
 
 // yuzora(v010): a press on a side's line numbers picks that side's line, where the row lays it
-// out; the text beside them only makes the hunk current.
+// out, at half and at a share kept; the text beside them only makes the hunk current.
 #[gpui::test]
 fn yuzora_diff_a_press_on_a_sides_numbers_picks_that_sides_line(cx: &mut TestAppContext) {
     const GUTTER: f64 = 44.;
-    // (case, rows, the sides that have a line)
+    // (case, rows, the sides that have a line, the share kept)
     let cases = [
-        ("both sides", json!([diff_row(Some((10, "a")), Some((20, "b")))]), "lr"),
-        ("added", json!([diff_row(None, Some((257, "b")))]), "r"),
-        ("long lines", json!([diff_row(Some((300, "a")), Some((300, "b")))]), "lr"),
+        ("both sides", json!([diff_row(Some((10, "a")), Some((20, "b")))]), "lr", None),
+        ("added", json!([diff_row(None, Some((257, "b")))]), "r", None),
+        ("long lines", json!([diff_row(Some((300, "a")), Some((300, "b")))]), "lr", None),
+        ("a share kept", json!([diff_row(Some((10, "a")), Some((20, "b")))]), "lr", Some(0.3)),
+        ("a share kept, long lines", json!([diff_row(Some((300, "a")), Some((300, "b")))]), "lr", Some(0.8)),
     ];
     let mut failures = Vec::new();
-    for (case, rows, sides) in cases {
-        let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
+    for (case, rows, sides, share) in cases {
+        let shared = Shared::default();
+        if let Some(share) = share {
+            shared.borrow_mut().insert(DIFF_SPLIT.into(), json!(share));
+        }
+        let mut pane = DiffPane::mount(cx, rows, 1200., &shared);
         let left = pane.width("l");
         // Row 0 is 28..48 (under the 28px header). A number's middle, and the text beside it.
         let mut presses = vec![(left + GUTTER / 2. + 1., Some("r")), (left + 1. + GUTTER + 20., None), (GUTTER + 12., None)];
@@ -754,8 +760,8 @@ fn yuzora_diff_opens_with_the_share_last_kept(cx: &mut TestAppContext) {
 }
 
 // yuzora(v010): a long line stays on its side: the pointer is over a side's text only where that
-// side's cell is (a line is clipped by its cell, however wide the characters), whether the lines
-// are scrolled or not.
+// side's text area is (a line is clipped there, however wide the characters), whether the lines
+// are scrolled or not: not over the other side, and, scrolled, not under its own line numbers.
 #[gpui::test]
 fn yuzora_diff_a_long_line_stays_on_its_side(cx: &mut TestAppContext) {
     let mut pane = DiffPane::mount(cx, long_rows(), 1200., &Shared::default());
@@ -772,13 +778,16 @@ fn yuzora_diff_a_long_line_stays_on_its_side(cx: &mut TestAppContext) {
         pane.hover(100., 310.);
         let left: Vec<String> = pane.over().split_off(before).into_iter().map(|(t, _)| t).collect();
         assert!(left.contains(&"\u{6F22}".to_string()) && !left.contains(&"b".to_string()), "scrolled={scrolled}: over the left side only its text is hit: {left:?}");
+        let before = pane.over().len();
+        pane.hover(20., 310.);
+        assert_eq!(pane.over().len(), before, "scrolled={scrolled}: no text under the line numbers");
     }
     pane.close();
 }
 
 // yuzora(v010): lines wider than their side scroll sideways (a wheel or swipe), both sides together,
-// as far as the widest line ends and no further; a line that fits does not, and a vertical wheel is
-// not a sideways one.
+// as far as the widest line ends and no further; a line that fits does not, and a vertical wheel (or
+// swipe, with a little sideways in it) is not a sideways one.
 #[gpui::test]
 fn yuzora_diff_long_lines_scroll_sideways_to_their_end(cx: &mut TestAppContext) {
     const GUTTER: f64 = 44.;
@@ -797,9 +806,21 @@ fn yuzora_diff_long_lines_scroll_sideways_to_their_end(cx: &mut TestAppContext) 
     near(start(&mut pane), GUTTER + 6. - 200., "a sideways wheel moves the lines");
     pane.wheel(100., 100., 0., -50.);
     near(start(&mut pane), GUTTER + 6. - 200., "a vertical one does not");
+    pane.wheel(100., 100., -10., -80.);
+    near(start(&mut pane), GUTTER + 6. - 200., "nor does a vertical one with a little sideways in it");
+    pane.wheel(100., 100., 60., -20.);
+    near(start(&mut pane), GUTTER + 6. - 140., "a sideways one with a little up or down in it does");
     pane.wheel(100., 100., -100000., 0.);
     let end = start(&mut pane) + pane.text_width("a");
     assert!(end <= 599.5 && end >= 599.5 - 30., "scrolled as far as it goes, the widest line ends at {end}, its cell at 599.5");
+    // The left side widens: it needs less scrolling, and the lines come back to end where it does.
+    pane.wheel(100., 100., -100000., 0.);
+    pane.press(600., 100., 1);
+    pane.drag(900., 100.);
+    pane.release(900., 100.);
+    let end = start(&mut pane) + pane.text_width("a");
+    let cell = pane.width("l");
+    assert!(end <= cell && end >= cell - 30., "after the divider moved the widest line ends at {end}, its cell at {cell}");
     pane.wheel(100., 100., 100000., 0.);
     near(start(&mut pane), GUTTER + 6., "and back");
     pane.close();

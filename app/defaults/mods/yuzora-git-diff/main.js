@@ -171,11 +171,13 @@ export default class GitDiff extends View {
     return Math.max(0, this.textW.l + REST - (left - GUTTER), this.textW.r + REST - (w - 1 - left - GUTTER));
   }
 
-  // A sideways swipe or wheel moves every line the same distance (a vertical one is the list's).
+  // A sideways swipe or wheel moves every line the same distance; the frame keeps it within [`reach`].
+  // A swipe is sideways when it goes more that way than up or down: the list takes the rest, and a
+  // little sideways in a vertical swipe does not drift the lines.
   wheel(e, cx) {
     const lay = this.lay;
-    if (!lay || !e.delta.x) return;
-    const at = Math.min(Math.max(lay.sx - e.delta.x, 0), lay.reach);
+    if (!lay || Math.abs(e.delta.x) <= Math.abs(e.delta.y)) return;
+    const at = Math.max(lay.sx - e.delta.x, 0);
     if (at !== this.scrollX) { this.scrollX = at; cx.notify(); }
   }
 
@@ -188,7 +190,7 @@ export default class GitDiff extends View {
       const ratio = ratioOf(d.from + (x - d.x) / Math.max(1, lay.width - 1));
       if (ratio !== d.ratio) { d.ratio = ratio; cx.notify(); }
     } else {
-      const at = Math.min(Math.max(d.from + (x - d.x) * d.per, 0), lay.reach);
+      const at = Math.max(d.from + (x - d.x) * d.per, 0);
       if (at !== this.scrollX) { this.scrollX = at; cx.notify(); }
     }
   }
@@ -252,12 +254,12 @@ export default class GitDiff extends View {
     const index = del ? r.li : r.ri;
     const picked = changedRow && present && this.sel[r.h]?.[del ? "del" : "add"]?.has(index);
     const canPick = changedRow && present && this.view.stageable;
-    return h_flex().w(0).flex_grow(grow).min_w(0).h_full().overflow_hidden().when(Boolean(bg), (el) => el.bg(bg)).when(changedRow && !present, (el) => el.bg(th.raised))
+    return h_flex().w(0).flex_grow(grow).min_w(0).h_full().when(Boolean(bg), (el) => el.bg(bg)).when(changedRow && !present, (el) => el.bg(th.raised))
       .child(div().w(GUTTER).flex_none().h_full().pr(6).text_right().text_color(picked ? th.foreground : th.dim)
         .when(picked, (el) => el.bg(del ? d.removed ?? th.ansi1 : d.added ?? th.ansi2).text_color(th.background))
         .when(canPick, (el) => el.cursor_pointer().hover((s) => s.text_color(th.foreground)))
         .child(present ? String(n) : ""))
-      .child(div().flex_1().min_w(0).h_full().overflow_hidden()
+      .child(h_flex().flex_1().min_w(0).h_full().overflow_hidden()
         .child(div().flex_none().pl(6).ml(-sx).child(present ? this.segments(r[`${side}s`], text, th.foreground, strong) : "")));
   }
 
