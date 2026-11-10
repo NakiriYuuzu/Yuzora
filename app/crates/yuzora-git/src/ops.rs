@@ -231,7 +231,7 @@ pub fn messages(repo: &Repo) -> GitResult<Value> {
     // The sidebar reads these on its own as it attaches: no lazy fetch before trust. Neither read needs the
     // other, and each is a process (a round trip on a machine), so they go side by side.
     let (template, last) = std::thread::scope(|s| {
-        let template = s.spawn(|| repo.run(Git::read(["config", "--path", "commit.template"])));
+        let template = crate::exec::spawn_scoped(s, || repo.run(Git::read(["config", "--path", "commit.template"])));
         let last = repo.run(crate::trust::own_read(
             repo,
             Git::read(["log", "-1", "--format=%B"]),
