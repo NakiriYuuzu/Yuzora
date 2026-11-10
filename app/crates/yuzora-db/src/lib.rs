@@ -79,6 +79,8 @@ export interface ResultSummary {
   truncated: boolean;
   affected: number | null; error: string | null; elapsedMs: number;
   editable: boolean; notEditable: string | null; edits: number;
+  /** The edits are being written back right now. */
+  writing: boolean;
 }
 export interface JobState {
   id: number; running: boolean; version: number; elapsedMs: number;
@@ -113,6 +115,8 @@ export function openTable(id: string, database: string | null, owner: string, ta
 /** A job's state once it changed past `seen` (at once when it already has). */
 export function job(id: number, seen?: number): Promise<JobState>;
 export function cancel(job: number): null;
+/** Stops the write-back of a result that is being written (the edits stay pending); no-op otherwise. */
+export function stopWrite(result: number): null;
 /** A result's summary (null when released). */
 export function result(id: number): ResultSummary | null;
 /** Closes `owner`'s connections and drops its results (a pane closing). */
@@ -278,6 +282,10 @@ pub fn host_module() -> HostModule {
         })
         .function("cancel", |a| {
             session::cancel(a.integer(0)? as u64);
+            Ok(HostValue::Null)
+        })
+        .function("stopWrite", |a| {
+            session::stop_write(a.integer(0)? as u64);
             Ok(HostValue::Null)
         })
         .function("result", |a| {

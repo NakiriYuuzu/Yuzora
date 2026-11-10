@@ -28,5 +28,8 @@
   },
   "unsaved": "{count} edited cells aren't written back yet",
   "unsaved_drop": "Discard and go on",
-  "unsaved_keep": "Keep editing"
+  "unsaved_keep": "Keep editing",
+  "unsaved_writing": "{count} edited cells are being written right now",
+  "unsaved_wait": "Keep waiting",
+  "unsaved_stop": "Stop saving"
 }

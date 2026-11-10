@@ -2321,3 +2321,309 @@ fn yuzora_dock_selected_mode_uses_the_theme_foreground(cx: &mut TestAppContext) 
 fn tokens_text_strong() -> String {
     yuzora_core::tokens::for_theme(false)["text"]["strong"].as_str().unwrap().to_owned()
 }
+
+/// The Database table pane's toolbar with a job running (its Stop shows), whose clicks `note`.
+const DB_TOOLBAR: &str = r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import { note } from "probe";
+export default class Scenario extends Real {
+  init(p, cx) {
+    super.init(p, cx);
+    this.target = { connection: "c", database: null, schema: "public", name: "customers_with_a_long_name", kind: "table" };
+    this.state = { id: 1, running: true, version: 1, elapsedMs: 0, error: null, cancelled: false, results: [] };
+    this.stop = () => note("stop");
+  }
+}
+"#;
+
+/// Where a click lands on what `note`s `name` when clicked: the corners of the box of such points.
+fn clickable(s: &mut Scenario, name: &str, width: f32, height: f32) -> Option<(f32, f32, f32, f32)> {
+    let mut found: Option<(f32, f32, f32, f32)> = None;
+    for y in (0..height as i32).step_by(3) {
+        for x in (0..width as i32).step_by(3) {
+            s.notes.borrow_mut().clear();
+            let position = gpui::point(gpui::px(x as f32), gpui::px(y as f32));
+            let modifiers = gpui::Modifiers::default();
+            s.visual.simulate_event(gpui::MouseDownEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+            s.visual.simulate_event(gpui::MouseUpEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1 });
+            if s.last(name).is_some() {
+                let (x, y) = (x as f32, y as f32);
+                found = Some(found.map_or((x, y, x, y), |(x0, y0, x1, y1)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y))));
+            }
+        }
+    }
+    found
+}
+
+// The dock leaves a table pane 110 to 230 px: the toolbar's Stop was pushed out of it by the name and the tabs.
+#[gpui::test]
+fn the_database_toolbars_stop_stays_inside_a_narrow_pane(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    for width in [110.0_f32, 150.0, 240.0] {
+        let mut s = Scenario::mount(cx, &staged, DB_TOOLBAR, width, 400.0);
+        let (x0, _, x1, _) = clickable(&mut s, "stop", width, 100.0).unwrap_or_else(|| panic!("{width}px: Stop can't be clicked anywhere in the pane"));
+        assert!(x1 < width - 6.0, "{width}px: Stop reaches the pane's edge ({x0}..{x1}), so it is cut off");
+        assert!(x1 - x0 >= 30.0, "{width}px: only {x0}..{x1} of Stop can be pressed");
+    }
+}
+
+/// A result of the Database table pane with one edited cell, and the confirm
+/// bar asking about it, whose buttons `note`. The bar stays up however it is
+/// answered, so the whole of it can be felt for.
+fn db_confirm(writing: bool) -> (u64, String) {
+    use yuzora_db::{model::{Cell, Column}, results::{self, WriteState, WriteStop}};
+    let set = results::create("render-confirm", "select * from customers");
+    let id = {
+        let mut r = results::lock(&set);
+        r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
+        r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+        r.complete = true;
+        r.edits.insert((0, 1), Cell::text("x"));
+        if writing {
+            r.write = WriteState::Writing(WriteStop::new());
+        }
+        r.id
+    };
+    let source = format!(
+        r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import {{ note }} from "probe";
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    super.init(p, cx);
+    this.target = {{ connection: "c", database: null, schema: "public", name: "customers", kind: "table" }};
+    this.state = {{ id: 1, running: false, version: 1, elapsedMs: 0, error: null, cancelled: false,
+      results: [{{ id: {id}, statement: "select * from customers", columns: 2, rows: 1, edits: 1 }}] }};
+    let confirm = {{ count: 1, action: () => note("drop") }};
+    Object.defineProperty(this, "confirm", {{
+      get() {{ return confirm; }},
+      set(v) {{ if (v === null) note("closed"); else confirm = v; }},
+      configurable: true,
+    }});
+    this.stopSaving = () => note("stop");
+    this.run = () => {{}};
+  }}
+}}
+"#
+    );
+    (id, source)
+}
+
+/// Where clicks land on what `note`s each of `names`, in one pass over the pane's top `height` px: the corners of each box of such points.
+fn clickables(s: &mut Scenario, names: &[&str], width: f32, height: f32) -> Vec<Option<(f32, f32, f32, f32)>> {
+    let mut found: Vec<Option<(f32, f32, f32, f32)>> = vec![None; names.len()];
+    for y in (0..height as i32).step_by(4) {
+        for x in (0..width as i32).step_by(4) {
+            s.notes.borrow_mut().clear();
+            let position = gpui::point(gpui::px(x as f32), gpui::px(y as f32));
+            let modifiers = gpui::Modifiers::default();
+            s.visual.simulate_event(gpui::MouseDownEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+            s.visual.simulate_event(gpui::MouseUpEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1 });
+            for (i, name) in names.iter().enumerate() {
+                if s.last(name).is_some() {
+                    let (x, y) = (x as f32, y as f32);
+                    found[i] = Some(found[i].map_or((x, y, x, y), |(x0, y0, x1, y1)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y))));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The answers of the bar, each pressable in the pane (`None`: the answer is not there).
+fn answers_inside(width: f32, boxes: &[Option<(f32, f32, f32, f32)>], names: &[&str]) {
+    for (name, found) in names.iter().zip(boxes) {
+        let (x0, _, x1, _) = found.unwrap_or_else(|| panic!("{width}px: {name} can't be clicked anywhere in the pane: {boxes:?}"));
+        assert!(x1 < width - 2.0 && x1 - x0 >= 24.0, "{width}px: {name} is only {x0}..{x1} inside the pane: {boxes:?}");
+    }
+}
+
+// The dock leaves a table pane 110 to 230 px: both answers stay in it, wherever the bar wraps them.
+#[gpui::test]
+fn the_database_table_pane_asks_about_unwritten_edits_in_a_narrow_pane(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let (_, source) = db_confirm(false);
+    for width in [110.0_f32, 150.0, 228.0, 320.0] {
+        let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+        let names = ["drop", "closed"];
+        answers_inside(width, &clickables(&mut s, &names, width, 260.0), &names);
+    }
+}
+
+// A save in flight can't be told to forget the edits it carries: the bar offers to wait for it or to stop it, not to discard.
+#[gpui::test]
+fn the_database_table_pane_does_not_offer_to_discard_edits_that_are_being_written(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let (_, source) = db_confirm(true);
+    for width in [110.0_f32, 228.0, 420.0] {
+        let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+        let boxes = clickables(&mut s, &["drop", "stop", "closed"], width, 260.0);
+        assert!(boxes[0].is_none(), "{width}px: the bar offers to discard edits that are being written: {boxes:?}");
+        answers_inside(width, &boxes[1..], &["stop", "closed"]);
+    }
+}
+
+/// The Database table pane as a person drives it: Run with an edited cell in
+/// the result, then an answer in the bar. `probe` mounts the same pane for
+/// finding where the answers are: it keeps the bar up however it is answered
+/// and only notes what Discard and Stop saving would do.
+fn db_run_then_answer(owner: &str, writing: bool, probe: bool) -> (u64, Option<yuzora_db::results::WriteStop>, String) {
+    use yuzora_db::{model::{Cell, Column}, results::{self, WriteState, WriteStop}};
+    let set = results::create(owner, "select * from customers");
+    let stop = writing.then(WriteStop::new);
+    let id = {
+        let mut r = results::lock(&set);
+        r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
+        r.rows = vec![vec![Cell::text("1"), Cell::text("a")]];
+        r.complete = true;
+        r.edits.insert((0, 1), Cell::text("x"));
+        if let Some(stop) = &stop {
+            r.write = WriteState::Writing(stop.clone());
+        }
+        r.id
+    };
+    let source = format!(
+        r#"
+import Real from "./mods/yuzora-db-table/main.js";
+import {{ note }} from "probe";
+const PROBE = {probe};
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    super.init(p, cx);
+    this.target = {{ connection: "none", database: null, schema: "public", name: "customers", kind: "table" }};
+    this.state = {{ id: 1, running: false, version: 1, elapsedMs: 0, error: null, cancelled: false,
+      results: [{{ id: {id}, statement: "select * from customers", columns: 2, rows: 1, edits: 1 }}] }};
+    let confirm = null;
+    Object.defineProperty(this, "confirm", {{
+      get() {{ return confirm; }},
+      set(v) {{ if (v === null) {{ note("closed"); if (!PROBE) confirm = null; }} else confirm = v; }},
+      configurable: true,
+    }});
+    if (PROBE) this.run(cx);
+  }}
+  run(cx) {{ note("run"); super.run(cx); }}
+  load(cx, order) {{ note("load"); if (!PROBE) super.load(cx, order); }}
+  stopSaving(id) {{ note("stop"); if (!PROBE) super.stopSaving(id); }}
+  render(cx) {{
+    note("shown", this.state === null ? "loading" : "settled", this.state?.error ?? null, this.confirm !== null);
+    return super.render(cx);
+  }}
+}}
+"#
+    );
+    (id, stop, source)
+}
+
+/// Where a click lands on what `note`s `name` and not `except` (every answer of the bar also closes it).
+fn clickable_only(s: &mut Scenario, name: &str, except: &str, width: f32, height: f32) -> Option<(f32, f32, f32, f32)> {
+    let mut found: Option<(f32, f32, f32, f32)> = None;
+    for y in (0..height as i32).step_by(4) {
+        for x in (0..width as i32).step_by(4) {
+            s.notes.borrow_mut().clear();
+            let position = gpui::point(gpui::px(x as f32), gpui::px(y as f32));
+            let modifiers = gpui::Modifiers::default();
+            s.visual.simulate_event(gpui::MouseDownEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
+            s.visual.simulate_event(gpui::MouseUpEvent { position, modifiers, button: gpui::MouseButton::Left, click_count: 1 });
+            if s.last(name).is_some() && s.last(except).is_none() {
+                let (x, y) = (x as f32, y as f32);
+                found = Some(found.map_or((x, y, x, y), |(x0, y0, x1, y1)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y))));
+            }
+        }
+    }
+    found
+}
+
+/// What the pane has shown last: `[state, error, bar up]`.
+fn shown(s: &Scenario) -> (String, Option<String>, bool) {
+    let n = s.last("shown").expect("the pane rendered");
+    (n[1].as_str().unwrap().to_owned(), n[2].as_str().map(str::to_owned), n[3].as_bool().unwrap())
+}
+
+fn press(s: &mut Scenario, (x0, y0, x1, y1): (f32, f32, f32, f32)) {
+    s.click(f64::from(x0 + x1) / 2.0, f64::from(y0 + y1) / 2.0);
+}
+
+/// Runs the pane's table until it has been read again (here it is a connection that isn't there: the read ends with an error).
+fn reloaded(s: &mut Scenario) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(5) {
+        s.settle();
+        if shown(s).1.is_some() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    false
+}
+
+// Bug (acceptance): "Discard and go on" left the table on "Loading…" for good. The bar's answer ran the refresh
+// with the `cx` of the click that raised the bar, and a `cx` only works during the call it was handed to.
+#[gpui::test]
+fn the_database_table_pane_reloads_when_the_bar_is_answered_with_discard_and_go_on(cx: &mut TestAppContext) {
+    // The read runs on the database runtime's threads and wakes the pane from there.
+    cx.executor().allow_parking();
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 228.0_f32;
+    let (_, _, probe) = db_run_then_answer("run-answer-probe", false, true);
+    let mut p = Scenario::mount(cx, &staged, &probe, width, 400.0);
+    let at = clickables(&mut p, &["run", "load"], width, 240.0);
+    let keep = clickable_only(&mut p, "closed", "load", width, 240.0);
+    let (Some(run), Some(discard), Some(keep)) = (at[0], at[1], keep) else { panic!("{width}px: Run and the bar's answers can't all be pressed: {at:?} {keep:?}") };
+    drop(p);
+
+    let (_, _, source) = db_run_then_answer("run-answer-discard", false, false);
+    let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+    assert_eq!(shown(&s), ("settled".into(), None, false));
+    press(&mut s, run);
+    assert_eq!(shown(&s), ("settled".into(), None, true), "Run asks before it drops the edit");
+    press(&mut s, discard);
+    assert!(s.last("load").is_some(), "Discard and go on did not reload the table");
+    assert!(reloaded(&mut s), "the table never came back from Loading: {:?}", shown(&s));
+    assert!(!shown(&s).2, "the bar is still up");
+
+    let (id, _, source) = db_run_then_answer("run-answer-keep", false, false);
+    let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+    press(&mut s, run);
+    press(&mut s, keep);
+    s.settle();
+    assert_eq!(shown(&s), ("settled".into(), None, false), "Keep editing leaves the table as it was");
+    assert!(s.last("load").is_none(), "Keep editing reloaded the table");
+    assert_eq!(yuzora_db::results::get(id).map(|set| yuzora_db::results::lock(&set).edits.len()), Some(1));
+}
+
+// Run while a save is on its way: the bar offers to wait or to stop, and both go through the same click path.
+#[gpui::test]
+fn the_database_table_pane_answers_a_save_in_flight_with_keep_waiting_or_stop_saving(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let width = 228.0_f32;
+    let (_, _, probe) = db_run_then_answer("run-writing-probe", true, true);
+    let mut p = Scenario::mount(cx, &staged, &probe, width, 400.0);
+    let at = clickables(&mut p, &["run", "stop"], width, 240.0);
+    let wait = clickable_only(&mut p, "closed", "stop", width, 240.0);
+    let (Some(run), Some(stop), Some(wait)) = (at[0], at[1], wait) else { panic!("{width}px: Run and the bar's answers can't all be pressed: {at:?} {wait:?}") };
+    drop(p);
+
+    let (_, saving, source) = db_run_then_answer("run-writing-wait", true, false);
+    let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+    press(&mut s, run);
+    assert!(shown(&s).2, "Run asks before it leaves a save");
+    press(&mut s, wait);
+    s.settle();
+    assert!(!shown(&s).2, "Keep waiting leaves the bar up");
+    assert!(s.last("stop").is_none() && s.last("load").is_none());
+    assert!(!saving.unwrap().is_stopped(), "Keep waiting stopped the save");
+
+    let (_, saving, source) = db_run_then_answer("run-writing-stop", true, false);
+    let mut s = Scenario::mount(cx, &staged, &source, width, 400.0);
+    press(&mut s, run);
+    press(&mut s, stop);
+    s.settle();
+    assert!(s.last("stop").is_some(), "Stop saving did not stop the save");
+    assert!(saving.unwrap().is_stopped(), "Stop saving did not reach the save");
+    assert!(!shown(&s).2 && s.last("load").is_none(), "Stop saving reloads nothing and closes the bar");
+}
