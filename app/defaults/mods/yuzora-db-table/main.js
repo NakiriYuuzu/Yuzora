@@ -87,7 +87,7 @@ export default class DbTable extends View {
     this.info = null;
     this.infoError = null;
     this.shown = 0;
-    this.watch(cx, openTable(tg.connection, tg.database, this.key, { schema: tg.schema, name: tg.name }, order ?? null));
+    this.watch(cx, openTable(tg.connection, tg.database, this.key, { schema: tg.schema, name: tg.name }, order ?? null), "table");
     cx.spawn(async (cx) => {
       try {
         const info = await describe(tg.connection, tg.database, { schema: tg.schema, name: tg.name });
@@ -102,8 +102,9 @@ export default class DbTable extends View {
     });
   }
 
-  watch(cx, id) {
+  watch(cx, id, kind) {
     this.jobId = id;
+    this.jobKind = kind; // "table": the read of the table; "sql": a statement of the person's
     this.state = null;
     cx.notify();
     cx.spawn(async (cx) => {
@@ -135,9 +136,8 @@ export default class DbTable extends View {
   }
 
   run(cx) {
-    if (this.state?.running) return;
     if (this.tab === "sql") this.runSql(cx);
-    else if (this.target) {
+    else if (this.target && !this.state?.running) {
       this.guard(cx, (cx) => {
         this.sql = "";
         this.load(cx);
@@ -146,8 +146,15 @@ export default class DbTable extends View {
     }
   }
 
+  /**
+   * Run in the SQL tab. A read of the table that is still going does not hold it back: it may be waiting for
+   * the very transaction this SQL ends (BEGIN; UPDATE … in this tab, then the table blocked on that row), and the
+   * core stops a pane's older job when a newer one starts. What the person asked for with a statement of their own is
+   * not stopped by another Run (Stop is for that), and unwritten edits are asked about first, as for any other
+   * way of leaving the result.
+   */
   runSql(cx) {
-    if (!this.target || this.state?.running) return;
+    if (!this.target || (this.state?.running && this.jobKind !== "table")) return;
     const text = editorText(`${this.key}:sql`);
     const sql = (text?.selection?.trim() ? text.selection : text?.text ?? "").trim();
     if (!sql) return;
@@ -155,7 +162,7 @@ export default class DbTable extends View {
       this.sql = sql;
       this.tab = "data";
       this.shown = 0;
-      this.watch(cx, query(this.target.connection, this.target.database, this.key, sql));
+      this.watch(cx, query(this.target.connection, this.target.database, this.key, sql), "sql");
     });
     cx.notify();
   }
@@ -225,7 +232,8 @@ export default class DbTable extends View {
 
   toolbar(th, conn) {
     const tg = this.target;
-    const running = Boolean(this.state?.running);
+    // In the SQL tab, Run goes ahead of a read of the table (see runSql): that is the button there while it goes on.
+    const running = Boolean(this.state?.running) && !(this.tab === "sql" && this.jobKind === "table");
     const where = [tg.database ?? conn?.database ?? "", tg.schema ? `${tg.schema}.${tg.name}` : tg.name].filter(Boolean).join(" · ");
     // The pane is as narrow as the dock leaves it: what doesn't fit beside the
     // name goes under it, and the button is always on a line of its own at worst.
@@ -243,7 +251,7 @@ export default class DbTable extends View {
           ? div().id("stop").h(20).px(10).flex().flex_none().items_center().rounded(4).border_1().border_color(th.input)
             .text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).on_click(() => this.stop()).child(t("stop"))
           : div().id("run").h(20).px(10).flex().flex_none().items_center().rounded(4).bg(th.solid).text_color(th.solid_foreground)
-            .font_semibold().text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).tooltip(t(this.tab === "sql" ? "run_sql_tip" : "refresh_tip"))
+            .font_semibold().text_size(11.5).cursor_pointer().hover((s) => s.opacity(0.88)).tooltip(this.tab !== "sql" ? t("refresh_tip") : this.state?.running ? t("run_sql_over_read_tip") : t("run_sql_tip"))
             .on_click((_e, cx) => this.run(cx)).child(t("run"))));
   }
 
@@ -312,11 +320,17 @@ export default class DbTable extends View {
           .child(SqlEditor.new(`${this.key}:ddl`, { engine: this.conn()?.engine, value: info.ddl, readonly: true }))));
   }
 
+  /** What the SQL tab's footer says: how to run, or why a Run does not start (a statement of the person's is still going), or what it will stop. */
+  sqlHint() {
+    if (!this.state?.running) return t("sql_hint");
+    return this.jobKind === "table" ? t("sql_over_read") : t("sql_busy");
+  }
+
   sqlTab(th) {
     return v_flex().flex_1().min_h(0)
       .child(div().flex_1().min_h(0).child(SqlEditor.new(`${this.key}:sql`, { engine: this.conn()?.engine, value: this.sql })))
       .child(div().h(24).flex_none().px(12).flex().items_center().text_size(11).text_color(th.dim).border_t(1).border_color(th.divider ?? th.border)
-        .child(t("sql_hint")));
+        .child(this.sqlHint()));
   }
 
   render(cx) {
