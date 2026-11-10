@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 // Where the app's own workflows run: main (once integration lands there) and
@@ -44,5 +44,23 @@ describe("the manifest checker the release uses", () => {
     const step = ci.jobs["platform-tests"].steps.find((s: any) => s.name === "Check the manifest checker");
     expect(step.if).toBe("matrix.platform == 'linux-x86_64'");
     expect(step.run).toContain("cargo test --locked --manifest-path scripts/yuzora/verify-manifest/Cargo.toml");
+  });
+});
+
+describe("the release workflow's contract is run by the PR that changes the workflow", () => {
+  const ci = load("app-ci.yml");
+
+  test("a change to app-release.yml starts App CI, as does anything under app/ the contract reads", () => {
+    for (const event of ["push", "pull_request"]) {
+      expect(ci.on[event].paths, event).toContain(".github/workflows/app-release.yml");
+      expect(ci.on[event].paths, event).toContain("app/**");
+    }
+  });
+
+  test("and App CI's Linux job runs every test under scripts, the contract's among them", () => {
+    const step = ci.jobs["platform-tests"].steps.find((s: any) => s.name === "Yuzora script tests");
+    expect(step.if).toBe("matrix.platform == 'linux-x86_64'");
+    expect(step.run).toBe("bun test scripts");
+    expect(existsSync(join(import.meta.dir, "app-release.test.ts"))).toBe(true);
   });
 });
