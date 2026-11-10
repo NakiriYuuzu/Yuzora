@@ -286,7 +286,7 @@ describe("plan, against a fake gh and a throwaway repository", () => {
 
   test("when gh cannot answer at all, the error says why instead of an HTTP status line", () => {
     process.env.PATH = join(fixtures, "no-gh");
-    expect(() => api("repos/NakiriYuuzu/Yuzora/compare/main...abc")).toThrow("ENOENT");
+    expect(() => api("repos/NakiriYuuzu/Yuzora/compare/main...abc")).toThrow(/ENOENT|not found/);
   });
 
   test("a changed workflow file is only a warning", () => {

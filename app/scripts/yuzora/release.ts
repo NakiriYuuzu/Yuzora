@@ -107,7 +107,9 @@ type Api = { status: number; body: any };
 
 /// `gh api`, reading only. 404 comes back as a value, anything else odd throws.
 export function api(path: string): Api {
-  const out = spawnSync("gh", ["api", "--include", path], { encoding: "utf8" });
+  // compare/main...<sha> lists every commit and file: 2 MB for a branch 500 commits ahead, over spawnSync's 1 MiB default.
+  const out = spawnSync("gh", ["api", "--include", path], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (out.error) throw new Error(`gh api ${path}: ${out.error.message}`);
   const text = out.stdout ?? "";
   const status = Number(/^HTTP\/\S+ (\d{3})/.exec(text)?.[1] ?? "0");
   if (status === 404) return { status, body: null };
