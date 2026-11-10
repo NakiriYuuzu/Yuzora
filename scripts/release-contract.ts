@@ -427,7 +427,28 @@ function verifyStableMacOsDistributionContract(workflow: Workflow): void {
   )
 }
 
+// release.yml belongs to the Tauri app. Once main carries the herdr-based app
+// (app/), a version string that reaches it must stop before a tag or a build.
+function verifyTauriReleaseRetired(workflow: Workflow): void {
+  const { guardSteps } = guardFor(workflow)
+  const index = guardSteps.findIndex((step) => step.name === "Refuse a Tauri release from a tree that carries app/")
+  const resolve = guardSteps.findIndex((step) => step.name === "Resolve release target")
+  assert(
+    index >= 0 && index === resolve + 1,
+    "release.yml must refuse a Tauri release from a tree that carries app/, right after the release is resolved"
+  )
+  const refuse = guardSteps[index]!
+  assert(
+    refuse.if === "steps.release.outputs.should_build == 'true'" &&
+      includes(refuse.run, "app/Cargo.toml") &&
+      includes(refuse.run, "app-release.yml") &&
+      includes(refuse.run, "exit 1"),
+    "the retirement step must fail a release that would be built when app/Cargo.toml exists"
+  )
+}
+
 function verifyReleaseWorkflowHardening(workflow: Workflow): void {
+  verifyTauriReleaseRetired(workflow)
   verifyReleaseActionPins(workflow)
   verifyCompanionNetGoSetup(jobFor(workflow, "build"), "jobs.build")
   verifyReleaseLeastPrivilege(workflow)
