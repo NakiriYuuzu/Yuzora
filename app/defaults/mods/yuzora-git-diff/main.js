@@ -65,7 +65,7 @@ const GRAB = 5, BAR = 8, REST = 12;
 // and what is cut by itself, a row or a line, is taken at its upper bound. An event asks for the next frame before it
 // works; a frame cannot ask, so a timer asks, LATE ms after the event that wanted the frame, if nothing came of it.
 const GROW = 4, FRAME = 1 << 15, LAYOUT = 1 << 18, TEXTS = 1 << 12;
-const LATE = 120;
+const LATE = 120, RETRIES = 40;
 const SLICE = 2e6, ORDER = 6, STEP = 100, TOLL = 200, SLOW = 25, LINE = 1 << 20, SORT = 1 << 16, FEW = 4, WORST = 3, HALF = 0.5;
 // The width of a run of this over its length is what a cell takes in the font. The layout rounds that width up
 // to a pixel, which on a cell is the less the longer the run.
@@ -145,7 +145,7 @@ export default class GitDiff extends View {
       this.sel = keep;
       this.hunk = Math.min(this.hunk, Math.max(0, view.hunks.length - 1));
     } catch (e) { if (this.loop === loop) this.error = String(e); }
-    cx.notify();
+    this.again(cx);
   }
 
   // Out of the modal into a pane (Git settings: beside the focused pane, or
@@ -161,7 +161,7 @@ export default class GitDiff extends View {
     cx.spawn(async (cx) => {
       try { this.show(await diffView(this.view.id, { layout: this.layout, context: this.context, whitespace: this.whitespace })); this.sel = {}; this.error = null; }
       catch (e) { this.error = String(e); }
-      cx.notify();
+      this.again(cx);
     });
   }
 
@@ -249,21 +249,26 @@ export default class GitDiff extends View {
 
   // The next frame is asked for, and asked for again if no event has asked since LATE ms: a frame the engine cuts off is not
   // drawn again by anything, and the events that would ask are in the frame it cut. A frame that is cut again is asked for
-  // again, a smaller one, for as long as it is cut.
+  // again, a smaller one, up to RETRIES times in a row.
   again(cx) {
     cx.notify();
+    this.retries = 0;
+    this.watch(cx);
+  }
+
+  watch(cx) {
     this.late?.cancel();
     this.late = cx.timer.after(LATE, (cx) => {
-      if (!this.waiting()) return;
+      if (!this.waiting() && !this.framing) return;
       cx.notify();
-      if (this.cutOff()) this.again(cx);
+      if (this.cutOff() && ++this.retries < RETRIES) this.watch(cx);
     });
   }
 
-  // Whether the last slice or frame that was begun was not finished.
+  // Whether the last slice, frame or batch that was begun was not finished.
   cutOff() {
     const { fit, gauge: g } = this;
-    return Boolean(fit?.trying || g && (g.l.trying || g.r.trying));
+    return Boolean(this.framing || fit?.trying || g && (g.l.trying || g.r.trying));
   }
 
   // Whether something is left to find out out of sight, which a frame asks for.
@@ -622,7 +627,16 @@ export default class GitDiff extends View {
       .child(label);
   }
 
+  // A frame that does not come back, not even by throwing, was cut off by the engine: it stays marked as begun.
   render(cx) {
+    this.framing = true;
+    try { return this.frame(cx); } finally {
+      this.framing = false;
+      if (this.gauge) this.gauge.l.trying = this.gauge.r.trying = null;
+    }
+  }
+
+  frame(cx) {
     const th = theme(), d = tokens().diff ?? {};
     const want = this.wanted();
     if (JSON.stringify(want ?? null) !== JSON.stringify(this.spec ?? null)) this.follow(cx);
@@ -690,15 +704,12 @@ export default class GitDiff extends View {
       .child(this.button("discard-yes", t("discard"), th, true, (cx) => { const a = this.askDiscard; this.askDiscard = null; this.apply(cx, "discard", a.hunks, a.lines); }))
       .child(this.button("discard-no", t("cancel"), th, true, (cx) => { this.askDiscard = null; cx.notify(); }));
 
-    const out = root.child(header)
+    return root.child(header)
       .when(Boolean(ask), (el) => el.child(ask))
       .when(Boolean(this.note), (el) => el.child(div().px(10).py(4).text_size(11.5).text_color(th.ansi1).child(this.note)))
       .when(Boolean(v?.modes) && v.rows.length > 0, (el) => el.child(div().px(10).py(3).text_size(11).text_color(th.muted).child(t("modes", { from: v.modes[0], to: v.modes[1] }))))
       .when(Boolean(v) && !v.stageable && (spec.mode === "unstaged" || spec.mode === "staged") && this.whitespace !== "none", (el) => el.child(div().px(10).py(3).text_size(11).text_color(th.dim).child(t("wsNoStage"))))
       .child(body);
-    // This frame was not cut off: the batches it asked for are not marked any more.
-    if (this.gauge) this.gauge.l.trying = this.gauge.r.trying = null;
-    return out;
   }
 }
 

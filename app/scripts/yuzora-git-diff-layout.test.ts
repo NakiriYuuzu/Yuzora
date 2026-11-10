@@ -11,7 +11,7 @@ const fonts = JSON.parse(await readFile(new URL("./fixtures/yuzora-git-diff-font
 };
 
 type Rank = { keys: Float64Array; base: number; rows: object[]; top: number };
-type Fit = { l: Rank; r: Rank; at: number; count: number; done: boolean; rows: object[] };
+type Fit = { l: Rank; r: Rank; at: number; count: number; done: boolean; rows: object[]; slice: number; hurt: number; trying: { left: number; at: number; slice: number } | null };
 type Gauge = { key: string; l: Side; r: Side };
 type Side = { left: number | undefined; got: number; blind: number; rounds: number };
 type Pane = {
@@ -25,14 +25,15 @@ type Pane = {
   span(name: string): number;
 };
 const zoomed = { zoom: 1 };
-const { ratioOf, bound, ranking, scan, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW } = (() => {
+const { ratioOf, bound, ranking, scan, cutSlice, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW } = (() => {
   const body = src.replace(/^import [\s\S]*?;\n/gm, "").replace("export default class GitDiff", "class GitDiff");
-  return new Function("View", "settings", `${body}; return { ratioOf, bound, ranking, scan, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW };`)(class {}, () => zoomed);
+  return new Function("View", "settings", `${body}; return { ratioOf, bound, ranking, scan, cutSlice, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW };`)(class {}, () => zoomed);
 })() as {
   ratioOf: (v: unknown) => number;
   bound: (text: string, meter: { left: number }) => number;
   ranking: (rows: object[]) => Fit;
   scan: (fit: Fit, meter: { left: number }) => void;
+  cutSlice: (fit: Fit) => void;
   entry: (rank: Rank, at: number) => { cells: number; r: Record<string, unknown> };
   cost: (chars: number, pieces: number) => number;
   GitDiff: { prototype: object };
@@ -347,13 +348,14 @@ test("the rows are ranked a slice at a time, no slice goes through more than its
 });
 
 test("putting a side's lines in order is work of the slice: with the slice used up the other side waits for the next, and a small diff is done in its first", () => {
-  const rows = Array.from({ length: 4e5 }, (_, i) => row("a".repeat(8 + (i % 5)), "b".repeat(8 + (i % 7))));
+  // A slice of a tenth, so that 60,000 rows are many slices and putting one side in order (6 units a line) is more than one.
+  const rows = Array.from({ length: 6e4 }, (_, i) => row("a".repeat(8 + (i % 5)), "b".repeat(8 + (i % 7))));
   const fit = ranking(rows);
   const ordered = () => [fit.l, fit.r].filter((side) => (side as { sorted?: boolean }).sorted).length;
   let calls = 0, most = 0;
   while (!fit.done) {
     const before = ordered();
-    scan(fit, { left: SLICE });
+    scan(fit, { left: SLICE / 10 });
     most = Math.max(most, ordered() - before);
     calls++;
   }
@@ -403,6 +405,24 @@ test("a slice cut off anywhere is gone on from without a row lost, and every lin
       }
     }
   }
+});
+
+test("a slice that was cut off is followed by half of what it got done, and a row it got nowhere with is taken at its bound", () => {
+  const fit = ranking(Array.from({ length: 50 }, () => row("a".repeat(10), "b")));
+  fit.at = 20;
+  fit.trying = { left: SLICE - 600000, at: 5, slice: SLICE };
+  cutSlice(fit);
+  expect([fit.slice, fit.hurt, fit.trying]).toEqual([300000, -1, null]);
+  fit.trying = { left: SLICE - 50, at: 20, slice: 300000 };
+  cutSlice(fit);
+  expect([fit.slice, fit.hurt]).toEqual([300000, 20]);
+  const hurt = ranking([row("a".repeat(10), "b"), row("é".repeat(30), "é".repeat(30)), row("a".repeat(10), "b")]);
+  hurt.hurt = 1;
+  scan(hurt, plenty());
+  const cells = (side: "l" | "r") => Array.from({ length: 3 }, (_, at) => entry(hurt[side], at)).map(({ cells, r }) => [cells, (r as { lt?: string }).lt?.length ?? 0]);
+  expect(cells("l")).toContainEqual([WORST * 30, 30]);
+  expect(cells("r")).toContainEqual([WORST * 30, 30]);
+  expect(cells("l")).toContainEqual([10, 10]);
 });
 
 test("the count of what is read sees every way a line can be read", () => {
