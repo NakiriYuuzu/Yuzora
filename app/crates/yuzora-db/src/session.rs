@@ -756,6 +756,7 @@ pub fn open_table(
 ) -> JobId {
     let id = new_job(owner);
     let (info_tx, mut info_rx) = tokio::sync::watch::channel(None);
+    let (held_tx, held_rx) = tokio::sync::oneshot::channel::<()>();
     let halt = jobs().1.get_mut(&id).map(|job| {
         job.info = Some(info_rx.clone());
         job.halt.clone()
@@ -777,7 +778,12 @@ pub fn open_table(
         {
             let (connection, database, table) = (connection.clone(), database.clone(), table.clone());
             runtime::spawn(async move {
-                let described = describe(&connection, database.as_deref(), &table).await;
+                let leased = lease(&connection, database.as_deref(), META).await;
+                let _ = held_tx.send(());
+                let described = match leased {
+                    Ok(mut l) => l.conn().describe(&table).await,
+                    Err(e) => Err(e),
+                };
                 let _ = info_tx.send(Some(Arc::new(described)));
             });
         }
@@ -863,6 +869,13 @@ pub fn open_table(
         // on a big table neither holds back editing nor queues a write-back.
         let count = async {
             if outcome.is_ok() && !job_cancelled(id) {
+                // The sidebar's connection is claimed before the count's, as it was when the description
+                // came first: on a login limited to two connections the count's place is the one the
+                // description needs, and the count (which can borrow the table's) is the one to go without.
+                let _ = select(Box::pin(held_rx), Box::pin(halt.called())).await;
+                if job_cancelled(id) {
+                    return;
+                }
                 let total = count_rows(&connection, database.as_deref(), &owner, engine, &table, id).await;
                 if let (Some(total), Some(set)) = (total, set.clone()) {
                     let result = {

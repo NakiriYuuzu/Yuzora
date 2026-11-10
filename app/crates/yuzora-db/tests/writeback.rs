@@ -1371,6 +1371,55 @@ fn postgres_a_sql_tab_beside_a_table_with_no_connection_to_spare_says_why_and_le
     session::disconnect(&limited);
 }
 
+/// A login that may have two connections, the table's still in the pool and the sidebar's gone (the
+/// server dropped it, or the sidebar moved to another database): the description's connection and
+/// the count's both want the one place left, and the description's has to be the one that gets it,
+/// as it was when the description came first. Whether it is depends on which gets there first, so
+/// this repeats (60 opens); without the count waiting for the description's connection, one open
+/// in ten to twenty-five ended read-only with `too many connections`.
+#[test]
+fn postgres_a_login_limited_to_two_connections_keeps_the_table_editable_when_the_sidebars_connection_is_gone() {
+    only_with!("postgres");
+    let _role = limited_role("yz_wb_order");
+    let scratch = PgScratchDatabase::new("yz_wb_order");
+    let setup = scratch.connection();
+    run(
+        &setup,
+        "setup",
+        "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t SELECT g, 'a' FROM generate_series(1, 50) g; GRANT SELECT, UPDATE ON t TO yz_wb_order;",
+    );
+    let limited = save(
+        json!({"name": "pg-order", "engine": "postgres", "host": "127.0.0.1", "port": 55432,
+               "user": "yz_wb_order", "database": "yz_wb_order", "ssl": "prefer"}),
+        Some("yz_wb_order-pw"),
+    );
+    let pane = owner(&limited, "order-pane");
+    let opened = wait(session::open_table(&limited, None, &pane, &table("public", "t"), None));
+    assert!(opened.results[0].editable, "{:?}", opened.results[0]);
+
+    let mut refused = Vec::new();
+    for round in 0..60 {
+        // The count borrowed the table's connection, so its last statement is the count's: the other
+        // backend of this login is the sidebar's.
+        run(
+            &setup,
+            "kill",
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'yz_wb_order' AND query NOT ILIKE '%count(%'",
+        );
+        // The client sees the connection closed; an open that reached it first would be the drop itself
+        // (a dead connection handed out), not the order of the connections.
+        std::thread::sleep(Duration::from_millis(100));
+        let state = wait(session::open_table(&limited, None, &pane, &table("public", "t"), None));
+        let summary = &state.results[0];
+        if !summary.editable || state.error.is_some() {
+            refused.push((round, summary.not_editable.clone(), state.error.clone()));
+        }
+    }
+    session::release_owner(&pane);
+    session::disconnect(&limited);
+    assert!(refused.is_empty(), "opens that did not end editable: {refused:?}");
+}
+
 /// A login dropped when the test ends, whatever happened (declared before the
 /// database it was granted on, so it goes after it).
 struct PgRole {
@@ -3078,4 +3127,3 @@ fn postgres_what_the_sql_tab_sets_does_not_change_what_the_table_reads_and_saves
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
-
