@@ -46,6 +46,13 @@ pub fn for_theme(light: bool) -> Value {
     t
 }
 
+/// The animation speeds (`motion` in tokens.json): `{ name: { duration, easing } }`, each what `transition(property, policy)`
+/// takes. A theme does not change them.
+pub fn motion() -> &'static Value {
+    static MOTION: OnceLock<Value> = OnceLock::new();
+    MOTION.get_or_init(|| for_theme(false)["motion"].clone())
+}
+
 fn merge(into: &mut Value, over: Value) {
     match (into, over) {
         (Value::Object(into), Value::Object(over)) => {
@@ -119,6 +126,24 @@ mod tests {
         walk(&all["light"], &for_theme(false), "");
         assert_ne!(for_theme(true)["text"]["strong"], for_theme(false)["text"]["strong"]);
         assert_eq!(for_theme(true)["space_badges"], for_theme(false)["space_badges"]);
+    }
+
+    // Yuzora's animations name a speed from here (`motion(name)` in yuzora:core) and never write their own
+    // milliseconds: short enough that an interface never waits for one, and the same in a light theme.
+    #[test]
+    fn motion_tokens_are_named_short_and_eased() {
+        let motion = for_theme(false)["motion"].clone();
+        let named = motion.as_object().expect("a motion block");
+        assert!(named.contains_key("fast") && named.contains_key("base"), "{motion}");
+        for (name, m) in named {
+            let ms = m["duration"].as_u64().unwrap_or(0);
+            assert!((1..=180).contains(&ms), "motion.{name} lasts {ms} ms");
+            let easing = m["easing"].as_str().unwrap_or("");
+            assert!(["linear", "ease-in", "ease-out", "ease-in-out"].contains(&easing), "motion.{name} eases with {easing:?}");
+            assert_eq!(m.as_object().map(|o| o.len()), Some(2), "motion.{name} is a duration and an easing, as `transition` takes them");
+        }
+        assert!(named["fast"]["duration"].as_u64() < named["base"]["duration"].as_u64(), "fast is faster than base");
+        assert_eq!(for_theme(true)["motion"], motion);
     }
 
     #[test]

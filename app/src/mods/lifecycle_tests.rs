@@ -332,8 +332,8 @@ export default class extends View {
 fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut TestAppContext) {
     let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
     let (from, to) = (
-        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
-        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, t, tokens, open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, gitSettings } from \"fixture\";",
+        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay } from \"herdr\";\nimport { t, tokens, session } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
+        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, session, t, tokens, open, changes, diffOpen, diffView, diffStage, diffUnstage, diffDiscard, gitSettings } from \"fixture\";",
     );
     assert_eq!(source.matches(from).count(), 1, "the diff mod no longer has: {from}");
     source = source.replacen(from, to, 1);
@@ -382,6 +382,7 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
             module = module.function(name, |_| Ok(HostValue::Null));
         }
         module = module.function("t", |a| Ok(a.string(0)?.into()));
+        module = module.function("session", |_| Ok("fixture-run".into()));
         let count = opened.clone();
         module = module.function("diffOpen", move |_| {
             count.set(count.get() + 1);
@@ -524,6 +525,7 @@ impl DiffPane {
         git = git.async_function("changes", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
         let core = HostModule::new("yuzora:core")
             .function("t", |a| Ok(a.string(0)?.into()))
+            .function("session", |_| Ok("fixture-run".into()))
             .function("tokens", |_| Ok(to_host(&json!({"diff": {"added": "#86d17a", "removed": "#f08a8a", "added_bg": "#103010", "removed_bg": "#301010"}}))));
         let calls = notes.clone();
         let fixture_module = HostModule::new("fixture").function("note", move |a| {
@@ -950,7 +952,7 @@ fn yuzora_diff_unified_has_no_divider_and_picks_by_its_numbers(cx: &mut TestAppC
     pane.drag(700., 100.);
     pane.release(700., 100.);
     pane.press(600., 100., 2);
-    assert!(shared.borrow().is_empty(), "nothing to drag or reset: {:?}", shared.borrow());
+    assert!(!shared.borrow().contains_key("yuzora.git.diff.split"), "nothing to drag or reset: {:?}", shared.borrow());
     pane.close();
 }
 

@@ -9,9 +9,61 @@
 // register handlers.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, InputState, Input } from "gpui-base";
-import { props, shared, setShared, panes, run, theme, settings } from "herdr";
-import { t, tokens } from "yuzora:core";
+import { spaces, panes, focused, props, shared, setShared, run, theme, settings } from "herdr";
+import { t, tokens, session } from "yuzora:core";
 import { open, status, changed, rebaseTodo, rebaseInteractive, rewordInMemory, sequencer } from "yuzora:git";
+
+// Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
+// the space of the pane it is given, so a pane is only looked for among the tabs of the shown
+// space. The functions down to the end of this block are the same in every Git mod that has
+// them (a mod cannot import another mod's files): scripts/yuzora-git-pane-reuse.test.ts keeps
+// them equal.
+function shownSpace() {
+  return spaces().find((s) => s.active) ?? null;
+}
+
+function findPane(mod, space) {
+  const tabs = new Set((space?.tabs ?? []).map((x) => x.id));
+  return panes().find((p) => p.mod === mod && tabs.has(p.tab)) ?? null;
+}
+
+// A diff, merge or rebase pane is asked in shared `<key>.<space id>`, so a space's pane keeps what
+// its space asked for while another space asks for its own.
+function requestKey(key, space) {
+  return `${key}.${space}`;
+}
+
+// shared is kept in a file across runs, and a request to the plain `<key>` is an order given during
+// one run. The first read of a run drops what an earlier run left there (beta.4 wrote every request
+// to it), once for the three kinds, so no pane is shown it. One written after that is followed.
+function retirePlain() {
+  const run = session();
+  if (shared("yuzora.git.run") === run) return;
+  setShared("yuzora.git.run", run);
+  for (const key of ["yuzora.git.diff", "yuzora.git.merge", "yuzora.git.rebase"]) if (shared(key) != null) setShared(key, null);
+}
+
+// What the shown space's pane is asked: its space's request, or the plain `<key>`, which names no
+// space (an agent's, written during this run) and is for every pane. The newer one wins.
+function requested(key) {
+  retirePlain();
+  const space = focused()?.space, mine = space ? shared(requestKey(key, space)) : null, any = shared(key);
+  return (mine?.at ?? 0) >= (any?.at ?? 0) ? mine ?? any : any;
+}
+
+// Merge and rebase: the shown space's pane is asked in its space's request and focused, else a tab
+// of its own gets the request as its props.
+function openRequested(key, mod, name, fields) {
+  const space = shownSpace();
+  if (!space) return;
+  const spec = { ...fields, at: Date.now() };
+  const pane = findPane(mod, space);
+  if (pane) {
+    setShared(requestKey(key, space.id), spec);
+    run("pane.focus", { pane: pane.pane });
+  } else run("tab.new", { name, space: space.id, mod, props: spec });
+}
+// ---- end of the shared pane helpers ----
 
 const KEY = "yuzora.git.rebase";
 const ROW = 30;
@@ -33,8 +85,10 @@ export default class GitRebase extends View {
     this.repo = null; this.st = null; this.error = null; this.note = null; this.result = null; this.busy = null;
     this.base = ""; this.todo = null; this.rows = []; this.loading = false; this.todoError = null; this.headOid = null; this.opKind = "";
     this.sel = 0; this.drag = null; this.dropAt = null; this.updateRefs = false; this.confirmAbort = false;
-    const p = props(), spec = p?.cwd ? p : shared(KEY);
-    if (spec?.cwd) this.begin(spec, cx);
+    // A request is read when the pane is drawn: init runs before the app publishes the space the pane
+    // is first shown in, so it would read the space shown before.
+    const p = props();
+    if (p?.cwd) this.begin(p, cx);
   }
 
   async close() {
@@ -143,11 +197,7 @@ export default class GitRebase extends View {
   openMerge(path) {
     const repo = this.repo;
     if (!repo) return;
-    const spec = { cwd: repo.root, on: repo.machine, path: path ?? null, at: Date.now() };
-    setShared("yuzora.git.merge", spec);
-    const pane = panes().find((p) => p.mod === "yuzora-git-merge");
-    if (pane) run("pane.focus", { pane: pane.pane });
-    else run("tab.new", { name: t("merge.tab"), mod: "yuzora-git-merge", props: spec });
+    openRequested("yuzora.git.merge", "yuzora-git-merge", t("merge.tab"), { cwd: repo.root, on: repo.machine, path: path ?? null });
   }
 
   // ---- the todo list ----
@@ -485,9 +535,9 @@ export default class GitRebase extends View {
   }
 
   render(cx) {
-    // The sidebar or the log opened this pane again (maybe on another base or repo).
-    const sh = shared(KEY);
-    if (sh?.cwd && (sh.at ?? 0) > this.at) this.begin(sh, cx);
+    // The sidebar or the log opened this pane again (maybe on another base or repo), or it has none yet.
+    const sh = requested(KEY);
+    if (sh?.cwd && (!this.spec || (sh.at ?? 0) > this.at)) this.begin(sh, cx);
     const th = theme(), radius = (tokens().metrics ?? {}).pane_radius ?? 6;
     const frame = (...kids) => v_flex().id("rebase").size_full().min_h(0).rounded(radius).overflow_hidden().bg(th.background).border_1().border_color(th.border)
       .text_color(th.foreground).text_size(12.5).track_focus(this.handle)

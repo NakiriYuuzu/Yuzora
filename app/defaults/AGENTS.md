@@ -1143,6 +1143,10 @@ with these differences.
   (tone: muted, working, blocked, done or accent).
 - The agent states' shapes are `mods/yuzora-sidebar-workspace/status/<working|blocked|done|idle|unknown>.svg`;
   tint them with `tokens().status.<state>.mark`.
+- Yuzora's own animations are short (at most 180 ms) and name a speed instead of writing milliseconds:
+  `el.transition("left", motion("fast"))` with `motion` from `yuzora:core` (`"fast"` 120 ms, `"base"` 160 ms, both
+  ease-out; `tokens().motion` lists them). They go through `transition`, which follows the system's reduce-motion
+  setting; `loop` does not, and a mod cannot read that setting, so a Yuzora mod does not use `loop`.
 <!-- yuzora:lane:L1:end -->
 
 <!-- yuzora:lane:L2:start -->
@@ -1183,6 +1187,20 @@ with these differences.
   `setShared("yuzora.git.diff.split", null)` resets it. A line wider than its
   side is cut there; a sideways swipe, or the bar under the lines when they
   need one, scrolls both sides together.
+- A diff, merge or rebase pane follows what its own space asks for, never another
+  space's, and an opener (the sidebar, the log, Annotate, the repository pane) looks
+  for the pane among the tabs of the space shown, so a space's pane is never
+  focused or changed from another space. A request is the pane's props plus `at`
+  (a time in ms), kept per space in shared `yuzora.git.diff.<space id>` (also
+  `yuzora.git.merge.<space id>`, `yuzora.git.rebase.<space id>`). A request written
+  to the plain key, `setShared("yuzora.git.diff", {cwd, path, mode, at})`, names no
+  space: the pane of every space follows it, the newer of it and its space's own.
+  A plain request is an order for this run, not state kept across runs: shared is
+  kept in a file, and the first time a pane reads in a run (any of the three kinds)
+  it drops the plain requests an earlier run left, so none is shown in a space that
+  never asked. What you write after that is followed, with or without `at`; what you
+  wrote before any of these panes drew in this run is dropped too. A request
+  to keep across restarts goes in the `<space id>` key.
 - A space can hold several repositories. The picker at the top of the Git
   sidebar follows the focused pane's repository (the default) or keeps one
   pinned for the space: `setShared("yuzora.git.repo.<space id>", {root, on})`
