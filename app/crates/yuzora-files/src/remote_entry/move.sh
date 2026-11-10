@@ -8,11 +8,13 @@ for tool in mv stat rm; do
 done
 idof() { stat -c '%d:%i' -- "$1" 2>/dev/null || stat -f '%d:%i' -- "$1" 2>/dev/null; }
 dev() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null; }
-held= heldid=
+held= heldid= heldkind= how= gnu=
 giveback() {
   if [ -n "$held" ]; then
-    if [ -n "$heldid" ]; then
-      [ "$(idof "$held")" = "$heldid" ] && rm -f -- "$held"
+    if [ -n "$heldid" ] && [ "$(idof "$held")" != "$heldid" ]; then
+      :
+    elif [ "$heldkind" = dir ]; then
+      rmdir -- "$held" 2>/dev/null
     elif [ -f "$held" ] && [ ! -L "$held" ] && [ ! -s "$held" ]; then
       rm -f -- "$held"
     fi
@@ -21,12 +23,29 @@ giveback() {
 }
 trap giveback EXIT
 trap 'echo "stopped before it was done: it may or may not have been" >&2; exit 1' HUP INT TERM
+pick() {
+  [ -z "$how" ] || return 0
+  if command -v perl >/dev/null 2>&1; then
+    how=perl
+  else
+    case $(mv --help 2>&1) in *-T*) how=mv ;; esac
+  fi
+  [ -n "$how" ] || { echo 'refused rename'; exit 0; }
+}
+rn() {
+  if [ "$how" = perl ]; then
+    perl -e 'rename($ARGV[0], $ARGV[1]) or do { print STDERR "$ARGV[0]: $!\n"; exit 1 }' "$1" "$2"
+  else
+    mv -fT -- "$1" "$2"
+  fi
+}
 there "$from" || { echo gone; exit 0; }
 if there "$to"; then
   if [ "$fold" = 1 ]; then
     a=$(idof "$from") b=$(idof "$to")
     if [ -n "$a" ] && [ "$a" = "$b" ]; then
-      if msg=$(mv -- "$from" "$to" 2>&1); then echo done; exit 0; fi
+      pick
+      if msg=$(rn "$from" "$to" 2>&1); then echo done; exit 0; fi
       fail "$msg"
     fi
   fi
@@ -38,19 +57,34 @@ blame "$to"
 a=$(dev "$from") b=$(dev "$d")
 if [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ]; then echo 'refused device'; exit 0; fi
 before=$(idof "$from")
-if [ -d "$from" ] && [ ! -L "$from" ]; then
-  if mv --version >/dev/null 2>&1; then flag=-nT; else flag=-n; fi
-  msg=$(mv $flag -- "$from" "$to" 2>&1)
+case $(mv --version 2>&1) in *'GNU coreutils'*) gnu=1 ;; esac
+if [ -n "$gnu" ]; then
+  msg=$(mv -nT -- "$from" "$to" 2>&1)
+  rc=$?
 else
-  if msg=$( (set -C; : > "$to") 2>&1 ); then held=$to; else blame "$to"; fail "$msg"; fi
+  pick
+  if [ -d "$from" ] && [ ! -L "$from" ]; then
+    for tool in mkdir rmdir; do
+      command -v "$tool" >/dev/null 2>&1 || { echo "refused tool $tool"; exit 0; }
+    done
+    if msg=$(mkdir -- "$to" 2>&1); then held=$to heldkind=dir; else blame "$to"; fail "$msg"; fi
+  else
+    if msg=$( (set -C; : > "$to") 2>&1 ); then held=$to; else blame "$to"; fail "$msg"; fi
+  fi
   heldid=$(idof "$to")
-  msg=$(mv -f -- "$from" "$to" 2>&1)
+  msg=$(rn "$from" "$to" 2>&1)
+  rc=$?
 fi
 if there "$from"; then
   giveback
   blame "$to"
   fail "$msg"
 fi
+if [ "$rc" -ne 0 ]; then
+  giveback
+  echo gone
+  exit 0
+fi
 held=
 if [ -z "$before" ] || [ "$(idof "$to")" = "$before" ]; then echo done; exit 0; fi
-fail "$from was moved into $to, a folder that took its name meanwhile"
+fail "$from was renamed, but what is at $to is not the entry that was at $from: one of them was replaced meanwhile"
