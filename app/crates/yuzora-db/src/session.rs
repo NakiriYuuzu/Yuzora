@@ -14,6 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use futures_util::future::{Either, select};
+
 use serde::Serialize;
 
 use crate::config::{self, ConnectionConfig};
@@ -82,6 +84,92 @@ type Key = (String, Option<String>, String);
 
 struct Live {
     conn: Arc<tokio::sync::Mutex<Option<Conn>>>,
+    turn: Mutex<Turn>,
+}
+
+/// Who wants a connection while a count has borrowed it. A person's work
+/// (a save, a query, a read) goes before a count, which is only there to make
+/// the total known: it steps aside and runs again once the work is done.
+#[derive(Default)]
+struct Turn {
+    /// Work asking for the connection, or about to hold it.
+    waiting: usize,
+    /// The count running on the connection now.
+    borrower: Option<Borrower>,
+}
+
+struct Borrower {
+    stand_down: StandDown,
+    stepped_aside: Arc<AtomicBool>,
+}
+
+/// Asks the count that borrowed a connection to give it up.
+#[derive(Clone)]
+struct StandDown(Arc<tokio::sync::watch::Sender<bool>>);
+
+impl StandDown {
+    fn new() -> Self {
+        Self(Arc::new(tokio::sync::watch::channel(false).0))
+    }
+
+    fn call(&self) {
+        self.0.send_replace(true);
+    }
+
+    async fn called(&self) {
+        let _ = self.0.subscribe().wait_for(|called| *called).await;
+    }
+}
+
+impl Live {
+    /// Work asks for the connection: a count on it steps aside now, not when it is done.
+    fn want(self: &Arc<Self>) -> Wanting {
+        let mut turn = self.turn.lock().unwrap_or_else(|e| e.into_inner());
+        turn.waiting += 1;
+        if let Some(borrower) = &turn.borrower {
+            borrower.stepped_aside.store(true, Ordering::SeqCst);
+            borrower.stand_down.call();
+        }
+        Wanting(self.clone())
+    }
+
+    /// A count that holds the connection takes its turn, unless work is
+    /// already asking for it (`None`: let it go).
+    fn borrow(self: &Arc<Self>, stand_down: StandDown) -> Option<Borrowing> {
+        let mut turn = self.turn.lock().unwrap_or_else(|e| e.into_inner());
+        if turn.waiting > 0 {
+            return None;
+        }
+        let stepped_aside = Arc::new(AtomicBool::new(false));
+        turn.borrower = Some(Borrower { stand_down, stepped_aside: stepped_aside.clone() });
+        Some(Borrowing { live: self.clone(), stepped_aside })
+    }
+}
+
+/// Work waiting for a connection, until it holds it.
+struct Wanting(Arc<Live>);
+
+impl Drop for Wanting {
+    fn drop(&mut self) {
+        self.0.turn.lock().unwrap_or_else(|e| e.into_inner()).waiting -= 1;
+    }
+}
+
+struct Borrowing {
+    live: Arc<Live>,
+    stepped_aside: Arc<AtomicBool>,
+}
+
+impl Borrowing {
+    fn stepped_aside(&self) -> bool {
+        self.stepped_aside.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for Borrowing {
+    fn drop(&mut self) {
+        self.live.turn.lock().unwrap_or_else(|e| e.into_inner()).borrower = None;
+    }
 }
 
 static POOL: LazyLock<Mutex<HashMap<Key, Arc<Live>>>> = LazyLock::new(Default::default);
@@ -98,7 +186,7 @@ fn live(key: &Key) -> Arc<Live> {
         pool.retain(|(c, d, o), _| !(o == META && c == &key.0 && d != &key.1));
     }
     pool.entry(key.clone())
-        .or_insert_with(|| Arc::new(Live { conn: Default::default() }))
+        .or_insert_with(|| Arc::new(Live { conn: Default::default(), turn: Default::default() }))
         .clone()
 }
 
@@ -132,6 +220,12 @@ impl Lease {
     pub fn conn(&mut self) -> &mut Conn {
         self.guard.as_mut().expect("a lease always holds a connection")
     }
+
+    /// Ends the connection instead of giving it to the next user: a stop sent
+    /// to it may still be on its way, and would find that user's statement.
+    fn retire(&mut self) {
+        *self.guard = None;
+    }
 }
 
 impl Drop for Lease {
@@ -143,17 +237,26 @@ impl Drop for Lease {
 }
 
 /// The connection for (`connection`, `database`, `owner`), opened when needed.
+/// A count that borrowed it steps aside for the caller.
 pub async fn lease(connection: &str, database: Option<&str>, owner: &str) -> DbResult<Lease> {
-    open_lease(connection, database, owner, true).await
+    open_lease(connection, database, owner, Use::Work).await
 }
 
-/// [`lease`]. `report`: whether opening the connection is what the sidebar
-/// shows of the saved connection. A connection opened for a side job (a
-/// count) that can't be is that job's loss, not the connection's.
-async fn open_lease(connection: &str, database: Option<&str>, owner: &str, report: bool) -> DbResult<Lease> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Use {
+    /// A person's work. Opening its connection is what the sidebar shows of the saved connection.
+    Work,
+    /// A count. A connection opened for it that can't be is its loss, not the connection's.
+    Count,
+}
+
+async fn open_lease(connection: &str, database: Option<&str>, owner: &str, usage: Use) -> DbResult<Lease> {
+    let report = usage == Use::Work;
     let key: Key = (connection.to_owned(), database.map(str::to_owned), owner.to_owned());
     let entry = live(&key);
+    let wanting = report.then(|| entry.want());
     let mut guard = entry.conn.clone().lock_owned().await;
+    drop(wanting);
     if guard.as_ref().is_some_and(Conn::is_closed) {
         *guard = None;
     }
@@ -262,9 +365,9 @@ struct Job {
     error: Option<String>,
     elapsed_ms: u64,
     results: Vec<ResultId>,
-    /// Stops the statement the job is running (see [`serving`]); `None` while
-    /// the job waits or does something else.
-    serving: Option<Canceller>,
+    /// Stops what the job is running (see [`serving`]); `None` while the job
+    /// waits or does something else.
+    serving: Option<Stop>,
     version: u64,
     watchers: Vec<async_channel::Sender<()>>,
 }
@@ -299,15 +402,26 @@ fn new_job(owner: &str) -> JobId {
     id
 }
 
-/// While the guard lives, `job`'s Stop reaches the statement `canceller`
-/// belongs to: the one the job runs on the connection it holds. Take it once
-/// that lease is held and let it go before the lease is: a pane's connection
-/// also carries its write-back, which only its own Stop may end.
+/// How a job's Stop ends what it is running.
+#[derive(Clone)]
+enum Stop {
+    /// The statement the job runs on the connection it holds.
+    Statement(Canceller),
+    /// A count on a connection that is the pane's: the count ends its own
+    /// statement and gives the connection back (see [`count_between`]), because
+    /// the stop is sent from nowhere else than the task that holds the lease.
+    Count(StandDown),
+}
+
+/// While the guard lives, `job`'s Stop reaches what `stop` belongs to: the
+/// statement the job runs on the connection it holds. Take it once that lease
+/// is held and let it go before the lease is: a pane's connection also carries
+/// its write-back, which only its own Stop may end.
 struct Serving(JobId);
 
-fn serving(job: JobId, canceller: Canceller) -> Serving {
+fn serving(job: JobId, stop: Stop) -> Serving {
     if let Some(j) = jobs().1.get_mut(&job) {
-        j.serving = Some(canceller);
+        j.serving = Some(stop);
     }
     Serving(job)
 }
@@ -392,8 +506,10 @@ pub fn cancel(id: JobId) {
         job.serving.clone()
     };
     update_job(id, |_| {});
-    if let Some(c) = target {
-        runtime::spawn(async move { c.cancel().await });
+    match target {
+        Some(Stop::Statement(c)) => runtime::spawn(async move { c.cancel().await }),
+        Some(Stop::Count(count)) => count.call(),
+        None => {}
     }
 }
 
@@ -567,7 +683,7 @@ pub fn start_query(connection: &str, database: Option<&str>, owner: &str, sql: &
         let started = Instant::now();
         let outcome = match lease(&connection, database.as_deref(), &owner).await {
             Ok(mut l) => {
-                let _serving = serving(id, l.conn().canceller());
+                let _serving = serving(id, Stop::Statement(l.conn().canceller()));
                 l.conn().execute(&sql, &mut sink).await
             }
             Err(e) => Err(e),
@@ -614,7 +730,7 @@ pub fn open_table(
         let order = order.as_ref().map(|(c, d)| (c.as_str(), *d));
         let sql = engine::select_sql(engine, home.as_deref(), &table, order, limit);
         let mut sink = JobSink::for_table(id, &owner, &sql);
-        let reading = serving(id, l.conn().canceller());
+        let reading = serving(id, Stop::Statement(l.conn().canceller()));
         let outcome = l.conn().execute(&sql, &mut sink).await;
         // The pane's connection is free from here: the count and any write-back
         // do not wait for each other, and the job's Stop is no longer for it.
@@ -683,8 +799,8 @@ pub fn open_table(
 /// `count(*)` of `table`. It has a connection of its own (leased under
 /// [`count_owner`], closed again right after), so a slow count holds nothing
 /// up. Where one more connection is not to be had (a limit on the login, a
-/// network blip) the pane's own does it, once it is free: the total is worth
-/// that, and the connection is not failed for it.
+/// network blip) the pane's own does it, when work has no use for it: the
+/// total is worth that, and the connection is not failed for it.
 async fn count_rows(
     connection: &str,
     database: Option<&str>,
@@ -694,22 +810,90 @@ async fn count_rows(
     job: JobId,
 ) -> Option<u64> {
     let counting = count_owner(owner);
-    match open_lease(connection, database, &counting, false).await {
+    match open_lease(connection, database, &counting, Use::Count).await {
         Ok(l) => {
-            let counted = count_on(l, engine, table, job).await;
+            let counted = count_on(l, engine, table, job, None).await;
             pool().remove(&(connection.to_owned(), database.map(str::to_owned), counting));
             counted
         }
-        Err(_) => count_on(lease(connection, database, owner).await.ok()?, engine, table, job).await,
+        Err(_) => count_between(connection, database, owner, engine, table, job).await,
     }
 }
 
+/// Counts on the pane's own connection, in the time work leaves it. A save, a
+/// query or a read that asks for the connection meanwhile has it at once: the
+/// count is stopped (the person is waiting, the count only informs) and begins
+/// again after them.
+async fn count_between(
+    connection: &str,
+    database: Option<&str>,
+    owner: &str,
+    engine: config::Engine,
+    table: &ObjectRef,
+    job: JobId,
+) -> Option<u64> {
+    let key: Key = (connection.to_owned(), database.map(str::to_owned), owner.to_owned());
+    loop {
+        if job_cancelled(job) {
+            return None;
+        }
+        // Behind whoever is already waiting for it.
+        let l = open_lease(connection, database, owner, Use::Count).await.ok()?;
+        let stand_down = StandDown::new();
+        let Some(borrowing) = live(&key).borrow(stand_down.clone()) else {
+            // Work asked while this waited: it has the connection next.
+            drop(l);
+            tokio::task::yield_now().await;
+            continue;
+        };
+        let counted = count_on(l, engine, table, job, Some(stand_down)).await;
+        let stepped_aside = borrowing.stepped_aside();
+        drop(borrowing);
+        if counted.is_some() || !stepped_aside {
+            return counted;
+        }
+    }
+}
+
+/// How long a count that was told to step aside has to end before it is dropped.
+const STEP_ASIDE: Duration = Duration::from_secs(3);
+
 /// Counts on the connection `l` holds, which the job's Stop reaches meanwhile.
-async fn count_on(mut l: Lease, engine: config::Engine, table: &ObjectRef, job: JobId) -> Option<u64> {
-    let _serving = serving(job, l.conn().canceller());
+/// `borrowed`: the connection is the pane's, and `stand_down` is how the count
+/// is asked to give it up.
+async fn count_on(mut l: Lease, engine: config::Engine, table: &ObjectRef, job: JobId, borrowed: Option<StandDown>) -> Option<u64> {
+    let canceller = l.conn().canceller();
+    let _serving = serving(job, borrowed.clone().map_or(Stop::Statement(canceller.clone()), Stop::Count));
     let home = l.conn().database().map(str::to_owned);
     let mut one = FirstCell { job, cell: None };
-    l.conn().execute(&engine::count_sql(engine, home.as_deref(), table), &mut one).await.ok()?;
+    let sql = engine::count_sql(engine, home.as_deref(), table);
+    let (mut asked, mut gave_up) = (false, false);
+    let outcome = {
+        let counting = Box::pin(l.conn().execute(&sql, &mut one));
+        match borrowed {
+            None => counting.await,
+            Some(stand_down) => match select(counting, Box::pin(stand_down.called())).await {
+                Either::Left((outcome, _)) => outcome,
+                Either::Right((_, counting)) => {
+                    asked = true;
+                    canceller.cancel().await;
+                    match tokio::time::timeout(STEP_ASIDE, counting).await {
+                        Ok(outcome) => outcome,
+                        Err(_) => {
+                            gave_up = true;
+                            Err(DbError::Cancelled)
+                        }
+                    }
+                }
+            },
+        }
+    };
+    // A stop that did not reach the count is still on its way to the server,
+    // and would find whatever the connection runs next.
+    if gave_up || (asked && !l.conn().cancel_landed()) {
+        l.retire();
+    }
+    outcome.ok()?;
     one.cell?.display().trim().parse().ok()
 }
 
@@ -845,7 +1029,7 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
             stop_work(work, async {
                 let canceller = engine_stop.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(canceller) = canceller {
-                    canceller.cancel().await;
+                    canceller.abandon().await;
                 }
             })
             .await;
@@ -871,6 +1055,9 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
 /// Ends work the person stopped: `signal` tells the engine while `work` still
 /// holds the connection it runs on. Let go of first, whatever queued for that
 /// connection would start on it, and the stop would land on that instead.
+/// That is not all of it: the request can still be on its way when the signal
+/// returns, which is why the signal is [`Canceller::abandon`] and the
+/// connection does not outlive it.
 async fn stop_work<W>(work: W, signal: impl std::future::Future<Output = ()>) {
     signal.await;
     drop(work);

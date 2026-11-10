@@ -16,7 +16,7 @@
     "writing": "A write-back is already running",
     "result_gone": "This result was replaced by a newer read: refresh the table to edit it again",
     "stopped": "Write-back stopped; nothing was written",
-    "stopped_maybe": "Write-back stopped; the database may already hold some of the changes: refresh the table to check",
+    "stopped_maybe": "Write-back stopped; the database may already have saved the changes: refresh the table to check",
     "failed": "The write-back failed",
     "connection_changed": "The connection's settings changed after this table was read: refresh the table, then edit again",
     "open_transaction": "The SQL tab left a transaction open on this connection: COMMIT or ROLLBACK it there, then write back",

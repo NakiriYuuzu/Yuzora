@@ -48,12 +48,27 @@ pub struct PgCanceller {
     /// A stop pressed by the person, as opposed to the sink saying enough:
     /// the server's "canceled" error then reads as [`DbError::Cancelled`].
     cancelled: Arc<AtomicBool>,
+    /// A stop reached the statement it was for: the server answered it with
+    /// "canceled". Until it does, the request is still on its way.
+    landed: Arc<AtomicBool>,
+    /// The connection is not to be used again (see [`PgCanceller::abandon`]).
+    retired: Arc<AtomicBool>,
 }
 
 impl PgCanceller {
     pub async fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
         self.signal().await;
+    }
+
+    /// [`cancel`](Self::cancel) for a statement whose end nobody will see. A
+    /// cancel is a request to the server that finds whatever the connection
+    /// runs when it gets there: if the statement is already over it can land
+    /// on the next one, or on the ROLLBACK that ends the write-back. Which of
+    /// them is not known, so the connection is let go of afterwards.
+    pub async fn abandon(&self) {
+        self.retired.store(true, Ordering::SeqCst);
+        self.cancel().await;
     }
 
     async fn signal(&self) {
@@ -107,7 +122,13 @@ impl PgConn {
         let row = client.query_one("SHOW server_version", &[]).await.map_err(|e| DbError::Connect(describe(&e)))?;
         let full: String = row.get(0);
         let version = format!("PostgreSQL {}", full.split_whitespace().next().unwrap_or(&full));
-        let canceller = PgCanceller { token: client.cancel_token(), tls, cancelled: Arc::new(AtomicBool::new(false)) };
+        let canceller = PgCanceller {
+            token: client.cancel_token(),
+            tls,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            landed: Arc::new(AtomicBool::new(false)),
+            retired: Arc::new(AtomicBool::new(false)),
+        };
         Ok(Self { client, version, canceller, backslash: false })
     }
 
@@ -116,7 +137,12 @@ impl PgConn {
     }
 
     pub fn is_closed(&self) -> bool {
-        self.client.is_closed()
+        self.client.is_closed() || self.canceller.retired.load(Ordering::SeqCst)
+    }
+
+    /// Whether the last stop was answered by the statement it was for.
+    pub fn cancel_landed(&self) -> bool {
+        self.canceller.landed.load(Ordering::SeqCst)
     }
 
     pub fn canceller(&self) -> PgCanceller {
@@ -313,6 +339,7 @@ impl PgConn {
 
     pub async fn execute(&mut self, sql: &str, sink: &mut dyn RowSink) -> DbResult<()> {
         self.canceller.cancelled.store(false, Ordering::SeqCst);
+        self.canceller.landed.store(false, Ordering::SeqCst);
         // Whether `\` escapes in an ordinary string is the session's setting:
         // asked when the script holds one, and again after a statement that
         // may change it, the rest then split anew.
@@ -441,6 +468,7 @@ impl PgConn {
     fn failure(&self, e: &tokio_postgres::Error, earlier: Option<&tokio_postgres::Error>) -> DbError {
         match e.code() {
             Some(code) if *code == SqlState::QUERY_CANCELED && self.canceller.cancelled.load(Ordering::SeqCst) => {
+                self.canceller.landed.store(true, Ordering::SeqCst);
                 DbError::Cancelled
             }
             Some(code) if *code == SqlState::IN_FAILED_SQL_TRANSACTION => query_failure(earlier.unwrap_or(e)),
@@ -450,6 +478,7 @@ impl PgConn {
 
     pub async fn apply_edits(&mut self, table: &ObjectRef, edits: &[RowEdit]) -> DbResult<u64> {
         self.canceller.cancelled.store(false, Ordering::SeqCst);
+        self.canceller.landed.store(false, Ordering::SeqCst);
         // Inside a transaction the SQL tab left open, BEGIN is ignored and
         // COMMIT would commit the tab's own work too. Outside one, a simple
         // query is its own transaction: it started with the statement.

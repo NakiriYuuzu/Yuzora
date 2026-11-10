@@ -90,6 +90,18 @@ impl Canceller {
             Canceller::Sqlite(c) => c.cancel(),
         }
     }
+
+    /// [`cancel`](Self::cancel) for work whose end nobody will see (a write-back
+    /// that was dropped): PostgreSQL's connection is let go of afterwards, since
+    /// the request may not have landed yet. SQL Server's socket is already gone,
+    /// and a SQLite interrupt cannot outlive the statement it was made for.
+    pub async fn abandon(&self) {
+        match self {
+            Canceller::Postgres(c) => c.abandon().await,
+            Canceller::Mssql(c) => c.cancel().await,
+            Canceller::Sqlite(c) => c.cancel(),
+        }
+    }
 }
 
 macro_rules! each {
@@ -125,8 +137,9 @@ impl Conn {
         each!(self, c => c.server_version())
     }
 
-    /// The connection is gone (server closed it, or a cancel had to end it):
-    /// the pool opens a new one next time.
+    /// The connection is gone (the server closed it, a cancel had to end it, or
+    /// it was told to let go after a stop it could not see the end of): the pool
+    /// opens a new one next time.
     pub fn is_closed(&self) -> bool {
         each!(self, c => c.is_closed())
     }
@@ -137,6 +150,18 @@ impl Conn {
         match self {
             Conn::Mssql(c) => Some(c.database()),
             Conn::Postgres(_) | Conn::Sqlite(_) => None,
+        }
+    }
+
+    /// Whether the stop last sent to this connection reached its statement. A
+    /// stop that did not is a request still on its way to the server (PostgreSQL),
+    /// which may find a later statement instead: the connection is not safe to
+    /// give to other work. SQL Server's stop is the socket itself, SQLite's an
+    /// interrupt that only acts on a statement running when it is made.
+    pub fn cancel_landed(&self) -> bool {
+        match self {
+            Conn::Postgres(c) => c.cancel_landed(),
+            Conn::Mssql(_) | Conn::Sqlite(_) => true,
         }
     }
 
