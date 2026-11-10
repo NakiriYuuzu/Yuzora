@@ -158,11 +158,11 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 - macOS 固定下載檔名為 `Yuzora-macos-aarch64.dmg`；更新發布流程時須同步核對官網、README、`docs/operations.md` 與 updater metadata。
 - 遠端 Host 保留 `macos-x86_64` 與 `macos-aarch64`；App 停止 Intel 支援不代表移除既有 Intel macOS 遠端工作區。
 - 已發布的舊版 Intel／universal artifacts 保持不可變，不重寫舊版 release 或 tag。
-- macOS 發布不使用 Apple Developer ID 簽章／公證；Stable 仍須 Tauri updater 簽章。正式 build 不可使用會一併停用 updater 簽章的 `--no-sign`；README 與 release notes 須說明 Gatekeeper 提示。
+- macOS 發布不使用 Apple Developer ID 簽章／公證；Stable 仍須用 release 金鑰簽章（Tauri 版簽 updater artifacts，`app/` 版簽 `yuzora-update.json`）。Tauri 版正式 build 不可使用會一併停用 updater 簽章的 `--no-sign`；README 與 release notes 須說明 Gatekeeper 提示。
 - beta.2（`app/`）起：
   - Windows 改用 per-user NSIS 安裝程式，固定下載檔名 `Yuzora-windows-x64-setup.exe`，不再出 MSI；Linux 另有 x86_64／aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`（沒有固定別名）。固定下載別名只上傳到 Stable release，Beta 只有版本化檔名（`docs/beta2/release.md` §6）。
-  - Stable 與 Beta 的更新 manifest（`yuzora-update.json`）都必須以 release 金鑰（minisign，key id `742456BCCDC22A24`，與 Tauri updater 同一把）簽章，App 驗不過就不更新；帶 beta.1 升級的 `latest.json` 照樣要 Tauri updater 簽章（beta.2 依使用者 2026-11-03 的決定不附 `latest.json`，舊版 App 內更新要等 0.1.0 Stable）。
-  - PR 與打包 workflow（`app-package.yml`）不讀任何 signing secret，簽章只在發布步驟；私鑰永遠不進 repo。
+  - Stable 與 Beta 的更新 manifest（`yuzora-update.json`）都必須以 release 金鑰（minisign，key id `742456BCCDC22A24`，與 Tauri updater 同一把）簽章，App 驗不過就不更新；帶 beta.1 升級的 `latest.json` 照樣要 Tauri updater 簽章（beta.2 至 beta.4 與 0.1.0 Stable 都不附 `latest.json`，0.0.x 與 beta.1 的使用者手動下載）。
+  - PR 與打包 workflow（`app-package.yml`）不讀任何 signing secret，簽章只在 `app-release.yml` 由使用者明確 dispatch 的 `sign` job；私鑰永遠不進 repo。
   - macOS 只做 ad-hoc 簽章（`codesign --sign -`），Windows 沒有 Authenticode；README 與 release notes 須說明 Gatekeeper 與 SmartScreen 提示。
 
 ## UI components — shadcn first（Tauri／React app）
