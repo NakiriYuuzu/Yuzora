@@ -1210,7 +1210,7 @@ with these differences.
   selection, when the button is let go, when a pointer move says the button is
   up (an app-wide shortcut pressed during the drag keeps the release from
   reaching the pane), when the pointer leaves the pane, when the pane loses
-  the keyboard, or at a key that reaches the pane (Cmd+C copies what is
+  the keyboard it had when the drag began, or at a key that reaches the pane (Cmd+C copies what is
   selected so far). A pointer left still at the edge after a release the pane
   never saw goes on scrolling the list until it moves or the pane loses the
   keyboard. The press that begins a selection decides the side: side by side,
@@ -1220,8 +1220,8 @@ with these differences.
   and selects nothing), and selects the row where it cannot; a fold opens the
   whole file when clicked and starts no selection; the divider and the thumb
   of the bar under the lines drag themselves, and a press on that bar's track
-  starts nothing (the bar under unified's lines is the window's own, and a
-  press on it is a press on the row behind it). Cmd+C (Ctrl+C on Windows and Linux) copies
+  starts nothing (the bar under unified's lines is the window's own, and what a
+  press on it does was not checked in the app). Cmd+C (Ctrl+C on Windows and Linux) copies
   the selected rows' lines as the file has them (tabs, trailing spaces and
   wide characters kept; no line numbers, no `+` or `-`) and says so in a
   toast; with nothing selected the key is left alone. Right-click a row (it
