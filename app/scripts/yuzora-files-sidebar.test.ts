@@ -786,6 +786,32 @@ for (const mode of ["name", "content"] as const) {
   });
 }
 
+for (const mode of ["name", "content"] as const) {
+  test(`a click on a ${mode} hit drawn before the search ran again under the repo's top opens nothing, not the file of that name under the new root`, async () => {
+    const s = sidebar(two(SUB, "/b"));
+    await flush();
+    await s.answer(s.pending("list")[0], listing("README.md"));
+    s.world.query = "x";
+    s.view.searching = true;
+    s.view.searchMode = mode;
+    const kind = mode === "name" ? "find" : "grep";
+    const found = () => (mode === "name" ? foundNames("README.md") : foundIn("README.md"));
+    s.view.search(s.cx);
+    fireSearch(s);
+    await flush();
+    await s.answer(s.pending(kind)[0], found());
+    const drawn = s.view.results[0].key;
+    await s.answer(s.pending("git")[0], repo("/repo"));
+    await s.answer(s.pending("list").find(c => c.args[0] === "/repo")!, listing("README.md", "sub/"));
+    fireSearch(s);
+    await flush();
+    await s.answer(s.pending(kind)[0], found());
+    expect(s.view.results).toHaveLength(1);
+    s.view.openResult(drawn);
+    expect(s.world.opened).toEqual([]);
+  });
+}
+
 test("an open search runs again under the repo's top when a read of the timer's moves the root, though the folder is watched", async () => {
   const s = sidebar(two(SUB, "/b"));
   await flush();
