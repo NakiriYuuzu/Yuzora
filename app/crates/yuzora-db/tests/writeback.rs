@@ -20,6 +20,7 @@ use yuzora_db::session::{self, JobId, JobState};
 use yuzora_db::{results, runtime};
 
 mod common;
+use common::enabled;
 
 /// The app home and the row cap are process-wide; every test starts here.
 static HOME: LazyLock<PathBuf> = LazyLock::new(|| {
@@ -39,10 +40,6 @@ static HOME: LazyLock<PathBuf> = LazyLock::new(|| {
 
 /// Rows a table read keeps (`db.maxRows`); the tables that must hit it hold far more.
 const CAP: usize = 1000;
-
-fn enabled(engine: &str) -> bool {
-    std::env::var("YUZORA_DATABASE_TEST_ENGINES").is_ok_and(|v| v.split(',').any(|e| e.trim().eq_ignore_ascii_case(engine)))
-}
 
 /// Ends the test early, passing, when `engine` is not selected.
 macro_rules! only_with {
