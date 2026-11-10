@@ -4426,8 +4426,9 @@ impl AppWindow {
         let core = crate::update::core();
         let core = core.ready.filter(|_| !core.updating);
         match (crate::update::ready(), core) {
-            (Some(a), Some(c)) => Some(format!("Herdr {a} and herdr-core {c} are ready")),
-            (Some(a), None) => Some(format!("Herdr {a} is ready")),
+            // yuzora(win-update): the app a person installed is called Yuzora; the pill said Herdr.
+            (Some(a), Some(c)) => Some(format!("Yuzora {a} and herdr-core {c} are ready")),
+            (Some(a), None) => Some(format!("Yuzora {a} is ready")),
             (None, Some(c)) => Some(format!("herdr-core {c} is ready")),
             (None, None) => None,
         }
