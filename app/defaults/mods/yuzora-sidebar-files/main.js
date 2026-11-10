@@ -100,9 +100,9 @@ export default class FilesSidebar extends View {
     return this.here === here;
   }
 
-  // `timed`: the 10 s timer's, which a watched folder doesn't need for search.
-  reload(cx, timed = false) {
-    const here = this.here;
+  // `timed`: the 10 s timer's, which a watched folder doesn't need for search. `here`: the folder to read again,
+  // which is the one shown unless a change made in another one has just ended.
+  reload(cx, timed = false, here = this.here) {
     if (!here?.cwd) return;
     cx.spawn(async cx => {
       const read = await this.store.reload(here, () => { this.version++; cx.notify(); }, { timed });
@@ -227,7 +227,8 @@ export default class FilesSidebar extends View {
     const req = shared(REQUEST);
     if (req?.seq && req.seq > this.lastRequest) {
       this.lastRequest = req.seq;
-      if (this.here?.root && this.store.owns(this.here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
+      const here = this.here;
+      if (here?.root && (req.on ?? null) === (here.on ?? null) && this.store.owns(here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
     }
     const refresh = shared(REFRESH) ?? 0;
     if (refresh > this.lastRefresh) { this.lastRefresh = refresh; this.reload(cx); }
@@ -235,10 +236,11 @@ export default class FilesSidebar extends View {
 
   // New file / folder / rename: one bar above the tree.
 
+  // The change is for the machine and the Space the name was asked in, whatever the tree shows by the time Enter is heard.
   startEdit(kind, path, dir, cx) {
-    if (this.here?.on) { notify({ title: t("remote.readonly"), level: "info" }); return; }
+    const here = this.here;
     const value = kind === "rename" ? base(path) : "";
-    this.edit = { kind, path, dir: dir ?? (path ? parent(path) : this.here.root) };
+    this.edit = { kind, path, dir: dir ?? (path ? parent(path) : here.root), here, loc: this.loc, on: here.on ?? null };
     this.editInput.set_value(value);
     if (value) {
       const dot = value.lastIndexOf(".");
@@ -253,17 +255,17 @@ export default class FilesSidebar extends View {
     if (!edit) return;
     if (!name || name === "." || name === ".." || /[\\/\0]/.test(name)) { notify({ title: t("error.name"), level: "warning" }); return; }
     this.edit = null;
-    const here = this.here, target = join(edit.dir, name);
+    const { here, loc, on } = edit, target = join(edit.dir, name);
     cx.spawn(async cx => {
       try {
-        if (edit.kind === "new-file") { await createFile(target); openFile(target, null); }
-        else if (edit.kind === "new-folder") await createFolder(target);
-        else if (target !== edit.path) { await rename(edit.path, target); moved(edit.path, target); }
+        if (edit.kind === "new-file") { await createFile(target, { on }); if (this.loc === loc) openFile(target, on); }
+        else if (edit.kind === "new-folder") await createFolder(target, { on });
+        else if (target !== edit.path) { await rename(edit.path, target, { on }); moved(edit.path, target, on); }
         const r = rel(here.root, edit.dir);
         if (r) here.open.add(r);
         here.selected = rel(here.root, target);
       } catch (e) { notify({ title: t(`error.${edit.kind}`), body: String(e?.message ?? e), level: "error" }); }
-      finally { this.reload(cx); cx.notify(); }
+      finally { this.reload(cx, false, here); cx.notify(); }
     });
     cx.notify();
   }
@@ -336,17 +338,15 @@ export default class FilesSidebar extends View {
         .when(enabled, el => el.cursor_pointer().hover(s => s.bg(on ? th.selected : th.hover).text_color(th.foreground)).on_click(onClick))
         .tooltip(label)
         .child(svg(`mods/${ME}/icons/${icon}.svg`).size(14));
-    // New files and folders: off on another machine (read-only there), which the tooltip says.
-    const canAdd = local && Boolean(here?.root);
-    const addTip = label => (local ? label : t("remote.readonly"));
+    const canAdd = Boolean(here?.root);
     // The folder above (shrinks first) and the folder's own name; "~" only on this machine.
     const head = here?.root ? heading(here.root, local ? home() : null, note.branch) : null;
     return v_flex().id("root").size_full().min_h(0).bg(th.chrome).text_color(th.foreground).text_size(12.5)
       .child(h_flex().h(32).px(12).flex_none().items_center()
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(t("title")))
         .child(h_flex().flex_none().gap(2)
-          .child(action("new-file", "new-file", addTip(t("action.new_file")), (_e, cx) => this.startEdit("new-file", null, this.selectedDir(), cx), false, canAdd))
-          .child(action("new-folder", "new-folder", addTip(t("action.new_folder")), (_e, cx) => this.startEdit("new-folder", null, this.selectedDir(), cx), false, canAdd))
+          .child(action("new-file", "new-file", t("action.new_file"), (_e, cx) => this.startEdit("new-file", null, this.selectedDir(), cx), false, canAdd))
+          .child(action("new-folder", "new-folder", t("action.new_folder"), (_e, cx) => this.startEdit("new-folder", null, this.selectedDir(), cx), false, canAdd))
           .child(action("refresh", "refresh", t("action.refresh"), (_e, cx) => { this.reload(cx); cx.notify(); }))
           .child(action("collapse", "collapse", t("action.collapse"), (_e, cx) => this.collapse(cx)))
           .child(action("search", "search", t("action.search"), (_e, cx) => this.toggleSearch(cx), this.searching))
@@ -482,7 +482,7 @@ export default class FilesSidebar extends View {
 }
 
 function request(action, m, extra) {
-  setShared(REQUEST, { action, root: m.root, seq: Date.now(), ...extra });
+  setShared(REQUEST, { action, root: m.root, on: m.on ?? null, seq: Date.now(), ...extra });
 }
 
 function revealLabel() {
@@ -498,9 +498,9 @@ function menuItems(m) {
     m.dir ? null : { label: t("menu.open"), run: () => openFile(m.abs, m.on) },
     { label: t("menu.terminal"), run: () => run("terminal.open", { folder, place: "right" }) },
     null,
-    { label: t("menu.new_file"), enabled: local, run: () => request("new-file", m, { dir: folder }) },
-    { label: t("menu.new_folder"), enabled: local, run: () => request("new-folder", m, { dir: folder }) },
-    { label: t("menu.rename"), enabled: local, run: () => request("rename", m, { path: m.abs }) },
+    { label: t("menu.new_file"), run: () => request("new-file", m, { dir: folder }) },
+    { label: t("menu.new_folder"), run: () => request("new-folder", m, { dir: folder }) },
+    { label: t("menu.rename"), run: () => request("rename", m, { path: m.abs }) },
     { label: t("menu.trash"), enabled: local, danger: true, run: () => {
       trash(m.abs).then(() => { setShared(REFRESH, Date.now()); notify({ title: t("toast.trashed", { name: base(m.abs) }), level: "success", timeout: 3000 }); })
         .catch(e => notify({ title: t("error.trash"), body: String(e?.message ?? e), level: "error" }));
