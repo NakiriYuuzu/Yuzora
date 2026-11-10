@@ -379,6 +379,73 @@ fn mssql_a_write_back_waiting_on_a_row_lock_can_be_stopped() {
     );
 }
 
+// ---------------------------------------------------------------- a connection the server dropped
+
+/// The pane's connection was closed by the server while it sat idle (a
+/// firewall, a restart, `KILL`): the first write-back after must not fail for
+/// that, nothing having been written yet.
+fn write_back_after_the_server_dropped_the_connection(connection: &str, t: ObjectRef, kill_the_others: &str, check: &str) {
+    let pane = open(connection, "dropped-pane", &t);
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    run(connection, "killer", kill_the_others);
+    std::thread::sleep(Duration::from_millis(500));
+    let written = within(Duration::from_secs(30), "the write-back after a dropped connection", {
+        let set = pane.set.clone();
+        move || runtime::block_on(session::write_back_set(&set))
+    });
+    assert_eq!(written, Ok(1), "{:?}", results::lock(&pane.set).write);
+    assert_eq!(first_row(connection, check), ["mine"]);
+}
+
+#[test]
+fn postgres_a_write_back_after_the_server_dropped_the_connection_still_saves() {
+    only_with!("postgres");
+    let id = postgres_connection("pg-dropped");
+    run(&id, "setup", "DROP SCHEMA IF EXISTS yz_wb_dropped CASCADE; CREATE SCHEMA yz_wb_dropped; CREATE TABLE yz_wb_dropped.t(id int PRIMARY KEY, name text); INSERT INTO yz_wb_dropped.t VALUES (1, 'a');");
+    write_back_after_the_server_dropped_the_connection(
+        &id,
+        table("yz_wb_dropped", "t"),
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'yuzora_p8' AND application_name = 'Yuzora' AND pid <> pg_backend_pid()",
+        "SELECT name FROM yz_wb_dropped.t WHERE id = 1",
+    );
+    run(&id, "setup", "DROP SCHEMA yz_wb_dropped CASCADE");
+}
+
+#[test]
+fn mssql_a_write_back_after_the_server_dropped_the_connection_still_saves() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_wb_dropped");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE dbo.t(id int PRIMARY KEY, name nvarchar(20)); INSERT INTO dbo.t VALUES (1, N'a');");
+    write_back_after_the_server_dropped_the_connection(
+        &id,
+        table("dbo", "t"),
+        "DECLARE @kill nvarchar(max) = N''; SELECT @kill += N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE is_user_process = 1 AND database_id = DB_ID(N'yz_wb_dropped') AND session_id <> @@SPID AND program_name = N'Yuzora'; EXEC(@kill)",
+        "SELECT name FROM dbo.t WHERE id = 1",
+    );
+}
+
+#[test]
+fn mssql_reading_the_schema_after_the_server_dropped_the_catalog_connection_still_works() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_wb_catalog");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE dbo.t(id int PRIMARY KEY, name nvarchar(20));");
+    let t = table("dbo", "t");
+    let described = runtime::block_on(session::describe(&id, None, &t)).expect("the first read");
+    assert_eq!(described.key_columns(), ["id"]);
+    run(
+        &id,
+        "killer",
+        "DECLARE @kill nvarchar(max) = N''; SELECT @kill += N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE is_user_process = 1 AND database_id = DB_ID(N'yz_wb_catalog') AND session_id <> @@SPID AND program_name = N'Yuzora'; EXEC(@kill)",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let again = within(Duration::from_secs(30), "the schema read after a dropped connection", move || {
+        runtime::block_on(session::describe(&id, None, &t))
+    });
+    assert_eq!(again.map(|info| info.key_columns()), Ok(vec!["id".to_owned()]));
+}
+
 // ---------------------------------------------------------------- a write-back that fails
 
 #[test]
