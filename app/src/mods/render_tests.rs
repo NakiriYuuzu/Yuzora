@@ -2353,7 +2353,6 @@ fn files_request(cx: &mut TestAppContext, staged: &Staged, request: Value) -> Fi
     let settled = draw(cx);
     cx.run_until_parked();
     let again = draw(cx);
-    drop(draw);
     drop(session);
     window.update(cx, |_, window, _| window.remove_window()).unwrap();
     cx.run_until_parked();
