@@ -985,7 +985,33 @@ test("the Yes of a discard asked about discards the file it names, though anothe
   expect(s.frame().texts).toContain("discard.ask");
   click(s, s.frame(), "discard-yes");
   await flush();
+  await s.answer(s.pending("status").at(-1)!, statusOf("/a"));
   expect(s.w.asks.discard.map((g) => g.args)).toEqual([[":/a", ["only-a.txt"]]]);
+});
+
+test("a discard confirmed asks git for the file again, and discards it only if it is still the kind of change asked about", async () => {
+  const s = world();
+  await s.settle();
+  const ask = () => { const f = s.frame(); s.aim(f, 1); s.press(f, f.keyOf("x.txt")); click(s, s.frame(), "discard-yes"); };
+  ask();
+  await flush();
+  const read = s.pending("status").at(-1)!;
+  expect(read.args).toEqual([":/a", { force: true }]);
+  expect(s.w.asks.discard).toEqual([]);
+  await s.answer(read, statusOf("/a"));
+  expect(s.w.asks.discard.map((g) => g.args)).toEqual([[":/a", ["x.txt"]]]);
+  await s.answer(s.pending("discard")[0], { ok: true });
+  await s.settle();
+
+  ask();
+  await flush();
+  await s.answer(s.pending("status").at(-1)!, { ...statusOf("/a"), unstaged: [file("only-a.txt")], untracked: [{ path: "x.txt", kind: "?", add: 0, del: 0, binary: false }] });
+  await s.settle();
+  expect(s.w.asks.discard.length).toBe(1);
+  const f = s.frame();
+  expect(f.texts).toContain("discard.changed");
+  expect(f.texts).not.toContain("discard.ask");
+  expect(f.rows.find((r) => r.path === "x.txt")).toBeDefined();
 });
 
 test("a quiet fetch waits for the repo to be read in this visit, like any other write", async () => {
