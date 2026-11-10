@@ -731,7 +731,7 @@ pub fn open_table(
         let sql = engine::select_sql(engine, home.as_deref(), &table, order, limit);
         let mut sink = JobSink::for_table(id, &owner, &sql);
         let reading = serving(id, Stop::Statement(l.conn().canceller()));
-        let outcome = l.conn().execute(&sql, &mut sink).await;
+        let outcome = l.conn().read_table(&sql, &mut sink).await;
         // The pane's connection is free from here: the count and any write-back
         // do not wait for each other, and the job's Stop is no longer for it.
         drop(reading);

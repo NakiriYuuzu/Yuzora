@@ -37,7 +37,16 @@ pub struct PgConn {
     /// `standard_conforming_strings` was off when last asked: `\` escapes in
     /// ordinary strings too.
     backslash: bool,
+    /// A script ran since [`PRINT_AS_READ`] was last set: it may have taken
+    /// the setting back, however it did (`RESET`, `DISCARD`, `SET`, a function).
+    unpinned: bool,
 }
+
+/// A value is shown as text and comes back as text: only ISO prints a zone as
+/// an offset (`CST` is read as -06:00 though Asia/Taipei printed it), and only
+/// extra_float_digits above 0 prints every digit of a float. The order of day
+/// and month in what a person types stays the session's.
+const PRINT_AS_READ: &str = "SET datestyle = 'ISO'; SET extra_float_digits = 3";
 
 /// Asks the server to stop what the connection is running (a second, short
 /// connection carries the request, over the same TLS settings).
@@ -123,14 +132,7 @@ impl PgConn {
         let row = client.query_one("SHOW server_version", &[]).await.map_err(|e| DbError::Connect(describe(&e)))?;
         let full: String = row.get(0);
         let version = format!("PostgreSQL {}", full.split_whitespace().next().unwrap_or(&full));
-        // A value is shown as text and comes back as text: only ISO prints a
-        // zone as an offset (`CST` is read as -06:00 though Asia/Taipei printed
-        // it), and only extra_float_digits above 0 prints every digit of a float.
-        // The order of day and month in what a person types stays the session's.
-        client
-            .batch_execute("SET datestyle = 'ISO'; SET extra_float_digits = 3")
-            .await
-            .map_err(|e| DbError::Connect(describe(&e)))?;
+        client.batch_execute(PRINT_AS_READ).await.map_err(|e| DbError::Connect(describe(&e)))?;
         let canceller = PgCanceller {
             token: client.cancel_token(),
             tls,
@@ -139,7 +141,7 @@ impl PgConn {
             retired: Arc::new(AtomicBool::new(false)),
             commit: CommitSent::default(),
         };
-        Ok(Self { client, version, canceller, backslash: false })
+        Ok(Self { client, version, canceller, backslash: false, unpinned: false })
     }
 
     pub fn server_version(&self) -> String {
@@ -347,9 +349,29 @@ impl PgConn {
         Ok(info)
     }
 
+    /// A script of the person's own (the SQL tab).
     pub async fn execute(&mut self, sql: &str, sink: &mut dyn RowSink) -> DbResult<()> {
         self.canceller.cancelled.store(false, Ordering::SeqCst);
         self.canceller.landed.store(false, Ordering::SeqCst);
+        self.unpinned = true;
+        self.run_script(sql, sink).await
+    }
+
+    /// The rows of a table, which are edited as they are printed and written
+    /// back as they were read. The settings that print them come first if the
+    /// person's SQL has run since: whatever it did to them, it is not the
+    /// statements that are told apart but the connection that is put back.
+    pub async fn read_table(&mut self, sql: &str, sink: &mut dyn RowSink) -> DbResult<()> {
+        self.canceller.cancelled.store(false, Ordering::SeqCst);
+        self.canceller.landed.store(false, Ordering::SeqCst);
+        if self.unpinned {
+            self.client.batch_execute(PRINT_AS_READ).await.map_err(|e| self.failure(&e, None))?;
+            self.unpinned = false;
+        }
+        self.run_script(sql, sink).await
+    }
+
+    async fn run_script(&mut self, sql: &str, sink: &mut dyn RowSink) -> DbResult<()> {
         // Whether `\` escapes in an ordinary string is the session's setting:
         // asked when the script holds one, and again after a statement that
         // may change it, the rest then split anew.
