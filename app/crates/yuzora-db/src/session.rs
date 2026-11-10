@@ -257,6 +257,11 @@ async fn open_lease(connection: &str, database: Option<&str>, owner: &str, usage
     let wanting = report.then(|| entry.want());
     let mut guard = entry.conn.clone().lock_owned().await;
     drop(wanting);
+    // A Stop pressed for what ran here before may still be on its way to the
+    // server, and would be felt by whatever starts now.
+    if let Some(conn) = guard.as_ref() {
+        conn.settled().await;
+    }
     if guard.as_ref().is_some_and(Conn::is_closed) {
         *guard = None;
     }
@@ -507,7 +512,7 @@ pub fn cancel(id: JobId) {
     };
     update_job(id, |_| {});
     match target {
-        Some(Stop::Statement(c)) => runtime::spawn(async move { c.cancel().await }),
+        Some(Stop::Statement(c)) => c.cancel_in_background(),
         Some(Stop::Count(count)) => count.call(),
         None => {}
     }
@@ -1062,12 +1067,12 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
     outcome
 }
 
-/// Ends work the person stopped: `signal` tells the engine while `work` still
-/// holds the connection it runs on. Let go of first, whatever queued for that
-/// connection would start on it, and the stop would land on that instead.
-/// That is not all of it: the request can still be on its way when the signal
-/// returns, which is why the signal is [`Canceller::abandon`] and the
-/// connection does not outlive it.
+/// Ends work the person stopped: `signal` tells the engine, and returns once
+/// the server has dealt with the stop, while `work` still holds the connection
+/// it runs on. What dropping `work` sends next (a write-back's ROLLBACK) is
+/// therefore the first the server hears after the stop, not something the stop
+/// can land on. The connection does not outlive it all the same
+/// ([`Canceller::abandon`]): `work` is dropped where it stands.
 async fn stop_work<W>(work: W, signal: impl std::future::Future<Output = ()>) {
     signal.await;
     drop(work);

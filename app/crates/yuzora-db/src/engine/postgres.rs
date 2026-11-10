@@ -9,15 +9,21 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::net::IpAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use bytes::BytesMut;
 use futures_util::future::try_join5;
 use futures_util::{FutureExt, StreamExt};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::TcpStream;
+use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_postgres::error::{DbError as ServerError, ErrorPosition, SqlState};
+use tokio_postgres::tls::MakeTlsConnect;
 use tokio_postgres::types::{Format, IsNull, Kind, ToSql, Type, to_sql_checked};
 use tokio_postgres::{CancelToken, Client, SimpleColumn, SimpleQueryMessage, Statement};
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -41,19 +47,58 @@ pub struct PgConn {
 
 /// Asks the server to stop what the connection is running (a second, short
 /// connection carries the request, over the same TLS settings).
+///
+/// The server acts on the request when it gets there, and finds whatever the
+/// connection runs by then: if the statement it was for is over, that is the
+/// next one. So a stop is not done when it is sent but when the server has
+/// dealt with it, which the server tells by closing the connection the request
+/// came on. [`cancel`](Self::cancel) returns then; a stop from a place that
+/// cannot wait ([`cancel_in_background`](Self::cancel_in_background)) is
+/// counted while it is on its way, and the connection is not handed to new work
+/// before it has arrived ([`settled`](Self::settled)).
 #[derive(Clone)]
 pub struct PgCanceller {
     token: CancelToken,
     tls: MakeRustlsConnect,
+    /// Where the request goes; `None` for a unix socket.
+    target: Option<Arc<Target>>,
     /// A stop pressed by the person, as opposed to the sink saying enough:
     /// the server's "canceled" error then reads as [`DbError::Cancelled`].
     cancelled: Arc<AtomicBool>,
     /// A stop reached the statement it was for: the server answered it with
     /// "canceled". Until it does, the request is still on its way.
     landed: Arc<AtomicBool>,
-    /// The connection is not to be used again (see [`PgCanceller::abandon`]).
+    /// The connection is not to be used again (see [`PgCanceller::abandon`], and
+    /// a request the server was not heard to deal with).
     retired: Arc<AtomicBool>,
+    /// How many requests are on their way to the server.
+    on_their_way: Arc<watch::Sender<usize>>,
     pub(super) commit: CommitSent,
+}
+
+/// The address a cancel request is sent to, and the name its TLS is for.
+#[derive(Clone)]
+struct Target {
+    address: String,
+    port: u16,
+    tls_name: String,
+}
+
+/// A request on its way to the server. Dropped without the server having
+/// dealt with it, the connection is let go of: the request may still arrive.
+struct OnItsWay {
+    count: Arc<watch::Sender<usize>>,
+    retired: Arc<AtomicBool>,
+    dealt_with: bool,
+}
+
+impl Drop for OnItsWay {
+    fn drop(&mut self) {
+        if !self.dealt_with {
+            self.retired.store(true, Ordering::SeqCst);
+        }
+        self.count.send_modify(|n| *n -= 1);
+    }
 }
 
 impl PgCanceller {
@@ -62,18 +107,96 @@ impl PgCanceller {
         self.signal().await;
     }
 
-    /// [`cancel`](Self::cancel) for a statement whose end nobody will see. A
-    /// cancel is a request to the server that finds whatever the connection
-    /// runs when it gets there: if the statement is already over it can land
-    /// on the next one, or on the ROLLBACK that ends the write-back. Which of
-    /// them is not known, so the connection is let go of afterwards.
+    /// [`cancel`](Self::cancel) from where nothing can wait for it. It is
+    /// counted on its way before this returns, not when the task that sends it
+    /// first runs.
+    pub fn cancel_in_background(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        let (this, on_its_way) = (self.clone(), self.on_its_way());
+        crate::runtime::spawn(async move { this.deliver(on_its_way).await });
+    }
+
+    /// [`cancel`](Self::cancel) for work that is dropped where it stands. The
+    /// connection is let go of afterwards rather than trusted to be clean.
     pub async fn abandon(&self) {
         self.retired.store(true, Ordering::SeqCst);
         self.cancel().await;
     }
 
+    /// Returns once no request is on its way to the server.
+    pub async fn settled(&self) {
+        let _ = self.on_their_way.subscribe().wait_for(|n| *n == 0).await;
+    }
+
+    /// Asks the server to stop the statement and waits for it to have dealt with
+    /// the request. The statement itself may take a moment to end after that.
     async fn signal(&self) {
-        let _ = tokio::time::timeout(Duration::from_secs(5), self.token.cancel_query(self.tls.clone())).await;
+        self.deliver(self.on_its_way()).await;
+    }
+
+    fn on_its_way(&self) -> OnItsWay {
+        self.on_their_way.send_modify(|n| *n += 1);
+        OnItsWay { count: self.on_their_way.clone(), retired: self.retired.clone(), dealt_with: false }
+    }
+
+    async fn deliver(&self, mut on_its_way: OnItsWay) {
+        on_its_way.dealt_with = tokio::time::timeout(CANCEL_WAIT, self.request()).await.unwrap_or(false);
+    }
+
+    /// Whether the server has dealt with the request: it closes the connection
+    /// it came on once it has told the statement. Over a unix socket it is only
+    /// sent, as the driver does.
+    async fn request(&self) -> bool {
+        let Some(target) = &self.target else {
+            return self.token.cancel_query(self.tls.clone()).await.is_ok();
+        };
+        let Ok(tcp) = TcpStream::connect((target.address.as_str(), target.port)).await else { return false };
+        let Ok(tls) = MakeTlsConnect::<UntilClosed>::make_tls_connect(&mut self.tls.clone(), &target.tls_name);
+        self.token.cancel_query_raw(UntilClosed { tcp, shut: false }, tls).await.is_ok()
+    }
+}
+
+/// How long a request has to get to the server and be dealt with.
+const CANCEL_WAIT: Duration = Duration::from_secs(5);
+
+/// A connection that is not finished shutting down until the other end has
+/// closed it: the driver ends a cancel request by shutting down, and the server
+/// closes its end once it has acted on the request.
+struct UntilClosed {
+    tcp: TcpStream,
+    shut: bool,
+}
+
+impl AsyncRead for UntilClosed {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.tcp).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for UntilClosed {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.tcp).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.tcp).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if !self.shut {
+            ready!(Pin::new(&mut self.tcp).poll_shutdown(cx))?;
+            self.shut = true;
+        }
+        // What the server still says (a TLS close) is of no interest; its end
+        // of the connection closing, or breaking, is.
+        let mut scratch = [0u8; 64];
+        loop {
+            let mut buf = ReadBuf::new(&mut scratch);
+            match ready!(Pin::new(&mut self.tcp).poll_read(cx, &mut buf)) {
+                Ok(()) if !buf.filled().is_empty() => {}
+                _ => return Poll::Ready(Ok(())),
+            }
+        }
     }
 }
 
@@ -104,7 +227,7 @@ impl PgConn {
         let mut tried = Vec::new();
         for (i, database) in candidates.iter().enumerate() {
             match open(spec, &tls, database, deadline).await {
-                Ok(client) => return Self::ready(client, tls).await,
+                Ok(client) => return Self::ready(client, tls, Target::of(spec)).await,
                 Err(Attempt { error, code }) => {
                     // Only a database that can't be had is worth moving on
                     // from: missing, no CONNECT right, connections disallowed.
@@ -119,16 +242,18 @@ impl PgConn {
         unreachable!("there is always one candidate database")
     }
 
-    async fn ready(client: Client, tls: MakeRustlsConnect) -> DbResult<Self> {
+    async fn ready(client: Client, tls: MakeRustlsConnect, target: Option<Arc<Target>>) -> DbResult<Self> {
         let row = client.query_one("SHOW server_version", &[]).await.map_err(|e| DbError::Connect(describe(&e)))?;
         let full: String = row.get(0);
         let version = format!("PostgreSQL {}", full.split_whitespace().next().unwrap_or(&full));
         let canceller = PgCanceller {
             token: client.cancel_token(),
             tls,
+            target,
             cancelled: Arc::new(AtomicBool::new(false)),
             landed: Arc::new(AtomicBool::new(false)),
             retired: Arc::new(AtomicBool::new(false)),
+            on_their_way: Arc::new(watch::channel(0).0),
             commit: CommitSent::default(),
         };
         Ok(Self { client, version, canceller, backslash: false })
@@ -140,6 +265,11 @@ impl PgConn {
 
     pub fn is_closed(&self) -> bool {
         self.client.is_closed() || self.canceller.retired.load(Ordering::SeqCst)
+    }
+
+    /// Returns once no stop is on its way to the server.
+    pub async fn settled(&self) {
+        self.canceller.settled().await;
     }
 
     /// Whether the last stop was answered by the statement it was for.
@@ -456,7 +586,7 @@ impl PgConn {
         }
         if stopped {
             // Ask the server to give up the rest, and read what is already on
-            // the way (briefly) so the cancel can't land on the next statement.
+            // the way (briefly).
             self.canceller.signal().await;
             let _ =
                 tokio::time::timeout(Duration::from_secs(2), async { while stream.next().await.is_some() {} }).await;
@@ -524,6 +654,31 @@ impl PgConn {
     }
 }
 
+/// The host to name and, through a tunnel, the address to reach it at: the
+/// bytes go to the tunnel's local end, but the certificate is still the
+/// server's, so the name to check stays the configured host.
+fn route(spec: &ConnectSpec) -> (&str, Option<IpAddr>) {
+    match spec.endpoint.as_ref().and_then(|(h, _)| h.parse::<IpAddr>().ok()) {
+        Some(ip) => (spec.config.host.trim(), Some(ip)),
+        None => (spec.host(), None),
+    }
+}
+
+impl Target {
+    /// Where a cancel request goes, the way [`open`] reaches the server.
+    fn of(spec: &ConnectSpec) -> Option<Arc<Self>> {
+        let (name, address) = route(spec);
+        // A host that is a path is a unix socket (the driver reads it so).
+        (!name.starts_with('/')).then(|| {
+            Arc::new(Target {
+                address: address.map_or_else(|| name.to_owned(), |ip| ip.to_string()),
+                port: spec.port(),
+                tls_name: name.to_owned(),
+            })
+        })
+    }
+}
+
 /// Opens one database: the connection's driver runs on the crate's runtime.
 async fn open(
     spec: &ConnectSpec,
@@ -538,12 +693,11 @@ async fn open(
     if let Some(password) = &spec.password {
         cfg.password(password);
     }
-    // Through a tunnel the bytes go to its local end, but the certificate is
-    // still the server's: the name to check stays the configured host.
-    match spec.endpoint.as_ref().and_then(|(h, _)| h.parse::<IpAddr>().ok()) {
-        Some(ip) => cfg.host(spec.config.host.trim()).hostaddr(ip),
-        None => cfg.host(host),
-    };
+    let (name, address) = route(spec);
+    cfg.host(name);
+    if let Some(ip) = address {
+        cfg.hostaddr(ip);
+    }
     let ssl = spec.config.ssl;
     let fail = |error: DbError, code: Option<String>| Attempt { error, code };
     match tokio::time::timeout_at(deadline, cfg.connect(tls.clone())).await {

@@ -1075,6 +1075,25 @@ fn postgres_a_stop_that_the_server_hears_late_is_not_felt_by_what_runs_after_it(
     }
 }
 
+/// The connection is not handed to new work while a stop is on its way, and
+/// the stop counts as on its way from the moment it is pressed, not from when
+/// the task that sends it first gets to run.
+#[test]
+fn postgres_a_stop_from_the_background_is_on_its_way_before_it_returns() {
+    only_with!("postgres");
+    run(async {
+        let mut conn = pg().await;
+        conn.canceller().cancel_in_background();
+        assert!(
+            tokio::time::timeout(Duration::ZERO, conn.settled()).await.is_err(),
+            "the stop was not counted on its way when it returned"
+        );
+        conn.settled().await;
+        assert!(!conn.is_closed());
+        assert_eq!(scalar(&mut conn, "SELECT 'after', pg_sleep(0.3)").await, "after");
+    });
+}
+
 #[test]
 fn postgres_a_stop_the_server_hears_late_still_ends_the_statement_it_was_for() {
     only_with!("postgres");
