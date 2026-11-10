@@ -796,8 +796,13 @@ async fn write_rows(
         let params: Vec<Param<'_>> = edit.changes.iter().chain(&edit.key).map(|(_, c)| Param::of(c)).collect();
         let refs: Vec<&dyn ToSql> = params.iter().map(Param::sql).collect();
         let sql = update_sql(database, table, edit);
-        let rows = client.query(sql, &refs).await.map_err(fail)?.into_first_result().await.map_err(fail)?;
-        let changed = rows.first().and_then(|r| r.try_get::<i64, _>(0).ok().flatten()).unwrap_or(-1);
+        let sets = client.query(sql, &refs).await.map_err(fail)?.into_results().await.map_err(fail)?;
+        // A trigger may return rows of its own, ahead of ours: the count is the last result.
+        let changed = sets
+            .last()
+            .and_then(|rows| rows.first())
+            .and_then(|r| r.try_get::<i64, _>(0).ok().flatten())
+            .unwrap_or(-1);
         if changed != 1 {
             return Err((DbError::Query(sql::key_mismatch(&edit.key, u64::try_from(changed).unwrap_or(0))), true));
         }
