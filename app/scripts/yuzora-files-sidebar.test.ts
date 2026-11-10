@@ -37,7 +37,7 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     timers: [] as { ms: number; fn: () => void; fired: boolean }[],
     calls: { list: [] as Call[], git: [] as Call[], stat: [] as Call[], watch: [] as Call[], make: [] as Call[] },
     name: "", props: null as any, clicks: new Map<string, any>(), moved: [] as any[][],
-    runs: [] as [string, any][], paneList: [] as any[], focus: null as any,
+    runs: [] as [string, any][], paneList: [] as any[], focus: null as any, revealError: null as Error | null,
   };
   const active = () => world.spaces.find(s => s.active)?.id;
   const ask = (kind: "list" | "git" | "stat" | "watch" | "make", args: any[]) => {
@@ -96,7 +96,7 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     createFile: (path: string, options: object) => ask("make", ["createFile", path, options]),
     createFolder: (path: string, options: object) => ask("make", ["createFolder", path, options]),
     rename: (from: string, to: string, options: object) => ask("make", ["rename", from, to, options]),
-    trash() {}, reveal() {}, copyText() {}, findFiles() {}, grep() {}, unsavedCount: () => 0,
+    trash: (path: string) => ask("make", ["trash", path]), reveal: () => { if (world.revealError) throw world.revealError; }, copyText() {}, findFiles() {}, grep() {}, unsavedCount: () => 0,
     openFile: (path: string, on: string | null) => world.opened.push({ path, on: on ?? null, space: active() }), moved: (...args: any[]) => world.moved.push(args),
     kindOf: (path: string) => (/\.(png|svg)$/i.test(path) ? "image" : /\.md$/i.test(path) ? "markdown" : "text"),
     documentFor: () => null, focusDocument() {}, revealLine() {},
@@ -685,6 +685,9 @@ async function submit(s: Awaited<ReturnType<typeof sidebarAt>>, name: string) {
   await flush();
 }
 const makes = (s: Awaited<ReturnType<typeof sidebarAt>>) => s.world.calls.make.map(c => c.args);
+// What the engine makes of an error the host reports: the call's name in front of what it said.
+const hostError = (call: string, message: string) => new Error(`\`yuzora:files.${call}\`: ${message}`);
+const toasts = (s: Awaited<ReturnType<typeof sidebarAt>>) => s.world.toasts.map(n => [n.title, n.body, n.level]);
 
 for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null]] as const) {
   test(`${where}: the toolbar's new file is made where the Space is, and opened there`, async () => {
@@ -752,12 +755,60 @@ for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null
     const s = await sidebarAt(machine);
     s.view.startEdit("new-file", null, s.view.selectedDir(), s.cx);
     await submit(s, "a.txt");
-    await s.fail(s.pending("make")[0], new Error("/srv/a.txt already exists"));
-    expect(s.world.toasts.map(n => [n.title, n.body])).toEqual([["error.new-file", "/srv/a.txt already exists"]]);
+    await s.fail(s.pending("make")[0], hostError("createFile", "cannot create /srv/a.txt: File exists (os error 17)"));
+    expect(s.world.toasts.map(n => [n.title, n.body])).toEqual([["error.new-file", 'reason.exists {"name":"a.txt"}']]);
     expect(s.world.opened).toEqual([]);
     expect(s.pending("list").map(c => c.args[0])).toContain("/srv");
   });
 }
+
+// A toast has a line each for its title and its body, and cuts what does not fit: the body starts with the cause.
+for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null]] as const) {
+  test(`${where}: a new folder, a new file and a rename that fail say the cause first, and no call name`, async () => {
+    const s = await sidebarAt(machine);
+    const cases: [string, string, string, string][] = [
+      ["new-folder", "createFolder", "cannot create /srv/src: File exists (os error 17)", 'reason.exists {"name":"src"}'],
+      ["new-file", "createFile", "cannot create /srv/ro/n.txt: Permission denied (os error 13)", "reason.writable"],
+      machine
+        ? ["rename", "rename", `cannot rename /srv/a.txt on ${machine}: machine ${machine} is not connected`, `reason.unreachable ${JSON.stringify({ machine })}`]
+        : ["rename", "rename", "cannot rename /srv/a.txt: Read-only file system (os error 30)", "reason.read_only"],
+    ];
+    for (const [kind, call, message, body] of cases) {
+      s.view.startEdit(kind, kind === "rename" ? "/srv/a.txt" : null, "/srv", s.cx);
+      await submit(s, kind === "new-folder" ? "src" : "n.txt");
+      await s.fail(s.pending("make").at(-1)!, hostError(call, message));
+      expect(toasts(s).at(-1)).toEqual([`error.${kind}`, body, "error"]);
+    }
+  });
+}
+
+test("a name that is taken is told by the name that was typed, not by the path of the call", async () => {
+  const s = await sidebarAt("lab");
+  s.view.startEdit("rename", "/srv/a.txt", "/srv", s.cx);
+  await submit(s, "notes.txt");
+  await s.fail(s.pending("make")[0], hostError("rename", "/srv/notes.txt already exists"));
+  expect(toasts(s)).toEqual([["error.rename", 'reason.exists {"name":"notes.txt"}', "error"]]);
+});
+
+test("a file that cannot be moved to the trash, and a folder that cannot be opened, say the cause first", async () => {
+  const s = await sidebarAt(null);
+  s.pressRight(s.frame(), A_ROW);
+  s.menuItems(s.world.menus[0].props.menu).find((i: any) => i?.label === "menu.trash").run();
+  await s.fail(s.pending("make")[0], hostError("trash", "cannot move /srv/a.txt to the trash: Permission denied (os error 13)"));
+  expect(toasts(s)).toEqual([["error.trash", "reason.denied", "error"]]);
+  s.press(s.frame(), SRC_ROW);
+  await flush();
+  await s.fail(s.pending("list").find(c => c.args[0] === "/srv/src")!, hostError("listDir", "cannot read /srv/src: Permission denied (os error 13)"));
+  expect(toasts(s).at(-1)).toEqual(["error.list", "reason.denied", "error"]);
+});
+
+test("a file that cannot be shown in the file manager says the cause first", async () => {
+  const s = await sidebarAt(null);
+  s.pressRight(s.frame(), A_ROW);
+  s.world.revealError = hostError("reveal", "cannot reveal /srv/a.txt: Disk on fire (os error 99)");
+  s.menuItems(s.world.menus[0].props.menu).find((i: any) => i?.label === "menu.reveal_mac").run();
+  expect(toasts(s)).toEqual([["error.reveal", "Disk on fire", "error"]]);
+});
 
 test("the menu of a remote Space offers new file, new folder and rename, and still not the trash or the file manager", async () => {
   const s = await sidebarAt("lab");
