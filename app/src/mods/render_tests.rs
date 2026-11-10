@@ -1802,14 +1802,23 @@ impl Scenario {
 
 /// The commit detail panel of the Git Log in a `width`×`height` box, dragged by its `dragging()`.
 /// A press with three clicks swaps in another commit's details (the height must stay).
+/// The message is `line N` lines with blank ones among them (`BLANKS`), so `detailPanel` lays out paragraphs
+/// as well as lines.
+const BLANKS: &str = "(i % 10 === 5 || i % 10 === 6) ? '' : i % 10 === 7 ? '   ' : 'line ' + i";
+
 fn detail_scenario(lines: usize, side: bool, width: f32, height: f32, files: usize) -> String {
+    detail_scenario_of(BLANKS, lines, side, width, height, files)
+}
+
+/// `detail_scenario` with the message line `i` being the JS expression `line`.
+fn detail_scenario_of(line: &str, lines: usize, side: bool, width: f32, height: f32, files: usize) -> String {
     format!(
         r#"
 import Real from "./mods/yuzora-git-log/main.js";
 import {{ v_flex }} from "gpui-base";
 import {{ theme }} from "herdr";
 import {{ note }} from "probe";
-const make = (hash, n) => ({{ hash, subject: "Subject " + hash, body: Array.from({{ length: n }}, (_, i) => "line " + i).join("\n"), author: "A", email: "a@x",
+const make = (hash, n) => ({{ hash, subject: "Subject " + hash, body: Array.from({{ length: n }}, (_, i) => {line}).join("\n"), author: "A", email: "a@x",
   authorTime: 1700000000, committer: "A", committerEmail: "a@x", commitTime: 1700000000, parents: [], signature: "N", signer: "",
   files: Array.from({{ length: {files} }}, (_, i) => ({{ path: "src/f" + i + ".rs", kind: "M" }})) }});
 export default class Scenario extends Real {{
@@ -1914,21 +1923,49 @@ fn git_log_detail_divider_drag_ends_when_the_pointer_leaves_the_pane(cx: &mut Te
     assert_eq!(state(&s).1, dragged, "the drag ended when the pointer left");
 }
 
-// yuzora(L2): a long message shows in full, up to 2000 lines and then says what is left out.
+// yuzora(L2): a long message shows in full, up to 2000 lines and then says what is left out. yuzora(beta4): in
+// one text per paragraph (a text per line cost 12ms of the 50ms JS render budget at 2000 lines).
 #[gpui::test]
 fn git_log_commit_message_is_shown_whole_up_to_a_cap(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let staged = Staged::new();
     for (lines, cut) in [(100, false), (2500, true)] {
         let setup = format!(
-            "this.repo = {{}}; this.showDetail = true; this.sel = {{hash:'a'}}; this.detail = {{hash:'a', data: {{hash:'a', subject:'S', body: Array.from({{length:{lines}}}, (_, i) => 'line ' + i).join('\\n'), \
+            "this.repo = {{}}; this.showDetail = true; this.sel = {{hash:'a'}}; this.detail = {{hash:'a', data: {{hash:'a', subject:'S', body: Array.from({{length:{lines}}}, (_, i) => {BLANKS}).join('\\n'), \
              author:'A', email:'a@x', authorTime:1, committer:'A', committerEmail:'a@x', commitTime:1, parents:[], signature:'N', signer:'', files:[]}}}};"
         );
         let tree = describe(cx, &staged, "mods/yuzora-git-log", false, props(), updates("current", "current"), Some(&setup)).unwrap();
         assert!(tree.contains(&format!("line {}\"", lines.min(2000) - 1)), "{lines} lines: the last one shows");
         assert!(!tree.contains("line 2000\""), "{lines} lines: the cap");
+        // A paragraph is one text, not a div per line (2000 of them cost a quarter of the 50ms render budget):
+        // a text for each of the paragraphs (lines 8 to 4 of the next ten, then 3 blank; 0 to 4 at the start) the message has, through `detailPanel`.
+        let paragraphs = lines.min(2000) / 10 + 1;
+        assert_eq!(tree.matches("text \"line 0\\n").count(), 1, "{lines} lines: the first paragraph is one text");
+        assert_eq!(tree.matches("text \"line ").count(), paragraphs, "{lines} lines: a text per paragraph, not per line");
         assert_eq!(tree.contains("text \"detail.truncated\""), cut, "{lines} lines: the notice");
     }
+}
+
+// yuzora(beta4): through `detailPanel` itself, a message of paragraphs and blank lines takes what its lines
+// and 8px per blank line take, in a column (a row or a text for the whole message would not). The info
+// area is as tall as its limit either way, so it is measured by how far the message scrolls.
+#[gpui::test]
+fn git_log_commit_message_paragraphs_in_the_panel_take_the_height_of_their_lines(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let scrolled = |cx: &mut TestAppContext, line: &str, lines: usize| {
+        let mut s = Scenario::mount(cx, &staged, &detail_scenario_of(line, lines, true, 340.0, 600.0, 0), 340.0, 600.0);
+        s.mouse("move", 100.0, 40.0, 0);
+        let before = s.last("info").expect("content under the pointer")[1].as_f64().unwrap();
+        s.wheel(100.0, 40.0, -100000.0);
+        s.mouse("move", 100.0, 40.0, 0);
+        s.last("info").unwrap()[1].as_f64().unwrap() - before
+    };
+    // 300 lines: 210 of text, and 30 runs of three blank ones (two blank, one whitespace-only) between them.
+    let with_blanks = scrolled(cx, BLANKS, 300);
+    let text_only = scrolled(cx, "'line ' + i", 210);
+    assert!(text_only > 1000.0, "the message scrolls: {text_only}");
+    assert!((with_blanks - text_only - 30.0 * 24.0).abs() < 0.5, "210 lines and 30 runs of 24px: {with_blanks} vs {text_only}");
 }
 
 /// The repo picker in the frame an overlay gives it (`render_overlays`): 340 wide, at most 360 high
@@ -2122,6 +2159,57 @@ fn sidebar_git_row_buttons_are_where_clickrow_counts_them(cx: &mut TestAppContex
             }
         }
     }
+}
+
+/// A commit message laid out as one text per paragraph (`paragraphs`) and, for reference, as a div per
+/// line (what #234 did), side by side in the same width: the heights they take and how many elements.
+fn message_layout_scenario(body: &str, width: f32) -> String {
+    format!(
+        r#"
+import Real from "./mods/yuzora-git-log/main.js";
+import {{ div }} from "gpui-kit";
+import {{ v_flex }} from "gpui-base";
+import {{ note }} from "probe";
+export default class Scenario extends Real {{
+  init(p, cx) {{ super.init(p, cx); }}
+  render(cx) {{
+    const lines = {body:?}.split("\n"), blocks = this.paragraphs(lines);
+    note("count", blocks.length);
+    const column = (id, children) => v_flex().id(id).w({width}).text_size(11.5).on_size_change((s) => note(id, s.width, s.height)).children(children);
+    return v_flex().id("scenario").size_full().child(column("new", blocks))
+      .child(column("old", lines.map((l) => (l.trim() ? div().child(l) : div().h(8)))));
+  }}
+}}
+"#
+    )
+}
+
+// yuzora(beta4): a message in one text per paragraph takes exactly the space a div per line took: lines
+// break at "\n", a long line still wraps, a blank line is 8px (several add up, before the first
+// paragraph and after the last too, a whitespace-only line is blank).
+#[gpui::test]
+fn git_log_commit_message_paragraphs_lay_out_like_a_div_per_line(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let long = "word ".repeat(60);
+    for (name, body, blocks) in [
+        ("lines", "one\ntwo\nthree".to_owned(), 1),
+        ("wrap", format!("short\n{long}\nend"), 1),
+        ("paragraphs", "a\nb\n\nc\n\n\n\nd".to_owned(), 3),
+        ("edges", "\n\nfirst\nsecond\n   \nthird\n\n".to_owned(), 3),
+        ("indent", "  indented\n\tTabbed\nplain".to_owned(), 1),
+    ] {
+        let s = Scenario::mount(cx, &staged, &message_layout_scenario(&body, 300.0), 320.0, 2000.0);
+        let height = |k: &str| s.last(k).unwrap_or_else(|| panic!("{name}: {k} not measured"))[2].as_f64().unwrap();
+        assert!(height("old") > 14.0, "{name}: measured");
+        assert_eq!(height("new"), height("old"), "{name}: same height as a div per line");
+        assert_eq!(s.last("count").unwrap()[1].as_f64().unwrap() as usize, blocks, "{name}: elements");
+    }
+    // The long line wrapped: it is taller than the same message with each word of it on a line's worth.
+    let s = Scenario::mount(cx, &staged, &message_layout_scenario(&format!("a\n{long}"), 300.0), 320.0, 2000.0);
+    let one = Scenario::mount(cx, &staged, &message_layout_scenario("a\nb", 300.0), 320.0, 2000.0);
+    let h = |s: &Scenario| s.last("new").unwrap()[2].as_f64().unwrap();
+    assert!(h(&s) > h(&one) + 20.0, "the long line wraps: {} vs {}", h(&s), h(&one));
 }
 
 // yuzora(dock): PR-4 review r1 and acceptance fixes.

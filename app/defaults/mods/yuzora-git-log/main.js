@@ -457,6 +457,22 @@ export default class GitLog extends View {
       .on_hover((hovered, cx) => { if (!hovered) { this.drag = null; cx.notify(); } }));
   }
 
+  // A message as one text per paragraph (its lines joined by "\n", which the text breaks on) and
+  // 8px of padding for each blank line after it: a div per line cost ~12ms of the 50ms render budget
+  // at 2000 lines. A blank line before the first paragraph is a spacer of its own.
+  paragraphs(lines) {
+    const out = [];
+    for (let i = 0; i < lines.length;) {
+      let j = i;
+      while (j < lines.length && lines[j].trim()) j++;
+      let k = j;
+      while (k < lines.length && !lines[k].trim()) k++;
+      out.push(j > i ? div().pb(8 * (k - j)).child(lines.slice(i, j).join("\n")) : div().h(8 * (k - j)));
+      i = k;
+    }
+    return out;
+  }
+
   detailPanel(th, side, mono, fs) {
     this.side = side;
     const d = this.detail?.data, shell = (body) => v_flex().flex_none().bg(th.chrome ?? th.background).border_color(th.divider ?? th.border)
@@ -478,7 +494,7 @@ export default class GitLog extends View {
     const content = v_flex().id("detail-info").flex_none().px(10).pb(6).gap(6)
       .when(Boolean(this.probe), (el) => el.on_mouse_move(this.probe("info"))) // tests: where the content sits under the pointer
       .child(div().font_semibold().text_size(12.5).child(d.subject))
-      .when(lines.length > 0, (el) => el.child(v_flex().text_color(th.muted).children(lines.map((l) => (l.trim() ? div().child(l) : div().h(8))))))
+      .when(lines.length > 0, (el) => el.child(v_flex().text_color(th.muted).children(this.paragraphs(lines))))
       .child(this.meta(t("detail.hash"), th, div().id("detail-hash").font_family(mono).cursor_pointer().hover((s) => s.text_color(th.accent)).tooltip(t("detail.copy"))
         .on_click((_e, cx) => cx.write_to_clipboard(d.hash)).child(d.hash)))
       .child(this.meta(t("detail.author"), th, ...person(d.author, d.email, d.authorTime)))
