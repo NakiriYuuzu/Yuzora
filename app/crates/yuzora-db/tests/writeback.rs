@@ -1983,6 +1983,24 @@ fn mssql_a_german_login_never_stores_a_year_first_date_as_another_day() {
 }
 
 #[test]
+fn mssql_a_day_first_login_saves_dates_of_an_aliased_type_and_under_a_computed_key() {
+    only_with!("mssql");
+    let login = LanguageLogin::new("yz_r1_alias", "British");
+    let id = login.connection();
+    run(&login.scratch.connection(), "setup", "CREATE TYPE dbo.yz_when FROM datetime;");
+    let s = "dbo";
+    go(
+        &id,
+        vec![
+            Case { name: "a column of a type made from datetime", setup: "CREATE TABLE dbo.al(id int PRIMARY KEY, w dbo.yz_when NULL); INSERT INTO dbo.al VALUES (1, '20240105');", schema: s, table: "al", edits: vec![(0, "w", Some("2024-01-06 2:30 PM"))], check: "SELECT CONVERT(varchar(30), w, 121) FROM dbo.al", expect: Expect::Written(&["2024-01-06 14:30:00.000"]) },
+            Case { name: "the same, typed in a way nobody can read one way", setup: "CREATE TABLE dbo.al2(id int PRIMARY KEY, w dbo.yz_when NULL); INSERT INTO dbo.al2 VALUES (1, '20240105');", schema: s, table: "al2", edits: vec![(0, "w", Some("2024-01-06 9:5"))], check: "SELECT CONVERT(varchar(30), w, 121) FROM dbo.al2", expect: Expect::Refused("can't be saved as a date and time") },
+            Case { name: "a persisted computed column as the key", setup: "CREATE TABLE dbo.cp(a datetime NOT NULL, k AS (a) PERSISTED NOT NULL PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.cp(a, v) VALUES ('20240105 10:00:00', N'x'), ('20240113 11:00:00.997', N'y');", schema: s, table: "cp", edits: vec![(0, "v", Some("p")), (1, "v", Some("q"))], check: "SELECT STRING_AGG(v, N',') WITHIN GROUP (ORDER BY a) FROM dbo.cp", expect: Expect::Written(&["p,q"]) },
+            Case { name: "a date in a text column that the same table holds a datetime beside", setup: "CREATE TABLE dbo.mx(id int PRIMARY KEY, w datetime NULL, t nvarchar(30) NULL); INSERT INTO dbo.mx VALUES (1, '20240105', N'a');", schema: s, table: "mx", edits: vec![(0, "w", Some("2024-01-06 2:30 PM")), (0, "t", Some("2024-01-06 2:30 PM"))], check: "SELECT CONVERT(varchar(30), w, 121), t FROM dbo.mx", expect: Expect::Written(&["2024-01-06 14:30:00.000", "2024-01-06 2:30 PM"]) },
+        ],
+    );
+}
+
+#[test]
 fn mssql_a_date_the_column_rounds_is_found_again_by_the_next_write_back() {
     only_with!("mssql");
     let login = LanguageLogin::new("yz_r1_round", "British");

@@ -1619,13 +1619,43 @@ struct DropFixtureTable(String);
 
 impl Drop for DropFixtureTable {
     fn drop(&mut self) {
-        let sql = format!("IF OBJECT_ID(N'dbo.{0}') IS NOT NULL DROP TABLE dbo.{0}", self.0);
+        let sql = format!(
+            "IF OBJECT_ID(N'dbo.{0}_v') IS NOT NULL DROP VIEW dbo.{0}_v; IF OBJECT_ID(N'dbo.{0}') IS NOT NULL DROP TABLE dbo.{0}",
+            self.0
+        );
         run(async {
             if let Ok(mut conn) = Conn::connect(&ms_spec("sa", SslMode::Prefer, "yuzora_p8")).await {
                 let _ = query(&mut conn, &sql).await;
             }
         });
     }
+}
+
+#[test]
+fn mssql_a_date_written_through_a_view_is_saved_as_it_says_under_a_day_first_session() {
+    only_with!("mssql");
+    let name = format!("yz_r1_view_{}", std::process::id());
+    let _cleanup = DropFixtureTable(name.clone());
+    run(async {
+        let mut conn = ms_sa("yuzora_p8").await;
+        query(
+            &mut conn,
+            &format!(
+                "IF OBJECT_ID(N'dbo.{name}_v') IS NOT NULL DROP VIEW dbo.{name}_v; \
+                 IF OBJECT_ID(N'dbo.{name}') IS NOT NULL DROP TABLE dbo.{name}; \
+                 CREATE TABLE dbo.{name} (id int PRIMARY KEY, d datetime NOT NULL); \
+                 INSERT INTO dbo.{name} VALUES (1, '20240105')"
+            ),
+        )
+        .await
+        .unwrap();
+        query(&mut conn, &format!("CREATE VIEW dbo.{name}_v AS SELECT id, d FROM dbo.{name}")).await.unwrap();
+        query(&mut conn, "SET DATEFORMAT dmy").await.unwrap();
+        assert_eq!(scalar(&mut conn, "SELECT CONVERT(varchar(10), CAST(N'2024-01-06' AS datetime), 120)").await, "2024-06-01");
+        let edit = RowEdit { key: vec![("id".into(), Cell::Int(1))], changes: vec![("d".into(), text("2024-01-06 2:30 PM"))] };
+        assert_eq!(conn.apply_edits(&ms_object("dbo", &format!("{name}_v")), &[edit]).await, Ok(1));
+        assert_eq!(scalar(&mut conn, &format!("SELECT CONVERT(varchar(30), d, 121) FROM dbo.{name}")).await, "2024-01-06 14:30:00.000");
+    });
 }
 
 #[test]
