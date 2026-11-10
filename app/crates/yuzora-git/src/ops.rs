@@ -223,18 +223,38 @@ fn template_file(repo: &Repo, p: &str) -> String {
 
 /// Earlier messages for this repo, newest first; the template; the last commit's message.
 pub fn messages(repo: &Repo) -> GitResult<Value> {
-    let all: BTreeMap<String, Vec<String>> = std::fs::read_to_string(messages_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let all: BTreeMap<String, Vec<String>> = std::fs::read_to_string(messages_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
     let history = all.get(&repo.id).cloned().unwrap_or_default();
     // The sidebar reads these on its own as it attaches: no lazy fetch before trust. Neither read needs the
     // other, and each is a process (a round trip on a machine), so they go side by side.
     let (template, last) = std::thread::scope(|s| {
         let template = s.spawn(|| repo.run(Git::read(["config", "--path", "commit.template"])));
-        let last = repo.run(crate::trust::own_read(repo, Git::read(["log", "-1", "--format=%B"])));
-        (template.join().unwrap_or_else(|_| Err(GitError::Other("a message read panicked".into()))), last)
+        let last = repo.run(crate::trust::own_read(
+            repo,
+            Git::read(["log", "-1", "--format=%B"]),
+        ));
+        (
+            template
+                .join()
+                .unwrap_or_else(|_| Err(GitError::Other("a message read panicked".into()))),
+            last,
+        )
     });
     let (template, last) = (template?, last?);
-    let template = template.ok().then(|| template.stdout_text().trim().to_owned()).filter(|p| !p.is_empty()).and_then(|p| repo.read_file(&template_file(repo, &p)).map(|b| String::from_utf8_lossy(&b).into_owned()));
-    Ok(json!({ "history": history, "template": template, "last": last.ok().then(|| last.stdout_text().trim_end().to_owned()) }))
+    let template = template
+        .ok()
+        .then(|| template.stdout_text().trim().to_owned())
+        .filter(|p| !p.is_empty())
+        .and_then(|p| {
+            repo.read_file(&template_file(repo, &p))
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+        });
+    Ok(
+        json!({ "history": history, "template": template, "last": last.ok().then(|| last.stdout_text().trim_end().to_owned()) }),
+    )
 }
 
 // ---- branches ----
@@ -1267,9 +1287,20 @@ mod tests {
         let m = messages(&repo).unwrap();
         assert!(m["last"].as_str().unwrap().starts_with("first"), "{m}");
         assert!(m.get("authors").is_none(), "{m}");
-        let started = std::fs::read_to_string(&log).unwrap().lines().filter(|l| *l == "s").count();
-        assert_eq!(started, 2, "git ran for more than the template and the last message");
-        assert_eq!(most_at_once(&log), 2, "the two reads ran one after the other");
+        let started = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .filter(|l| *l == "s")
+            .count();
+        assert_eq!(
+            started, 2,
+            "git ran for more than the template and the last message"
+        );
+        assert_eq!(
+            most_at_once(&log),
+            2,
+            "the two reads ran one after the other"
+        );
     }
 
     #[test]

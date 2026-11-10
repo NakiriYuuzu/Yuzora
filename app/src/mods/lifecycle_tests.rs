@@ -642,7 +642,7 @@ fn git_sidebar_module(state: Rc<GitSidebar>, props: Value, fails: &'static [(&'s
             "stash": 0, "truncated": false, "numstatSkipped": false
         })) }))
     });
-    module = module.async_function("messages", move |_| Ok(answer(Ok(json!({"history": [], "template": null, "last": null, "authors": []})))));
+    module = module.async_function("messages", move |_| Ok(answer(Ok(json!({"history": [], "template": null, "last": null})))));
     module = module.async_function("changed", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
     let s = state.clone();
     module = module.async_function("nextCommand", move |_| {
@@ -676,12 +676,24 @@ fn git_sidebar_mount(cx: &mut TestAppContext, source: &str, module: HostModule) 
 }
 
 /// [`git_sidebar_mount`], keeping what the window asks a mod to draw again with when herdr's data changes.
-fn git_sidebar_mount_live(cx: &mut TestAppContext, source: &str, module: HostModule) -> (Fixture, VisualTestContext, Rc<ShellRuntime>, gpui::Entity<ShellRoot>) {
+fn git_sidebar_mount_live(
+    cx: &mut TestAppContext,
+    source: &str,
+    module: HostModule,
+) -> (
+    Fixture,
+    VisualTestContext,
+    Rc<ShellRuntime>,
+    gpui::Entity<ShellRoot>,
+) {
     let fixture = Fixture::new(source);
     gpui_shell::policy::set_default(Policy::new().with_host_module(module).unwrap());
     let runtime = ShellRuntime::new_isolated().unwrap();
-    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
-    let root = window.update(cx, |mounted, _, _| mounted.0.clone()).unwrap();
+    let window =
+        cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
+    let root = window
+        .update(cx, |mounted, _, _| mounted.0.clone())
+        .unwrap();
     let mut visual = VisualTestContext::from_window(*window.deref(), cx);
     git_sidebar_settle(&mut visual);
     (fixture, visual, runtime, root)
@@ -748,8 +760,11 @@ fn yuzora_git_repo_follows_the_focus_or_the_pin_of_its_space(cx: &mut TestAppCon
 fn yuzora_git_sidebar_follows_its_place_in_the_frame_it_changes(cx: &mut TestAppContext) {
     let state = Rc::new(GitSidebar::default());
     *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
-    let module = git_sidebar_module(state.clone(), Value::Null, &[], |_| Ok(json!({"repos": [], "truncated": false})));
-    let (_fixture, mut visual, runtime, root) = git_sidebar_mount_live(cx, &git_sidebar_source(&[]), module);
+    let module = git_sidebar_module(state.clone(), Value::Null, &[], |_| {
+        Ok(json!({"repos": [], "truncated": false}))
+    });
+    let (_fixture, mut visual, runtime, root) =
+        git_sidebar_mount_live(cx, &git_sidebar_source(&[]), module);
     let opened = |state: &GitSidebar| state.opened.borrow().clone();
     assert_eq!(opened(&state), ["/sp/a"]);
     let draw_again = |visual: &mut VisualTestContext| {
@@ -758,12 +773,23 @@ fn yuzora_git_sidebar_follows_its_place_in_the_frame_it_changes(cx: &mut TestApp
     };
     *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p2"});
     draw_again(&mut visual);
-    assert_eq!(opened(&state), ["/sp/a", "/sp/b/c"], "the focus moved to another pane's folder");
-    assert_eq!(state.shared.borrow().get("yuzora.badge.git").cloned(), Some(json!(2)), "and its changes are the badge");
+    assert_eq!(
+        opened(&state),
+        ["/sp/a", "/sp/b/c"],
+        "the focus moved to another pane's folder"
+    );
+    assert_eq!(
+        state.shared.borrow().get("yuzora.badge.git").cloned(),
+        Some(json!(2)),
+        "and its changes are the badge"
+    );
     *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
     draw_again(&mut visual);
     assert_eq!(opened(&state), ["/sp/a", "/sp/b/c", "/sp/a"], "and back");
-    assert_eq!(state.shared.borrow().get("yuzora.badge.git").cloned(), Some(json!(1)));
+    assert_eq!(
+        state.shared.borrow().get("yuzora.badge.git").cloned(),
+        Some(json!(1))
+    );
     visual.update(|window, _| window.remove_window());
 }
 

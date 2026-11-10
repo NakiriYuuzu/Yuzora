@@ -541,28 +541,48 @@ mod tests {
     #[ignore = "needs a repository: YUZORA_GIT_PERF_REPO"]
     fn perf_attach_to_a_repository() {
         use std::time::Instant;
-        let Ok(path) = std::env::var("YUZORA_GIT_PERF_REPO") else { return };
-        let runs: usize = std::env::var("YUZORA_GIT_PERF_RUNS").ok().and_then(|n| n.parse().ok()).unwrap_or(5);
+        let Ok(path) = std::env::var("YUZORA_GIT_PERF_REPO") else {
+            return;
+        };
+        let runs: usize = std::env::var("YUZORA_GIT_PERF_RUNS")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(5);
         let timeline = std::env::var("YUZORA_GIT_TIMELINE").ok();
         // No file watch: what an attach costs without starting one (`open` starts it).
-        crate::watch::NO_WATCH.with(|n| n.set(std::env::var_os("YUZORA_GIT_PERF_NO_WATCH").is_some()));
-        let spawned = || timeline.as_ref().map_or(0, |t| std::fs::read_to_string(t).map_or(0, |s| s.lines().count()));
+        crate::watch::NO_WATCH
+            .with(|n| n.set(std::env::var_os("YUZORA_GIT_PERF_NO_WATCH").is_some()));
+        let spawned = || {
+            timeline.as_ref().map_or(0, |t| {
+                std::fs::read_to_string(t).map_or(0, |s| s.lines().count())
+            })
+        };
         let phase = |what: &str, work: &mut dyn FnMut()| {
             let (t, before) = (Instant::now(), spawned());
             work();
-            format!("{what} {}ms/{}", t.elapsed().as_millis(), spawned() - before)
+            format!(
+                "{what} {}ms/{}",
+                t.elapsed().as_millis(),
+                spawned() - before
+            )
         };
         for (n, kind) in (0..runs).flat_map(|n| [(n, "cold"), (n, "again")]) {
             let mut repo = None;
             let (total, before) = (Instant::now(), spawned());
-            let open = phase("open", &mut || repo = Some(repo::open(&path, None).unwrap()));
+            let open = phase("open", &mut || {
+                repo = Some(repo::open(&path, None).unwrap())
+            });
             let repo = repo.unwrap();
             let status = phase("status", &mut || drop(status::read(&repo, false).unwrap()));
             let messages = phase("messages", &mut || {
                 trust::check(&repo).unwrap();
                 ops::messages(&repo).unwrap();
             });
-            println!("attach {kind} {n}: {} ms, {} git processes ({open}, {status}, {messages})", total.elapsed().as_millis(), spawned() - before);
+            println!(
+                "attach {kind} {n}: {} ms, {} git processes ({open}, {status}, {messages})",
+                total.elapsed().as_millis(),
+                spawned() - before
+            );
             if kind == "again" {
                 repo::close(&repo.id);
             }
