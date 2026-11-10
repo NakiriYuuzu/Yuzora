@@ -44,17 +44,20 @@ const SPLIT = "yuzora.git.diff.split", SPLIT_MIN = 0.15, SPLIT_MAX = 0.85;
 // The grab area over the divider, the bar below the lines when they scroll sideways, and the room left
 // after the widest line.
 const GRAB = 5, BAR = 8, REST = 12;
-// How a diff's lines are laid out out of sight to find how wide they are ([`GitDiff.probes`]): the first frame lays
-// out a line a side and each after it GROW times as many as the one before, up to what a frame lays out per side
-// (FRAME), and the frames lay out MEASURE in all, both counted as [`cost`] says; a line longer than LAYOUT
-// characters, or drawn in more than TEXTS pieces, is not laid out. [`rank`] puts the lines in the order
-// they are laid out in by what each can take at most, reading LOOK characters of a diff in all, one line to LINE
-// of them; a line costs TOLL of them besides its length, and each character that is not ASCII SLOW more; one with more
-// than SORT of those is not sorted by kind. It reads in full the lines that beat the FEW widest it has read so far,
-// and takes a line it does not read at WORST cells a UTF-16 unit. A piece of a line is rounded up to a pixel of the
-// window, which is at most HALF a cell for each piece but the first.
-const GROW = 4, FRAME = 1 << 15, MEASURE = 1 << 18, LAYOUT = 1 << 18, TEXTS = 1 << 12;
-const LOOK = 4e6, LINE = 1 << 20, TOLL = 200, SLOW = 25, SORT = 1 << 16, FEW = 4, WORST = 3, HALF = 0.5;
+// How wide a diff's lines are is found out a little at a time, so that nothing a frame or an event does grows with the
+// diff. [`scan`] goes through the rows SLICE units of work at a time (a row costs STEP, and reading a line TOLL besides
+// its length, and SLOW more for each character that is not ASCII): taking the diff in does the first slice, and a frame
+// that finds the rest not done asks, out of sight, for the next. It works out what each line can take at most, in cells
+// ([`bound`], reading LINE characters of a line at most), and puts the lines in the order of that, widest first; a line
+// that three cells a character cannot make as wide as the FEW widest read so far is not read. Then each frame lays out
+// the first lines in that order, out of sight, in the box the rows draw them in ([`GitDiff.probes`]): one a side in the
+// first, GROW times as many as in the one before after it, and never more than FRAME in all, counted as [`cost`] says. A
+// line that costs more than FRAME by itself is laid out alone, a side to a frame, up to LAYOUT characters or TEXTS
+// pieces, past which it is not laid out at all. The range is the widest line laid out, and while lines are left that can
+// be wider, the most the widest of them can take at most. A piece of a line is rounded up to a pixel of the window,
+// which is at most HALF a cell for each piece but the first.
+const GROW = 4, FRAME = 1 << 15, LAYOUT = 1 << 18, TEXTS = 1 << 12;
+const SLICE = 2e6, STEP = 100, TOLL = 200, SLOW = 25, LINE = 1 << 20, SORT = 1 << 16, FEW = 4, WORST = 3, HALF = 0.5;
 // The width of a run of this over its length is what a cell takes in the font. The layout rounds that width up
 // to a pixel, which on a cell is the less the longer the run.
 const RULER = "W".repeat(1 << 16);
@@ -215,14 +218,21 @@ export default class GitDiff extends View {
     return this.drag?.kind === "split" ? this.drag.ratio : ratioOf(shared(SPLIT));
   }
 
-  // A diff's rows come in here: what the pane needs of them to draw, which takes reading all of their
-  // lines, is worked out now, once, not in each frame. Both are kept only when it is all done, so a
-  // failure leaves the diff that is on show as it was.
+  // A diff's rows come in here: what the pane needs of their lines to draw is worked out from now on, once, not in
+  // each frame, and a slice of it now. A failure in that slice leaves the diff that is on show as it was; one in a
+  // later slice (a row that is not what the rows are) ends the diff as an error.
   show(view) {
-    const fit = this.layout === "unified"
-      ? { longest: Math.min(2000, view.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0)) }
-      : ranks(view.rows);
+    let fit;
+    if (this.layout === "unified") fit = { longest: Math.min(2000, view.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0)) };
+    else scan(fit = ranking(view.rows), { left: SLICE });
     this.view = view; this.fit = fit; this.gauge = null;
+  }
+
+  // The next slice of the rows is ranked, when a frame has asked for it out of sight.
+  ranked(fit, cx) {
+    if (this.fit !== fit || fit.done) return;
+    try { scan(fit, { left: SLICE }); } catch (e) { this.error = String(e); }
+    cx.notify();
   }
 
   // What measuring the lines has laid out so far, for the zoom and font they are drawn in now. A line is as wide as
@@ -232,10 +242,12 @@ export default class GitDiff extends View {
     if (!this.fit?.l) return null;
     const key = this.gaugeKey();
     if (this.gauge?.key !== key) {
-      const side = (name) => ({ left: this.fit[name].keys.length - 1, got: 0, spent: 0, blind: 0, rounds: 0 });
-      this.gauge = { id: ++gauges, key, l: side("l"), r: side("r") };
+      const side = () => ({ left: undefined, got: 0, blind: 0, rounds: 0 });
+      this.gauge = { id: ++gauges, key, l: side(), r: side() };
     }
-    return this.gauge;
+    const g = this.gauge;
+    if (this.fit.done) for (const name of ["l", "r"]) g[name].left ??= this.fit[name].keys.length - 1;
+    return g;
   }
 
   gaugeKey() {
@@ -248,10 +260,12 @@ export default class GitDiff extends View {
   }
 
   // The most, in cells, that the lines of a side that were not laid out can take: the next of them in line,
-  // which can take the most of those left, and those passed over because they cannot be laid out.
+  // which can take the most of those left, and those passed over because they cannot be laid out. While the rows
+  // are still being ranked, the most any line ranked so far can take.
   remain(name) {
-    const g = this.gauge[name];
-    return Math.max(g.blind, g.left >= 0 ? entry(this.fit[name], g.left).cells : 0);
+    const g = this.gauge[name], rank = this.fit[name];
+    if (!this.fit.done) return rank.top;
+    return Math.max(g.blind, g.left >= 0 ? entry(rank, g.left).cells : 0);
   }
 
   // How wide the box of the widest line of a side that was not laid out may be, in the unit the pane writes
@@ -267,8 +281,7 @@ export default class GitDiff extends View {
   }
 
   // What the widest line of a side takes, in the box it is drawn in: as it was laid out, or while some lines are
-  // left (and when the measuring ran out of what it may lay out, for good) as much as the widest of them could
-  // take at most, if that is more.
+  // left as much as the widest of them could take at most, if that is more.
   span(name) {
     const g = this.gauge?.[name];
     if (!g) return 0;
@@ -300,8 +313,8 @@ export default class GitDiff extends View {
     this.downX = x == null ? null : unzoom(x);
   }
 
-  // The drag in progress follows the pointer: the divider by the share of the width it moved, the bar
-  // by what its thumb's travel stands for.
+  // The drag in progress follows the pointer: the divider by the share of the width it moved, the bar by
+  // where its thumb is, which the offset is worked out from in each frame.
   dragTo(x, cx) {
     const d = this.drag, lay = this.lay;
     if (!d || !lay) return;
@@ -309,8 +322,8 @@ export default class GitDiff extends View {
       const ratio = ratioOf(d.from + unzoom(x - d.x) / Math.max(1, lay.width - 1));
       if (ratio !== d.ratio) { d.ratio = ratio; cx.notify(); }
     } else {
-      const at = Math.max(d.from + unzoom(x - d.x) * d.per, 0);
-      if (at !== this.scrollX) { this.scrollX = at; cx.notify(); }
+      const room = Math.max(1, lay.width - lay.thumb), at = Math.min(Math.max(d.from + unzoom(x - d.x), 0), room);
+      if (at !== d.at) { d.at = at; cx.notify(); }
     }
   }
 
@@ -438,23 +451,25 @@ export default class GitDiff extends View {
 
   // The bar under the lines when they scroll sideways; its thumb drags.
   hbar(th) {
-    const lay = this.lay, thumb = Math.max(24, Math.round(lay.width * lay.width / (lay.width + lay.reach)));
+    const lay = this.lay, thumb = lay.thumb;
     return div().absolute().left(0).bottom(0).w_full().h(BAR)
       .child(div().id("diff-thumb").absolute().top(2).left(Math.round((lay.width - thumb) * lay.sx / lay.reach)).w(thumb).h(BAR - 4).rounded(3).bg(th.dim)
         .opacity(this.drag?.kind === "bar" ? 0.9 : 0.5).cursor_pointer().hover((s) => s.opacity(0.9))
         .on_mouse_down("left", (e, cx) => {
           cx.stop_propagation();
-          this.drag = { kind: "bar", x: e.position.x, from: lay.sx, per: lay.reach / Math.max(1, lay.width - thumb) };
+          const from = (lay.width - thumb) * lay.sx / lay.reach;
+          this.drag = { kind: "bar", x: e.position.x, from, at: from };
           cx.notify();
         }));
   }
 
   // The next lines of a side to lay out, widest first by what each can take at most, as many as a frame lays out,
-  // and where they start in the order. Lines that cannot be laid out are passed over, and kept in `blind`.
+  // and where they start in the order. A line that costs a frame by itself is a batch of its own, unless it is past
+  // what can be laid out: those are passed over, and kept in `blind`.
   batch(name) {
     const g = this.gauge[name], rank = this.fit[name], { text, pieces } = SIDES[name], lines = [];
     let used = 0;
-    for (let at = g.left; at >= 0 && g.spent + used < MEASURE && lines.length < GROW ** g.rounds; at--) {
+    for (let at = g.left; at >= 0 && lines.length < GROW ** g.rounds && used <= FRAME; at--) {
       const { cells, r } = entry(rank, at), long = (r[text] ?? r.t).length, cut = r[pieces]?.length || 1, price = cost(long, cut);
       if (long > LAYOUT || cut > TEXTS) {
         if (lines.length) break;
@@ -476,24 +491,27 @@ export default class GitDiff extends View {
     const width = unzoom(size.width);
     if (width > s.got) s.got = width;
     s.left = batch.from - batch.lines.length;
-    s.spent += batch.cost;
     s.rounds++;
     cx.notify();
   }
 
-  // The lines to measure, laid out out of sight in the very box the cells draw them in ([`line`]), in the font and
-  // size of the rows: a batch of each side while some lines of it may be wider than the widest laid out so far, and a
-  // run of ruler, which says what a cell is for the lines that are not. Each reports its width, which is how far the
-  // sides scroll; they go away once nothing is left to find out.
+  // What is done out of sight, in the very box the cells draw lines in ([`line`]), in the font and size of the rows: the
+  // next slice of the rows is ranked, if they are not all, as the size of an element that is new each time says; then a
+  // batch of each side is laid out while some lines of it may be wider than the widest laid out so far, and a run of
+  // ruler, which says what a cell is for the lines that are not. Each reports its width, which is how far the sides
+  // scroll; they go away once nothing is left to find out.
   probes(th, d) {
-    const g = this.gauge;
+    const g = this.gauge, fit = this.fit;
     if (!g) return div();
     const hidden = () => v_flex().absolute().top(0).left(0).h(0).overflow_hidden();
     const out = [];
-    for (const name of ["l", "r"]) {
+    let heavy = false;
+    if (!fit.done) out.push(hidden().id(`rank-${fit.at}`).on_size_change((_size, cx) => this.ranked(fit, cx)).child(div().w(1)));
+    else for (const name of ["l", "r"]) {
       if (this.settled(name)) continue;
       const batch = this.batch(name);
-      if (!batch.lines.length) continue;
+      if (!batch.lines.length || batch.cost > FRAME && heavy) continue;
+      if (batch.cost > FRAME) heavy = true;
       out.push(hidden().id(`gauge-${g.id}-${name}-${batch.from}`)
         .on_size_change((size, cx) => this.measured(g, name, batch, size, cx))
         .children(batch.lines.map((r) => h_flex().child(this.line(r, name, th, d)))));
@@ -517,8 +535,10 @@ export default class GitDiff extends View {
     // What is kept, a wheel's or a thumb's reach past the end included, is brought within the room there is
     // now: a pane made narrower or a divider moved leaves the lines where they are, and does not give them
     // what was asked for beyond the end.
-    this.scrollX = Math.min(this.scrollX, reach);
-    this.lay = { ratio, width, reach, sx: this.scrollX, l: ratio * 100, r: (1 - ratio) * 100 };
+    // A thumb that is held stays under the pointer when the range changes: the offset follows the thumb.
+    const thumb = Math.max(24, Math.round(width * width / (width + reach))), room = Math.max(1, width - thumb);
+    this.scrollX = this.drag?.kind === "bar" ? reach * Math.min(this.drag.at, room) / room : Math.min(this.scrollX, reach);
+    this.lay = { ratio, width, reach, thumb, sx: this.scrollX, l: ratio * 100, r: (1 - ratio) * 100 };
     return div().flex_1().min_h(0).relative().overflow_hidden().font_family(mono).text_size(11.5)
       .child(div().id("diff-rows-box").size_full().pb(reach > 0 ? BAR : 0)
         .on_size_change((size, cx) => { if (Math.abs(size.width - this.rowsPx) > 0.5) { this.rowsPx = size.width; cx.notify(); } })
@@ -646,14 +666,11 @@ const NARROW = /[^\x80-\u058f\u2000-\u206f\u2190-\u22ff\u2500-\u259f]+/g;
 const WIDE = /[^\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]+/g;
 const PAIR = /[^\ud800-\udfff]+/g;
 
-// The cells a line takes at most, reading as much of it as `meter` has left to give: a line it reads
-// only the first [`LINE`] characters of has the rest taken at [`WORST`], and one it has nothing left
-// for is taken at [`WORST`] whole, as is every character that is not ASCII in a line with more than
-// [`SORT`] of them. The reading costs what [`TOLL`] and [`SLOW`] say, taken from the meter.
+// The cells a line takes at most, reading its first [`LINE`] characters (the rest is taken at [`WORST`] a unit, as is
+// every character that is not ASCII in a line with more than [`SORT`] of them). What the reading costs, [`TOLL`] and
+// [`SLOW`], is taken from `meter`.
 function bound(s, meter) {
-  const n = s.length, read = Math.min(n, LINE, Math.max(meter.left, 0));
-  if (!read) return WORST * n;
-  const head = read < n ? s.slice(0, read) : s;
+  const n = s.length, read = Math.min(n, LINE), head = read < n ? s.slice(0, read) : s;
   const other = head.replace(ASCII, "");
   meter.left -= TOLL + read + SLOW * other.length;
   let cells = read - other.length + WORST * (n - read);
@@ -678,36 +695,48 @@ function cost(chars, pieces) {
   return chars + 16 * pieces + 64;
 }
 
-// Every line of a side, widest first by what it can take at most, in cells: [`bound`] of its text, and what its pieces
-// may be rounded up by. A line is read in full if it can beat the few widest read so far, else it is taken at three
-// cells a character. The order is a sort of numbers (a bound in quarters of a cell above, the row below, in one number),
-// so what a frame goes through of it is the few lines it takes off the end, and nothing depends on how many rows
-// there are. How wide the lines are is found by laying them out in that order: what the table of cells says is
-// wrong costs lines to lay out, not the range. Both sides go by in one pass over the rows, and a line that is the same
-// on both (an unchanged row) is read once.
-function ranks(rows, meter = { left: LOOK }) {
+// Every line of a side in the order they are laid out in, widest first by what each can take at most, in cells:
+// [`bound`] of its text, and what its pieces may be rounded up by. The order is a sort of numbers (a bound in quarters
+// of a cell above, the row below, in one number), so what a frame goes through of it is the few lines it takes off the
+// end, and nothing depends on how many rows there are. How wide the lines are is found by laying them out in that
+// order: what the table of cells says is wrong costs lines to lay out, not the range. A line that is the same on both
+// sides (an unchanged row) is read once.
+function ranking(rows) {
   const count = rows.length, base = 2 ** Math.ceil(Math.log2(count + 1));
-  const l = { keys: new Float64Array(count), few: [], floor: -1 }, r = { keys: new Float64Array(count), few: [], floor: -1 };
-  let ln = 0, rn = 0, lfloor = -1, rfloor = -1;
-  for (let i = 0; i < count; i++) {
-    const row = rows[i], t = row.t, lt = row.lt ?? t, rt = row.rt ?? t;
+  const side = () => ({ keys: new Float64Array(count), n: 0, few: [], floor: -1, top: 0, base, rows });
+  return { rows, count, base, at: 0, done: false, l: side(), r: side() };
+}
+
+// Ranks the rows from where `fit` left off until `meter` has nothing left, and sorts the lines when all the rows have
+// been. A line is read in full if it can beat the FEW widest read so far, else it is taken at three cells a unit.
+function scan(fit, meter) {
+  const { rows, count, base, l, r } = fit;
+  while (fit.at < count && meter.left > 0) {
+    const i = fit.at++, row = rows[i], t = row.t, lt = row.lt ?? t, rt = row.rt ?? t;
+    meter.left -= STEP;
     let same = 0;
     if (lt) {
       const cut = row.ls?.length;
       let cells = WORST * lt.length + (cut > 1 ? HALF * (cut - 1) : 0);
-      if (cells > lfloor) { cells = read(l, lt, cut, meter); lfloor = l.floor; }
-      l.keys[ln++] = cells * 4 * base + i;
+      if (cells > l.floor) cells = read(l, lt, cut, meter);
+      l.keys[l.n++] = cells * 4 * base + i;
+      if (cells > l.top) l.top = cells;
       if (rt === lt && !row.ls && !row.rs) same = cells;
     }
     if (rt) {
       const cut = row.rs?.length;
       let cells = same || WORST * rt.length + (cut > 1 ? HALF * (cut - 1) : 0);
-      if (same) { if (cells > rfloor) { keep(r, cells); rfloor = r.floor; } }
-      else if (cells > rfloor) { cells = read(r, rt, cut, meter); rfloor = r.floor; }
-      r.keys[rn++] = cells * 4 * base + i;
+      if (!same) { if (cells > r.floor) cells = read(r, rt, cut, meter); }
+      else if (cells > r.floor) keep(r, cells);
+      r.keys[r.n++] = cells * 4 * base + i;
+      if (cells > r.top) r.top = cells;
     }
   }
-  return { l: { keys: l.keys.subarray(0, ln).sort(), base, rows }, r: { keys: r.keys.subarray(0, rn).sort(), base, rows } };
+  if (fit.at === count && !fit.done) {
+    l.keys = l.keys.subarray(0, l.n).sort();
+    r.keys = r.keys.subarray(0, r.n).sort();
+    fit.done = true;
+  }
 }
 
 // A line read in full: its bound.

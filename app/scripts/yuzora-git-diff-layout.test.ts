@@ -10,11 +10,12 @@ const fonts = JSON.parse(await readFile(new URL("./fixtures/yuzora-git-diff-font
   samples: { text: string; units: number; cells: number }[];
 };
 
-type Rank = { keys: Float64Array; base: number; rows: object[] };
+type Rank = { keys: Float64Array; base: number; rows: object[]; top: number };
+type Fit = { l: Rank; r: Rank; at: number; count: number; done: boolean; rows: object[] };
 type Gauge = { key: string; l: Side; r: Side };
-type Side = { left: number; got: number; spent: number; blind: number; rounds: number };
+type Side = { left: number | undefined; got: number; blind: number; rounds: number };
 type Pane = {
-  fit: { l: Rank; r: Rank };
+  fit: Fit;
   gauge: Gauge | null;
   unit: { key: string; w: number } | null;
   gauged(): Gauge;
@@ -24,26 +25,48 @@ type Pane = {
   span(name: string): number;
 };
 const zoomed = { zoom: 1 };
-const { ratioOf, bound, ranks, entry, cost, GitDiff, LINE, LAYOUT, WORST, HALF, FRAME, MEASURE, LOOK } = (() => {
+const { ratioOf, bound, ranking, scan, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW } = (() => {
   const body = src.replace(/^import [\s\S]*?;\n/gm, "").replace("export default class GitDiff", "class GitDiff");
-  return new Function("View", "settings", `${body}; return { ratioOf, bound, ranks, entry, cost, GitDiff, LINE, LAYOUT, WORST, HALF, FRAME, MEASURE, LOOK };`)(class {}, () => zoomed);
+  return new Function("View", "settings", `${body}; return { ratioOf, bound, ranking, scan, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW };`)(class {}, () => zoomed);
 })() as {
   ratioOf: (v: unknown) => number;
   bound: (text: string, meter: { left: number }) => number;
-  ranks: (rows: object[], meter?: { left: number }) => { l: Rank; r: Rank };
+  ranking: (rows: object[]) => Fit;
+  scan: (fit: Fit, meter: { left: number }) => void;
   entry: (rank: Rank, at: number) => { cells: number; r: Record<string, unknown> };
   cost: (chars: number, pieces: number) => number;
   GitDiff: { prototype: object };
   LINE: number;
   LAYOUT: number;
+  TEXTS: number;
   WORST: number;
   HALF: number;
   FRAME: number;
-  MEASURE: number;
-  LOOK: number;
+  SLICE: number;
+  STEP: number;
+  TOLL: number;
+  SLOW: number;
 };
 
 const plenty = () => ({ left: Infinity });
+// The rows ranked, all of them at once.
+const ranks = (rows: object[]) => {
+  const fit = ranking(rows);
+  scan(fit, plenty());
+  return fit;
+};
+// The rows ranked a slice at a time, as the pane does: how many slices it took, and the most rows one went through.
+const ranksInSlices = (rows: object[], slice = SLICE) => {
+  const fit = ranking(rows);
+  let slices = 0, most = 0;
+  while (!fit.done) {
+    const from = fit.at;
+    scan(fit, { left: slice });
+    most = Math.max(most, fit.at - from);
+    slices++;
+  }
+  return { fit, slices, most };
+};
 // What each character takes in the diff's font, in cells, as it was measured.
 const measured = new Map(fonts.samples.filter((s) => [...s.text].length === 1).map((s) => [s.text, s.cells]));
 const truly = (text: string) => [...text].reduce((n, ch) => n + (measured.get(ch) ?? 1), 0);
@@ -67,13 +90,13 @@ test("an ASCII line takes a cell a character, no more, and a wide one is not tak
   expect(bound("\u{1f600}".repeat(100), plenty())).toBe(300);
 });
 
-test("what is not read is taken at its worst: the rest of a long line, and a line past what is left to read", () => {
+test("the rest of a line past what is read of it is taken at its worst, and what reading costs is taken from the meter", () => {
   expect(bound("a".repeat(LINE + 10), plenty())).toBe(LINE + WORST * 10);
-  expect(bound("a".repeat(50), { left: 0 })).toBe(WORST * 50);
-  const meter = { left: 120 };
+  const meter = { left: 10000 };
   expect(bound("a".repeat(100), meter)).toBe(100);
-  expect(meter.left).toBeLessThan(0);
-  expect(bound("a".repeat(100), meter)).toBe(WORST * 100);
+  expect(meter.left).toBe(10000 - TOLL - 100);
+  expect(bound("é漢".repeat(10), meter)).toBeGreaterThan(20);
+  expect(meter.left).toBe(10000 - TOLL - 100 - TOLL - 20 - SLOW * 20);
 });
 
 const row = (lt?: string, rt?: string, pieces?: string[]) => ({
@@ -84,7 +107,7 @@ const row = (lt?: string, rt?: string, pieces?: string[]) => ({
 });
 // The texts of a side in the order they are laid out in: widest first by what they can take at most.
 const order = (rows: object[], side: "l" | "r" = "l") => {
-  const r = ranks(rows, plenty())[side];
+  const r = ranks(rows)[side];
   return Array.from({ length: r.keys.length }, (_, i) => entry(r, r.keys.length - 1 - i));
 };
 const texts = (rows: object[], side: "l" | "r" = "l") => order(rows, side).map((e) => e.r[`${side}t`] ?? e.r.t);
@@ -122,7 +145,7 @@ test("a line that is the same on both sides, in an unchanged row, is read once",
 test("a line that three cells a character cannot make as wide as the widest read is not read", () => {
   // Six lines of 900 characters, then five thousand of 200: 600 cells at most each, under the 900 of the four widest.
   const rows = [...Array.from({ length: 6 }, () => row("a".repeat(900))), ...Array.from({ length: 5000 }, () => row("b".repeat(200)))];
-  const { out, read } = reading(() => ranks(rows, plenty()));
+  const { out, read } = reading(() => ranks(rows));
   expect(read).toBeLessThan(20000);
   expect(out.l.keys.length).toBe(5006);
   expect(entry(out.l, 0).cells).toBe(WORST * 200);
@@ -144,7 +167,7 @@ const drawn = (r: Record<string, unknown>, side: "l" | "r", zoom: number) => {
 
 // Measures the rows' lines as the pane does, a batch a frame, laying out each batch as the window does (here, by the
 // table of widths and the rounding), until nothing is asked for.
-function measure(rows: object[], zoom: number, ruler = CELL) {
+function measure(rows: object[], zoom: number, ruler = CELL, each: (pane: Pane) => void = () => {}) {
   zoomed.zoom = zoom;
   const pane = Object.create(GitDiff.prototype) as Pane;
   Object.assign(pane, { fit: ranks(rows), gauge: null, unit: null });
@@ -167,6 +190,7 @@ function measure(rows: object[], zoom: number, ruler = CELL) {
       asked = true;
       pane.unit = { key: g.key, w: ruler };
     }
+    each(pane);
     if (!asked) break;
   }
   return { pane, frames, laid };
@@ -192,7 +216,7 @@ test("lines in a script the table does not list are laid out until the widest is
   }
 });
 
-test("what each frame lays out is a few lines, whatever the diff, and a line too long to lay out is passed over", () => {
+test("what each frame lays out is a few lines, whatever the diff, and a line that costs a frame by itself is laid out alone", () => {
   const rows = Array.from({ length: 20000 }, (_, i) => row("a".repeat(30 + (i % 60)), "b"));
   const pane = Object.assign(Object.create(GitDiff.prototype), { fit: ranks(rows), gauge: null, unit: null }) as Pane;
   const g = pane.gauged();
@@ -203,28 +227,68 @@ test("what each frame lays out is a few lines, whatever the diff, and a line too
   expect(batch.cost).toBeLessThanOrEqual(FRAME);
   expect(batch.lines.length).toBeGreaterThan(FRAME / 2 / cost(90, 1));
   expect(batch.lines.length).toBeLessThanOrEqual(FRAME / cost(30, 1) + 1);
-  const long = "a".repeat(LAYOUT + 1);
-  const over = Object.assign(Object.create(GitDiff.prototype), { fit: ranks([row(long, "b"), row("short", "b")]), gauge: null, unit: null }) as Pane;
-  const gauge = over.gauged();
-  expect(over.batch("l").lines).toEqual([row("short", "b")]);
-  expect(gauge.l.blind).toBe(LAYOUT + 1);
-  // What it could take at most is still counted in the room, since nothing says how wide it is.
-  over.unit = { key: gauge.key, w: CELL };
-  expect(over.span("l")).toBeGreaterThanOrEqual((LAYOUT + 1) * CELL);
 });
 
-test("when what may be laid out runs out, the range is what the lines left could take, never less", () => {
-  // A hundred lines of 6,000 Chinese characters: 1.67 cells each in the font, 2 at most while they are read. Reading
-  // takes 156,000 of the 4,000,000 that may be read, so the first 25 are, and the other 75 are taken at 3 cells a
-  // character without being read, which puts them first in line. Laying a line out takes 6,080 of the 262,144 that
-  // may, so 43 are laid out, and the 57 left may be as wide as any: the widest of them is taken at 18,000 cells.
+test("a line that costs more than a frame is a batch of its own, and one past what can be laid out is passed over", () => {
+  const heavy = "a".repeat(FRAME), short = row("short", "b");
+  expect(cost(heavy.length, 1)).toBeGreaterThan(FRAME);
+  const open = (rows: object[]) => {
+    const pane = Object.assign(Object.create(GitDiff.prototype), { fit: ranks(rows), gauge: null, unit: null }) as Pane;
+    pane.gauged().l.rounds = 10;
+    return pane;
+  };
+  const alone = open([row(heavy, "b"), short, short]);
+  expect(alone.batch("l").lines).toEqual([row(heavy, "b")]);
+  expect(alone.batch("l").cost).toBeGreaterThan(FRAME);
+  // The lines before it in the order go together and it comes after them, alone.
+  const behind = open([row("a".repeat(FRAME - 500), "b"), row(heavy, "b")]);
+  const first = behind.batch("l");
+  expect(first.lines).toEqual([row(heavy, "b")]);
+  behind.gauge!.l.left = first.from - first.lines.length;
+  expect(behind.batch("l").lines).toEqual([row("a".repeat(FRAME - 500), "b")]);
+  // Past LAYOUT characters or TEXTS pieces it is not laid out; what it could take at most is still in the room.
+  const pieces = Array.from({ length: TEXTS + 1 }, () => "a");
+  for (const past of [row("a".repeat(LAYOUT + 1), "b"), row(pieces.join(""), "b", pieces)]) {
+    const over = open([past, short]);
+    expect(over.batch("l").lines).toEqual([short]);
+    expect(over.gauge!.l.blind).toBeGreaterThanOrEqual(entry(over.fit.l, 1).cells);
+    over.unit = { key: over.gauge!.key, w: CELL };
+    expect(over.span("l")).toBeGreaterThanOrEqual(entry(over.fit.l, 1).cells * CELL);
+  }
+});
+
+test("a batch never costs more than a frame unless it is one line, whatever line comes first in it", () => {
+  const costs = [FRAME - 100, FRAME - 1, FRAME / 2, FRAME / 4, 300, 90].map((c) => c - 64 - 16);
+  const rows = costs.flatMap((n) => [row("a".repeat(n), "b"), row("a".repeat(n), "b")]);
+  const { pane } = measure(rows, 1);
+  const g = pane.gauge!;
+  g.l.left = pane.fit.l.keys.length - 1;
+  for (g.l.rounds = 0; g.l.left >= 0; g.l.rounds++) {
+    const batch = pane.batch("l");
+    expect(batch.lines.length).toBeGreaterThan(0);
+    if (batch.lines.length > 1) expect(batch.cost).toBeLessThanOrEqual(FRAME);
+    g.l.left = batch.from - batch.lines.length;
+  }
+});
+
+test("lines are laid out until the widest is found, however many there are: nothing caps the total, only each frame", () => {
+  // A hundred lines of 6,000 Chinese characters: 1.67 cells each in the font, 2 at most. All of them can be as wide as
+  // the widest laid out, so all are laid out, five to a frame (a line costs 6,080 and a frame 32,768).
   const rows = Array.from({ length: 100 }, () => row("漢".repeat(6000), "b"));
-  const { pane, laid } = measure(rows, 1);
-  expect(laid.l).toBe(Math.ceil(MEASURE / cost(6000, 1)));
-  expect(pane.settled("l")).toBe(false);
-  expect(pane.gauge!.l.left).toBeGreaterThanOrEqual(0);
-  expect(pane.span("l")).toBeGreaterThanOrEqual(widestDrawn(rows as Record<string, unknown>[], "l", 1));
-  expect(pane.span("l")).toBeCloseTo(6 + 18000 * CELL, 6);
+  const { pane, laid, frames } = measure(rows, 1);
+  expect(laid.l).toBe(100);
+  expect(frames).toBeLessThanOrEqual(30);
+  expect(pane.settled("l")).toBe(true);
+  expect(pane.span("l")).toBeCloseTo(widestDrawn(rows as Record<string, unknown>[], "l", 1), 6);
+  // Thousands of lines in a script the table does not list (three cells a character against one drawn): the range is
+  // the widest drawn at the end, and never less than it at any frame on the way.
+  const hebrew = Array.from({ length: 3000 }, (_, i) => row("א".repeat(150 - (i % 50)), "b"));
+  const wide = widestDrawn(hebrew as Record<string, unknown>[], "l", 1);
+  const lowest = { span: Infinity };
+  const hebrewPane = measure(hebrew, 1, CELL, (pane) => (lowest.span = Math.min(lowest.span, pane.span("l"))));
+  expect(hebrewPane.pane.span("l")).toBeCloseTo(wide, 6);
+  expect(lowest.span).toBeGreaterThanOrEqual(wide - 1e-6);
+  expect(hebrewPane.frames).toBeLessThanOrEqual(60);
 });
 
 // Replaces the methods of strings and of regular expressions that go through a whole string for the length of
@@ -257,15 +321,29 @@ function reading<T>(f: () => T): { out: T; read: number } {
   }
 }
 
-test("how much of a diff is read does not depend on how big it is, however it is read", () => {
+test("how much of a diff is read in a slice does not depend on how big it is, however it is read", () => {
   // Thirty lines of 2,000,000 characters, then a hundred thousand more: 66,000,000 characters in all.
   const rows = [...Array.from({ length: 30 }, () => row("a".repeat(2e6) + "é")), ...Array.from({ length: 1e5 }, () => row("short line of text"))];
-  const { out, read } = reading(() => ranks(rows));
-  // A line's head is copied once and scanned once.
-  expect(read).toBeLessThanOrEqual(2.5 * LOOK);
-  expect(out.l.keys.length).toBe(1e5 + 30);
-  // Nothing was read of what came after, and each line of it is taken at its worst: three cells a character.
-  expect(entry(out.l, 0).cells).toBe(WORST * "short line of text".length);
+  const fit = ranking(rows);
+  const slice = reading(() => scan(fit, { left: SLICE }));
+  // A line's head is copied once and scanned once, and the slice ends with the line that used up its budget.
+  expect(slice.read).toBeLessThanOrEqual(2 * (SLICE + LINE) + 1000);
+  expect(fit.at).toBeLessThan(5);
+  expect(fit.done).toBe(false);
+});
+
+test("the rows are ranked a slice at a time, no slice goes through more than its budget allows, and it ends as if done at once", () => {
+  const rows = Array.from({ length: 30000 }, (_, i) => (i % 3 ? row("a".repeat(10 + (i % 90)), "b".repeat(i % 50)) : { k: "=", t: `${"é".repeat(i % 20)} unchanged ${i}` }));
+  const slice = SLICE / 40, { fit, slices, most } = ranksInSlices(rows, slice);
+  expect(slices).toBeGreaterThan(5);
+  expect(most).toBeLessThanOrEqual(Math.ceil(slice / STEP));
+  const whole = ranks(rows);
+  expect(Array.from(fit.l.keys)).toEqual(Array.from(whole.l.keys));
+  expect(Array.from(fit.r.keys)).toEqual(Array.from(whole.r.keys));
+  // Rows that cost nothing to read still cost a step each: a million of them is not one slice.
+  const empty = Array.from({ length: 5e5 }, () => ({ k: "=" }));
+  expect(ranksInSlices(empty).slices).toBeGreaterThan(5e5 / (SLICE / STEP) - 1);
+  expect(ranksInSlices([]).fit.done).toBe(true);
 });
 
 test("the count of what is read sees every way a line can be read", () => {
@@ -309,7 +387,7 @@ test("the widest line is found whatever the table of cells says of the rest: any
     // that much wider), and no more than that over once nothing is left.
     if (got < want - 2 / zoom - 1e-6) failures.push(`trial ${trial} at zoom ${zoom}: the range is ${got} for lines drawn ${want} wide`);
     if (pane.settled("l") && got > want + 1e-6) failures.push(`trial ${trial} at zoom ${zoom}: settled at ${got} for lines drawn ${want} wide`);
-    if (!pane.settled("l") && pane.gauge!.l.spent < MEASURE && pane.gauge!.l.left >= 0) failures.push(`trial ${trial}: stopped with lines left and room to lay them out`);
+    if (!pane.settled("l") && pane.gauge!.l.left >= 0) failures.push(`trial ${trial}: stopped with lines left to lay out`);
   }
   expect(failures).toEqual([]);
 });
