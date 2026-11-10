@@ -800,11 +800,13 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
             // Waiting for the connection ends with the future; on the server
             // the statement has to be told (PostgreSQL, SQLite), or the socket
             // dropped with it (SQL Server).
-            drop(work);
-            let canceller = engine_stop.lock().unwrap_or_else(|e| e.into_inner()).take();
-            if let Some(canceller) = canceller {
-                canceller.cancel().await;
-            }
+            stop_work(work, async {
+                let canceller = engine_stop.lock().unwrap_or_else(|e| e.into_inner()).take();
+                if let Some(canceller) = canceller {
+                    canceller.cancel().await;
+                }
+            })
+            .await;
             Err(DbError::Cancelled)
         }
     };
@@ -824,6 +826,13 @@ pub async fn write_back_set(set: &Arc<Mutex<ResultSet>>) -> DbResult<u64> {
     outcome
 }
 
+/// Ends work the person stopped: `signal` tells the engine, and `work` (with
+/// the connection it holds) is let go of around it.
+async fn stop_work<W>(work: W, signal: impl std::future::Future<Output = ()>) {
+    drop(work);
+    signal.await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,6 +847,23 @@ mod tests {
         query.columns(vec![Column::new("x", "int4")]);
         assert_eq!(results::lock(query.last.as_ref().unwrap()).editing, Editing::ReadOnly(ReadOnly::Query));
         supersede("sink-test");
+    }
+
+    #[test]
+    fn the_engine_is_told_to_stop_while_the_work_still_holds_the_connection() {
+        runtime::block_on(async {
+            let slot = Arc::new(tokio::sync::Mutex::new(None::<Conn>));
+            let held = slot.clone().lock_owned().await;
+            let work = Box::pin(async move {
+                let _held = held;
+                std::future::pending::<()>().await
+            });
+            let signal = async {
+                assert!(slot.try_lock().is_err(), "the connection was let go before the engine was told to stop");
+            };
+            stop_work(work, signal).await;
+            assert!(slot.try_lock().is_ok(), "the connection is let go of once the engine was told");
+        });
     }
 
     #[test]

@@ -861,3 +861,295 @@ fn mssql_writes_every_kind_of_column_back_through_the_session() {
     ];
     go(&id, cases);
 }
+
+// ---------------------------------------------------------------- each Stop ends what it stands beside
+
+/// The result of a table job once it can be edited (its count may still be out).
+fn editable_result(job: JobId) -> std::sync::Arc<std::sync::Mutex<results::ResultSet>> {
+    let mut found = None;
+    until("the table never became editable", || {
+        found = session::job_state(job).and_then(|s| s.results.first().filter(|r| r.editable).map(|r| r.id));
+        found.is_some()
+    });
+    results::get(found.unwrap()).unwrap()
+}
+
+/// Another connection to the file, holding its write lock.
+fn another_writer(file: &std::path::Path) -> rusqlite::Connection {
+    let other = rusqlite::Connection::open(file).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    other
+}
+
+/// A table of one person read for a pane whose count is still out (its
+/// connection is not to be had), with one cell edited.
+struct SlowCount {
+    id: String,
+    file: PathBuf,
+    job: JobId,
+    set: std::sync::Arc<std::sync::Mutex<results::ResultSet>>,
+    held: Option<session::Lease>,
+}
+
+fn slow_count(name: &str, setup: &str) -> SlowCount {
+    let (id, file) = sqlite_connection(name);
+    run(&id, "setup", &format!("create table people(id integer primary key, name text); insert into people values (1, 'a'); {setup}"));
+    let pane_owner = owner(&id, &format!("{name}-pane"));
+    let held = runtime::block_on(session::lease(&id, None, &session::count_owner(&pane_owner))).unwrap();
+    let job = session::open_table(&id, None, &pane_owner, &table("", "people"), None);
+    let set = editable_result(job);
+    assert!(session::job_state(job).unwrap().running, "the count is still out");
+    results::lock(&set).set_edit(0, 1, Cell::text("mine"));
+    SlowCount { id, file, job, set, held: Some(held) }
+}
+
+/// Starts the write-back and waits until it sits on the database's lock.
+fn write_back_on_a_lock(set: &std::sync::Arc<std::sync::Mutex<results::ResultSet>>) -> std::thread::JoinHandle<Result<u64, DbError>> {
+    let set = set.clone();
+    let writer = {
+        let set = set.clone();
+        std::thread::spawn(move || runtime::block_on(session::write_back_set(&set)))
+    };
+    until("the write-back never reported that it is waiting", || results::lock(&set).is_writing());
+    std::thread::sleep(Duration::from_millis(400));
+    writer
+}
+
+/// An UPDATE that takes a few seconds (its trigger writes a few million rows).
+const SLOW_UPDATE: &str = "create table scratch(n integer);
+    create trigger slow after update on people begin
+      insert into scratch select x from (with recursive c(x) as (select 1 union all select x + 1 from c where x < 3000000) select x from c);
+    end;";
+
+#[test]
+fn sqlite_the_tables_stop_leaves_a_write_back_that_is_running() {
+    let mut pane = slow_count("wb-stop-table", SLOW_UPDATE);
+    let writer = {
+        let set = pane.set.clone();
+        std::thread::spawn(move || runtime::block_on(session::write_back_set(&set)))
+    };
+    until("the write-back never started", || results::lock(&pane.set).is_writing());
+    std::thread::sleep(Duration::from_millis(500));
+
+    session::cancel(pane.job);
+    let written = within(Duration::from_secs(60), "the write-back after the table's Stop", move || writer.join().unwrap());
+    assert_eq!(written, Ok(1), "the table's Stop is not the write-back's: {:?}", results::lock(&pane.set).write);
+    assert_eq!(rows(&pane.id, "select name from people"), [["mine"]]);
+
+    drop(pane.held.take());
+    let state = wait(pane.job);
+    assert!(state.cancelled, "the Stop did reach the count: {state:?}");
+    assert_eq!(results::lock(&pane.set).total, None);
+}
+
+#[test]
+fn sqlite_stopping_a_write_back_leaves_the_count_running() {
+    let mut pane = slow_count("wb-stop-write", "");
+    let other = another_writer(&pane.file);
+    let writer = write_back_on_a_lock(&pane.set);
+
+    let rid = results::lock(&pane.set).id;
+    session::stop_write(rid);
+    let stopped = within(Duration::from_secs(5), "the stopped write-back", move || writer.join().unwrap());
+    assert_eq!(stopped, Err(DbError::Cancelled));
+    let state = session::job_state(pane.job).unwrap();
+    assert!(state.running && !state.cancelled, "the write-back's Stop is not the table's: {state:?}");
+    {
+        let r = results::lock(&pane.set);
+        assert_eq!(r.write_failure().map(str::to_owned), Some(yuzora_db::i18n::t("edit.stopped_maybe", &[])));
+    }
+    other.execute_batch("ROLLBACK").unwrap();
+
+    drop(pane.held.take());
+    let state = wait(pane.job);
+    assert!(!state.cancelled && state.error.is_none(), "{state:?}");
+    assert_eq!(results::lock(&pane.set).total, Some(1), "the count still ran");
+}
+
+/// A count that really runs (a view that has to count a few hundred million
+/// rows, one the read never gets to): the table's Stop ends it.
+#[test]
+fn sqlite_the_tables_stop_ends_a_count_that_is_running() {
+    let (id, _) = sqlite_connection("wb-stop-count");
+    run(
+        &id,
+        "setup",
+        "create view slow(id) as with recursive c(x) as (select 1 union all select x + 1 from c where x < 400000000) select x from c;",
+    );
+    let job = session::open_table(&id, None, &owner(&id, "stop-count-pane"), &table("", "slow"), None);
+    until("the rows never arrived", || {
+        session::job_state(job).is_some_and(|s| s.results.first().is_some_and(|r| r.rows > 0 && r.complete))
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(session::job_state(job).unwrap().running, "the count is running");
+    session::cancel(job);
+    let state = within(Duration::from_secs(5), "the table's Stop ending the count", move || wait(job));
+    assert!(state.cancelled, "{state:?}");
+    assert_eq!(state.results[0].total, None);
+}
+
+#[test]
+fn postgres_the_tables_stop_leaves_a_write_back_that_is_waiting_on_a_row_lock() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_stoptable");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a'), (2, 'b');");
+    let pane_owner = owner(&id, "stop-table-pane");
+    let held = runtime::block_on(session::lease(&id, None, &session::count_owner(&pane_owner))).unwrap();
+    let job = session::open_table(&id, None, &pane_owner, &table("public", "t"), None);
+    let set = editable_result(job);
+    assert!(session::job_state(job).unwrap().running, "the count is still out");
+    let row = {
+        let r = results::lock(&set);
+        r.rows.iter().position(|row| row[0].display() == "2").unwrap()
+    };
+    run(&id, "locker", "BEGIN; UPDATE t SET name = 'locked' WHERE id = 2");
+    results::lock(&set).set_edit(row, 1, Cell::text("mine"));
+    let writer = write_back_on_a_lock(&set);
+
+    session::cancel(job);
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(
+        results::lock(&set).is_writing(),
+        "the table's Stop is not the write-back's: {:?}",
+        results::lock(&set).write
+    );
+    run(&id, "locker", "ROLLBACK");
+    let written = within(Duration::from_secs(10), "the write-back after the table's Stop", move || writer.join().unwrap());
+    assert_eq!(written, Ok(1), "{:?}", results::lock(&set).write);
+    assert_eq!(first_row(&id, "SELECT name FROM t WHERE id = 2"), ["mine"]);
+    drop(held);
+    assert!(wait(job).cancelled);
+}
+
+#[test]
+fn postgres_stopping_a_write_back_says_so_in_words_and_leaves_the_count_running() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_stopwrite");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');");
+    let pane_owner = owner(&id, "stop-write-pane");
+    let held = runtime::block_on(session::lease(&id, None, &session::count_owner(&pane_owner))).unwrap();
+    let job = session::open_table(&id, None, &pane_owner, &table("public", "t"), None);
+    let set = editable_result(job);
+    run(&id, "locker", "BEGIN; UPDATE t SET name = 'locked' WHERE id = 1");
+    results::lock(&set).set_edit(0, 1, Cell::text("mine"));
+    let writer = write_back_on_a_lock(&set);
+
+    let rid = results::lock(&set).id;
+    session::stop_write(rid);
+    let stopped = within(Duration::from_secs(5), "the stopped write-back", move || writer.join().unwrap());
+    assert_eq!(stopped, Err(DbError::Cancelled));
+    let words = results::lock(&set).write_failure().map(str::to_owned).unwrap_or_default();
+    assert_eq!(words, yuzora_db::i18n::t("edit.stopped_maybe", &[]), "not the server's: {words}");
+    let state = session::job_state(job).unwrap();
+    assert!(state.running && !state.cancelled, "{state:?}");
+    run(&id, "locker", "ROLLBACK");
+    drop(held);
+    let state = wait(job);
+    assert!(!state.cancelled);
+    assert_eq!(results::lock(&set).total, Some(1));
+    assert_eq!(first_row(&id, "SELECT name FROM t WHERE id = 1"), ["a"]);
+}
+
+#[test]
+fn postgres_the_tables_stop_ends_a_count_that_is_running() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_stopcount");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE VIEW slow AS WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 2000000000) SELECT x AS id FROM c;");
+    let job = session::open_table(&id, None, &owner(&id, "stop-count-pane"), &table("public", "slow"), None);
+    until("the rows never arrived", || {
+        session::job_state(job).is_some_and(|s| s.results.first().is_some_and(|r| r.rows > 0 && r.complete))
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(session::job_state(job).unwrap().running, "the count is running");
+    session::cancel(job);
+    let state = within(Duration::from_secs(10), "the table's Stop ending the count", move || wait(job));
+    assert!(state.cancelled, "{state:?}");
+    assert_eq!(state.results[0].total, None);
+}
+
+// ---------------------------------------------------------------- a count that has no connection of its own
+
+/// A pane's table is read while the connection a count would use cannot be
+/// opened: the connection stays what it was, and the total still comes.
+#[cfg(unix)]
+#[test]
+fn sqlite_a_count_without_a_connection_of_its_own_runs_on_the_panes_and_does_not_fail_the_connection() {
+    let (id, file) = sqlite_connection("wb-count-fallback");
+    run(&id, "setup", "create table people(id integer primary key, name text); insert into people values (1, 'a'), (2, 'b');");
+    let pane_owner = owner(&id, "fallback-pane");
+    let t = table("", "people");
+    // The connections the read opens first are there: the count's is the only new one.
+    runtime::block_on(session::describe(&id, None, &t)).unwrap();
+    drop(runtime::block_on(session::lease(&id, None, &pane_owner)).unwrap());
+    let moved = file.with_extension("moved");
+    std::fs::rename(&file, &moved).unwrap();
+
+    let state = wait(session::open_table(&id, None, &pane_owner, &t, None));
+    std::fs::rename(&moved, &file).unwrap();
+    assert_eq!(state.error, None);
+    assert_eq!(state.results[0].rows, 2);
+    assert_eq!(state.results[0].total, Some(2), "the count came, on the pane's connection");
+    let status = session::status(&id);
+    assert_eq!(status.state, session::State::Connected, "{status:?}");
+}
+
+/// A role that may have two connections: the sidebar's and the pane's.
+#[test]
+fn postgres_a_connection_limit_does_not_fail_the_connection_or_hide_the_total() {
+    only_with!("postgres");
+    let maintenance = postgres_in("pg-maintenance-limit", "postgres");
+    run(&maintenance, "role", "DROP ROLE IF EXISTS yz_wb_lim");
+    run(&maintenance, "role", "CREATE ROLE yz_wb_lim LOGIN PASSWORD 'yz-wb-lim-pw' CONNECTION LIMIT 2");
+    let _role = PgRole { maintenance: maintenance.clone(), name: "yz_wb_lim" };
+    let scratch = PgScratchDatabase::new("yz_wb_limit");
+    let setup = scratch.connection();
+    run(&setup, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c'); GRANT SELECT, UPDATE ON t TO yz_wb_lim;");
+    let limited = save(
+        json!({"name": "pg-limited", "engine": "postgres", "host": "127.0.0.1", "port": 55432,
+               "user": "yz_wb_lim", "database": "yz_wb_limit", "ssl": "prefer"}),
+        Some("yz-wb-lim-pw"),
+    );
+
+    let state = wait(session::open_table(&limited, None, &owner(&limited, "limit-pane"), &table("public", "t"), None));
+    assert_eq!(state.error, None);
+    let summary = &state.results[0];
+    assert!(summary.editable, "{summary:?}");
+    assert_eq!(summary.total, Some(3), "the count came, though a third connection is not allowed");
+    let status = session::status(&limited);
+    assert_eq!(status.state, session::State::Connected, "{status:?}");
+
+    let set = results::get(summary.id).unwrap();
+    results::lock(&set).set_edit(0, 1, Cell::text("mine"));
+    assert_eq!(runtime::block_on(session::write_back_set(&set)), Ok(1));
+    assert_eq!(first_row(&setup, "SELECT name FROM t WHERE id = 1"), ["mine"]);
+    session::release_owner(&owner(&limited, "limit-pane"));
+    session::disconnect(&limited);
+}
+
+/// A login dropped when the test ends, whatever happened (declared before the
+/// database it was granted on, so it goes after it).
+struct PgRole {
+    maintenance: String,
+    name: &'static str,
+}
+
+impl Drop for PgRole {
+    fn drop(&mut self) {
+        let job = session::start_query(
+            &self.maintenance,
+            None,
+            &owner(&self.maintenance, "role"),
+            &format!("DROP ROLE IF EXISTS {}", self.name),
+        );
+        let mut seen = 0;
+        while let Ok(state) = runtime::block_on(session::job_after(job, seen)) {
+            if !state.running {
+                break;
+            }
+            seen = state.version;
+        }
+    }
+}

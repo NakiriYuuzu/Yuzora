@@ -592,6 +592,7 @@ impl Grid {
                     let selected = self.is_selected((view_row, col_ix));
                     let cell = div()
                         .id(("c", view_row * 4096 + col_ix))
+                        .debug_selector(move || format!("grid-cell-{view_row}-{col_ix}"))
                         .w(px(width))
                         .flex_none()
                         .h_full()
@@ -682,6 +683,7 @@ impl Grid {
         let button = |id: &'static str, label: String, primary: bool| {
             div()
                 .id(id)
+                .debug_selector(move || format!("grid-{id}"))
                 .h(px(20.0))
                 .px(px(8.0))
                 .flex()
@@ -694,6 +696,8 @@ impl Grid {
                 .child(label)
         };
         div()
+            .id("footer")
+            .debug_selector(|| "grid-footer".into())
             .flex()
             .flex_row()
             .flex_none()
@@ -712,6 +716,7 @@ impl Grid {
                 d.child(
                     div()
                         .id("message")
+                        .debug_selector(|| "grid-message".into())
                         .min_w_0()
                         .truncate()
                         .cursor_pointer()
@@ -852,6 +857,7 @@ impl Render for Grid {
         let open_message = message.map(|(text, error)| {
             div()
                 .id("message-open")
+                .debug_selector(|| "grid-message-open".into())
                 .flex_none()
                 .max_h(px(140.0))
                 .overflow_y_scroll()
