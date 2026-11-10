@@ -33,6 +33,11 @@ pub struct ConnectSpec {
     /// host up. The host still names the server for TLS.
     pub addresses: Option<Vec<SocketAddr>>,
     pub connect_timeout: Duration,
+    /// The connection a table is read and written back on, which only this
+    /// crate's statements run on (`session::table_owner`). PostgreSQL prints
+    /// values the way they are read back there; any other connection keeps the
+    /// server's settings.
+    pub for_table: bool,
 }
 
 impl ConnectSpec {
@@ -44,6 +49,7 @@ impl ConnectSpec {
             endpoint: None,
             addresses: None,
             connect_timeout: Duration::from_secs(15),
+            for_table: false,
         }
     }
 

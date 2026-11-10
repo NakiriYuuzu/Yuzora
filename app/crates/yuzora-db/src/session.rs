@@ -278,7 +278,13 @@ async fn open_lease(connection: &str, database: Option<&str>, owner: &str, usage
                 }
             });
         }
-        match async { Conn::connect(&spec?).await }.await {
+        match async {
+            let mut spec = spec?;
+            spec.for_table = is_table_owner(owner);
+            Conn::connect(&spec).await
+        }
+        .await
+        {
             Ok(conn) => {
                 let version = conn.server_version();
                 *guard = Some(conn);
@@ -996,7 +1002,13 @@ pub fn count_owner(owner: &str) -> String {
 /// temporary table) stays there: the table's rows are read and written by a
 /// connection that only this crate's own statements have run on.
 pub fn table_owner(owner: &str) -> String {
-    format!("{owner}:table")
+    format!("{owner}{TABLE}")
+}
+
+const TABLE: &str = ":table";
+
+fn is_table_owner(owner: &str) -> bool {
+    owner.ends_with(TABLE)
 }
 
 /// Writes a result's pending edits in one transaction; on success they become

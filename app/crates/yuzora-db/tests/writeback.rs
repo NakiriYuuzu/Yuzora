@@ -2877,7 +2877,7 @@ fn postgres_pane(id: &str, name: &str, tab: Option<&TabState>) -> Vec<String> {
     outcome.push(written);
     outcome.extend(first_row(
         id,
-        "SELECT octet_length(t)::text, (arr[2] IS NULL)::text, EXTRACT(epoch FROM iv)::bigint::text, to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), d::text, n::text FROM pg_s WHERE id = 1",
+        "SELECT octet_length(t)::text, (arr[2] IS NULL)::text, EXTRACT(epoch FROM iv)::bigint::text, to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), to_char(d, 'YYYY-MM-DD'), n::text FROM pg_s WHERE id = 1",
     ));
     outcome
 }
