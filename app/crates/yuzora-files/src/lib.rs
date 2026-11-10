@@ -1636,6 +1636,37 @@ return JSON.stringify([a, b, c, d]); }})()"#
     }
 
     #[test]
+    fn a_pane_not_started_yet_is_replaced_under_the_new_name_when_its_file_is_renamed() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            restore("s1", "a.rs", "yuzora-editor", { path: "/r/a.rs", on: null, opened: 1, line: 9 });
+            restore("s1", "R.md", "yuzora-markdown", { path: "/r/d/R.md", on: null, opened: 1 });
+            moved("/r/a.rs", "/r/b.rs", null); moved("/r/d", "/r/e", null); flush();
+            out.push(strip("s1"), focus());
+            openFile("/r/b.rs", null); flush();
+            out.push(strip("s1"));
+            openFile("/r/e/R.md", null); flush();
+            out.push(strip("s1"));
+            // The old name is free: a file made there is a new one.
+            openFile("/r/a.rs", null); flush();
+            out.push(strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [shell] [editor /r/b.rs] [markdown /r/e/R.md]",
+                "shell",
+                "[shell] [shell] [editor /r/b.rs]* [markdown /r/e/R.md]",
+                "[shell] [shell] [editor /r/b.rs] [markdown /r/e/R.md]*",
+                "[shell] [shell] [editor /r/b.rs] [markdown /r/e/R.md] [editor /r/a.rs]*",
+            ]
+        );
+    }
+
+    #[test]
     fn with_two_panes_on_one_file_the_one_its_document_was_last_seen_in_is_shown() {
         let seen = in_the_open(
             r#"
