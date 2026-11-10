@@ -1248,7 +1248,11 @@ mod tests {
             input.update_in(cx, |s, window, cx| s.replace_and_mark_text_in_range(None, "ㄅ", None, window, cx));
             with_another_edit(cx, &set);
             click(cx, "grid-write");
-            assert_eq!(edit_of(&set, 1), Some(Cell::text("𠀀中")), "the cell is what was chosen, without the composition");
+            assert_eq!(
+                edit_of(&set, 1),
+                Some(Cell::text("𠀀中")),
+                "the cell is what was chosen, without the composition"
+            );
             assert_eq!(edit_of(&set, 2), Some(Cell::text("other cell")));
             assert!(!is_editing(cx, "composing-button"));
         }
