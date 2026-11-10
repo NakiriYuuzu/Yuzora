@@ -3440,7 +3440,7 @@ impl AppWindow {
             "app.quit" => cx.quit(),
             "app.update" => {
                 if !crate::update::apply() {
-                    return self.fail("no update is ready yet");
+                    return self.fail(crate::yuzora::release::update::apply_failure()); // yuzora(win-update): why the swap failed, else "no update is ready yet"
                 }
                 self.drain_documents(window, cx);
                 crate::update::relaunch();

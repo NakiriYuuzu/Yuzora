@@ -67,6 +67,46 @@ fn keeps_given(settings: &serde_json::Value, running: &str, version: &str) -> bo
     Channel::chosen_from(settings, running).takes(version, false)
 }
 
+/// Why the last swap failed, in words for the person.
+static SWAP_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn failure_slot() -> std::sync::MutexGuard<'static, Option<String>> {
+    SWAP_FAILURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `swap` (src/update.rs) could not move the folders: keeps what "Restart" will say.
+pub fn note_swap_failure(e: &std::io::Error) {
+    let busy = cfg!(windows) && busy_code(e.raw_os_error());
+    *failure_slot() = Some(swap_failure_text(busy, &e.to_string()));
+}
+
+/// What `app.update` says when `apply` returned false: the swap's failure if it had one, else that nothing is waiting.
+pub fn apply_failure() -> String {
+    failure_slot()
+        .take()
+        .unwrap_or_else(|| "no update is ready yet".into())
+}
+
+/// Windows says "in use" with sharing violation (32), access denied (5) or lock violation (33).
+fn busy_code(code: Option<i32>) -> bool {
+    matches!(code, Some(5 | 32 | 33))
+}
+
+fn swap_failure_text(busy: bool, error: &str) -> String {
+    let installer = format!("download the installer from https://github.com/{REPO}/releases");
+    if busy {
+        format!(
+            "Yuzora could not install the update because another program is using its install folder. Close any terminal opened in that folder. If you came from a beta, restart your PC once. Then choose Restart again, or {installer}."
+        )
+    } else {
+        format!(
+            "Yuzora could not install the update: {error}. Choose Restart to try again, or {installer}."
+        )
+    }
+}
+
 /// Upstream's `check`, for Yuzora: Ok(Some(version)) once a newer version is
 /// downloaded, checked and staged beside `root`.
 pub fn check(root: &Path) -> Result<Option<String>, String> {
@@ -225,6 +265,79 @@ mod tests {
         // GitHub's download URLs inside, so those stay GitHub's.
         let source = Source { list: format!("{base}/repos/{REPO}/releases?per_page={PER_PAGE}"), downloads: Source::github().downloads };
         (source, serve_on(listener, routes, requests))
+    }
+
+    #[test]
+    fn a_folder_in_use_is_what_windows_calls_32_5_and_33() {
+        assert!([32, 5, 33].into_iter().all(|code| busy_code(Some(code))));
+        assert!(!busy_code(Some(183)) && !busy_code(Some(2)) && !busy_code(None));
+    }
+
+    #[test]
+    fn a_folder_in_use_says_what_to_close_and_where_the_installer_is() {
+        let text = swap_failure_text(
+            true,
+            "The process cannot access the file because it is being used by another process. (os error 32)",
+        );
+        assert!(
+            text.contains("another program is using its install folder"),
+            "{text}"
+        );
+        assert!(text.contains("Restart"), "{text}");
+        assert!(text.contains("restart your PC"), "{text}");
+        assert!(
+            text.contains("https://github.com/NakiriYuuzu/Yuzora/releases"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn any_other_swap_failure_carries_the_system_error() {
+        let text = swap_failure_text(
+            false,
+            "Cannot create a file when that file already exists. (os error 183)",
+        );
+        assert!(text.contains("os error 183"), "{text}");
+        assert!(
+            text.contains("https://github.com/NakiriYuuzu/Yuzora/releases"),
+            "{text}"
+        );
+        assert!(!text.contains("install folder"), "{text}");
+    }
+
+    #[test]
+    fn the_upstream_files_call_what_this_module_provides() {
+        let main = include_str!("../../main.rs");
+        let leave = main
+            .find("yuzora::release::cwd::leave_install_dir()")
+            .expect("main() leaves the install folder");
+        let swap = main
+            .find("update::apply_on_startup()")
+            .expect("main() applies a staged update");
+        assert!(
+            leave < swap,
+            "the working directory moves before the startup swap"
+        );
+        let update = include_str!("../../update.rs");
+        assert_eq!(
+            update.matches("update::note_swap_failure(&e)").count(),
+            2,
+            "both ways a swap fails"
+        );
+        let window = include_str!("../../window.rs");
+        assert!(
+            window.contains("self.fail(crate::yuzora::release::update::apply_failure())"),
+            "Restart says why"
+        );
+    }
+
+    #[test]
+    fn restart_names_the_failure_once_and_then_the_default() {
+        assert_eq!(apply_failure(), "no update is ready yet");
+        note_swap_failure(&std::io::Error::other("no"));
+        let said = apply_failure();
+        assert!(said.contains("could not install the update"), "{said}");
+        assert_eq!(apply_failure(), "no update is ready yet");
     }
 
     #[test]
