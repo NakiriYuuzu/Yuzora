@@ -1484,6 +1484,62 @@ fn postgres_a_stop_leaves_the_panes_connection_whole_whichever_comes_first_the_s
     assert!(stop_came_first >= rounds / 4, "only {stop_came_first} of {rounds} rounds had the Stop first");
 }
 
+/// What the write-back is doing is not up to when it gets to look at the Stop:
+/// a Stop pressed before COMMIT is sent means no COMMIT, whether or not the
+/// write-back has noticed it yet. The write-back is polled by hand and left
+/// alone from the moment it waits on the lock until its UPDATE has gone
+/// through on the server, so the Stop is pressed while it cannot see anything.
+#[test]
+fn postgres_a_stop_pressed_before_the_commit_is_sent_writes_nothing_though_the_write_back_has_not_seen_it() {
+    use std::future::Future;
+    use std::task::Poll;
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_unseen");
+    let direct = scratch.connection();
+    run(&direct, "setup", "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t VALUES (1, 'a');");
+    let locker = raw_postgres("yz_wb_unseen");
+    let pane = open(&direct, "unseen-pane", &table("public", "t"));
+    pane.edit(pane.row_where("id", "1"), "name", Some("mine"));
+    runtime::block_on(locker.batch_execute("BEGIN; UPDATE t SET name = 'holder' WHERE id = 1")).unwrap();
+    let count = |state: &'static str| {
+        let locker = &locker;
+        async move {
+            let sql = format!("SELECT count(*)::int FROM pg_stat_activity WHERE datname = 'yz_wb_unseen' AND {state}");
+            locker.query_one(sql.as_str(), &[]).await.unwrap().get::<_, i32>(0)
+        }
+    };
+
+    let set = pane.set.clone();
+    let written = runtime::block_on(async {
+        let mut write = Box::pin(session::write_back_set(&set));
+        let mut polls = 0;
+        while count("wait_event_type = 'Lock'").await == 0 {
+            assert!(std::future::poll_fn(|cx| Poll::Ready(write.as_mut().poll(cx))).await.is_pending());
+            polls += 1;
+            assert!(polls < 2000, "the write-back never got to wait on the lock");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        results::lock(&pane.set).stop_write();
+        locker.batch_execute("COMMIT").await.unwrap();
+        let mut waited = 0;
+        while count("state = 'idle in transaction'").await == 0 {
+            waited += 1;
+            assert!(waited < 2000, "the UPDATE never went through once the lock was let go");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tokio::time::timeout(Duration::from_secs(10), write).await.expect("the write-back ends once it is polled again")
+    });
+
+    assert_eq!(written, Err(DbError::Cancelled));
+    assert_eq!(
+        results::lock(&pane.set).write_failure().map(str::to_owned),
+        Some(yuzora_db::i18n::t("edit.stopped", &[])),
+        "COMMIT had not been sent when the Stop was pressed, so the message must not say the database may have saved it"
+    );
+    assert_eq!(first_row(&direct, "SELECT name FROM t WHERE id = 1"), ["holder"], "a Stop before COMMIT wrote anyway");
+    assert_eq!(wait(session::start_query(&direct, None, &pane.owner, "SELECT 1")).error, None);
+}
+
 /// SQLite waits for another writer's lock inside the file, where an interrupt
 /// does not reach: a stopped write-back must still write nothing once the lock
 /// is let go, and must not keep the pane's connection until then.
