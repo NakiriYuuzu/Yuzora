@@ -209,3 +209,4 @@ beta.4 PR-3、PR-4 之後要重拍或新增的（截圖尚未重拍，圖檔不�
 - **遠端（`machine` 有值）**：三步合成一個 `sh -c` 在那台機器上依序跑（選項、順序、停止條件與 `--no-lazy-fetch` 都和逐步版相同：不是 repo 或 detached 就停、promisor 才加 `--no-lazy-fetch`），一次往返。script 的每個 `git` 都直接寫出 `--no-optional-locks -c core.fsmonitor=false`（不經過未加引號的變數，所以 zsh 原生模式之類不拆字的 shell 也不會走偏）。只有 `rc=0`（分支）、`1`（detached）、`128`（不是 repo）算答案；輸出被截斷、格式不完整、或其他 rc（沒有 git、shell 沒照寫法執行）都退回逐步版。那台機器沒有 `sh`（或沒回應）同樣退回；逾時照樣當逾時，不重試。
 - **本機與退回路徑**：`symbolic-ref` 與 `config` 互不相依，改成並行（3 輪變 2 輪）。代價：detached 或資料夾不是 repo 時，本機現在會多跑 1 個 `config`（只讀，不執行程式；等待時間沒有增加）。
 - 安全條件不變（L1 #197）：只讀 refs 與 config，不讀 index 或 work tree，不執行 filter、fsmonitor；測試守著（`a_machines_repo_filter_never_runs`、`a_machines_partial_clone_is_not_fetched_either`）。
+- **什麼時候問**（v0.1.0 E1）：一個資料夾第一次被畫到（焦點移過去的那一幀）就問，不等 2 秒計時器；每個資料夾各有自己的詢問（以前共用一個 `busy`，一個慢的答案會擋住後面所有資料夾）；答案以詢問時的資料夾為鍵，回到看過的資料夾第一幀就有分支與 ↑↓。計時器只剩「視窗在前景時每 15 秒再問一次」。測試：`scripts/yuzora-statusbar.test.ts`。

@@ -87,9 +87,9 @@ async function logPane(w: ReturnType<typeof world>, p: object, { rootOf = (cwd: 
 }
 
 async function sidebar(w: ReturnType<typeof world>, repo: { root: string; machine: string | null }) {
-  const { SidebarGit } = await load("yuzora-sidebar-git", w.scope, ["SidebarGit"]);
+  const { SidebarGit, repoView } = await load("yuzora-sidebar-git", w.scope, ["SidebarGit", "repoView"]);
   const side = new SidebarGit();
-  side.repo = repo;
+  side.v = repoView(repo);
   return side;
 }
 

@@ -629,8 +629,11 @@ fn git_sidebar_module(state: Rc<GitSidebar>, props: Value, fails: &'static [(&'s
             None => Ok(json!({"id": top, "root": top, "machine": null, "gitDir": format!("{top}/.git"), "commonDir": format!("{top}/.git")})),
         }))
     });
+    let s = state.clone();
     module = module.async_function("status", move |a| {
         let root = a.string(0)?.to_owned();
+        // yuzora(v0.1.0 E1 r1): which repos were read, for the test of an arrival for a place left.
+        s.effects.borrow_mut().push(("status".into(), json!(root)));
         let n = match root.as_str() { "/sp/a" => 1, "/sp/b/c" => 2, "/sp/r" => 3, "/sp/ALIAS" => 4, _ => 0 };
         let unstaged: Vec<Value> = (0..n).map(|i| json!({"path": format!("f{i}"), "kind": "M", "add": 1, "del": 0, "binary": false})).collect();
         Ok(answer(if root == "/sp/vanish" { Err("fatal: cannot change to '/sp/vanish': No such file or directory".into()) } else { Ok(json!({
@@ -642,7 +645,7 @@ fn git_sidebar_module(state: Rc<GitSidebar>, props: Value, fails: &'static [(&'s
             "stash": 0, "truncated": false, "numstatSkipped": false
         })) }))
     });
-    module = module.async_function("messages", move |_| Ok(answer(Ok(json!({"history": [], "template": null, "last": null, "authors": []})))));
+    module = module.async_function("messages", move |_| Ok(answer(Ok(json!({"history": [], "template": null, "last": null})))));
     module = module.async_function("changed", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
     let s = state.clone();
     module = module.async_function("nextCommand", move |_| {
@@ -673,6 +676,30 @@ fn git_sidebar_mount(cx: &mut TestAppContext, source: &str, module: HostModule) 
     let mut visual = VisualTestContext::from_window(*window.deref(), cx);
     git_sidebar_settle(&mut visual);
     (fixture, visual)
+}
+
+/// [`git_sidebar_mount`], keeping what the window asks a mod to draw again with when herdr's data changes.
+fn git_sidebar_mount_live(
+    cx: &mut TestAppContext,
+    source: &str,
+    module: HostModule,
+) -> (
+    Fixture,
+    VisualTestContext,
+    Rc<ShellRuntime>,
+    gpui::Entity<ShellRoot>,
+) {
+    let fixture = Fixture::new(source);
+    gpui_shell::policy::set_default(Policy::new().with_host_module(module).unwrap());
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window =
+        cx.add_window(|window, cx| Mounted(runtime.try_load(&fixture.0, window, cx).unwrap()));
+    let root = window
+        .update(cx, |mounted, _, _| mounted.0.clone())
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(*window.deref(), cx);
+    git_sidebar_settle(&mut visual);
+    (fixture, visual, runtime, root)
 }
 
 fn git_sidebar_settle(visual: &mut VisualTestContext) {
@@ -728,6 +755,98 @@ fn yuzora_git_repo_follows_the_focus_or_the_pin_of_its_space(cx: &mut TestAppCon
     visual.update(|window, _| window.remove_window());
 }
 
+// yuzora(v0.1.0 E1): the sidebar looks at where it is in the frame the focus moves in: the window draws a mod
+// again when herdr's data changes, and no second goes by before the new place is opened (the clock stays where it
+// is). A place seen before is shown from what was read of it, so going back opens it again but shows its changes
+// at once.
+#[gpui::test]
+fn yuzora_git_sidebar_follows_its_place_in_the_frame_it_changes(cx: &mut TestAppContext) {
+    let state = Rc::new(GitSidebar::default());
+    *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
+    let module = git_sidebar_module(state.clone(), Value::Null, &[], |_| {
+        Ok(json!({"repos": [], "truncated": false}))
+    });
+    let (_fixture, mut visual, runtime, root) =
+        git_sidebar_mount_live(cx, &git_sidebar_source(&[]), module);
+    let opened = |state: &GitSidebar| state.opened.borrow().clone();
+    assert_eq!(opened(&state), ["/sp/a"]);
+    let draw_again = |visual: &mut VisualTestContext| {
+        visual.update(|_, cx| runtime.refresh(&root, cx).unwrap());
+        git_sidebar_settle(visual);
+    };
+    *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p2"});
+    draw_again(&mut visual);
+    assert_eq!(
+        opened(&state),
+        ["/sp/a", "/sp/b/c"],
+        "the focus moved to another pane's folder"
+    );
+    assert_eq!(
+        state.shared.borrow().get("yuzora.badge.git").cloned(),
+        Some(json!(2)),
+        "and its changes are the badge"
+    );
+    *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
+    draw_again(&mut visual);
+    assert_eq!(opened(&state), ["/sp/a", "/sp/b/c", "/sp/a"], "and back");
+    assert_eq!(
+        state.shared.borrow().get("yuzora.badge.git").cloned(),
+        Some(json!(1))
+    );
+    visual.update(|window, _| window.remove_window());
+}
+
+// yuzora(v0.1.0 E1 r1): an arrival ends at its first wait that finds its place left. The focus goes to another
+// pane and back before the first `open` has answered (two draws, nothing run between): the arrival for the pane
+// left throws and the sidebar catches it, in QuickJS as it does in the bun tests, and only the place the focus
+// ended at is shown and followed.
+#[gpui::test]
+fn yuzora_git_sidebar_arrival_for_a_place_left_ends_quietly(cx: &mut TestAppContext) {
+    let state = Rc::new(GitSidebar::default());
+    *state.focused.borrow_mut() = json!({"space": "s1", "pane": "p1"});
+    let module = git_sidebar_module(state.clone(), Value::Null, &[], |_| {
+        Ok(json!({"repos": [], "truncated": false}))
+    });
+    let (_fixture, mut visual, runtime, root) =
+        git_sidebar_mount_live(cx, &git_sidebar_source(&[]), module);
+    for pane in ["p2", "p1"] {
+        *state.focused.borrow_mut() = json!({"space": "s1", "pane": pane});
+        visual.update(|window, cx| {
+            runtime.refresh(&root, cx).unwrap();
+            window.draw(cx).clear(cx);
+        });
+    }
+    git_sidebar_settle(&mut visual);
+    assert_eq!(state.opened.borrow().clone(), ["/sp/a", "/sp/b/c", "/sp/a"]);
+    let badges: Vec<Value> = state
+        .effects
+        .borrow()
+        .iter()
+        .filter(|(name, v)| name == "setShared" && v[0] == "yuzora.badge.git")
+        .map(|(_, v)| v[1].clone())
+        .collect();
+    assert!(
+        !badges.contains(&json!(2)),
+        "the pane that was left was shown: {badges:?}"
+    );
+    let read: Vec<Value> = state
+        .effects
+        .borrow()
+        .iter()
+        .filter(|(name, _)| name == "status")
+        .map(|(_, v)| v.clone())
+        .collect();
+    assert!(
+        !read.contains(&json!("/sp/b/c")),
+        "the pane that was left was followed: {read:?}"
+    );
+    assert_eq!(
+        state.shared.borrow().get("yuzora.badge.git").cloned(),
+        Some(json!(1))
+    );
+    visual.update(|window, _| window.remove_window());
+}
+
 // yuzora(L2): a pinned repo that's gone (no `.git` left in its folder, or no folder: `repos`
 // reads the file system, no git runs) is unpinned with a note, and the sidebar follows the focus
 // again; found gone when it opens, or later, when status fails, or when git opens it as another
@@ -772,7 +891,7 @@ fn yuzora_git_repo_pinned_and_gone_follows_the_focus_again(cx: &mut TestAppConte
         state.shared.borrow_mut().insert("yuzora.git.repo.s1".into(), json!({"root": root, "on": null}));
         let module = git_sidebar_module(state.clone(), Value::Null, FAILS, found);
         // The error the sidebar shows.
-        let source = git_sidebar_source(&[(".child(this.error ?? t(\"loading\"))", ".child((note(\"error\", this.error ?? null), this.error ?? t(\"loading\")))")]);
+        let source = git_sidebar_source(&[(".child(v.error ?? t(\"loading\"))", ".child((note(\"error\", v.error ?? null), v.error ?? t(\"loading\")))")]);
         let (_fixture, mut visual) = git_sidebar_mount(cx, &source, module);
         git_sidebar_tick(&mut visual);
         let pin = state.shared.borrow().get("yuzora.git.repo.s1").cloned().unwrap_or(Value::Null);

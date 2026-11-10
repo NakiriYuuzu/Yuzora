@@ -223,16 +223,40 @@ fn template_file(repo: &Repo, p: &str) -> String {
 
 /// Earlier messages for this repo, newest first; the template; the last commit's message.
 pub fn messages(repo: &Repo) -> GitResult<Value> {
-    let all: BTreeMap<String, Vec<String>> = std::fs::read_to_string(messages_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let all: BTreeMap<String, Vec<String>> = std::fs::read_to_string(messages_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
     let history = all.get(&repo.id).cloned().unwrap_or_default();
-    let template = repo.run(Git::read(["config", "--path", "commit.template"]))?;
-    let template = template.ok().then(|| template.stdout_text().trim().to_owned()).filter(|p| !p.is_empty()).and_then(|p| repo.read_file(&template_file(repo, &p)).map(|b| String::from_utf8_lossy(&b).into_owned()));
-    // The sidebar reads these on its own: no lazy fetch before trust.
-    let last = repo.run(crate::trust::own_read(repo, Git::read(["log", "-1", "--format=%B"])))?;
-    let authors = repo.run(crate::trust::own_read(repo, Git::read(["log", "-n", "300", "--format=%an <%ae>"])))?;
-    let mut seen = HashSet::new();
-    let authors: Vec<String> = authors.stdout_text().lines().filter(|a| seen.insert(a.to_string())).take(16).map(str::to_owned).collect();
-    Ok(json!({ "history": history, "template": template, "last": last.ok().then(|| last.stdout_text().trim_end().to_owned()), "authors": authors }))
+    // The sidebar reads these on its own as it attaches: no lazy fetch before trust. Neither read needs the
+    // other, and each is a process (a round trip on a machine), so they go side by side.
+    let (template, last) = std::thread::scope(|s| {
+        let template = crate::exec::spawn_scoped(s, || {
+            repo.run(Git::read(["config", "--path", "commit.template"]))
+        });
+        let last = repo.run(crate::trust::own_read(
+            repo,
+            Git::read(["log", "-1", "--format=%B"]),
+        ));
+        (
+            template
+                .join()
+                .unwrap_or_else(|_| Err(GitError::Other("a message read panicked".into()))),
+            last,
+        )
+    });
+    let (template, last) = (template?, last?);
+    let template = template
+        .ok()
+        .then(|| template.stdout_text().trim().to_owned())
+        .filter(|p| !p.is_empty())
+        .and_then(|p| {
+            repo.read_file(&template_file(repo, &p))
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+        });
+    Ok(
+        json!({ "history": history, "template": template, "last": last.ok().then(|| last.stdout_text().trim_end().to_owned()) }),
+    )
 }
 
 // ---- branches ----
@@ -1253,6 +1277,57 @@ mod tests {
         assert_eq!(m["last"], "two", "{m}");
     }
 
+    /// Both reads start their commands the way the caller would (tests: with its `TEST_ENV`), the way the
+    /// status reads' threads are meant to; a thread of its own lost the caller's environment.
+    #[test]
+    fn messages_reads_the_template_with_the_environment_of_its_caller() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let template = s.dir.path().join("template.txt");
+        std::fs::write(&template, "subject line\n\nbody\n").unwrap();
+        crate::exec::TEST_ENV.with(|t| {
+            *t.borrow_mut() = vec![
+                ("GIT_CONFIG_COUNT".into(), "1".into()),
+                ("GIT_CONFIG_KEY_0".into(), "commit.template".into()),
+                (
+                    "GIT_CONFIG_VALUE_0".into(),
+                    template.to_string_lossy().into_owned(),
+                ),
+            ]
+        });
+        let m = messages(&s.repo);
+        crate::exec::TEST_ENV.with(|t| t.borrow_mut().clear());
+        assert_eq!(m.unwrap()["template"], "subject line\n\nbody\n");
+    }
+
+    /// The sidebar reads these as it attaches, so each read costs it a process and a wait: the template and
+    /// the last message are read together, and no list of authors is read that nothing shows.
+    #[cfg(unix)]
+    #[test]
+    fn messages_reads_the_template_and_the_last_message_together_and_no_authors() {
+        use crate::repo::testing::{most_at_once, timed_git};
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let (repo, log) = timed_git(&s, None);
+        let m = messages(&repo).unwrap();
+        assert!(m["last"].as_str().unwrap().starts_with("first"), "{m}");
+        assert!(m.get("authors").is_none(), "{m}");
+        let started = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .filter(|l| *l == "s")
+            .count();
+        assert_eq!(
+            started, 2,
+            "git ran for more than the template and the last message"
+        );
+        assert_eq!(
+            most_at_once(&log),
+            2,
+            "the two reads ran one after the other"
+        );
+    }
+
     #[test]
     fn commit_remembers_messages_and_branches_list_tracking() {
         let s = scratch();
@@ -1267,7 +1342,6 @@ mod tests {
         assert!(body.contains("Signed-off-by: Yuzora Test"), "{body}");
         let m = messages(&s.repo).unwrap();
         assert!(m["last"].as_str().unwrap().starts_with("second"));
-        assert!(m["authors"][0].as_str().unwrap().starts_with("Yuzora Test"));
         assert!(commit(&s.repo, &CommitOptions::default()).is_err());
         branch_create(&s.repo, "feature", None, false).unwrap();
         let b = branches(&s.repo).unwrap();
