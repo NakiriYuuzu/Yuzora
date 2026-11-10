@@ -3463,7 +3463,8 @@ fn the_database_table_pane_is_not_drawn_again_by_typing_in_its_sql_editor(cx: &m
     s.visual.simulate_input("select 1");
     s.settle();
     assert_eq!(drawn(&s), before, "typing draws the pane's JS again");
-    s.visual.simulate_keystrokes("cmd-enter");
+    // The shortcut a person presses on this system: the hint says "⌘↵ / Ctrl+Enter".
+    s.visual.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-enter" } else { "ctrl-enter" });
     s.settle();
     assert_eq!(
         s.last("typed").map(|n| n[1].clone()),
