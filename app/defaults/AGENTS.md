@@ -1209,7 +1209,11 @@ with these differences.
   the cursor), `.run_all`, `.stop`; `yuzora-db-table.data`, `.structure`,
   `.sql`, `.run`, `.stop`; `yuzora-sidebar-database.next`, `.prev`,
   `.refresh`, `.add`, `.query`. Edited cells are written back only when the
-  person presses Write back.
+  person presses Write back or Cmd+S (Ctrl+S) in the table; nothing is saved
+  by itself. A write-back that waits (on a lock, on the connection) shows
+  Stop: stopping it writes nothing, unless the message says the server had
+  already been asked to commit, and the edits stay in the cells. Running the
+  table again with edits not yet written asks first.
 <!-- yuzora:lane:L3:end -->
 
 <!-- yuzora:lane:L4:start -->
