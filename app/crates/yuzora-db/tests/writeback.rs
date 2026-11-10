@@ -1551,3 +1551,230 @@ fn sqlite_a_count_that_borrowed_the_panes_connection_steps_aside_for_whoever_ask
     session::cancel(job);
     assert!(within(Duration::from_secs(10), "the table's Stop", move || wait(job)).cancelled);
 }
+
+// ---------------------------------------------------------------- dates, whatever the session reads them as
+
+const LOGIN_PASSWORD: &str = "Yz-Dt-Only-2026!";
+
+/// Runs `sql` and waits for it; whatever it says, it says nothing (this runs while a test unwinds).
+fn quietly(connection: &str, sql: &str) {
+    let job = session::start_query(connection, None, &owner(connection, "quietly"), sql);
+    let mut seen = 0;
+    while let Ok(state) = runtime::block_on(session::job_after(job, seen)) {
+        if !state.running {
+            break;
+        }
+        seen = state.version;
+    }
+}
+
+/// A SQL Server login whose default language is `language`, owner of a database
+/// of its own. The database goes first, then the login.
+struct LanguageLogin {
+    scratch: ScratchDatabase,
+    login: String,
+}
+
+impl LanguageLogin {
+    fn new(database: &str, language: &str) -> Self {
+        let scratch = ScratchDatabase::new(database);
+        let login = LanguageLogin { login: format!("{database}_login"), scratch };
+        login.drop_login();
+        let name = &login.login;
+        run(
+            &login.scratch.master,
+            "login",
+            &format!("CREATE LOGIN {name} WITH PASSWORD = N'{LOGIN_PASSWORD}', DEFAULT_LANGUAGE = {language}, CHECK_POLICY = OFF"),
+        );
+        run(&login.scratch.connection(), "login", &format!("CREATE USER {name} FOR LOGIN {name}; ALTER ROLE db_owner ADD MEMBER {name}"));
+        login
+    }
+
+    fn connection(&self) -> String {
+        save(
+            json!({"name": format!("ms-login-{}", self.login), "engine": "mssql", "host": "127.0.0.1", "port": 51433,
+                   "user": self.login, "database": self.scratch.name, "ssl": "prefer"}),
+            Some(LOGIN_PASSWORD),
+        )
+    }
+
+    fn drop_login(&self) {
+        let name = &self.login;
+        quietly(
+            &self.scratch.master,
+            &format!(
+                "DECLARE @k nvarchar(max) = N''; \
+                 SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N'; ' FROM sys.dm_exec_sessions WHERE login_name = N'{name}'; \
+                 EXEC (@k); \
+                 IF SUSER_ID(N'{name}') IS NOT NULL DROP LOGIN {name}"
+            ),
+        );
+    }
+}
+
+impl Drop for LanguageLogin {
+    fn drop(&mut self) {
+        self.scratch.drop_it();
+        self.drop_login();
+    }
+}
+
+/// What a person types into a date cell, and what the table must hold afterwards.
+fn day_first_cases() -> Vec<Case> {
+    let s = "dbo";
+    vec![
+        Case { name: "datetime and smalldatetime cells, a day up to 12", setup: "CREATE TABLE dbo.c1(id int PRIMARY KEY, a datetime, b smalldatetime); INSERT INTO dbo.c1 VALUES (1, '20240105 10:00:00', '20240105 10:00:00');", schema: s, table: "c1", edits: vec![(0, "a", Some("2024-01-06 10:00:00")), (0, "b", Some("2024-01-07 10:01:00"))], check: "SELECT CONVERT(varchar(30), a, 121), CONVERT(varchar(30), b, 121) FROM dbo.c1", expect: Expect::Written(&["2024-01-06 10:00:00.000", "2024-01-07 10:01:00.000"]) },
+        Case { name: "datetime and smalldatetime cells, a day above 12", setup: "CREATE TABLE dbo.c2(id int PRIMARY KEY, a datetime, b smalldatetime); INSERT INTO dbo.c2 VALUES (1, '20240105 10:00:00', '20240105 10:00:00');", schema: s, table: "c2", edits: vec![(0, "a", Some("2024-01-13 10:00:00")), (0, "b", Some("2024-01-14 10:02:00"))], check: "SELECT CONVERT(varchar(30), a, 121), CONVERT(varchar(30), b, 121) FROM dbo.c2", expect: Expect::Written(&["2024-01-13 10:00:00.000", "2024-01-14 10:02:00.000"]) },
+        Case { name: "a datetime with milliseconds and a date without a time", setup: "CREATE TABLE dbo.c3(id int PRIMARY KEY, a datetime, b smalldatetime); INSERT INTO dbo.c3 VALUES (1, '20240105 10:00:00', '20240105 10:00:00');", schema: s, table: "c3", edits: vec![(0, "a", Some("2024-02-03 04:05:06.997")), (0, "b", Some("2024-02-04"))], check: "SELECT CONVERT(varchar(30), a, 121), CONVERT(varchar(30), b, 121) FROM dbo.c3", expect: Expect::Written(&["2024-02-03 04:05:06.997", "2024-02-04 00:00:00.000"]) },
+        Case { name: "a year-first date with slashes", setup: "CREATE TABLE dbo.c4(id int PRIMARY KEY, a datetime); INSERT INTO dbo.c4 VALUES (1, '20240105 10:00:00');", schema: s, table: "c4", edits: vec![(0, "a", Some("2024/01/13"))], check: "SELECT CONVERT(varchar(30), a, 121) FROM dbo.c4", expect: Expect::Written(&["2024-01-13 00:00:00.000"]) },
+        Case { name: "a datetime key, days up to 12 and above", setup: "CREATE TABLE dbo.k1(k datetime PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.k1 VALUES ('20240105 10:00:00', N'a'), ('20240113 10:00:00.997', N'b'), ('20240512 08:30:00', N'c');", schema: s, table: "k1", edits: vec![(0, "v", Some("zz")), (1, "v", Some("yy")), (2, "v", Some("xx"))], check: "SELECT STRING_AGG(v, N',') WITHIN GROUP (ORDER BY k) FROM dbo.k1", expect: Expect::Written(&["zz,yy,xx"]) },
+        Case { name: "a smalldatetime key, days up to 12 and above", setup: "CREATE TABLE dbo.k2(k smalldatetime PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.k2 VALUES ('20240105 10:00', N'a'), ('20240113 10:01', N'b');", schema: s, table: "k2", edits: vec![(0, "v", Some("zz")), (1, "v", Some("yy"))], check: "SELECT STRING_AGG(v, N',') WITHIN GROUP (ORDER BY k) FROM dbo.k2", expect: Expect::Written(&["zz,yy"]) },
+        Case { name: "a datetime key that is itself edited", setup: "CREATE TABLE dbo.k3(k datetime PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.k3 VALUES ('20240105 10:00:00', N'a');", schema: s, table: "k3", edits: vec![(0, "k", Some("2024-02-13 04:05:06"))], check: "SELECT CONVERT(varchar(30), k, 121) FROM dbo.k3", expect: Expect::Written(&["2024-02-13 04:05:06.000"]) },
+        Case { name: "a date typed the way the login's language writes it", setup: "CREATE TABLE dbo.c5(id int PRIMARY KEY, a datetime); INSERT INTO dbo.c5 VALUES (1, '20240105 10:00:00');", schema: s, table: "c5", edits: vec![(0, "a", Some("13/01/2024 10:00:00"))], check: "SELECT CONVERT(varchar(30), a, 121) FROM dbo.c5", expect: Expect::Written(&["2024-01-13 10:00:00.000"]) },
+        Case { name: "the other date and time types, and numbers", setup: "CREATE TABLE dbo.o1(id int PRIMARY KEY, b datetime2(7), d date, e time(7), f datetimeoffset(7), m money, n decimal(12,2), x float, r real); INSERT INTO dbo.o1 VALUES (1, SYSDATETIME(), GETDATE(), SYSDATETIME(), SYSDATETIMEOFFSET(), 1, 1, 1, 1);", schema: s, table: "o1", edits: vec![(0, "b", Some("2024-01-13 10:00:00.1234567")), (0, "d", Some("2024-01-13")), (0, "e", Some("11:22:33.1234567")), (0, "f", Some("2024-01-13 10:00:00.1234567 +08:00")), (0, "m", Some("1234.5678")), (0, "n", Some("19.99")), (0, "x", Some("0.1")), (0, "r", Some("0.25"))], check: "SELECT CONVERT(varchar(30), b, 121), CONVERT(varchar(30), d, 121), CONVERT(varchar(30), e, 121), CONVERT(varchar(40), f, 121), CONVERT(varchar(30), m, 2), CAST(n AS varchar(20)), CAST(x AS varchar(20)), CAST(r AS varchar(20)) FROM dbo.o1", expect: Expect::Written(&["2024-01-13 10:00:00.1234567", "2024-01-13", "11:22:33.1234567", "2024-01-13 10:00:00.1234567 +08:00", "1234.5678", "19.99", "0.1", "0.25"]) },
+        Case { name: "text that looks like a date stays text, in a cell and in a key", setup: "CREATE TABLE dbo.t1(k nvarchar(30) PRIMARY KEY, v nvarchar(30), w varchar(30)); INSERT INTO dbo.t1 VALUES (N'2024-01-06 10:00:00', N'a', 'a'), (N'2024-01-13 11:00:00', N'b', 'b');", schema: s, table: "t1", edits: vec![(0, "v", Some("2024-01-06 10:00:00")), (0, "w", Some("2024/01/13")), (1, "v", Some("zz"))], check: "SELECT STRING_AGG(v + N'|' + w, N',') WITHIN GROUP (ORDER BY k) FROM dbo.t1", expect: Expect::Written(&["2024-01-06 10:00:00|2024/01/13,zz|b"]) },
+    ]
+}
+
+#[test]
+fn mssql_a_login_that_reads_dates_day_first_writes_the_dates_it_is_given() {
+    only_with!("mssql");
+    for (n, language) in ["British", "German"].into_iter().enumerate() {
+        let login = LanguageLogin::new(&format!("yz_dt_lang{n}"), language);
+        let id = login.connection();
+        assert_eq!(
+            first_row(&id, "SELECT CONVERT(varchar(10), CAST(N'2024-01-06' AS datetime), 120)"),
+            ["2024-06-01"],
+            "{language} reads 2024-01-06 as the 1st of June, or this test would prove nothing"
+        );
+        go(&id, day_first_cases());
+    }
+}
+
+fn first_row_as(connection: &str, owner_name: &str, sql: &str) -> Vec<String> {
+    let state = run(connection, owner_name, sql);
+    let set = results::get(state.results.last().expect("a result").id).expect("result");
+    let r = results::lock(&set);
+    r.rows.first().map(|row| row.iter().map(|c| c.display().into_owned()).collect()).unwrap_or_default()
+}
+
+#[test]
+fn mssql_a_pane_whose_own_session_reads_dates_day_first_writes_the_dates_it_is_given() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_dt_pane");
+    let id = scratch.connection();
+    run(&id, "setup", "CREATE TABLE dbo.p(k datetime PRIMARY KEY, a datetime, b smalldatetime, v nvarchar(10)); INSERT INTO dbo.p VALUES ('20240105 10:00:00', '20240105 10:00:00', '20240105 10:00', N'a'), ('20240113 10:00:00', '20240105 10:00:00', '20240105 10:00', N'b');");
+    for (n, format) in ["dmy", "ydm", "dym"].into_iter().enumerate() {
+        let pane_name = format!("df-{format}");
+        run(&id, &pane_name, &format!("SET DATEFORMAT {format}"));
+        let pane = open(&id, &pane_name, &table("dbo", "p"));
+        let day = 10 + n;
+        for row in 0..2 {
+            pane.edit(row, "a", Some(&format!("2024-02-{day} 11:00:00")));
+            pane.edit(row, "b", Some(&format!("2024-03-{day} 12:01:00")));
+            pane.edit(row, "v", Some(format));
+        }
+        runtime::block_on(session::write_back_set(&pane.set)).unwrap_or_else(|e| panic!("{format}: {e}"));
+        assert_eq!(
+            rows(&id, "SELECT CONVERT(varchar(30), a, 121), CONVERT(varchar(30), b, 121), v FROM dbo.p ORDER BY k"),
+            vec![vec![format!("2024-02-{day} 11:00:00.000"), format!("2024-03-{day} 12:01:00.000"), format.to_owned()]; 2],
+            "{format}"
+        );
+        assert_eq!(
+            first_row_as(&id, &pane_name, "SELECT CONVERT(varchar(10), CAST(N'2024-01-06' AS datetime), 120)"),
+            ["2024-06-01"],
+            "{format}: the write-back left the pane's DATEFORMAT as it found it"
+        );
+        session::release_owner(&pane.owner);
+    }
+}
+
+/// A table per key type, each holding two rows: one with a day up to 12, one above.
+fn key_cases(types: &[(&'static str, &'static str, &'static str)]) -> Vec<Case> {
+    types
+        .iter()
+        .map(|(ty, one, two)| {
+            let name: &'static str = Box::leak(format!("{ty} key").into_boxed_str());
+            let table: &'static str = Box::leak(format!("pk_{}", ty.replace(' ', "_")).into_boxed_str());
+            let setup: &'static str = Box::leak(
+                format!("DROP TABLE IF EXISTS {table}; CREATE TABLE {table}(k {ty} PRIMARY KEY, v text); INSERT INTO {table} VALUES ({one}, 'a'), ({two}, 'b');")
+                    .into_boxed_str(),
+            );
+            let check: &'static str = Box::leak(format!("SELECT count(*)::text FROM {table} WHERE v IN ('zz', 'yy')").into_boxed_str());
+            Case { name, setup, schema: "public", table, edits: vec![(0, "v", Some("zz")), (1, "v", Some("yy"))], check, expect: Expect::Written(&["2"]) }
+        })
+        .collect()
+}
+
+#[test]
+fn postgres_dates_are_written_back_in_whatever_style_the_database_prints_them() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_dt_pg");
+    let db = scratch.name.clone();
+    for (n, (datestyle, intervalstyle)) in
+        [("ISO, MDY", "postgres"), ("SQL, DMY", "sql_standard"), ("German, DMY", "iso_8601"), ("Postgres, DMY", "postgres_verbose")]
+            .into_iter()
+            .enumerate()
+    {
+        run(
+            &scratch.maintenance,
+            "style",
+            &format!(
+                "ALTER DATABASE {db} SET datestyle = '{datestyle}'; ALTER DATABASE {db} SET intervalstyle = '{intervalstyle}'; \
+                 ALTER DATABASE {db} SET timezone = 'Asia/Taipei'"
+            ),
+        );
+        let id = postgres_in(&format!("pg-dt-{n}"), &db);
+        run(&id, "setup", "DROP TABLE IF EXISTS pc; CREATE TABLE pc(id int PRIMARY KEY, tz timestamptz, ts timestamp, d date, tm time, tmz timetz, iv interval); INSERT INTO pc VALUES (1, '2024-01-06 10:00:00+08', '2024-01-06 10:00:00', '2024-01-06', '10:00:00', '10:00:00+08', '1 day');");
+        let pane = open(&id, &format!("dt-pane-{n}"), &table("public", "pc"));
+        let shown = |column: &str| {
+            let at = pane.column(column);
+            results::lock(&pane.set).rows[0][at].display().into_owned()
+        };
+        // The person changes what the grid printed, the way it printed it.
+        let printed = (shown("tz"), shown("ts"), shown("d"));
+        pane.edit(0, "tz", Some(&shown("tz").replace("10:00:00", "11:00:00")));
+        pane.edit(0, "ts", Some(&shown("ts").replace("10:00:00", "11:00:00")));
+        pane.edit(0, "d", Some(&shown("d").replace("06", "07")));
+        pane.edit(0, "tm", Some(&shown("tm").replace("10:00:00", "11:00:00")));
+        pane.edit(0, "tmz", Some(&shown("tmz").replace("10:00:00", "11:00:00")));
+        pane.edit(0, "iv", Some("5 days 06:07:08"));
+        runtime::block_on(session::write_back_set(&pane.set)).unwrap_or_else(|e| panic!("{datestyle}: {e}"));
+        assert_eq!(
+            first_row(
+                &id,
+                "SELECT to_char(tz AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'), to_char(ts, 'YYYY-MM-DD HH24:MI:SS'), to_char(d, 'YYYY-MM-DD'), \
+                        to_char(tm, 'HH24:MI:SS'), (tmz AT TIME ZONE 'UTC')::time::text, floor(extract(epoch FROM iv))::bigint::text FROM pc"
+            ),
+            ["2024-01-06 03:00:00", "2024-01-06 11:00:00", "2024-01-07", "11:00:00", "03:00:00", "454028"],
+            "{datestyle} / {intervalstyle}: the grid printed {printed:?}"
+        );
+        session::release_owner(&pane.owner);
+        go(
+            &id,
+            key_cases(&[
+                ("timestamptz", "'2024-01-06 10:00:00+08'", "'2024-01-13 10:00:00.5+08'"),
+                ("timestamp", "'2024-01-06 10:00:00'", "'2024-01-13 10:00:00.123456'"),
+                ("date", "'2024-01-06'", "'2024-01-13'"),
+                ("time", "'10:00:00'", "'13:14:15.5'"),
+                ("timetz", "'10:00:00+08'", "'13:14:15.5-05'"),
+                ("interval", "'1 day 02:03:04'", "'3 mons 13 days 04:05:06.5'"),
+            ]),
+        );
+    }
+}
+
+#[test]
+fn postgres_float_keys_are_found_whatever_extra_float_digits_the_database_sets() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_dt_float");
+    run(&scratch.maintenance, "style", &format!("ALTER DATABASE {} SET extra_float_digits = 0", scratch.name));
+    let id = scratch.connection();
+    go(
+        &id,
+        key_cases(&[
+            ("float8", "0.1::float8 + 0.2::float8", "1.0::float8 / 3"),
+            ("real", "0.1::real", "(1.0 / 3)::real"),
+        ]),
+    );
+}
