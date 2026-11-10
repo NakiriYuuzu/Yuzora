@@ -162,7 +162,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 - beta.2（`app/`）起：
   - Windows 改用 per-user NSIS 安裝程式，固定下載檔名 `Yuzora-windows-x64-setup.exe`，不再出 MSI；Linux 另有 x86_64／aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`（沒有固定別名）。固定下載別名只上傳到 Stable release，Beta 只有版本化檔名（`docs/beta2/release.md` §6）。
   - Stable 與 Beta 的更新 manifest（`yuzora-update.json`）都必須以 release 金鑰（minisign，key id `742456BCCDC22A24`，與 Tauri updater 同一把）簽章，App 驗不過就不更新；帶 beta.1 升級的 `latest.json` 照樣要 Tauri updater 簽章（beta.2 至 beta.4 與 0.1.0 Stable 都不附 `latest.json`，0.0.x 與 beta.1 的使用者手動下載）。
-  - PR 與打包 workflow（`app-package.yml`）不讀任何 signing secret，簽章只在 `app-release.yml` 由使用者明確 dispatch 的 `sign` job；私鑰永遠不進 repo。
+  - PR 與打包 workflow（`app-package.yml`）不讀任何 signing secret，簽章只在 `app-release.yml` 以 dispatch 啟動的 `sign` job（沒有 push 觸發；dispatch 需要 repository 的 Actions 寫入權限；`yuzora-release` environment 的 required reviewers 是它的人工閘門，金鑰本身是 repository 層級 secret）；私鑰永遠不進 repo。
   - macOS 只做 ad-hoc 簽章（`codesign --sign -`），Windows 沒有 Authenticode；README 與 release notes 須說明 Gatekeeper 與 SmartScreen 提示。
 
 ## UI components — shadcn first（Tauri／React app）

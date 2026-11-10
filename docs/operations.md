@@ -145,7 +145,7 @@ beta.2 起同一把金鑰也簽 `yuzora-update.json`，下列檔案同屬供應�
 - `app/scripts/yuzora/release.ts`
 - `app/scripts/yuzora/verify-manifest/`（簽章前後驗證 manifest 的獨立 crate）
 
-這些變更應由指定 maintainer review。`app-release.yml` 的寫入 job 已引用 Environment `yuzora-release`，但 required reviewer 保護規則必須由使用者在 repository 設定；設定完成前不得宣稱此 gate 已啟用。
+這些變更應由指定 maintainer review。`app-release.yml` 的 `sign` 與四個寫入 job 都引用 Environment `yuzora-release`，但 required reviewers 必須由使用者在 repository 設定；設定完成前不得宣稱此 gate 已啟用。簽章金鑰是 repository 層級的 secret，不在這個 Environment 裡：reviewers 只擋 `app-release.yml` 自己的 job，不擋其他 workflow 讀取 secret（`docs/beta2/release.md` §6.3 第 0 步）。
 
 ### 尚未啟用：Windows 作業系統平台簽章
 
@@ -157,7 +157,7 @@ beta.2 起同一把金鑰也簽 `yuzora-update.json`，下列檔案同屬供應�
 - 新 Beta build 會在建立 tag 前要求 repository variables `YUZORA_BETA_ACCEPTED_TREE_SHA` 與 `YUZORA_BETA_ACCEPTANCE_URL`。Guard 會把前者與 exact successful-main tree 比對，並要求後者指向本 repository 的 PR／Issue evidence；未設定、格式錯誤或 tree 不一致都 fail closed。這是 blocking human attestation，但 workflow 不會自行理解 comment 內容或逐項重跑 candidate acceptance。
 - Stable 尚未使用同一 tree-attestation variables；仍依 release PR、candidate evidence 與明確 merge 核准流程人工把關。
 - 既有同版本 draft 的 tag SHA 已強制必須等於本次 `workflow_run.head_sha`，不一致時會 fail closed。
-- Release actions 已固定到經審查的完整 commit SHA，checkout 一律停用 persisted credentials；仍應定期審查並更新 pin，並將 signing secrets 移入具 required reviewer 的 protected Environment。
+- Release actions 已固定到經審查的完整 commit SHA，checkout 一律停用 persisted credentials；仍應定期審查並更新 pin。Signing secrets 目前是 repository 層級，沒有放進 Environment：`release.yml` 的 guard job 沒有 environment、直接讀取它們，移進 Environment 會讓 `Release` 在每次 main 的 CI 成功後驗證失敗，要移的話先改 `release.yml`。
 - Metadata generator／finalizer 會強制 URL 屬於目前 repository/tag，並在產生 metadata 時比對公開 signature 與對應 `.sig` 內容；仍不得把 artifact 存在視為應用程式平台簽章已啟用。
 
 ---

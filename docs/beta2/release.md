@@ -155,7 +155,7 @@
   簽完不可再改 manifest 的任何位元組（包括換行）。
 - **換鑰**：先發一版把新公鑰加進 `TRUSTED_KEYS`（仍用舊鑰簽），等使用者大多更新後再改用新鑰簽，最後一版移除舊鑰。金鑰外洩時同樣流程，但要在 release notes 公告並請使用者手動下載。
 - **debug build 的測試金鑰**：`YUZORA_UPDATE_TEST_KEY` 只在 `debug_assertions` 開啟且沒有 `HERDR_APP_RELEASE` 的 build 生效，用來在本機跑完整的更新流程；release build 永遠不讀它。
-- **不在 PR／打包 workflow 讀任何 signing secret**：`app-package.yml` 產出的 manifest 未簽章。簽章屬於發布步驟（§6），應放進有 required reviewer 的 protected environment（operations.md §4 的既有建議）。
+- **不在 PR／打包 workflow 讀任何 signing secret**：`app-package.yml` 產出的 manifest 未簽章。簽章屬於發布步驟（§6）：`sign` job 引用 environment `yuzora-release`，要設了 required reviewers 才有人工閘門（§6.3 第 0 步）。金鑰本身是 repository 層級的 secret，不在那個 environment 裡。
 
 ## 5. beta.1 → beta.2 升級
 
@@ -211,7 +211,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 
 | 階段 | 做什麼 | 單向嗎 |
 | --- | --- | --- |
-| `dry-run` | 用正式金鑰簽一份 manifest，用 App 自己的 `manifest.rs` 驗過，存成 artifact。不建 tag、不建 release、不上傳到任何公開位置。 | 否 |
+| `dry-run` | 用正式金鑰簽一份 manifest，用 App 自己的 `manifest.rs` 驗過，存成 artifact `manifest-verified`。不建 tag、不建 release、不寫 repository。artifact 在公開 repo 是任何登入的 GitHub 使用者都下載得到的（保留 3 天），內容的網址全是本機，任何已安裝的 App 在正式環境都不接受。 | 否 |
 | `draft` | 建 annotated tag（指向被驗收的 commit）與 **draft** release（`prerelease=false`、不是 Latest），上傳版本化安裝檔、固定別名、四個 tar.gz、兩份 changelog。release 內文取自根 `CHANGELOG.zh-TW.md`／`CHANGELOG.md` 該版本段落（繁中在前）。draft 沒有人看得到。 | tag 是；draft 可刪 |
 | `publish` | draft 變公開，**不是 Latest**（API 的 `make_latest` 預設是 `true`，所以明確送 `false`）。檢查沒有 manifest／簽章、`releases/latest` 不是它、匿名下載每個檔案的 sha256 與 GitHub 的 digest 相符。更新程式在這一步仍看不到它。 | 是（公開） |
 | `manifest` | 簽 `yuzora-update.json`，驗過，先上傳 manifest，**最後**上傳 `.sig`。兩個檔都在，已安裝的 beta 才會在下一次檢查（啟動 10 秒後，之後每小時）看到更新。 | 是（使用者端開始下載、暫存、交換，無法收回已暫存的） |
@@ -226,6 +226,18 @@ gh workflow run "App release" --ref main \
 gh run watch <run id>        # 每個階段的 job summary 會列出做了什麼、檔案與 sha256
 ```
 
+各階段實際會跑的 job（其餘都是 skipped）：
+
+| 階段 | 跑的 job | 讀 signing secret | 能寫什麼 | 執行 repo 程式 |
+| --- | --- | --- | --- | --- |
+| `dry-run` | `plan` → `build-manifest` → `sign` → `verify-manifest` | 只有 `sign` | 無（`contents: read`） | `plan`、`build-manifest`、`verify-manifest`、`sign`（只有 `bun install --frozen-lockfile --ignore-scripts`，與 lockfile 裝出來的 Tauri CLI；lockfile 是 dispatch 的 ref 上的） |
+| `draft` | `plan` → `draft` | 無 | `draft`：tag、draft release、上傳檔案（`contents: write`） | 只有 `plan` |
+| `publish` | `plan` → `publish` | 無 | `publish`：release 變公開、不是 Latest | 只有 `plan` |
+| `manifest` | `plan` → `build-manifest` → `sign` → `verify-manifest` → `upload-manifest` | 只有 `sign` | `upload-manifest`：上傳 manifest，最後上傳 `.sig` | `plan`、`build-manifest`、`verify-manifest`、`sign` |
+| `latest` | `plan` → `latest` | 無 | `latest`：設為 Latest | 只有 `plan` |
+
+寫入的 job（`draft`、`publish`、`upload-manifest`、`latest`）不 checkout、只跑 `gh`、`jq`、`curl`、`sha256sum` 與 shell，不讀任何 secret；跑 repo 程式的 job 只有讀取權限。這兩件事由 `app-release.test.ts` 守著（見 §8）。
+
 每個階段的輸入都先經 `plan` job 檢查：run 是否合格、`app/Cargo.toml` 在該 commit 的版本等於 `version`、tag 的位置、`draft` 時該 commit 是否已在 `main`。`draft` 之後的階段要求 tag 已存在且指向同一個 commit。
 
 ### 6.3 逐步手冊
@@ -236,9 +248,13 @@ gh run watch <run id>        # 每個階段的 job summary 會列出做了什麼
 
 - 確認 secrets 存在：dry-run 會替你確認（簽不出來就是缺或密碼錯）。不要讀、不要印它的值。
 - 確認 repo 沒開 immutable releases（開了就不能在發布後補上傳 manifest）：`gh api repos/NakiriYuuzu/Yuzora/immutable-releases` 應回 `"enabled":false`。
-- 可選：在 GitHub Settings › Environments 建立 `yuzora-release` 並加 required reviewer。workflow 的 `sign` 與所有寫 release 的 job 都引用這個 environment；不建立的話 GitHub 會自動建一個沒有保護的同名 environment，行為不變。
+- **第一個 dispatch 之前**：在 GitHub Settings › Environments 建立 `yuzora-release`，加上 required reviewers。`sign` 與四個寫 release 的 job 都引用它；設了之後，每個引用它的 job 都停在 Waiting for review，等 reviewer 在 Actions 頁核准（`manifest` 階段會停兩次：簽章前的 `sign`、上傳前的 `upload-manifest`）。
+  - 它擋的是「workflow 檔沒變、只有 `release.ts`、`manifest.ts` 或 lockfile 變了」的 dispatch，以及從還帶著 push 觸發的舊 commit 切出的分支（見下）：這兩種情況下 `sign` 都還引用這個 environment，會停下等人。
+  - 它**不保護金鑰本身**。`TAURI_SIGNING_PRIVATE_KEY` 與 `_PASSWORD` 是 repository 層級的 secret（`environments/yuzora-release/secrets` 是空的），能推 workflow 檔的人可以寫一個不引用 environment 的 workflow 去讀。所以金鑰的保管邊界是「誰有 repository 的寫入權與 workflow 權限」，這個 environment 只是 `app-release.yml` 自己的人工閘門。沒設 required reviewers 之前，不要宣稱簽章有閘門。
+  - 不把 secret 搬進這個 environment：`release.yml` 的 `Validate updater signing inputs` 在沒有 environment 的 guard job 裡直接讀它們，搬走之後每次 main 的 CI 成功都會讓 `Release` 變紅。要搬的話先改 `release.yml`。
 - `App release` 已經登記為 active workflow（`release-dryrun/1` 的兩次 push run，42874436208 與 42874964284，是在拿掉 push 觸發之前跑的）。GitHub 文件對 `workflow_dispatch` 的說明是「This event will only trigger a workflow run if the workflow file exists on the default branch」，以及「Once a workflow has run at least once, you can dispatch it against any branch or tag via the GitHub API or GitHub CLI」。所以合併進 main 之前也能對分支 dispatch（`gh workflow run "App release" --ref <分支>`），合併之後一律 `--ref main`。已確認的是登記狀態；「對分支 dispatch」本身在這個 workflow 上還沒有實測，第 1 步就是第一次。
 - 沒有 push 觸發，這是刻意的：push 的 run 用的是被推送 commit 上的 workflow 檔，任何從還帶著 push 觸發的舊 commit（例如現在遠端的 `release-dryrun/1`）切出的分支，推上去就會用正式金鑰簽章。要啟動這個 workflow，一定得有 Actions 的寫入權限（dispatch）。
+- dispatch 的 ref 就是這次發布的程式：`plan`、`build-manifest`、`sign`、`verify-manifest` 跑的都是該 ref 上的 `release.ts`、`manifest.ts`、lockfile；`draft`、`publish`、`upload-manifest`、`latest` 不跑 repo 程式，但它們用的 tag、commit、檔案清單、release 內文全是 `plan` 在該 ref 上算出來的。所以除了 dry-run，一律 `--ref main`（合併之後）。`plan` 另外要求該 ref 的 `app/Cargo.toml` 版本等於 `version`（dry-run 除外）：從 main（0.1.0）對 beta.4 的 run dispatch `manifest` 會被擋，不會改到已發布的舊 release。main 在 0.1.0 發完之前就前進到下一版時，改用 `--ref v0.1.0`（tag 在 `draft` 階段已建立）。
 
 **1. 簽章試跑（dry-run）**，在任何單向動作之前；不需要候選版
 
@@ -275,6 +291,8 @@ gh workflow run "App release" --ref release-dryrun/1 \
 
   `downloads_base` 只接受本機（`http://127.0.0.1` 或 `localhost`），所以這份用正式金鑰簽過、網址指向本機的 manifest，任何已安裝的 App 在正式環境都不會接受。artifact 只留 3 天；公開 repo 的 artifact 任何登入的 GitHub 使用者都能下載，不要拿這份當別的用途。
 - dry run 的 id：`gh run list --workflow app-release.yml --limit 3`（下面的 `<dry-run id>`）。
+
+用 beta 的 run（例如 beta.4 的 `App package`）簽出來的 manifest，dry-run 會把 archive 改名成 `yuzora-0.1.0-<target>.tar.gz`，簽章與內容檢查都過；但裡面是 beta 的 binary，`--version` 印的不是 0.1.0，所以下面的隔離檢查走不完交換。要走完整個更新，得用 release-prep 的候選（第 2 步）。
 
 接著做隔離檢查。這一步會開出 App 視窗；依使用者全域規則，開之前先取得同意。
 
@@ -362,6 +380,8 @@ env -i HOME=$T/home USER=$USER TMPDIR=$T/tmp TERM=xterm-256color LANG=en_US.UTF-
 | --- | --- | --- |
 | `plan` 紅：`did not succeed`／`not a run of …`／`merge commit` | 給的 run id 不合格 | 換成 `push` 或 `workflow_dispatch` 觸發、成功的 `App package` run |
 | `plan` 紅：`is not on main` | `draft` 時該 commit 不在 main | 先合併 |
+| `plan` 紅：`… is not the release this workflow runs from` | dispatch 的 ref 的 `app/Cargo.toml` 不是這個版本（例如從 main 對舊版 dispatch） | 對正確的版本、用該版本所在的 ref（`--ref main`，或 `--ref v<版本>`）；這是刻意的，不改舊 release |
+| `plan` 紅：`gh api …` 開頭的錯誤 | GitHub 的 API 沒回答，或回應太大／`gh` 跑不起來（訊息會寫原因） | 過一會再重跑；沒有任何東西被改動 |
 | `plan` 紅：`points at … not at the accepted commit` | 這個版本的 tag 已存在但指向別的 commit | 不動 tag；改發新版本 |
 | `draft` 紅：`the run's artifacts are not the files 0.1.0 ships` | artifacts 過期（保留 7 天）或缺平台 | 在 7 天內做完 `draft`；缺平台就查那個 run |
 | 任何階段紅：`… is already on v0.1.0 with other content` | 重跑時檔案內容不同 | 查為什麼不同；draft 才能刪單一檔案後重跑，公開後不改，改發新版本 |
@@ -410,7 +430,7 @@ env -i HOME=$T/home USER=$USER TMPDIR=$T/tmp TERM=xterm-256color LANG=en_US.UTF-
 
 ### `app-release.yml`
 
-- 只有 `workflow_dispatch`，沒有 push 觸發（push 的 run 用被推送 commit 上的 workflow 檔，見 §6.3 第 0 步）。階段、權限與檢查見 §6；契約（誰能寫、誰能讀金鑰、哪些 job 執行 repo 的程式）由 `app/scripts/yuzora/app-release.test.ts` 守著，在 App CI 的 Linux job 跑。
+- 只有 `workflow_dispatch`，沒有 push 觸發（push 的 run 用被推送 commit 上的 workflow 檔，見 §6.3 第 0 步）。階段、權限與檢查見 §6；契約（誰能寫、誰能讀金鑰、哪些 job 執行 repo 的程式）由 `app/scripts/yuzora/app-release.test.ts` 守著，在 App CI 的 Linux job 跑；`app-ci.yml` 的路徑清單包含 `app-release.yml`，所以只改 workflow 的 PR 也會跑到它。
 - `verify-manifest/` 的測試（它編譯 `manifest.rs`，所以也跑 `manifest.rs` 自己的單元測試）同樣在 App CI 的 Linux job 跑。
 
 ### `app-ci.yml` 的快取與執行時間評估
@@ -456,7 +476,7 @@ L0 PR #187 最後一次成功的執行（run 41480446879）：
 
 - L6：設定頁加「更新通道」選擇（寫 `update` section 的 `channel`，`stable`／`beta`），以及顯示目前通道。beta build 上這個選項沒有效果（一律只收 Stable，§3），顯示目前通道要用 `Channel::chosen()` 的結果，不能直接顯示 `update.channel` 的值，否則會在 beta build 上顯示「beta」、實際卻走 stable；可以從 `yuzora:core` 的 `getSetting`／`setSetting` 讀寫。
 - L3／L4／L6：各自實作 `migrate::Importer`（§7 表），總指揮在啟動流程接上 `migrate::run` 與結果顯示。
-- 發布 workflow（§6）：已實作。使用者要做的只有（可選）在 Settings › Environments 為 `yuzora-release` 加 required reviewer。
+- 發布 workflow（§6）：已實作。使用者要做的是在 Settings › Environments 建立 `yuzora-release` 並加 required reviewers（§6.3 第 0 步），第一個 dispatch 之前。
 
 **待辦**
 
