@@ -10,6 +10,7 @@ import { openFile, moved, join, parent, base, rel } from "./open.js";
 import { fileIcon } from "./icons.js";
 import { heading } from "./paths.js";
 import { readGit } from "./git-state.js";
+import { reason } from "./failure.js";
 import { createStore, panel, info } from "./tree-state.js";
 
 const ME = "yuzora-sidebar-files";
@@ -105,11 +106,14 @@ export default class FilesSidebar extends View {
   reload(cx, timed = false, here = this.here) {
     if (!here?.cwd) return;
     cx.spawn(async cx => {
-      const read = await this.store.reload(here, () => { this.version++; cx.notify(); }, { timed });
-      if (!read?.ok || !this.current(here)) return;
-      // An open search follows the files too (the new root's, after a move).
-      if (this.searching && !(read.timed && this.watching === here)) this.search(cx, !read.timed);
-      this.watch(here, cx);
+      // Told as each read ends: reads that follow one another must not hold these back.
+      const settled = read => {
+        if (!read.ok || !this.current(here)) return;
+        // An open search follows the files too, and the new root's after a move, watched or not.
+        if (this.searching && (read.moved || !(read.timed && this.watching === here))) this.search(cx, !read.timed);
+        this.watch(here, cx);
+      };
+      await this.store.reload(here, () => { this.version++; cx.notify(); }, { timed, settled });
     });
   }
 
@@ -143,7 +147,7 @@ export default class FilesSidebar extends View {
       const failed = await this.store.expand(here, root, folder, () => { this.version++; cx.notify(); });
       if (!failed || this.loc !== loc) return;
       if (failed.gone) notify({ title: t("error.gone", { name: row.name }), level: "warning" });
-      else notify({ title: t("error.list"), body: String(failed.error?.message ?? failed.error), level: "error" });
+      else notify({ title: t("error.list"), body: reason(failed.error, { name: row.name, machine: here.on, kind: "list" }), level: "error" });
     });
     cx.notify();
   }
@@ -227,14 +231,20 @@ export default class FilesSidebar extends View {
     const req = shared(REQUEST);
     if (req?.seq && req.seq > this.lastRequest) {
       this.lastRequest = req.seq;
-      const here = this.here;
-      if (here?.root && (req.on ?? null) === (here.on ?? null) && this.store.owns(here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
+      // A frame only looks: the name input and the redraw are for the task that follows it.
+      cx.timer.after(0, cx => this.answer(req, cx));
     }
     const refresh = shared(REFRESH) ?? 0;
     if (refresh > this.lastRefresh) { this.lastRefresh = refresh; this.reload(cx); }
   }
 
   // New file / folder / rename: one bar above the tree.
+
+  // The popup's request, for the machine and the folder this tree is.
+  answer(req, cx) {
+    const here = this.here;
+    if (here?.root && (req.on ?? null) === (here.on ?? null) && this.store.owns(here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
+  }
 
   startEdit(kind, path, dir, cx) {
     const value = kind === "rename" ? base(path) : "";
@@ -264,7 +274,7 @@ export default class FilesSidebar extends View {
         const r = rel(here.root, edit.dir);
         if (r) here.open.add(r);
         here.selected = rel(here.root, target);
-      } catch (e) { notify({ title: t(`error.${edit.kind}`), body: String(e?.message ?? e), level: "error" }); }
+      } catch (e) { notify({ title: t(`error.${edit.kind}`), body: reason(e, { name, machine: on, kind: edit.kind }), level: "error" }); }
       finally { this.reload(cx, false, here); cx.notify(); }
     });
     cx.notify();
@@ -279,11 +289,13 @@ export default class FilesSidebar extends View {
     cx.timer.after(this.searchMode === "name" ? 60 : 250, cx => {
       if (seq !== this.searchSeq) return;
       cx.spawn(async cx => {
+        // The hits are paths under the root the search was made under, which the tree may leave while it runs.
+        const root = here.root;
         try {
           if (this.searchMode === "name") {
-            const found = await findFiles(here.root, query, { on: here.on, hidden: this.hidden, limit: 200, fresh });
+            const found = await findFiles(root, query, { on: here.on, hidden: this.hidden, limit: 200, fresh });
             if (seq !== this.searchSeq) return;
-            this.results = found.matches.map(f => ({ key: f.path, root: here.root, on: here.on, path: f.path }));
+            this.results = found.matches.map(f => ({ key: join(root, f.path), root, on: here.on, path: f.path }));
             const notes = [
               found.tooLong ? t("search.too_long") : found.matches.length ? null : t("search.none"),
               found.more ? t("search.truncated", { count: found.matches.length }) : null,
@@ -293,9 +305,9 @@ export default class FilesSidebar extends View {
             ].filter(Boolean);
             this.searchNote = notes.length ? notes.join(" ") : null;
           } else {
-            const found = await grep(here.root, query, { on: here.on, hidden: this.hidden, limit: 500 });
+            const found = await grep(root, query, { on: here.on, hidden: this.hidden, limit: 500 });
             if (seq !== this.searchSeq) return;
-            this.results = found.hits.map((h, i) => ({ key: `${i}:${h.path}:${h.line}`, root: here.root, on: here.on, path: h.path, line: h.line, column: h.column, text: h.text }));
+            this.results = found.hits.map((h, i) => ({ key: `${i}:${join(root, h.path)}:${h.line}`, root, on: here.on, path: h.path, line: h.line, column: h.column, text: h.text }));
             const notes = !found.available ? [t("search.no_rg")] : [
               found.hits.length ? null : t("search.none"),
               found.truncated ? t("search.truncated", { count: found.hits.length }) : null,
@@ -496,6 +508,7 @@ function menuItems(m) {
   const relPath = rel(m.root, m.abs) ?? m.abs;
   return [
     m.dir ? null : { label: t("menu.open"), run: () => openFile(m.abs, m.on) },
+    m.dir ? null : { label: t("menu.open_side"), run: () => openFile(m.abs, m.on, { place: "side" }) },
     { label: t("menu.terminal"), run: () => run("terminal.open", { folder, place: "right" }) },
     null,
     { label: t("menu.new_file"), run: () => request("new-file", m, { dir: folder }) },
@@ -503,11 +516,11 @@ function menuItems(m) {
     { label: t("menu.rename"), run: () => request("rename", m, { path: m.abs }) },
     { label: t("menu.trash"), enabled: local, danger: true, run: () => {
       trash(m.abs).then(() => { setShared(REFRESH, Date.now()); notify({ title: t("toast.trashed", { name: base(m.abs) }), level: "success", timeout: 3000 }); })
-        .catch(e => notify({ title: t("error.trash"), body: String(e?.message ?? e), level: "error" }));
+        .catch(e => notify({ title: t("error.trash"), body: reason(e, { name: base(m.abs), kind: "trash" }), level: "error" }));
     } },
     null,
     { label: t("menu.copy_path"), run: () => copyText(m.abs) },
     { label: t("menu.copy_relative"), run: () => copyText(relPath) },
-    { label: revealLabel(), enabled: local, run: () => { try { reveal(m.abs); } catch (e) { notify({ title: t("error.reveal"), body: String(e?.message ?? e), level: "error" }); } } },
+    { label: revealLabel(), enabled: local, run: () => { try { reveal(m.abs); } catch (e) { notify({ title: t("error.reveal"), body: reason(e, { name: base(m.abs), kind: "reveal" }), level: "error" }); } } },
   ].filter((it, i, all) => it || (i > 0 && all[i - 1]));
 }

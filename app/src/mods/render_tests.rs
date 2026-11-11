@@ -2500,6 +2500,91 @@ fn tokens_text_strong() -> String {
     yuzora_core::tokens::for_theme(false)["text"]["strong"].as_str().unwrap().to_owned()
 }
 
+/// What the Files sidebar did with a request from its right-click popup.
+struct FilesRequest {
+    /// The first frame after the request was left in shared state, then the frame after the timers had run, then
+    /// another one: each what was drawn, or the error that stopped the frame.
+    frames: [Result<String, String>; 3],
+    /// Every call made on the name input: `[method, args, made while a frame was being built]`.
+    input: Vec<Value>,
+}
+
+/// One Files sidebar copy over a tree that is already listed (a listing runs on a thread of its own, which the
+/// test executor refuses), with `request` left in shared state after the copy started, as the popup does.
+fn files_request(cx: &mut TestAppContext, staged: &Staged, request: Value) -> FilesRequest {
+    let calls = Rc::new(RefCell::new(Calls::default()));
+    let policy = Policy::new()
+        .with_storage_path(staged.0.join("store-files.json"))
+        .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+        .with_host_module(module(fixture(true, json!({}), updates("current", "current")), calls.clone()))
+        .unwrap();
+    let policy = crate::yuzora::with_modules(policy, "");
+    let setup = format!(
+        "Real.prototype.reload = function () {{}};{BEFORE_INIT}
+        setShared('yuzora.files.request', {request});
+        const here = this.here;
+        here.root = '/fixture/project';
+        here.tree = {{ root: here.root, folders: new Map([['', {{ list: [{{ name: 'notes.txt', dir: false, link: false, hidden: false }}], truncated: false, skipped: false }}]]) }};
+        const input = this.editInput;
+        for (const name of ['set_value', 'set_selected_range', 'focus']) {{
+          const real = input[name];
+          input[name] = (...args) => {{
+            setShared('test.input', [...(shared('test.input') ?? []), [name, args, Boolean(this.building)]]);
+            return real.apply(input, args);
+          }};
+        }}
+        const render = this.render;
+        this.render = function (cx) {{ this.building = true; try {{ return render.call(this, cx); }} finally {{ this.building = false; }} }};"
+    );
+    let root = staged.wrapper_with_shared("mods/yuzora-sidebar-files", &setup);
+    let window = cx.add_window(|_, _| Empty);
+    let mut session = window.update(cx, |_, window, cx| {
+        DescriptionSession::load(ShellRuntime::new_isolated().unwrap(), root, policy, window, cx).unwrap()
+    }).unwrap();
+    let mut draw = |cx: &mut TestAppContext| window.update(cx, |_, window, cx| session.describe(window, cx).map_err(|e| e.to_string())).unwrap();
+    let first = draw(cx);
+    cx.executor().advance_clock(std::time::Duration::from_millis(50));
+    cx.run_until_parked();
+    let settled = draw(cx);
+    cx.run_until_parked();
+    let again = draw(cx);
+    drop(session);
+    window.update(cx, |_, window, _| window.remove_window()).unwrap();
+    cx.run_until_parked();
+    let calls = calls.borrow();
+    assert!(calls.unexpected.is_empty(), "{:?}", calls.unexpected);
+    FilesRequest { frames: [first, settled, again], input: calls.shared.get("test.input").and_then(Value::as_array).cloned().unwrap_or_default() }
+}
+
+// Bug (acceptance): Rename in the right-click popup left the sidebar with "set_selected_range cannot run during render
+// or layout". The popup leaves its request in shared state, which can only be seen from a frame; the name input
+// is for the frame's follow-up to change. The toolbar buttons never hit it: they start the same edit from a click.
+#[gpui::test]
+fn files_popup_requests_start_their_edit_after_the_frame_that_saw_them(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let request = |action: &str, extra: Value| {
+        let mut r = json!({"action": action, "root": "/fixture/project", "on": null, "seq": 7});
+        r.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        r
+    };
+    for (action, extra, label, calls) in [
+        ("rename", json!({"path": "/fixture/project/notes.txt"}), "edit.rename",
+            json!([["set_value", ["notes.txt"], false], ["set_selected_range", [{"start": 0, "end": 5}], false], ["focus", [], false]])),
+        ("new-file", json!({"dir": "/fixture/project"}), "edit.new-file", json!([["set_value", [""], false], ["focus", [], false]])),
+        ("new-folder", json!({"dir": "/fixture/project"}), "edit.new-folder", json!([["set_value", [""], false], ["focus", [], false]])),
+    ] {
+        let done = files_request(cx, &staged, request(action, extra));
+        let [first, settled, again] = &done.frames;
+        let first = first.as_ref().unwrap_or_else(|e| panic!("{action}: the frame that saw the request failed: {e}"));
+        assert!(!first.contains(label), "{action}: the edit starts after that frame, not in it: {first}");
+        let settled = settled.as_ref().unwrap_or_else(|e| panic!("{action}: {e}"));
+        assert!(settled.contains(label), "{action}: the name input is drawn: {settled}");
+        assert!(again.is_ok(), "{action}: {again:?}");
+        assert_eq!(json!(done.input), calls, "{action}: set once, with the name before its extension selected, focused, never while drawing");
+    }
+}
+
 // yuzora(v0.1.0 D1): from here to the end of the file, the Database table pane in a window: its toolbar in a
 // narrow pane, and the bar that asks about edits not written. None of it is upstream's.
 /// The Database table pane's toolbar with a job running (its Stop shows), whose clicks `note`.

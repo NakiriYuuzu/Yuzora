@@ -44,6 +44,7 @@
   },
   "menu": {
     "open": "Open",
+    "open_side": "Open to the Side",
     "terminal": "Open in terminal",
     "new_file": "New file…",
     "new_folder": "New folder…",
@@ -57,6 +58,30 @@
   },
   "toast": {
     "trashed": "Moved {name} to the trash"
+  },
+  "reason": {
+    "exists": "{name} already exists",
+    "writable": "The folder is not writable",
+    "denied": "Permission denied",
+    "no_folder": "The folder no longer exists",
+    "gone": "That item is no longer there",
+    "unreachable": "Can't reach {machine}",
+    "timed": "{machine} took too long: check again",
+    "unsure": "Not sure it was done: check again",
+    "other_disk": "A rename can't copy to another disk",
+    "no_rename": "Can't rename this here without copying",
+    "copied": "Copied or replaced: check the result",
+    "left": "An empty placeholder was left there",
+    "no_tool": "{machine} has no {tool}",
+    "no_shell": "Windows machines can't be changed here",
+    "bad_path": "A machine can't use that path",
+    "open": "A document of that name is still open",
+    "saving": "It is being saved: try again shortly",
+    "read_only": "The disk is read-only",
+    "full": "The disk is full",
+    "too_long": "That name is too long",
+    "not_dir": "A part of the path is not a folder",
+    "unknown": "Something went wrong"
   },
   "error": {
     "list": "Can't open this folder",

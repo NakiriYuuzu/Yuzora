@@ -137,9 +137,11 @@ pub fn rename(
 ) -> oneshot::Receiver<Result<(), String>> {
     let (tx, rx) = oneshot::channel();
     let on = on.filter(|m| !m.is_empty());
+    let backslash = backslash_separates(on.as_deref(), here_is_windows());
     let open_there = all(cx).into_iter().find_map(|d| {
         let key = &d.read(cx).key;
-        (key.on == on && renamed(&key.path, &to, &to).is_some()).then(|| key.path.clone())
+        (key.on == on && renamed(&key.path, &to, &to, backslash).is_some())
+            .then(|| key.path.clone())
     });
     if let Some(path) = open_there {
         let _ = tx.send(Err(format!(
@@ -151,7 +153,7 @@ pub fn rename(
         .into_iter()
         .filter(|d| {
             let key = &d.read(cx).key;
-            key.on == on && renamed(&key.path, &from, &to).is_some()
+            key.on == on && renamed(&key.path, &from, &to, backslash).is_some()
         })
         .collect();
     if let Some(doc) = moving.iter().map(|d| d.read(cx)).find(|d| d.saving) {
@@ -186,12 +188,15 @@ pub fn rename(
 
 /// Re-keys the documents on `on` at `from`, or under it, to `to`.
 fn moved(from: &str, to: &str, on: Option<&str>, cx: &mut App) {
+    let backslash = backslash_separates(on, here_is_windows());
     for view in all(cx) {
         let (id, key) = {
             let doc = view.read(cx);
             (doc.id, doc.key.clone())
         };
-        let Some(path) = renamed(&key.path, from, to).filter(|_| key.on.as_deref() == on) else {
+        let Some(path) =
+            renamed(&key.path, from, to, backslash).filter(|_| key.on.as_deref() == on)
+        else {
             continue;
         };
         let new_key = DocKey {
@@ -211,14 +216,31 @@ fn moved(from: &str, to: &str, on: Option<&str>, cx: &mut App) {
     }
 }
 
-/// `path` after `from` moved to `to`, if it is `from` or inside it. Only on
-/// Windows is `\` a separator too: elsewhere it is part of a name.
-fn renamed(path: &str, from: &str, to: &str) -> Option<String> {
+/// Whether this app runs on Windows. A test can say it does, to run the Windows rules on any system.
+fn here_is_windows() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = tests::FORCED_WINDOWS.with(std::cell::Cell::get) {
+        return forced;
+    }
+    cfg!(windows)
+}
+
+/// Whether `\` separates the segments of a path on the file system `on` names
+/// (`None`: this machine, which is Windows when `here_is_windows`). A machine's
+/// files are changed through `sh` (`remote_entry`), so its paths are Unix paths
+/// whatever this app runs on.
+fn backslash_separates(on: Option<&str>, here_is_windows: bool) -> bool {
+    on.is_none() && here_is_windows
+}
+
+/// `path` after `from` moved to `to`, if it is `from` or inside it. Only where
+/// `backslash` is a separator is `\` one too: elsewhere it is part of a name.
+fn renamed(path: &str, from: &str, to: &str, backslash: bool) -> Option<String> {
     if path == from {
         return Some(to.to_owned());
     }
     let rest = path.strip_prefix(from)?;
-    rest.starts_with(|c| c == '/' || (cfg!(windows) && c == '\\'))
+    rest.starts_with(|c| c == '/' || (backslash && c == '\\'))
         .then(|| format!("{to}{rest}"))
 }
 
@@ -1387,6 +1409,29 @@ fn elsewhere(view: Entity<DocView>, owner: String, look: &Look) -> AnyElement {
 mod tests {
     use super::*;
 
+    thread_local! {
+        pub(super) static FORCED_WINDOWS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// Runs the rest of the test as an app on Windows, whatever system it is on.
+    #[cfg(unix)]
+    struct AsWindows;
+
+    #[cfg(unix)]
+    impl AsWindows {
+        fn new() -> Self {
+            FORCED_WINDOWS.with(|forced| forced.set(Some(true)));
+            AsWindows
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for AsWindows {
+        fn drop(&mut self) {
+            FORCED_WINDOWS.with(|forced| forced.set(None));
+        }
+    }
+
     #[test]
     fn encoded_matches_what_write_text_puts_on_disk() {
         assert_eq!(fsops::encode_text("a\nb", Eol::Lf, false), b"a\nb");
@@ -1932,19 +1977,41 @@ mod tests {
     #[test]
     fn renames_reach_the_paths_inside() {
         assert_eq!(
-            renamed("/r/a.txt", "/r/a.txt", "/r/b.txt").as_deref(),
+            renamed("/r/a.txt", "/r/a.txt", "/r/b.txt", false).as_deref(),
             Some("/r/b.txt")
         );
         assert_eq!(
-            renamed("/r/d/a.txt", "/r/d", "/r/e").as_deref(),
+            renamed("/r/d/a.txt", "/r/d", "/r/e", false).as_deref(),
             Some("/r/e/a.txt")
         );
-        assert_eq!(renamed("/r/dd/a.txt", "/r/d", "/r/e"), None);
-        assert_eq!(renamed("/r/a.txt", "/r/b.txt", "/r/c.txt"), None);
-        // `d\a.txt` is in `d` on Windows, and next to it elsewhere.
+        assert_eq!(renamed("/r/dd/a.txt", "/r/d", "/r/e", false), None);
+        assert_eq!(renamed("/r/a.txt", "/r/b.txt", "/r/c.txt", false), None);
+        // `d\a.txt` is in `d` where `\` separates, and next to it elsewhere.
         assert_eq!(
-            renamed(r"/r/d\a.txt", "/r/d", "/r/e").as_deref(),
-            cfg!(windows).then_some(r"/r/e\a.txt")
+            renamed(r"/r/d\a.txt", "/r/d", "/r/e", true).as_deref(),
+            Some(r"/r/e\a.txt")
+        );
+        assert_eq!(renamed(r"/r/d\a.txt", "/r/d", "/r/e", false), None);
+    }
+
+    #[test]
+    fn a_machines_paths_are_split_at_slashes_whatever_this_app_runs_on() {
+        // A machine's files are changed through `sh`: its paths are Unix paths.
+        for here_is_windows in [true, false] {
+            assert!(!backslash_separates(Some("lab"), here_is_windows));
+        }
+        assert!(backslash_separates(None, true));
+        assert!(!backslash_separates(None, false));
+        // Renaming /r/foo on a machine from a Windows app leaves the file `foo\notes.txt` beside it where it is.
+        let on_lab = backslash_separates(Some("lab"), true);
+        assert_eq!(
+            renamed(r"/r/foo\notes.txt", "/r/foo", "/r/bar", on_lab),
+            None
+        );
+        let here = backslash_separates(None, true);
+        assert_eq!(
+            renamed(r"/r/foo\notes.txt", "/r/foo", "/r/bar", here).as_deref(),
+            Some(r"/r/bar\notes.txt")
         );
     }
 
@@ -2090,6 +2157,58 @@ mod tests {
             assert_eq!(find(&keys[2], cx), Some(ids[2]));
             assert_eq!(find(&key_on(Some("lab"), &b), cx), Some(ids[1]));
         });
+    }
+
+    /// `foo\notes.txt` and `bar\old.txt` are names of files beside the folders `foo` and `bar`.
+    #[cfg(unix)]
+    fn backslash_files(dir: &std::path::Path) -> [std::path::PathBuf; 2] {
+        std::fs::create_dir(dir.join("foo")).unwrap();
+        let beside = ["foo\\notes.txt", "bar\\old.txt"].map(|name| dir.join(name));
+        for path in &beside {
+            std::fs::write(path, "one\n").unwrap();
+        }
+        beside
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_windows_app_renaming_on_a_machine_leaves_the_files_with_a_backslash_in_their_names_alone(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let beside = backslash_files(dir.path());
+        crate::remote_write::testing::fake_hc();
+        let _windows = AsWindows::new();
+        let keys = beside.each_ref().map(|p| key_on(Some("lab"), p));
+        let ids = keys.clone().map(|k| cx.update(|cx| open(k, cx)));
+        cx.run_until_parked();
+        // `bar\old.txt` is not at the new path or under it, so it is no obstacle, and neither file moves.
+        renamed_on(
+            Some("lab"),
+            &dir.path().join("foo"),
+            &dir.path().join("bar"),
+            cx,
+        )
+        .unwrap();
+        cx.update(|cx| {
+            assert_eq!(find(&keys[0], cx), Some(ids[0]));
+            assert_eq!(find(&keys[1], cx), Some(ids[1]));
+        });
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_windows_app_renaming_here_takes_a_backslash_for_a_separator(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let beside = backslash_files(dir.path());
+        let _windows = AsWindows::new();
+        let id = cx.update(|cx| open(key_on(None, &beside[0]), cx));
+        cx.run_until_parked();
+        renamed_on(None, &dir.path().join("foo"), &dir.path().join("bar"), cx).unwrap();
+        let moved = key_on(None, &dir.path().join("bar\\notes.txt"));
+        cx.update(|cx| assert_eq!(find(&moved, cx), Some(id)));
     }
 
     #[cfg(unix)]

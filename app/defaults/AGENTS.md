@@ -1372,11 +1372,29 @@ with these differences.
 <!-- yuzora:lane:L5:start -->
 ### Files and the editor
 
-- The right dock's Files mode shows the focused pane's repo. Files open beside the
-  focused pane: `yuzora-editor` (code), `yuzora-markdown` (`.md`: preview or
-  source), `yuzora-files-image` (images and SVG). Open one yourself with
-  `pane.split {direction: "right", mod: "yuzora-editor", props: {path: "/abs/file.rs", line: 12}}`
+- The right dock's Files mode shows the focused pane's repo. A file opens in a tab
+  of its own, after the selected tab of the shown Space, and "Open to the Side" in
+  its right-click menu always opens it beside the focused pane instead, though it
+  is open elsewhere. A file already open in a pane of the shown Space is shown where
+  it is, also after a restart (`panes()` lists a mod pane's `props` and whether it
+  has `started`, so a pane in a tab not shown yet is found by its `path`); a file
+  open only in another Space opens again in the shown one. The panes are
+  `yuzora-editor` (code), `yuzora-markdown` (`.md`: preview or source),
+  `yuzora-files-image` (images and SVG). Open one yourself with
+  `tab.new {name: "file.rs", mod: "yuzora-editor", props: {path: "/abs/file.rs", line: 12}}`
+  or beside a pane with `pane.split {direction: "right", mod: "yuzora-editor", props: {path: "/abs/file.rs", line: 12}}`
   (`on`: a machine for a remote space's file).
+- A pane's props cannot change, so Files replaces a pane in three cases: a pane
+  that has not started (`started` false: restored in a tab not shown yet) when a
+  search hit asks it for a line or its file is renamed; an image pane when its file
+  is renamed; and, on a rename, a second started pane on a file whose document
+  another pane already holds. The new pane is split off to the right of the old
+  one and the old one is closed, so the pane id is new (read `panes()` again; don't
+  keep an id across a rename) and the tab keeps the name it had. In the tab shown
+  the new pane also takes the old one's place, share of the row and the tab's zoom.
+  In a tab not shown it does not: the pane before the old one takes half of its
+  share of the row (unless it was the first), the tab's zoom is cleared, and the
+  tab remembers the new pane as its focus.
 - The editor follows the disk: a file with no unsaved changes reloads when it
   changes; with unsaved changes the person is asked. While you (an agent) are
   working in a folder that holds an open file you just changed, its pane shows
