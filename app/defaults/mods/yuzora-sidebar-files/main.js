@@ -10,6 +10,7 @@ import { openFile, moved, join, parent, base, rel } from "./open.js";
 import { fileIcon } from "./icons.js";
 import { heading } from "./paths.js";
 import { readGit } from "./git-state.js";
+import { reason } from "./failure.js";
 import { createStore, panel, info } from "./tree-state.js";
 
 const ME = "yuzora-sidebar-files";
@@ -100,16 +101,19 @@ export default class FilesSidebar extends View {
     return this.here === here;
   }
 
-  // `timed`: the 10 s timer's, which a watched folder doesn't need for search.
-  reload(cx, timed = false) {
-    const here = this.here;
+  // `timed`: the 10 s timer's, which a watched folder doesn't need for search. `here`: the folder to read again,
+  // which is the one shown unless a change made in another one has just ended.
+  reload(cx, timed = false, here = this.here) {
     if (!here?.cwd) return;
     cx.spawn(async cx => {
-      const read = await this.store.reload(here, () => { this.version++; cx.notify(); }, { timed });
-      if (!read?.ok || !this.current(here)) return;
-      // An open search follows the files too (the new root's, after a move).
-      if (this.searching && !(read.timed && this.watching === here)) this.search(cx, !read.timed);
-      this.watch(here, cx);
+      // Told as each read ends: reads that follow one another must not hold these back.
+      const settled = read => {
+        if (!read.ok || !this.current(here)) return;
+        // An open search follows the files too, and the new root's after a move, watched or not.
+        if (this.searching && (read.moved || !(read.timed && this.watching === here))) this.search(cx, !read.timed);
+        this.watch(here, cx);
+      };
+      await this.store.reload(here, () => { this.version++; cx.notify(); }, { timed, settled });
     });
   }
 
@@ -143,7 +147,7 @@ export default class FilesSidebar extends View {
       const failed = await this.store.expand(here, root, folder, () => { this.version++; cx.notify(); });
       if (!failed || this.loc !== loc) return;
       if (failed.gone) notify({ title: t("error.gone", { name: row.name }), level: "warning" });
-      else notify({ title: t("error.list"), body: String(failed.error?.message ?? failed.error), level: "error" });
+      else notify({ title: t("error.list"), body: reason(failed.error, { name: row.name, machine: here.on, kind: "list" }), level: "error" });
     });
     cx.notify();
   }
@@ -227,7 +231,8 @@ export default class FilesSidebar extends View {
     const req = shared(REQUEST);
     if (req?.seq && req.seq > this.lastRequest) {
       this.lastRequest = req.seq;
-      if (this.here?.root && this.store.owns(this.here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
+      // A frame only looks: the name input and the redraw are for the task that follows it.
+      cx.timer.after(0, cx => this.answer(req, cx));
     }
     const refresh = shared(REFRESH) ?? 0;
     if (refresh > this.lastRefresh) { this.lastRefresh = refresh; this.reload(cx); }
@@ -235,8 +240,13 @@ export default class FilesSidebar extends View {
 
   // New file / folder / rename: one bar above the tree.
 
+  // The popup's request, for the machine and the folder this tree is.
+  answer(req, cx) {
+    const here = this.here;
+    if (here?.root && (req.on ?? null) === (here.on ?? null) && this.store.owns(here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
+  }
+
   startEdit(kind, path, dir, cx) {
-    if (this.here?.on) { notify({ title: t("remote.readonly"), level: "info" }); return; }
     const value = kind === "rename" ? base(path) : "";
     this.edit = { kind, path, dir: dir ?? (path ? parent(path) : this.here.root) };
     this.editInput.set_value(value);
@@ -253,17 +263,19 @@ export default class FilesSidebar extends View {
     if (!edit) return;
     if (!name || name === "." || name === ".." || /[\\/\0]/.test(name)) { notify({ title: t("error.name"), level: "warning" }); return; }
     this.edit = null;
-    const here = this.here, target = join(edit.dir, name);
+    // The change is for the machine and the Space it was asked in (the bar is dropped when another Space is shown),
+    // whatever is shown by the time the machine answers.
+    const here = this.here, loc = this.loc, on = here.on ?? null, target = join(edit.dir, name);
     cx.spawn(async cx => {
       try {
-        if (edit.kind === "new-file") { await createFile(target); openFile(target, null); }
-        else if (edit.kind === "new-folder") await createFolder(target);
-        else if (target !== edit.path) { await rename(edit.path, target); moved(edit.path, target); }
+        if (edit.kind === "new-file") { await createFile(target, { on }); if (this.loc === loc) openFile(target, on); }
+        else if (edit.kind === "new-folder") await createFolder(target, { on });
+        else if (target !== edit.path) { await rename(edit.path, target, { on }); moved(edit.path, target, on); }
         const r = rel(here.root, edit.dir);
         if (r) here.open.add(r);
         here.selected = rel(here.root, target);
-      } catch (e) { notify({ title: t(`error.${edit.kind}`), body: String(e?.message ?? e), level: "error" }); }
-      finally { this.reload(cx); cx.notify(); }
+      } catch (e) { notify({ title: t(`error.${edit.kind}`), body: reason(e, { name, machine: on, kind: edit.kind }), level: "error" }); }
+      finally { this.reload(cx, false, here); cx.notify(); }
     });
     cx.notify();
   }
@@ -277,11 +289,13 @@ export default class FilesSidebar extends View {
     cx.timer.after(this.searchMode === "name" ? 60 : 250, cx => {
       if (seq !== this.searchSeq) return;
       cx.spawn(async cx => {
+        // The hits are paths under the root the search was made under, which the tree may leave while it runs.
+        const root = here.root;
         try {
           if (this.searchMode === "name") {
-            const found = await findFiles(here.root, query, { on: here.on, hidden: this.hidden, limit: 200, fresh });
+            const found = await findFiles(root, query, { on: here.on, hidden: this.hidden, limit: 200, fresh });
             if (seq !== this.searchSeq) return;
-            this.results = found.matches.map(f => ({ key: f.path, root: here.root, on: here.on, path: f.path }));
+            this.results = found.matches.map(f => ({ key: join(root, f.path), root, on: here.on, path: f.path }));
             const notes = [
               found.tooLong ? t("search.too_long") : found.matches.length ? null : t("search.none"),
               found.more ? t("search.truncated", { count: found.matches.length }) : null,
@@ -291,9 +305,9 @@ export default class FilesSidebar extends View {
             ].filter(Boolean);
             this.searchNote = notes.length ? notes.join(" ") : null;
           } else {
-            const found = await grep(here.root, query, { on: here.on, hidden: this.hidden, limit: 500 });
+            const found = await grep(root, query, { on: here.on, hidden: this.hidden, limit: 500 });
             if (seq !== this.searchSeq) return;
-            this.results = found.hits.map((h, i) => ({ key: `${i}:${h.path}:${h.line}`, root: here.root, on: here.on, path: h.path, line: h.line, column: h.column, text: h.text }));
+            this.results = found.hits.map((h, i) => ({ key: `${i}:${join(root, h.path)}:${h.line}`, root, on: here.on, path: h.path, line: h.line, column: h.column, text: h.text }));
             const notes = !found.available ? [t("search.no_rg")] : [
               found.hits.length ? null : t("search.none"),
               found.truncated ? t("search.truncated", { count: found.hits.length }) : null,
@@ -336,17 +350,15 @@ export default class FilesSidebar extends View {
         .when(enabled, el => el.cursor_pointer().hover(s => s.bg(on ? th.selected : th.hover).text_color(th.foreground)).on_click(onClick))
         .tooltip(label)
         .child(svg(`mods/${ME}/icons/${icon}.svg`).size(14));
-    // New files and folders: off on another machine (read-only there), which the tooltip says.
-    const canAdd = local && Boolean(here?.root);
-    const addTip = label => (local ? label : t("remote.readonly"));
+    const canAdd = Boolean(here?.root);
     // The folder above (shrinks first) and the folder's own name; "~" only on this machine.
     const head = here?.root ? heading(here.root, local ? home() : null, note.branch) : null;
     return v_flex().id("root").size_full().min_h(0).bg(th.chrome).text_color(th.foreground).text_size(12.5)
       .child(h_flex().h(32).px(12).flex_none().items_center()
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(t("title")))
         .child(h_flex().flex_none().gap(2)
-          .child(action("new-file", "new-file", addTip(t("action.new_file")), (_e, cx) => this.startEdit("new-file", null, this.selectedDir(), cx), false, canAdd))
-          .child(action("new-folder", "new-folder", addTip(t("action.new_folder")), (_e, cx) => this.startEdit("new-folder", null, this.selectedDir(), cx), false, canAdd))
+          .child(action("new-file", "new-file", t("action.new_file"), (_e, cx) => this.startEdit("new-file", null, this.selectedDir(), cx), false, canAdd))
+          .child(action("new-folder", "new-folder", t("action.new_folder"), (_e, cx) => this.startEdit("new-folder", null, this.selectedDir(), cx), false, canAdd))
           .child(action("refresh", "refresh", t("action.refresh"), (_e, cx) => { this.reload(cx); cx.notify(); }))
           .child(action("collapse", "collapse", t("action.collapse"), (_e, cx) => this.collapse(cx)))
           .child(action("search", "search", t("action.search"), (_e, cx) => this.toggleSearch(cx), this.searching))
@@ -482,7 +494,7 @@ export default class FilesSidebar extends View {
 }
 
 function request(action, m, extra) {
-  setShared(REQUEST, { action, root: m.root, seq: Date.now(), ...extra });
+  setShared(REQUEST, { action, root: m.root, on: m.on ?? null, seq: Date.now(), ...extra });
 }
 
 function revealLabel() {
@@ -496,18 +508,19 @@ function menuItems(m) {
   const relPath = rel(m.root, m.abs) ?? m.abs;
   return [
     m.dir ? null : { label: t("menu.open"), run: () => openFile(m.abs, m.on) },
+    m.dir ? null : { label: t("menu.open_side"), run: () => openFile(m.abs, m.on, { place: "side" }) },
     { label: t("menu.terminal"), run: () => run("terminal.open", { folder, place: "right" }) },
     null,
-    { label: t("menu.new_file"), enabled: local, run: () => request("new-file", m, { dir: folder }) },
-    { label: t("menu.new_folder"), enabled: local, run: () => request("new-folder", m, { dir: folder }) },
-    { label: t("menu.rename"), enabled: local, run: () => request("rename", m, { path: m.abs }) },
+    { label: t("menu.new_file"), run: () => request("new-file", m, { dir: folder }) },
+    { label: t("menu.new_folder"), run: () => request("new-folder", m, { dir: folder }) },
+    { label: t("menu.rename"), run: () => request("rename", m, { path: m.abs }) },
     { label: t("menu.trash"), enabled: local, danger: true, run: () => {
       trash(m.abs).then(() => { setShared(REFRESH, Date.now()); notify({ title: t("toast.trashed", { name: base(m.abs) }), level: "success", timeout: 3000 }); })
-        .catch(e => notify({ title: t("error.trash"), body: String(e?.message ?? e), level: "error" }));
+        .catch(e => notify({ title: t("error.trash"), body: reason(e, { name: base(m.abs), kind: "trash" }), level: "error" }));
     } },
     null,
     { label: t("menu.copy_path"), run: () => copyText(m.abs) },
     { label: t("menu.copy_relative"), run: () => copyText(relPath) },
-    { label: revealLabel(), enabled: local, run: () => { try { reveal(m.abs); } catch (e) { notify({ title: t("error.reveal"), body: String(e?.message ?? e), level: "error" }); } } },
+    { label: revealLabel(), enabled: local, run: () => { try { reveal(m.abs); } catch (e) { notify({ title: t("error.reveal"), body: reason(e, { name: base(m.abs), kind: "reveal" }), level: "error" }); } } },
   ].filter((it, i, all) => it || (i > 0 && all[i - 1]));
 }

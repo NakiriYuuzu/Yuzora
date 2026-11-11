@@ -17,6 +17,7 @@ pub mod git;
 pub mod highlight;
 pub mod image;
 pub mod markdown;
+mod remote_entry;
 pub mod remote_write;
 pub mod search;
 pub mod svg;
@@ -85,7 +86,7 @@ export function listDir(path: string, options?: On & { limit?: number }): Promis
 /** git status for the repo `cwd` is in; null outside a repo. Writes nothing under .git. */
 export function gitStatus(cwd: string, options?: On): Promise<GitMarks | null>;
 export function stat(path: string, options?: On): Promise<{ len: number; mtime_ms: number } | null>;
-/** New file, new folder, rename: this machine only for now (a machine in `on` is refused). */
+/** New file, new folder, rename: here, or on the machine in `on`. Nothing already at the name is replaced. */
 export function createFile(path: string, options?: On): Promise<null>;
 export function createFolder(path: string, options?: On): Promise<null>;
 /** Renaming also moves the documents open at that path (or under that folder) to the new one. */
@@ -721,6 +722,184 @@ return JSON.stringify([a, b, c, d]); }})()"#
         );
     }
 
+    /// `failure.js` reads the sentences made here (fsops.rs, remote_entry.rs), so it is run on what they make:
+    /// a sentence changed on this side without it changes what the toast says first.
+    #[test]
+    fn sidebar_failures_are_told_by_their_cause_from_the_messages_made_here() {
+        use crate::remote_entry::{Act, Kind, Problem, interpret};
+        use yuzora_core::remote::ExecError;
+        let dir = tempfile::tempdir().unwrap();
+        let at = |name: &str| format!("{}/{name}", dir.path().display());
+        std::fs::write(at("taken.txt"), "").unwrap();
+        std::fs::write(at("a.txt"), "").unwrap();
+        let failed = |r: Result<(), String>| r.unwrap_err();
+        let mut cases: Vec<(String, &str, &str, &str)> = vec![
+            (
+                failed(fsops::create_file(&at("taken.txt"), None)),
+                "taken.txt",
+                "new-file",
+                "taken.txt already exists",
+            ),
+            (
+                failed(fsops::create_dir(&at("taken.txt"), None)),
+                "taken.txt",
+                "new-folder",
+                "taken.txt already exists",
+            ),
+            (
+                failed(fsops::create_file(&at("gone/n.txt"), None)),
+                "n.txt",
+                "new-file",
+                "The folder no longer exists",
+            ),
+            (
+                failed(fsops::rename(&at("a.txt"), &at("taken.txt"), None)),
+                "taken.txt",
+                "rename",
+                "taken.txt already exists",
+            ),
+            (
+                failed(fsops::rename(&at("none.txt"), &at("b.txt"), None)),
+                "b.txt",
+                "rename",
+                "That item is no longer there",
+            ),
+        ];
+        #[cfg(unix)]
+        // SAFETY: a plain syscall with no arguments.
+        if unsafe { libc::geteuid() } != 0 {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::create_dir(at("ro")).unwrap();
+            std::fs::set_permissions(at("ro"), std::fs::Permissions::from_mode(0o555)).unwrap();
+            cases.push((
+                failed(fsops::create_file(&at("ro/n.txt"), None)),
+                "n.txt",
+                "new-file",
+                "The folder is not writable",
+            ));
+            std::fs::set_permissions(at("ro"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let timed = interpret(Err(ExecError::TimedOut {
+            seconds: 30.0,
+            machine: Some("lab".into()),
+        }))
+        .unwrap_err();
+        let offline = interpret(Err(ExecError::Remote(
+            "machine lab is not connected".into(),
+        )))
+        .unwrap_err();
+        let make = Act::Make("/srv/n.txt", Kind::File);
+        let rename = Act::Move("/srv/a.txt", "/srv/b.txt");
+        for (act, problem, name, kind, want) in [
+            (
+                &make,
+                Problem::Exists,
+                "n.txt",
+                "new-file",
+                "n.txt already exists",
+            ),
+            (
+                &rename,
+                Problem::Gone,
+                "b.txt",
+                "rename",
+                "That item is no longer there",
+            ),
+            (
+                &make,
+                Problem::NoFolder,
+                "n.txt",
+                "new-file",
+                "The folder no longer exists",
+            ),
+            (
+                &make,
+                Problem::FolderNotWritable,
+                "n.txt",
+                "new-file",
+                "The folder is not writable",
+            ),
+            (
+                &rename,
+                Problem::OtherDevice,
+                "b.txt",
+                "rename",
+                "A rename can't copy to another disk",
+            ),
+            (
+                &rename,
+                Problem::NoTool("mv"),
+                "b.txt",
+                "rename",
+                "lab has no mv",
+            ),
+            (
+                &make,
+                Problem::NoShell,
+                "n.txt",
+                "new-file",
+                "Windows machines can't be changed here",
+            ),
+            (
+                &make,
+                Problem::BadPath,
+                "n.txt",
+                "new-file",
+                "A machine can't use that path",
+            ),
+            (&make, offline, "n.txt", "new-file", "Can't reach lab"),
+            (
+                &rename,
+                timed,
+                "b.txt",
+                "rename",
+                "lab took too long: check again",
+            ),
+            (
+                &make,
+                Problem::Failed(
+                    "the answer could not be read; it may or may not have been done".into(),
+                ),
+                "n.txt",
+                "new-file",
+                "Not sure it was done: check again",
+            ),
+        ] {
+            cases.push((act.describe(&problem, "lab"), name, kind, want));
+        }
+        let input: Vec<serde_json::Value> = cases
+            .iter()
+            .map(|(message, name, kind, _)| {
+                serde_json::json!([format!("`yuzora:files.call`: {message}"), name, kind])
+            })
+            .collect();
+        let src = include_str!("../../../defaults/mods/yuzora-sidebar-files/failure.js")
+            .replace("export const", "const")
+            .replace("export function", "function")
+            .replace(r#"import { t } from "yuzora:core";"#, "");
+        let script = format!(
+            r#"(() => {{
+    const en = {strings};
+    const t = (key, vars = {{}}) => key.split(".").reduce((o, k) => o?.[k], en).replace(/\{{(\w+)\}}/g, (_, k) => vars[k]);
+    {src}
+    return JSON.stringify({input}.map(([message, name, kind]) => reason(new Error(message), {{ name, machine: "lab", kind }})));
+    }})()"#,
+            strings = include_str!("../../../defaults/mods/yuzora-sidebar-files/i18n/en.json"),
+            input = serde_json::Value::Array(input),
+        );
+        let runtime = quickjs::Runtime::new().unwrap();
+        let context = quickjs::Context::full(&runtime).unwrap();
+        let got: String = context.with(|ctx| ctx.eval(script).unwrap());
+        let got: Vec<String> = serde_json::from_str(&got).unwrap();
+        let want: Vec<&str> = cases.iter().map(|c| c.3).collect();
+        assert_eq!(
+            got,
+            want,
+            "{:#?}",
+            cases.iter().map(|c| &c.0).collect::<Vec<_>>()
+        );
+    }
+
     /// What a unit test of `readGit` cannot see: the sidebar uses it, shows
     /// its failure and the too-long query note, and does not swallow errors.
     #[test]
@@ -925,8 +1104,145 @@ return JSON.stringify([a, b, c, d]); }})()"#
         );
     }
 
-    #[test]
-    fn a_renamed_image_is_shown_in_the_same_place_under_its_new_path() {
+    /// A fake Herdr that follows window.rs. `run` only queues a command; `flush()` applies the queue and
+    /// publishes what `panes()`, `spaces()` and `focused()` read, as the window does a moment after a mod
+    /// asked (a mod pane lists its props, a terminal does not). `tab.new` selects the new tab (after the
+    /// selected one) and its Space, a split focuses inside its own tab, `pane.focus` selects the pane's tab and
+    /// Space. A mod pane starts (and opens its document) when its tab is first shown, not before; the pane
+    /// that has the keys notes itself on its document, as `doc-pane.js` does, and no other does.
+    /// `restore(...)` puts a pane there that the layout had before this run: in a tab of its own that has not
+    /// been shown, or with `beside` in the tab shown. `rename(from, to)` follows a file renamed, as `docs.rs` does.
+    /// A mod pane is listed with `started` (a copy of its mod is running); a command that names a pane that is no
+    /// longer there does nothing, as the window answers it with an error and goes on. `tab.select` shows a tab
+    /// and its Space.
+    /// `pane.split` puts the zoom of its tab away and focuses the new pane there; `pane.swap` and `pane.zoom` take
+    /// the focused pane of the tab shown when they are not told one, as the window does; `commands` lists what ran.
+    /// `autoNote = false`: no pane notes itself; the test says which pane took the keys with `notePane`, as an
+    /// editor does when it gets them (a pane that only shows "Edit here" never does).
+    /// `strip(space)` is the tab strip with the panes in each tab and `*` on the selected tab, `focus()` the
+    /// pane that has the keys.
+    const HERDR_WORLD: &str = r##"
+        const world = [
+          { id: "s1", machine: null, active: true, selected: "t1", tabs: [
+            { id: "t1", name: "", focus: "p1", panes: [{ pane: "p1", mod: null }] },
+            { id: "t2", name: "build", focus: "p2", panes: [{ pane: "p2", mod: null }] } ] },
+          { id: "s2", machine: "lab", active: false, selected: "t3", tabs: [
+            { id: "t3", name: "", focus: "p3", panes: [{ pane: "p3", mod: null }] } ] },
+          { id: "s3", machine: null, active: false, selected: "t4", tabs: [
+            { id: "t4", name: "", focus: "p4", panes: [{ pane: "p4", mod: null }] } ] },
+        ];
+        const given = {}, queue = [], revealed = [], focusedDocs = [], docs = new Map(), opens = {}, started = new Set(), commands = [];
+        let serial = 10, docs_made = 0, snapshot = null, nobody = false, autoNote = true;
+        const shown = () => world.find(s => s.active);
+        const tabShown = () => shown().tabs.find(t => t.id === shown().selected);
+        const tabOf = pane => world.flatMap(s => s.tabs).find(t => t.panes.some(p => p.pane === pane));
+        const select = tab => {
+          const s = world.find(x => x.tabs.includes(tab));
+          s.selected = tab.id;
+          for (const x of world) x.active = x === s;
+        };
+        const keyOf = (path, on) => `${on ?? ""}\0${path}`;
+        const DOC_PANES = ["yuzora-editor", "yuzora-markdown"];
+        function apply(name, a) {
+          commands.push(a.pane === undefined && (name === "pane.swap" || name === "pane.zoom") ? `${name}(focused)` : name);
+          if (name === "tab.new") {
+            const s = a.space ? world.find(x => x.id === a.space) : shown(), pane = `p${++serial}`;
+            const tab = { id: `t${serial}`, name: a.name ?? "", focus: pane, panes: [{ pane, mod: a.mod ?? null }] };
+            s.tabs.splice(s.tabs.findIndex(t => t.id === s.selected) + 1, 0, tab);
+            given[pane] = a.props;
+            select(tab);
+          } else if (name === "pane.split") {
+            const target = a.pane ?? tabShown().focus, tab = tabOf(target), pane = `p${++serial}`;
+            if (!tab) return;
+            tab.panes.splice(tab.panes.findIndex(p => p.pane === target) + 1, 0, { pane, mod: a.mod ?? null });
+            given[pane] = a.props;
+            tab.focus = pane;
+            tab.zoom = null;
+          } else if (name === "pane.close") {
+            const tab = tabOf(a.pane);
+            if (!tab) return;
+            tab.panes = tab.panes.filter(p => p.pane !== a.pane);
+            if (tab.focus === a.pane) tab.focus = tab.panes[0].pane;
+            if (tab.zoom === a.pane) tab.zoom = null;
+          } else if (name === "pane.focus") {
+            const tab = tabOf(a.pane);
+            if (!tab) return;
+            tab.focus = a.pane;
+            if (tab.zoom) tab.zoom = a.pane;
+            select(tab);
+          } else if (name === "pane.swap") {
+            const pane = a.pane ?? tabShown().focus, tab = tabOf(pane);
+            if (!tab || tabOf(a.target) !== tab) return;
+            const i = tab.panes.findIndex(p => p.pane === pane), j = tab.panes.findIndex(p => p.pane === a.target);
+            [tab.panes[i], tab.panes[j]] = [tab.panes[j], tab.panes[i]];
+          } else if (name === "pane.zoom") {
+            const pane = a.pane ?? tabShown().focus, tab = tabOf(pane);
+            if (!tab || tab.panes.length < 2) return;
+            tab.zoom = tab.zoom === pane ? null : pane;
+          } else if (name === "tab.select") {
+            const tab = world.flatMap(s => s.tabs).find(t => t.id === a.id);
+            if (tab) select(tab);
+          } else throw new Error(name);
+        }
+        function publish() {
+          const tab = tabShown();
+          for (const p of tab.panes) {
+            const at = given[p.pane];
+            if (started.has(p.pane)) continue;
+            started.add(p.pane);
+            if (!DOC_PANES.includes(p.mod) || !at?.path) continue;
+            if (!docs.has(keyOf(at.path, at.on))) docs.set(keyOf(at.path, at.on), { id: ++docs_made, pane: null });
+            opens[p.pane] = docs.get(keyOf(at.path, at.on));
+          }
+          const here = tab.panes.find(p => p.pane === tab.focus);
+          if (autoNote && opens[here.pane]) opens[here.pane].pane = here.pane;
+          snapshot = {
+            spaces: world.map(s => ({ id: s.id, machine: s.machine, active: s.active, tabs: s.tabs.map(t => ({ id: t.id, name: t.name, active: s.selected === t.id })) })),
+            panes: world.flatMap(s => s.tabs.flatMap(t => t.panes.map(p => ({ pane: p.pane, mod: p.mod ?? undefined, ...(p.mod ? { props: given[p.pane], started: started.has(p.pane) } : {}), tab: t.id, zoomed: t.zoom === p.pane })))),
+            focused: { space: shown().id, tab: tab.id, pane: nobody ? null : tab.focus },
+          };
+        }
+        publish();
+        const flush = () => { while (queue.length) apply(...queue.shift()); publish(); };
+        const run = (name, args) => { queue.push([name, args]); };
+        const spaces = () => snapshot.spaces, panes = () => snapshot.panes, focused = () => snapshot.focused;
+        const kindOf = p => (/\.png$/.test(p) ? "image" : /\.md$/.test(p) ? "markdown" : "text");
+        const documentFor = (path, o) => { const d = docs.get(keyOf(path, o?.on)); return d ? { doc: d.id, pane: d.pane } : null; };
+        const paneDocument = pane => { for (const [key, d] of docs) if (d.pane === pane) return { path: key.split("\0")[1] }; return null; };
+        const notePane = (doc, pane) => { for (const d of docs.values()) if (d.id === doc) d.pane = pane; };
+        const focusDocument = doc => focusedDocs.push(doc);
+        const revealLine = (doc, line, column) => revealed.push([line, column]);
+        const show = id => { for (const s of world) s.active = s.id === id; publish(); };
+        const restore = (space, name, mod, props, { beside = false, pane = null } = {}) => {
+          const s = world.find(x => x.id === space), n = ++serial;
+          pane ??= `r${n}`;
+          given[pane] = props;
+          if (beside) tabShown().panes.push({ pane, mod });
+          else s.tabs.push({ id: `tr${n}`, name, focus: pane, panes: [{ pane, mod }] });
+          publish();
+          return pane;
+        };
+        const rename = (from, to, on = null) => {
+          for (const [key, d] of [...docs]) {
+            const [machine, path] = key.split("\0");
+            if (machine !== (on ?? "") || !(path === from || path.startsWith(from + "/"))) continue;
+            docs.delete(key);
+            docs.set(keyOf(to + path.slice(from.length), on), d);
+          }
+        };
+        const label = p => (p.mod === null ? "shell" : `${p.mod.replace(/^yuzora-(files-)?/, "")} ${given[p.pane].path}`);
+        const strip = id => {
+          const s = world.find(x => x.id === id);
+          return s.tabs.map(t => `[${t.panes.map(label).join(", ")}]${s.selected === t.id ? "*" : ""}`).join(" ");
+        };
+        const names = id => world.find(x => x.id === id).tabs.map(t => t.name || "-").join(" ");
+        const focus = () => { const t = tabShown(); return label(t.panes.find(p => p.pane === t.focus)); };
+        const paneOf = path => panes().find(p => given[p.pane]?.path === path).pane;
+        const zoomedPane = () => panes().find(p => p.zoomed)?.pane ?? null;
+    "##;
+
+    /// Runs `body` against open.js as shipped and `HERDR_WORLD`; `body` returns what it saw.
+    fn in_the_open(body: &str) -> Vec<String> {
         let paths = include_str!("../../../defaults/mods/yuzora-sidebar-files/paths.js")
             .replace("export const", "const");
         let open = include_str!("../../../defaults/mods/yuzora-sidebar-files/open.js")
@@ -935,65 +1251,1225 @@ return JSON.stringify([a, b, c, d]); }})()"#
             .collect::<Vec<_>>()
             .join("\n")
             .replace("export function", "function");
-        // A fake Herdr: one row of panes, the focused one, a split's props.
-        let fake = r#"
-            let all = [{ pane: "p1", mod: "yuzora-editor" }], focus = "p1", n = 1;
-            const given = {};
-            const panes = () => all.map(p => ({ ...p }));
-            const focused = () => ({ pane: focus });
-            const run = (name, a) => {
-              if (name === "pane.split") {
-                const id = `p${++n}`;
-                all.splice(all.findIndex(p => p.pane === a.pane) + 1, 0, { pane: id, mod: a.mod });
-                given[id] = a.props; focus = id;
-              } else if (name === "pane.close") {
-                all = all.filter(p => p.pane !== a.pane);
-                if (focus === a.pane) focus = all[0]?.pane ?? null;
-              } else if (name === "pane.focus") focus = a.pane;
-              else throw new Error(name);
-            };
-            const kindOf = p => (p.endsWith(".png") ? "image" : "text");
-            const documentFor = () => null, focusDocument = () => {}, revealLine = () => {};
-            const shown = () => [all.map(p => (p.mod === "yuzora-files-image" ? given[p.pane].path : p.mod)), focus];
-        "#;
-        let body = r#"
-            const out = [];
-            openFile("/r/a.png", null);
-            run("pane.focus", { pane: "p1" });
-            moved("/r/a.png", "/r/b.png");
-            out.push(shown());
-            // Opening the new name finds that pane.
-            openFile("/r/b.png", null);
-            out.push(shown());
-            run("pane.focus", { pane: "p1" });
-            openFile("/r/img/c.png", null);
-            moved("/r/im", "/r/x");
-            moved("/r/img", "/r/pics");
-            out.push(shown());
-            // A pane closed meanwhile is not opened again.
-            run("pane.close", { pane: "p3" });
-            moved("/r/b.png", "/r/d.png");
-            out.push(shown());
-            return JSON.stringify(out);
-        "#;
-        let script = ["(() => {", &paths, fake, &open, body, "})()"].join("\n");
+        let script = ["(() => {", &paths, HERDR_WORLD, &open, body, "})()"].join("\n");
         let runtime = quickjs::Runtime::new().unwrap();
         let context = quickjs::Context::full(&runtime).unwrap();
-        let out: String = context.with(|ctx| ctx.eval(script).unwrap());
-        let got: Vec<(Vec<String>, String)> = serde_json::from_str(&out).unwrap();
-        let step = |panes: &[&str], focus: &str| {
-            (
-                panes.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
-                focus.to_owned(),
-            )
-        };
+        context.with(|ctx| match ctx.eval::<Vec<String>, _>(script) {
+            Ok(seen) => seen,
+            Err(error) => panic!("{error}: {:?}", ctx.catch()),
+        })
+    }
+
+    #[test]
+    fn a_file_opens_in_a_tab_of_its_own_after_the_one_shown() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/src/a.rs", null);
+            flush();
+            return [strip("s1"), names("s1"), focus()];
+        "#,
+        );
         assert_eq!(
-            got,
+            seen,
             [
-                step(&["yuzora-editor", "/r/b.png"], "p1"),
-                step(&["yuzora-editor", "/r/b.png"], "p3"),
-                step(&["yuzora-editor", "/r/pics/c.png", "/r/b.png"], "p5"),
-                step(&["yuzora-editor", "/r/pics/c.png"], "p5"),
+                "[shell] [editor /r/src/a.rs]* [shell]",
+                "- a.rs build",
+                "editor /r/src/a.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn each_kind_of_file_opens_in_its_own_pane_alone_in_the_new_tab() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            for (const path of ["/r/a.rs", "/r/README.md", "/r/a.png"]) { openFile(path, null); flush(); out.push(focus()); }
+            out.push(strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "editor /r/a.rs",
+                "markdown /r/README.md",
+                "image /r/a.png",
+                "[shell] [editor /r/a.rs] [markdown /r/README.md] [image /r/a.png]* [shell]"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_opened_to_the_side_splits_the_tab_shown() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null, { place: "side" });
+            flush();
+            return [strip("s1"), names("s1"), focus()];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell, editor /r/a.rs]* [shell]",
+                "- build",
+                "editor /r/a.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_already_open_is_shown_where_it_is_and_not_opened_again() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            const away = strip("s1");
+            openFile("/r/a.rs", null); flush();
+            const byClick = strip("s1");
+            return [away, byClick, focus()];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [editor /r/a.rs] [shell]",
+                "[shell] [editor /r/a.rs]* [shell]",
+                "editor /r/a.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn open_to_the_side_splits_the_focused_pane_though_the_file_is_open_in_a_tab() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            for (const path of ["/r/a.rs", "/r/README.md", "/r/a.png"]) { openFile(path, null); flush(); }
+            run("pane.focus", { pane: "p1" }); flush();
+            for (const path of ["/r/a.rs", "/r/README.md", "/r/a.png"]) { openFile(path, null, { place: "side" }); flush(); out.push(focus()); }
+            out.push(strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "editor /r/a.rs",
+                "markdown /r/README.md",
+                "image /r/a.png",
+                "[shell, editor /r/a.rs, markdown /r/README.md, image /r/a.png]* [editor /r/a.rs] [markdown /r/README.md] [image /r/a.png] [shell]",
+            ]
+        );
+    }
+
+    #[test]
+    fn open_to_the_side_splits_though_the_file_waits_in_a_pane_not_started() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "a.rs", "yuzora-editor", { path: "/r/a.rs", on: null, opened: 1 });
+            restore("s1", "", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1 }, { beside: true });
+            openFile("/r/a.rs", null, { place: "side", line: 4 }); flush();
+            return [strip("s1"), JSON.stringify(given[focused().pane].line)];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell, editor /r/a.rs, editor /r/b.rs]* [shell] [editor /r/a.rs]",
+                "4"
+            ]
+        );
+    }
+
+    #[test]
+    fn open_to_the_side_with_no_pane_in_focus_opens_a_tab_though_the_file_is_open() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null); flush();
+            nobody = true; publish();
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            return [strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["[shell] [editor /r/a.rs] [editor /r/a.rs]* [shell]"]);
+    }
+
+    #[test]
+    fn a_file_open_beside_a_shell_is_shown_there_by_a_click() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.rs", null); flush();
+            return [strip("s1"), focus()];
+        "#,
+        );
+        assert_eq!(seen, ["[shell, editor /r/a.rs]* [shell]", "editor /r/a.rs"]);
+    }
+
+    #[test]
+    fn a_line_is_kept_in_a_new_tab_and_shown_in_one_already_open() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null, { line: 12, column: 3 }); flush();
+            const props = given[focused().pane];
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.rs", null, { line: 40 }); flush();
+            return [`${props.line}:${props.column}`, typeof props.opened, JSON.stringify(revealed), strip("s1")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "12:3",
+                "number",
+                "[[40,1]]",
+                "[shell] [editor /r/a.rs]* [shell]"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_of_a_remote_space_opens_in_a_tab_of_that_space() {
+        let seen = in_the_open(
+            r#"
+            show("s2");
+            openFile("/srv/a.rs", "lab"); flush();
+            const props = given[focused().pane];
+            return [strip("s1"), strip("s2"), `${props.on}:${props.path}`, shown().id];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [shell]",
+                "[shell] [editor /srv/a.rs]*",
+                "lab:/srv/a.rs",
+                "s2"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_open_in_another_space_is_opened_again_in_the_space_shown() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            for (const path of ["/r/a.rs", "/r/README.md", "/r/a.png"]) { openFile(path, null); flush(); }
+            restore("s1", "b.rs", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1 });
+            const before = strip("s1");
+            show("s3");
+            for (const path of ["/r/a.rs", "/r/README.md", "/r/a.png", "/r/b.rs"]) { openFile(path, null); flush(); out.push(shown().id + " " + focus()); }
+            out.push(strip("s3"), strip("s1") === before ? "s1 as it was" : strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "s3 editor /r/a.rs",
+                "s3 markdown /r/README.md",
+                "s3 image /r/a.png",
+                "s3 editor /r/b.rs",
+                "[shell] [editor /r/a.rs] [markdown /r/README.md] [image /r/a.png] [editor /r/b.rs]*",
+                "s1 as it was",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pane_of_the_space_shown_is_used_though_the_document_was_last_seen_in_another() {
+        let seen = in_the_open(
+            r#"
+            const at = { path: "/r/a.rs", on: null, opened: 1 };
+            const other = restore("s1", "", "yuzora-editor", at, { beside: true });
+            const waiting = restore("s3", "a.rs", "yuzora-editor", at);
+            run("pane.focus", { pane: other }); flush();
+            show("s3");
+            openFile("/r/a.rs", null, { line: 5 }); flush();
+            return [String(panes().some(p => p.pane === waiting)), String(panes().some(p => p.pane === other)), JSON.stringify(revealed), strip("s3"), given[focused().pane].line + ""];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            ["false", "true", "[]", "[shell] [editor /r/a.rs]*", "5"]
+        );
+    }
+
+    #[test]
+    fn a_pane_not_started_is_shown_without_the_focus_of_a_document_it_does_not_hold() {
+        let seen = in_the_open(
+            r#"
+            const at = { path: "/r/a.rs", on: null, opened: 1 };
+            const other = restore("s1", "", "yuzora-editor", at, { beside: true });
+            const waiting = restore("s3", "a.rs", "yuzora-editor", at);
+            show("s3");
+            openFile("/r/a.rs", null); flush();
+            return [String(focused().pane === waiting), JSON.stringify(focusedDocs), strip("s3")];
+        "#,
+        );
+        assert_eq!(seen, ["true", "[]", "[shell] [editor /r/a.rs]*"]);
+    }
+
+    #[test]
+    fn a_rename_reaches_the_panes_of_every_space() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "a.rs", "yuzora-editor", { path: "/r/a.rs", on: null, opened: 1 });
+            restore("s3", "a.png", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 });
+            show("s3");
+            moved("/r", "/x", null); flush();
+            return [strip("s1"), strip("s3")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [shell] [editor /x/a.rs]",
+                "[shell]* [image /x/a.png]"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_opened_just_before_another_is_still_shown_by_its_own_tab() {
+        let seen = in_the_open(
+            r#"
+            show("s2");
+            openFile("/srv/README.md", "lab"); flush();
+            openFile("/srv/b.rs", "lab"); flush();
+            run("pane.focus", { pane: "p3" }); flush();
+            openFile("/srv/README.md", "lab"); flush();
+            return [strip("s2"), focus()];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell] [markdown /srv/README.md]* [editor /srv/b.rs]",
+                "markdown /srv/README.md"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_opens_in_the_space_it_was_asked_in_though_another_is_shown_when_the_command_runs() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null);
+            show("s2");
+            flush();
+            return [strip("s1"), strip("s2")];
+        "#,
+        );
+        assert_eq!(seen, ["[shell] [editor /r/a.rs]* [shell]", "[shell]*"]);
+    }
+
+    #[test]
+    fn a_place_that_is_not_known_opens_nothing() {
+        let seen = in_the_open(
+            r#"
+            let said = "";
+            try { openFile("/r/a.rs", null, { place: "elsewhere" }); } catch (e) { said = String(e.message); }
+            flush();
+            return [said, strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["unknown place: elsewhere", "[shell]* [shell]"]);
+    }
+
+    #[test]
+    fn with_no_pane_focused_the_side_is_a_tab() {
+        let seen = in_the_open(
+            r#"
+            nobody = true; publish();
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            return [strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["[shell] [editor /r/a.rs]* [shell]"]);
+    }
+
+    #[test]
+    fn an_image_open_in_a_tab_is_shown_by_a_second_click() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.png", null); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.png", null); flush();
+            return [strip("s1"), names("s1"), focus()];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            ["[shell] [image /r/a.png]* [shell]", "- a.png build", "image /r/a.png"]
+        );
+    }
+
+    #[test]
+    fn a_renamed_image_is_shown_in_the_same_place_under_its_new_path() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            openFile("/r/a.png", null, { place: "side" }); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            moved("/r/a.png", "/r/b.png", null); flush();
+            out.push(strip("s1") + " " + focus());
+            // Opening the new name finds that pane.
+            openFile("/r/b.png", null); flush();
+            out.push(strip("s1") + " " + focus());
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/img/c.png", null, { place: "side" }); flush();
+            moved("/r/im", "/r/x", null); moved("/r/img", "/r/pics", null); flush();
+            out.push(strip("s1") + " " + focus());
+            // A pane closed meanwhile is not opened again.
+            run("pane.close", { pane: paneOf("/r/b.png") }); flush();
+            moved("/r/b.png", "/r/d.png", null); flush();
+            out.push(strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell, image /r/b.png]* [shell] shell",
+                "[shell, image /r/b.png]* [shell] image /r/b.png",
+                "[shell, image /r/pics/c.png, image /r/b.png]* [shell] image /r/pics/c.png",
+                "[shell, image /r/pics/c.png]* [shell]",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_keys_stay_with_the_pane_that_had_them_when_two_panes_of_a_folder_are_replaced() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            openFile("/r/d/a.png", null); flush(); openFile("/r/d/b.png", null, { place: "side" }); flush();
+            const had = paneOf("/r/d/a.png");
+            run("pane.focus", { pane: had }); flush();
+            rename("/r/d", "/r/e"); moved("/r/d", "/r/e", null); flush();
+            out.push(strip("s1"), focus());
+            // The same with the other pane in focus.
+            run("pane.focus", { pane: paneOf("/r/e/b.png") }); flush();
+            moved("/r/e", "/r/f", null); flush();
+            out.push(strip("s1"), focus());
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell] [image /r/e/a.png, image /r/e/b.png]* [shell]",
+                "image /r/e/a.png",
+                "[shell] [image /r/f/a.png, image /r/f/b.png]* [shell]",
+                "image /r/f/b.png",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_whose_pane_was_closed_is_opened_again() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.rs", null, { place: "side" }); openFile("/r/a.png", null, { place: "side" }); flush();
+            run("pane.close", { pane: paneOf("/r/a.rs") }); run("pane.close", { pane: paneOf("/r/a.png") }); flush();
+            const closed = strip("s1");
+            openFile("/r/a.rs", null); openFile("/r/a.png", null); flush();
+            return [closed, strip("s1")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [shell]",
+                "[shell] [editor /r/a.rs] [image /r/a.png]* [shell]"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_renamed_image_in_a_tab_not_shown_is_found_by_its_own_pane() {
+        let seen = in_the_open(
+            r#"
+            openFile("/r/a.png", null); flush();
+            openFile("/r/c.png", null); flush();
+            moved("/r/a.png", "/r/b.png", null); flush();
+            openFile("/r/b.png", null); flush();
+            return [strip("s1"), focus()];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell] [image /r/b.png]* [image /r/c.png] [shell]",
+                "image /r/b.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_in_a_tab_the_layout_restored_and_nobody_has_shown_yet_is_shown_not_opened_again() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            const files = [["yuzora-editor", "/r/a.rs"], ["yuzora-markdown", "/r/README.md"], ["yuzora-files-image", "/r/a.png"]];
+            for (const [mod, path] of files) restore("s1", path.split("/").pop(), mod, { path, on: null, opened: 1 });
+            const before = strip("s1");
+            for (const [, path] of files) { openFile(path, null); flush(); out.push(focus()); }
+            out.push(before, strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "editor /r/a.rs",
+                "markdown /r/README.md",
+                "image /r/a.png",
+                "[shell]* [shell] [editor /r/a.rs] [markdown /r/README.md] [image /r/a.png]",
+                "[shell] [shell] [editor /r/a.rs] [markdown /r/README.md] [image /r/a.png]*",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_in_a_pane_the_layout_restored_beside_the_one_shown_is_shown_not_opened_again() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            const files = [["yuzora-editor", "/r/a.rs"], ["yuzora-markdown", "/r/README.md"], ["yuzora-files-image", "/r/a.png"]];
+            for (const [mod, path] of files) restore("s1", "", mod, { path, on: null, opened: 1 }, { beside: true });
+            out.push(String(documentFor("/r/a.rs").pane));
+            for (const [, path] of files) { openFile(path, null); flush(); out.push(focus()); }
+            out.push(strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "null",
+                "editor /r/a.rs",
+                "markdown /r/README.md",
+                "image /r/a.png",
+                "[shell, editor /r/a.rs, markdown /r/README.md, image /r/a.png]* [shell]",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_of_a_remote_space_restored_with_its_layout_is_shown_not_opened_again() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            restore("s2", "a.rs", "yuzora-editor", { path: "/srv/a.rs", on: "lab", opened: 1 }, { pane: "lab/pa175" });
+            restore("s2", "b.rs", "yuzora-editor", { path: "/srv/b.rs", on: "lab", opened: 1 }, { pane: "lab/pb176" });
+            show("s2");
+            restore("s2", "", "yuzora-editor", { path: "/srv/c.rs", on: "lab", opened: 1 }, { beside: true, pane: "lab/pc177" });
+            for (const path of ["/srv/a.rs", "/srv/c.rs"]) { openFile(path, "lab"); flush(); out.push(focused().pane); }
+            out.push(strip("s1"), strip("s2"), shown().id);
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "lab/pa175",
+                "lab/pc177",
+                "[shell]* [shell]",
+                "[shell, editor /srv/c.rs]* [editor /srv/a.rs] [editor /srv/b.rs]",
+                "s2",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_restored_pane_is_for_its_own_machine_only() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "a.rs", "yuzora-editor", { path: "/srv/a.rs", on: "lab", opened: 1 });
+            openFile("/srv/a.rs", null); flush();
+            return [strip("s1")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            ["[shell] [editor /srv/a.rs]* [shell] [editor /srv/a.rs]"]
+        );
+    }
+
+    #[test]
+    fn a_pane_of_another_mod_holding_the_same_path_is_not_the_files_pane() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "", "yuzora-git-diff", { path: "/r/a.rs", on: null, cwd: "/r" }, { beside: true });
+            restore("s1", "", "yuzora-editor", { path: "/r/a.png", on: null, opened: 1 }, { beside: true });
+            openFile("/r/a.rs", null); flush();
+            openFile("/r/a.png", null); flush();
+            return [strip("s1")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell, git-diff /r/a.rs, editor /r/a.png] [editor /r/a.rs] [image /r/a.png]* [shell]"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_restored_pane_is_found_under_the_name_its_file_was_renamed_to() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "", "yuzora-editor", { path: "/r/d/a.rs", on: null, opened: 1 }, { beside: true });
+            rename("/r/d/a.rs", "/r/d/b.rs"); moved("/r/d/a.rs", "/r/d/b.rs", null); flush();
+            openFile("/r/d/b.rs", null); flush();
+            const file = strip("s1");
+            rename("/r/d", "/r/e"); moved("/r/d", "/r/e", null); flush();
+            openFile("/r/e/b.rs", null); flush();
+            const folder = strip("s1");
+            // The old name is free again: a file made under it is a new one, not the pane of the renamed.
+            openFile("/r/d/a.rs", null); flush();
+            return [file, folder, strip("s1")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell, editor /r/d/a.rs]* [shell]",
+                "[shell, editor /r/d/a.rs]* [shell]",
+                "[shell, editor /r/d/a.rs] [editor /r/d/a.rs]* [shell]",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pane_not_started_yet_is_replaced_under_the_new_name_when_its_file_is_renamed() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            restore("s1", "a.rs", "yuzora-editor", { path: "/r/a.rs", on: null, opened: 1, line: 9 });
+            restore("s1", "R.md", "yuzora-markdown", { path: "/r/d/R.md", on: null, opened: 1 });
+            moved("/r/a.rs", "/r/b.rs", null); moved("/r/d", "/r/e", null); flush();
+            out.push(strip("s1"), focus());
+            openFile("/r/b.rs", null); flush();
+            out.push(strip("s1"));
+            openFile("/r/e/R.md", null); flush();
+            out.push(strip("s1"));
+            // The old name is free: a file made there is a new one.
+            openFile("/r/a.rs", null); flush();
+            out.push(strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [shell] [editor /r/b.rs] [markdown /r/e/R.md]",
+                "shell",
+                "[shell] [shell] [editor /r/b.rs]* [markdown /r/e/R.md]",
+                "[shell] [shell] [editor /r/b.rs] [markdown /r/e/R.md]*",
+                "[shell] [shell] [editor /r/b.rs] [markdown /r/e/R.md] [editor /r/a.rs]*",
+            ]
+        );
+    }
+
+    #[test]
+    fn with_two_panes_on_one_file_the_one_its_document_was_last_seen_in_is_shown() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            const at = { path: "/r/a.rs", on: null, opened: 1 };
+            const a = restore("s1", "", "yuzora-editor", at, { beside: true }), b = restore("s1", "", "yuzora-editor", at, { beside: true });
+            const is = pane => (pane === a ? "first" : pane === b ? "second" : pane);
+            openFile("/r/a.rs", null); flush();
+            out.push(is(focused().pane));
+            run("pane.focus", { pane: b }); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.rs", null); flush();
+            out.push(is(focused().pane), strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "first",
+                "second",
+                "[shell, editor /r/a.rs, editor /r/a.rs]* [shell]"
+            ]
+        );
+    }
+
+    // Two panes on one file: the one beside the shell started with the app, the other waits in a tab not shown yet.
+    // `dormant_first` puts the waiting pane ahead of the started one in the list of panes.
+    const TWO_PANES_ON_A_FILE: &str = r#"
+        const two = (dormantFirst, at) => {
+          if (!dormantFirst) {
+            const running = restore("s1", "", "yuzora-editor", at, { beside: true });
+            return { running, waiting: restore("s1", "a.rs", "yuzora-editor", at) };
+          }
+          const waiting = restore("s1", "a.rs", "yuzora-editor", at);
+          restore("s1", "x.rs", "yuzora-editor", { path: "/r/x.rs", on: null, opened: 1 });
+          select(world[0].tabs[3]); publish();
+          return { running: restore("s1", "", "yuzora-editor", at, { beside: true }), waiting };
+        };
+    "#;
+
+    #[test]
+    fn a_pane_not_started_is_replaced_when_its_file_is_renamed_though_another_pane_holds_the_document()
+     {
+        for (dormant_first, strip) in [
+            (false, "[shell, editor /r/a.rs]* [shell] [editor /r/b.rs]"),
+            (
+                true,
+                "[shell] [shell] [editor /r/b.rs] [editor /r/x.rs, editor /r/a.rs]*",
+            ),
+        ] {
+            let seen = in_the_open(&[
+                TWO_PANES_ON_A_FILE,
+                &format!(
+                    r#"
+                const {{ running }} = two({dormant_first}, {{ path: "/r/a.rs", on: null, opened: 1 }});
+                rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+                const renamed = strip("s1");
+                openFile("/r/b.rs", null); flush();
+                return [renamed, focused().pane === running ? "the started pane" : "the other"];
+            "#
+                ),
+            ]
+            .join("\n"));
+            assert_eq!(
+                seen,
+                [strip, "the started pane"],
+                "the waiting pane first: {dormant_first}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pane_whose_document_was_renamed_is_not_given_the_document_of_another_file_at_its_old_name()
+    {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            openFile("/r/a.rs", null); flush();
+            const stale = focused().pane;
+            run("pane.focus", { pane: "p1" }); flush();
+            rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+            // A file made under the old name is a new one, in a tab ahead of the pane that holds the renamed.
+            openFile("/r/a.rs", null); flush();
+            const made = focused().pane;
+            run("pane.focus", { pane: "p1" }); flush();
+            rename("/r/a.rs", "/r/c.rs"); moved("/r/a.rs", "/r/c.rs", null); flush();
+            openFile("/r/c.rs", null); flush();
+            out.push(focused().pane === made ? "the pane of the new file" : focused().pane === stale ? "the pane of the renamed" : focused().pane);
+            openFile("/r/b.rs", null); flush();
+            out.push(focused().pane === stale ? "the pane of the renamed" : focused().pane);
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            ["the pane of the new file", "the pane of the renamed"]
+        );
+    }
+
+    // A file open in two panes that have both started: the document is claimed by one pane, and a rename must leave
+    // the other no longer holding the old name, or a file made under that name is shown in it.
+    // `from`: the pane the second view is opened beside; the claimed pane is listed ahead of the second view or after it.
+    fn a_file_viewed_twice_is_renamed_and_made_again(from: &str) -> Vec<String> {
+        in_the_open(&format!(
+            r#"
+            autoNote = false;
+            openFile("/r/a.rs", null); flush();
+            const owner = focused().pane;
+            notePane(documentFor("/r/a.rs", {{ on: null }}).doc, owner);
+            run("pane.focus", {{ pane: "{from}" }}); flush();
+            openFile("/r/a.rs", null, {{ place: "side" }}); flush();
+            const second = focused().pane;
+            run("pane.focus", {{ pane: "p1" }}); flush();
+            const out = [strip("s1")];
+            rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+            out.push(strip("s1"), String(panes().some(p => p.pane === second)));
+            openFile("/r/a.rs", null); flush();
+            out.push(strip("s1"));
+            openFile("/r/b.rs", null); flush();
+            out.push(focused().pane === owner ? "the pane of the renamed" : focused().pane);
+            return out;
+        "#
+        ))
+    }
+
+    #[test]
+    fn a_file_made_under_the_old_name_gets_a_tab_when_the_renamed_documents_pane_is_listed_last() {
+        assert_eq!(
+            a_file_viewed_twice_is_renamed_and_made_again("p1"),
+            [
+                "[shell, editor /r/a.rs]* [editor /r/a.rs] [shell]",
+                "[shell, editor /r/b.rs]* [editor /r/a.rs] [shell]",
+                "false",
+                "[shell, editor /r/b.rs] [editor /r/a.rs]* [editor /r/a.rs] [shell]",
+                "the pane of the renamed",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_made_under_the_old_name_gets_a_tab_when_the_renamed_documents_pane_is_listed_first() {
+        assert_eq!(
+            a_file_viewed_twice_is_renamed_and_made_again("p2"),
+            [
+                "[shell]* [editor /r/a.rs] [shell, editor /r/a.rs]",
+                "[shell]* [editor /r/a.rs] [shell, editor /r/b.rs]",
+                "false",
+                "[shell] [editor /r/a.rs]* [editor /r/a.rs] [shell, editor /r/b.rs]",
+                "the pane of the renamed",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_made_under_the_old_name_gets_a_tab_when_two_spaces_showed_the_renamed_file() {
+        let seen = in_the_open(
+            r#"
+            autoNote = false;
+            openFile("/r/a.rs", null); flush();
+            const owner = focused().pane;
+            notePane(documentFor("/r/a.rs", { on: null }).doc, owner);
+            run("pane.focus", { pane: "p1" }); flush();
+            show("s3"); openFile("/r/a.rs", null); flush();
+            const second = focused().pane;
+            rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+            const out = [strip("s1"), strip("s3"), String(panes().some(p => p.pane === second))];
+            show("s1"); openFile("/r/a.rs", null); flush();
+            out.push(strip("s1"));
+            openFile("/r/b.rs", null); flush();
+            out.push(focused().pane === owner ? "the pane of the renamed" : focused().pane);
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [editor /r/a.rs] [shell]",
+                "[shell] [editor /r/b.rs]*",
+                "false",
+                "[shell] [editor /r/a.rs]* [editor /r/a.rs] [shell]",
+                "the pane of the renamed",
+            ]
+        );
+    }
+
+    #[test]
+    fn of_three_started_panes_on_a_renamed_file_no_document_has_claimed_one_is_left() {
+        let seen = in_the_open(
+            r#"
+            autoNote = false;
+            openFile("/r/a.rs", null); flush();
+            const first = focused().pane;
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            const second = focused().pane;
+            run("pane.focus", { pane: "p2" }); flush();
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            const third = focused().pane;
+            run("pane.focus", { pane: "p1" }); flush();
+            rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+            const kept = [first, second, third].filter(id => panes().some(p => p.pane === id));
+            const out = [String(kept.length), strip("s1")];
+            openFile("/r/a.rs", null); flush();
+            out.push(kept.includes(focused().pane) ? "a pane of the renamed" : "a pane of its own");
+            openFile("/r/b.rs", null); flush();
+            out.push(kept.includes(focused().pane) ? "a pane of the renamed" : "other");
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "1",
+                "[shell, editor /r/a.rs]* [editor /r/b.rs] [shell, editor /r/b.rs]",
+                "a pane of its own",
+                "a pane of the renamed",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_started_pane_takes_the_document_of_a_renamed_file_when_the_pane_that_held_it_is_gone() {
+        let seen = in_the_open(
+            r#"
+            autoNote = false;
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            const owner = focused().pane;
+            notePane(documentFor("/r/a.rs", { on: null }).doc, owner);
+            run("pane.focus", { pane: "p2" }); flush();
+            openFile("/r/a.rs", null, { place: "side" }); flush();
+            const second = focused().pane;
+            run("pane.focus", { pane: "p1" }); flush();
+            run("pane.close", { pane: owner }); flush();
+            rename("/r/a.rs", "/r/b.rs"); moved("/r/a.rs", "/r/b.rs", null); flush();
+            const out = [strip("s1"), String(panes().some(p => p.pane === second))];
+            openFile("/r/b.rs", null); flush();
+            out.push(focused().pane === second ? "the pane that stayed" : focused().pane, strip("s1"));
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell]* [shell, editor /r/a.rs]",
+                "true",
+                "the pane that stayed",
+                "[shell] [shell, editor /r/a.rs]*",
+            ]
+        );
+    }
+
+    // `replace` (open.js) splits a pane and closes it. In the tab shown the pane the split made has the focus, so a swap
+    // of the focused pane with the old one, before the close, puts the new pane in the old one's place with its share.
+    fn an_image_beside_the_shell_is_renamed(before: &str) -> Vec<String> {
+        in_the_open(&format!(
+            r#"
+            {before}
+            commands.length = 0;
+            rename("/r/a.png", "/r/b.png"); moved("/r/a.png", "/r/b.png", null); flush();
+            return [commands.join(" "), strip("s1"), String(zoomedPane() === null ? null : given[zoomedPane()]?.path ?? "the shell")];
+        "#
+        ))
+    }
+
+    #[test]
+    fn in_the_tab_shown_the_new_pane_is_swapped_into_the_place_of_the_old_one_before_it_closes() {
+        assert_eq!(
+            an_image_beside_the_shell_is_renamed(
+                r#"restore("s1", "", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 }, { beside: true });"#
+            ),
+            [
+                "pane.split pane.swap(focused) pane.close pane.focus",
+                "[shell, image /r/b.png]* [shell]",
+                "null"
+            ]
+        );
+    }
+
+    #[test]
+    fn in_a_tab_not_shown_a_pane_is_replaced_without_a_swap() {
+        assert_eq!(
+            an_image_beside_the_shell_is_renamed(
+                r#"restore("s1", "a.png", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 });"#
+            ),
+            [
+                "pane.split pane.close pane.focus",
+                "[shell]* [shell] [image /r/b.png]",
+                "null"
+            ]
+        );
+    }
+
+    #[test]
+    fn with_a_layout_block_in_focus_a_pane_is_replaced_without_a_swap() {
+        assert_eq!(
+            an_image_beside_the_shell_is_renamed(
+                r#"restore("s1", "", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 }, { beside: true }); nobody = true; publish();"#
+            ),
+            [
+                "pane.split pane.close",
+                "[shell, image /r/b.png]* [shell]",
+                "null"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_zoom_of_the_tab_shown_is_put_back_when_a_pane_it_hides_is_replaced() {
+        assert_eq!(
+            an_image_beside_the_shell_is_renamed(
+                r#"restore("s1", "", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 }, { beside: true });
+                run("pane.zoom", { pane: "p1" }); flush();"#
+            ),
+            [
+                "pane.split pane.swap(focused) pane.close pane.zoom pane.focus",
+                "[shell, image /r/b.png]* [shell]",
+                "the shell"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_zoom_of_the_tab_shown_goes_to_the_new_pane_when_the_zoomed_pane_is_replaced() {
+        assert_eq!(
+            an_image_beside_the_shell_is_renamed(
+                r#"const image = restore("s1", "", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 }, { beside: true });
+                run("pane.focus", { pane: image }); flush(); run("pane.zoom", { pane: image }); flush();"#
+            ),
+            [
+                "pane.split pane.swap(focused) pane.close pane.zoom(focused)",
+                "[shell, image /r/b.png]* [shell]",
+                "/r/b.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pane_that_has_started_is_shown_ahead_of_one_that_has_not_when_both_hold_the_file() {
+        let seen = in_the_open(&[
+            TWO_PANES_ON_A_FILE,
+            r#"
+            const { running } = two(true, { path: "/r/a.rs", on: null, opened: 1 });
+            openFile("/r/a.rs", null, { line: 12, column: 4 }); flush();
+            return [focused().pane === running ? "the started pane" : "the other", JSON.stringify(revealed), strip("s1")];
+        "#,
+        ]
+        .join("\n"));
+        assert_eq!(
+            seen,
+            [
+                "the started pane",
+                "[[12,4]]",
+                "[shell] [shell] [editor /r/a.rs] [editor /r/x.rs, editor /r/a.rs]*",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_asked_of_a_file_in_a_pane_not_started_is_given_to_the_pane_that_takes_its_place() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "", "yuzora-editor", { path: "/r/a.rs", on: null, opened: 1 }, { beside: true });
+            restore("s1", "b.rs", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1, line: 3 });
+            openFile("/r/a.rs", null, { line: 40, column: 2 }); flush();
+            const asked = JSON.stringify(revealed);
+            const before = paneOf("/r/b.rs");
+            openFile("/r/b.rs", null, { line: 7 }); flush();
+            const now = focused().pane, at = given[now];
+            return [
+              asked, JSON.stringify(revealed), `${at.path} ${at.line}:${at.column}`, String(at.opened > 1),
+              String(now === before), String(panes().some(p => p.pane === before)), focus(), strip("s1"),
+            ];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[[40,2]]",
+                "[[40,2]]",
+                "/r/b.rs 7:1",
+                "true",
+                "false",
+                "false",
+                "editor /r/b.rs",
+                "[shell, editor /r/a.rs] [shell] [editor /r/b.rs]*",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_asked_of_a_markdown_file_in_a_pane_not_started_of_a_remote_space_is_given_to_the_pane_that_takes_its_place()
+     {
+        let seen = in_the_open(
+            r#"
+            restore("s2", "R.md", "yuzora-markdown", { path: "/srv/R.md", on: "lab", opened: 1 }, { pane: "lab/pm1" });
+            show("s2");
+            openFile("/srv/R.md", "lab", { line: 5, column: 3 }); flush();
+            const at = given[focused().pane];
+            return [shown().id, `${at.on}:${at.path} ${at.line}:${at.column}`, strip("s1"), strip("s2")];
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "s2",
+                "lab:/srv/R.md 5:3",
+                "[shell]* [shell]",
+                "[shell] [markdown /srv/R.md]*",
+            ]
+        );
+    }
+
+    #[test]
+    fn of_two_lines_asked_of_one_file_in_a_pane_not_started_the_last_is_the_one_gone_to() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "b.rs", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1 });
+            openFile("/r/b.rs", null, { line: 7 }); flush();
+            const first = given[focused().pane].line;
+            openFile("/r/b.rs", null, { line: 9, column: 2 }); flush();
+            return [String(first), JSON.stringify(revealed), strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["7", "[[9,2]]", "[shell] [shell] [editor /r/b.rs]*"]);
+    }
+
+    #[test]
+    fn a_file_asked_of_with_no_line_in_a_pane_not_started_is_shown_where_it_is() {
+        let seen = in_the_open(
+            r#"
+            restore("s1", "b.rs", "yuzora-editor", { path: "/r/b.rs", on: null, opened: 1 });
+            const before = paneOf("/r/b.rs");
+            openFile("/r/b.rs", null); flush();
+            return [String(focused().pane === before), strip("s1")];
+        "#,
+        );
+        assert_eq!(seen, ["true", "[shell] [shell] [editor /r/b.rs]*"]);
+    }
+
+    #[test]
+    fn an_image_restored_with_the_layout_is_replaced_under_its_new_path_when_renamed() {
+        let seen = in_the_open(
+            r#"
+            const out = [];
+            restore("s1", "", "yuzora-files-image", { path: "/r/a.png", on: null, opened: 1 }, { beside: true });
+            restore("s1", "c.png", "yuzora-files-image", { path: "/r/img/c.png", on: null, opened: 1 });
+            moved("/r/a.png", "/r/b.png", null); flush();
+            out.push(strip("s1") + " " + focus());
+            openFile("/r/b.png", null); flush();
+            out.push(strip("s1") + " " + focus());
+            moved("/r/img", "/r/pics", null); flush();
+            run("pane.focus", { pane: "p1" }); flush();
+            openFile("/r/pics/c.png", null); flush();
+            out.push(strip("s1") + " " + focus());
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                "[shell, image /r/b.png]* [shell] [image /r/img/c.png] shell",
+                "[shell, image /r/b.png]* [shell] [image /r/img/c.png] image /r/b.png",
+                "[shell, image /r/b.png] [shell] [image /r/pics/c.png]* image /r/pics/c.png",
+            ]
+        );
+    }
+
+    /// `doc-pane.js` as shipped, its imports stubbed: one pane (`kind` "editor" or "markdown") over a document the
+    /// test sets with `docState`, in a window where `focusedPane` has the keys. `calls` records the host calls that
+    /// say whose document is whose (`note <doc> <pane>`) and where the cursor goes.
+    fn in_a_doc_pane(body: &str) -> Vec<String> {
+        let source = include_str!("../../../defaults/mods/yuzora-editor/doc-pane.js");
+        let mut skipping = false;
+        let code = source
+            .lines()
+            .filter(|line| {
+                let starts = line.starts_with("import ");
+                if starts || skipping {
+                    skipping = !line.trim_end().ends_with(';');
+                    return false;
+                }
+                true
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("export class", "class");
+        let stubs = r#"
+            const calls = [];
+            let propsNow = {}, docState = null, focusedPane = null, paneList = [];
+            class View {}
+            const div = () => ({}), svg = div, v_flex = div, h_flex = div, Input = {}, Editor = {}, Markdown = {};
+            const InputState = { new: () => ({ on() {}, value: () => "" }) };
+            const theme = () => ({}), settings = () => ({}), agents = () => [], notify = () => {}, home = () => "/home/me";
+            const win = () => ({ platform: "macos" }), shared = () => null, setShared = () => {};
+            const watchFolder = () => new Promise(() => {}), nextCommand = () => new Promise(() => {});
+            const focused = () => (focusedPane ? { pane: focusedPane } : null), panes = () => paneList, props = () => propsNow;
+            const t = key => key, tokens = () => ({});
+            const openDocument = () => 7, releaseDocument = () => {}, documentState = () => docState;
+            const documentChanged = () => new Promise(() => {}), checkDisk = () => Promise.resolve();
+            const saveDocument = () => {}, reloadDocument = () => {}, keepMine = () => {}, find = () => {}, findStep = () => {};
+            const endFind = () => {}, replaceOne = () => {}, replaceAll = () => {}, unsavedCount = () => 0, startedAt = () => 0;
+            const focusDocument = () => calls.push("focus document"), gotoLine = (d, line, column) => calls.push(`goto ${line}:${column}`);
+            const notePane = (doc, pane) => calls.push(`note ${doc} ${pane}`);
+            const localStorage = { getItem: () => null, setItem() {} };
+            const cx = { focus_handle: () => ({}), spawn() {}, timer: { every() {} }, notify() {} };
+            const pane = kind => {
+              const made = new (class extends DocPane { kind() { return kind; } })();
+              made.init(null, cx);
+              return made;
+            };
+        "#;
+        let script = ["(() => {", stubs, &code, body, "})()"].join("\n");
+        let runtime = quickjs::Runtime::new().unwrap();
+        let context = quickjs::Context::full(&runtime).unwrap();
+        context.with(|ctx| match ctx.eval::<Vec<String>, _>(script) {
+            Ok(seen) => seen,
+            Err(error) => panic!("{error}: {:?}", ctx.catch()),
+        })
+    }
+
+    #[test]
+    fn a_pane_just_opened_does_not_give_its_document_to_the_pane_that_has_the_keys() {
+        for kind in ["markdown", "editor"] {
+            let seen = in_a_doc_pane(&format!(
+                r#"
+                propsNow = {{ path: "/srv/a", on: "lab", opened: Date.now() }};
+                docState = {{ phase: "ready", owner: null, focused: false, pane: null, dirty: false, reveal: null, path: "/srv/a", name: "a" }};
+                paneList = [{{ pane: "mine", mod: "yuzora-{kind}" }}, {{ pane: "other", mod: "yuzora-editor" }}];
+                // Another file was opened right after this one, and has the keys.
+                focusedPane = "other";
+                const made = pane("{kind}");
+                docState.owner = made.owner;
+                made.state = docState;
+                made.settle();
+                return calls;
+            "#
+            ));
+            assert!(
+                seen.iter().all(|c| !c.starts_with("note ")),
+                "{kind}: {seen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pane_gives_its_document_to_the_pane_with_the_keys_when_its_editor_or_its_keys_say_it_is_that_pane()
+     {
+        let seen = in_a_doc_pane(
+            r#"
+            propsNow = { path: "/srv/a", on: "lab", opened: 1 };
+            docState = { phase: "ready", owner: null, focused: false, pane: null, dirty: false, reveal: null, path: "/srv/a", name: "a" };
+            paneList = [{ pane: "mine", mod: "yuzora-editor" }];
+            focusedPane = "mine";
+            const made = pane("editor");
+            made.settle();
+            const quiet = calls.length;
+            docState.focused = true;
+            made.state = docState;
+            made.settle();
+            const afterEditor = calls.length;
+            docState.focused = false; made.state = docState; calls.length = 0;
+            made.key({ modifiers: {}, key: "a" }, { stop_propagation() {} });
+            return [String(quiet), String(afterEditor), JSON.stringify(calls)];
+        "#,
+        );
+        assert_eq!(seen, ["0", "1", r#"["note 7 mine"]"#]);
+    }
+
+    #[test]
+    fn a_pane_opened_with_a_line_goes_there_in_the_source_and_one_restored_with_it_does_not() {
+        let seen = in_a_doc_pane(
+            r#"
+            const out = [];
+            docState = { phase: "loading", owner: null, focused: false, pane: null, dirty: false, reveal: null, path: "/r/R.md", name: "R.md" };
+            for (const kind of ["markdown", "editor"]) {
+              for (const opened of [Date.now(), 1]) {
+                propsNow = { path: "/r/R.md", on: null, opened, line: 7, column: 2 };
+                const made = pane(kind);
+                out.push(`${kind} ${opened === 1 ? "restored" : "opened"}: ${JSON.stringify(made.goto)} ${made.view}`);
+              }
+            }
+            return out;
+        "#,
+        );
+        assert_eq!(
+            seen,
+            [
+                r#"markdown opened: {"line":7,"column":2} source"#,
+                "markdown restored: null preview",
+                r#"editor opened: {"line":7,"column":2} source"#,
+                "editor restored: null source",
             ]
         );
     }

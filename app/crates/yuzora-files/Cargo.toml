@@ -60,3 +60,8 @@ tempfile = "3"
 [[test]]
 name = "svg_child"
 harness = false
+
+# The reload benchmark's own tests: it must list as the sidebar does, or its numbers are not the sidebar's.
+[[example]]
+name = "reload_cost"
+test = true

@@ -113,7 +113,7 @@ export function createStore(io) {
     if (!e) {
       e = { key: loc.key, on: loc.on, cwd: loc.cwd, spaces: new Set(), root: null, open: new Set(), pending: new Set(),
         selected: null, tree: null, next: null, left: null, git: null, sure: false, misses: 0, error: null, reloading: false,
-        queued: null, used: 0, seen: new Map() };
+        queued: false, used: 0, seen: new Map() };
       entries.set(loc.key, e);
     }
     e.spaces.add(loc.space);
@@ -245,29 +245,31 @@ export function createStore(io) {
   }
 
   /**
-   * Reads the tree again from where it is. A read asked for while one runs is not lost: they are one more
-   * read when this one ends, and the tree ends up as the last of them found it. null for such a request
-   * (the running read answers it); else { ok: whether the root could be listed, timed: whether every request
-   * served was the timer's }.
+   * Reads the tree again from where it is. `settled({ ok, timed, moved })` is told as each read ends, though
+   * another is to follow: whether the root could be listed, whether the request it answered was the timer's, and
+   * whether the tree's root moved. A request made while a read runs is not lost: it is one more read when this
+   * one ends, and the tree ends up as the last of them found it. The timer's is not made one: it asks again
+   * in 10 s, and a read slower than that would follow itself for ever.
    */
-  async function reload(e, notify, { timed = false } = {}) {
-    if (!e.cwd || !live(e)) return null;
+  async function reload(e, notify, { timed = false, settled } = {}) {
+    if (!e.cwd || !live(e)) return;
     if (e.reloading) {
-      e.queued = { timed: (e.queued?.timed ?? true) && timed };
-      return null;
+      if (!timed) e.queued = true;
+      return;
     }
     e.reloading = true;
-    let ok = false, allTimed = timed;
     try {
+      let asked = timed;
       do {
-        e.queued = null;
-        ok = await pass(e, notify);
-        if (e.queued) allTimed &&= e.queued.timed;
+        e.queued = false;
+        const from = e.root ?? e.cwd;
+        const ok = await pass(e, notify);
+        settled?.({ ok, timed: asked, moved: e.root !== from });
+        asked = false;
       } while (e.queued && live(e));
-      return { ok, timed: allTimed };
     } finally {
       e.reloading = false;
-      e.queued = null;
+      e.queued = false;
       trim();
     }
   }

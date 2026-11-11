@@ -195,7 +195,8 @@ export class DocPane extends View {
   }
 
   // The pane is ours while one of ours has focus: the editor (or this view's
-  // keys and commands), or a pane just opened, which pane.split focuses.
+  // keys and commands). Not because it was just opened: the keys may have gone to another
+  // pane by the time its document settles, and this pane does not know its own id.
   notePane() {
     const f = focused();
     if (!f?.pane || this.state?.pane === f.pane) return;
@@ -217,7 +218,7 @@ export class DocPane extends View {
         this.went = null;
       }
     }
-    if (s.focused || this.fresh) this.notePane();
+    if (s.focused) this.notePane();
     if (Date.now() > this.until) { this.goto = null; this.fresh = false; }
     // The editor exists once this pane owns it (Rust bumps when it is made).
     const ready = s.phase === "ready" && s.owner === this.owner && this.view === "source";

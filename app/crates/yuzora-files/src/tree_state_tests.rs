@@ -397,7 +397,8 @@ a.open.add("src");
 await load(store, h, a, { git: repo("/a"), "": listing("src/", "x.txt"), src: listing("a.js") });
 let notes = 0;
 let done = false;
-const run = store.reload(a, () => { notes++; });
+let ran = null;
+const run = store.reload(a, () => { notes++; }, { settled: r => { ran = r; } });
 run.then(() => { done = true; });
 await flush();
 for (const c of h.pending("git")) h.answer(c, repo("/a"));
@@ -406,7 +407,7 @@ for (const c of h.pending("list")) {
   else h.fail(c, new Error("no such folder"));
 }
 await flush();
-const ran = await run;
+await run;
 const failed = { ran: ran.ok, panel: panel(a).kind, fresh: panel(a).fresh, rows: names(a), notes, open: [...a.open] };
 await load(store, h, a, { git: repo("/a"), "": listing("src/", "x.txt"), src: listing("a.js") });
 return JSON.stringify({ failed, healed: panel(a).fresh });
@@ -521,8 +522,11 @@ fn one_reload_runs_at_a_time_per_folder_and_a_shared_folder_is_one_tree() {
     let got = run(r#"
 const h = host(), store = createStore(h.io);
 const a = store.enter(loc("/a", "s1"));
+let firstDone = false;
 const first = store.reload(a, () => {});
-const second = await store.reload(a, () => {});
+first.then(() => { firstDone = true; });
+await store.reload(a, () => {});
+const answeredAtOnce = !firstDone;
 await flush();
 const asked = [h.pending("git").length, h.pending("list").length];
 for (let turn = 0, done = false; !done; turn++) {
@@ -535,9 +539,9 @@ for (let turn = 0, done = false; !done; turn++) {
 await first;
 const twin = store.enter(loc("/a", "s2"));
 store.forget(new Set(["s2"]));
-return JSON.stringify({ second, asked, twin: twin === a, kept: store.enter(loc("/a", "s2")) === a });
+return JSON.stringify({ answeredAtOnce, asked, twin: twin === a, kept: store.enter(loc("/a", "s2")) === a });
 "#);
-    assert_eq!(got["second"], serde_json::Value::Null);
+    assert_eq!(got["answeredAtOnce"], true);
     assert_eq!(got["asked"], serde_json::json!([1, 1]));
     assert_eq!(got["twin"], true);
     assert_eq!(got["kept"], true);
@@ -554,7 +558,8 @@ let done = false;
 const first = store.reload(a, () => {});
 first.then(() => { done = true; });
 await flush();
-const merged = await Promise.all([store.reload(a, () => {}), store.reload(a, () => {}), store.reload(a, () => {})]);
+await Promise.all([store.reload(a, () => {}), store.reload(a, () => {}), store.reload(a, () => {})]);
+const answeredAtOnce = !done;
 h.answer(h.pending("git")[0], repo("/a"));
 h.answer(h.pending("list")[0], listing("x.txt"));
 await flush();
@@ -563,9 +568,9 @@ for (const c of h.pending("git")) h.answer(c, repo("/a"));
 for (const c of h.pending("list")) h.answer(c, listing("x.txt", "y.txt"));
 await first;
 await flush();
-return JSON.stringify({ merged, second, rows: names(a), asked: { git: h.calls.git.length - base.git, list: h.calls.list.length - base.list }, still: [h.pending("git").length, h.pending("list").length], reloading: a.reloading });
+return JSON.stringify({ answeredAtOnce, second, rows: names(a), asked: { git: h.calls.git.length - base.git, list: h.calls.list.length - base.list }, still: [h.pending("git").length, h.pending("list").length], reloading: a.reloading });
 "#);
-    assert_eq!(got["merged"], serde_json::json!([null, null, null]));
+    assert_eq!(got["answeredAtOnce"], true);
     assert_eq!(
         got["second"],
         serde_json::json!({ "git": 1, "list": 1, "done": false })
@@ -574,6 +579,84 @@ return JSON.stringify({ merged, second, rows: names(a), asked: { git: h.calls.gi
     assert_eq!(got["asked"], serde_json::json!({ "git": 2, "list": 2 }));
     assert_eq!(got["still"], serde_json::json!([0, 0]));
     assert_eq!(got["reloading"], false);
+}
+
+#[test]
+fn a_timers_request_while_a_read_runs_is_not_another_read_after_it() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/a"));
+await load(store, h, a, { git: repo("/a"), "": listing("x.txt") });
+const base = { git: h.calls.git.length, list: h.calls.list.length };
+const seen = [];
+const first = store.reload(a, () => {}, { timed: true, settled: r => seen.push(r) });
+await flush();
+await Promise.all([store.reload(a, () => {}, { timed: true }), store.reload(a, () => {}, { timed: true })]);
+h.answer(h.pending("git")[0], repo("/a"));
+h.answer(h.pending("list")[0], listing("x.txt"));
+await first;
+await flush();
+return JSON.stringify({ seen: seen.map(r => [r.ok, r.timed]), asked: { git: h.calls.git.length - base.git, list: h.calls.list.length - base.list }, reloading: a.reloading });
+"#);
+    assert_eq!(got["seen"], serde_json::json!([[true, true]]));
+    assert_eq!(got["asked"], serde_json::json!({ "git": 1, "list": 1 }));
+    assert_eq!(got["reloading"], false);
+}
+
+#[test]
+fn a_read_that_ends_is_told_before_the_read_asked_for_meanwhile_begins_to_end() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/a"));
+await load(store, h, a, { git: repo("/a"), "": listing("x.txt") });
+const seen = [];
+const first = store.reload(a, () => {}, { settled: r => seen.push(r) });
+await flush();
+store.reload(a, () => {});
+h.answer(h.pending("git")[0], repo("/a"));
+h.answer(h.pending("list")[0], listing("x.txt"));
+await flush();
+const between = { told: seen.length, git: h.pending("git").length, reloading: a.reloading };
+for (const c of h.pending("git")) h.answer(c, repo("/a"));
+for (const c of h.pending("list")) h.answer(c, listing("x.txt", "y.txt"));
+await first;
+return JSON.stringify({ between, seen: seen.map(r => [r.ok, r.timed]), rows: names(a) });
+"#);
+    assert_eq!(
+        got["between"],
+        serde_json::json!({ "told": 1, "git": 1, "reloading": true })
+    );
+    assert_eq!(
+        got["seen"],
+        serde_json::json!([[true, false], [true, false]])
+    );
+    assert_eq!(got["rows"], serde_json::json!(["x.txt", "y.txt"]));
+}
+
+#[test]
+fn a_read_says_whether_it_moved_the_root() {
+    let got = run(r#"
+const h = host(), store = createStore(h.io);
+const a = store.enter(loc("/repo/sub"));
+const seen = [];
+const read = async () => {
+  const run = store.reload(a, () => {}, { settled: r => seen.push(r) });
+  let done = false;
+  run.then(() => { done = true; });
+  for (let turn = 0; !done; turn++) {
+    if (turn > 50) throw new Error("never finished");
+    await flush();
+    for (const c of h.pending("git")) h.answer(c, repo("/repo"));
+    for (const c of h.pending("list")) h.answer(c, c.root === "/repo" ? listing("sub/", "top.txt") : listing("inner.txt"));
+  }
+  await run;
+};
+await read();
+await read();
+return JSON.stringify({ moved: seen.map(r => r.moved), root: a.root });
+"#);
+    assert_eq!(got["moved"], serde_json::json!([true, false]));
+    assert_eq!(got["root"], "/repo");
 }
 
 #[test]
@@ -939,7 +1022,7 @@ return JSON.stringify({ afterMove, left, staleAsked, afterLeft, lateOpen, exists
 }
 
 #[test]
-fn a_read_that_ends_with_a_request_from_the_timer_only_is_a_timers_read() {
+fn a_read_is_a_timers_read_when_the_request_it_answers_is_the_timers() {
     let got = run(r#"
 const h = host(), store = createStore(h.io);
 const a = store.enter(loc("/a"));
@@ -949,36 +1032,37 @@ const finish = async promise => {
   for (let turn = 0; !done; turn++) { if (turn > 50) throw new Error("never finished"); await flush(); for (const c of h.pending("git")) h.answer(c, repo("/a")); for (const c of h.pending("list")) h.answer(c, listing("x.txt")); }
   return promise;
 };
-const alone = await finish(store.reload(a, () => {}, { timed: true }));
-const manual = await finish(store.reload(a, () => {}));
-const first = store.reload(a, () => {}, { timed: true });
-await flush();
-store.reload(a, () => {}, { timed: true });
-store.reload(a, () => {}, { timed: false });
-store.reload(a, () => {}, { timed: true });
-const merged = await finish(first);
-const timers = store.reload(a, () => {}, { timed: true });
-await flush();
-store.reload(a, () => {}, { timed: true });
-const onlyTimers = await finish(timers);
+const reads = async (start) => {
+  const seen = [];
+  const settled = r => seen.push([r.ok, r.timed]);
+  await finish(start(settled));
+  return seen;
+};
+const alone = await reads(settled => store.reload(a, () => {}, { timed: true, settled }));
+const manual = await reads(settled => store.reload(a, () => {}, { settled }));
+const merged = await reads(async settled => {
+  const first = store.reload(a, () => {}, { timed: true, settled });
+  await flush();
+  store.reload(a, () => {}, { timed: true });
+  store.reload(a, () => {}, { timed: false });
+  store.reload(a, () => {}, { timed: true });
+  return first;
+});
+const onlyTimers = await reads(async settled => {
+  const timers = store.reload(a, () => {}, { timed: true, settled });
+  await flush();
+  store.reload(a, () => {}, { timed: true });
+  return timers;
+});
 return JSON.stringify({ alone, manual, merged, onlyTimers });
 "#);
-    assert_eq!(
-        got["alone"],
-        serde_json::json!({ "ok": true, "timed": true })
-    );
-    assert_eq!(
-        got["manual"],
-        serde_json::json!({ "ok": true, "timed": false })
-    );
+    assert_eq!(got["alone"], serde_json::json!([[true, true]]));
+    assert_eq!(got["manual"], serde_json::json!([[true, false]]));
     assert_eq!(
         got["merged"],
-        serde_json::json!({ "ok": true, "timed": false })
+        serde_json::json!([[true, true], [true, false]])
     );
-    assert_eq!(
-        got["onlyTimers"],
-        serde_json::json!({ "ok": true, "timed": true })
-    );
+    assert_eq!(got["onlyTimers"], serde_json::json!([[true, true]]));
 }
 
 #[test]
@@ -987,20 +1071,18 @@ fn a_failed_listing_of_the_root_git_is_about_to_leave_is_not_the_new_trees_error
     let got = run(r#"
 const h = host(), store = createStore(h.io);
 const a = store.enter(loc("/repo/sub"));
-const run = store.reload(a, () => {});
+let read = null;
+const run = store.reload(a, () => {}, { settled: r => { read = r; } });
 await flush();
 h.fail(h.pending("list")[0], new Error("EACCES /repo/sub"));
 await flush();
 h.answer(h.pending("git")[0], repo("/repo"));
 await flush();
 h.answer(h.pending("list").find(c => c.root === "/repo"), listing("a.txt"));
-const read = await run;
-return JSON.stringify({ read, error: a.error, rows: names(a), fresh: panel(a).fresh });
+await run;
+return JSON.stringify({ read: [read.ok, read.timed], error: a.error, rows: names(a), fresh: panel(a).fresh });
 "#);
-    assert_eq!(
-        got["read"],
-        serde_json::json!({ "ok": true, "timed": false })
-    );
+    assert_eq!(got["read"], serde_json::json!([true, false]));
     assert_eq!(got["error"], serde_json::Value::Null);
     assert_eq!(got["rows"], serde_json::json!(["a.txt"]));
     assert_eq!(got["fresh"], "fresh");

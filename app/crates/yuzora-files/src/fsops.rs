@@ -15,6 +15,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
+use crate::remote_entry::{self, Act, Kind};
 pub use crate::remote_write::Refusal;
 use crate::remote_write::{MAX_BYTES, posix_crc, resolve_links, save_gate};
 
@@ -123,10 +124,6 @@ printf '%s %s\n' "$s" "$w"
 [ "${s%% *}" -gt "$3" ] && exit 0
 head -c "$2" -- "$1""#
 );
-
-/// Creating, renaming and removing on another machine are not there yet: a file there can be
-/// opened and saved, nothing more.
-const REMOTE_READ_ONLY: &str = "files on another machine are read-only in this version";
 
 /// One directory entry.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -1209,10 +1206,11 @@ fn keep_extended(_file: &std::fs::File, _original: &Path) -> bool {
 
 // ---- create, rename, remove ----
 
-/// A new empty file; an error when the path exists. This machine only.
+/// A new empty file; an error when the path exists. On another machine it gets what that
+/// machine gives a file its own `touch` makes ([`crate::remote_entry`]).
 pub fn create_file(path: &str, on: Option<&str>) -> Result<(), String> {
-    if machine(on).is_some() {
-        return Err(REMOTE_READ_ONLY.into());
+    if let Some(m) = machine(on) {
+        return remote_entry::on_machine(Act::Make(path, Kind::File), m);
     }
     std::fs::OpenOptions::new()
         .write(true)
@@ -1222,20 +1220,19 @@ pub fn create_file(path: &str, on: Option<&str>) -> Result<(), String> {
         .map_err(|e| format!("cannot create {path}: {e}"))
 }
 
-/// A new folder; an error when the path exists or its parent does not. This
-/// machine only.
+/// A new folder; an error when the path exists or its parent does not.
 pub fn create_dir(path: &str, on: Option<&str>) -> Result<(), String> {
-    if machine(on).is_some() {
-        return Err(REMOTE_READ_ONLY.into());
+    if let Some(m) = machine(on) {
+        return remote_entry::on_machine(Act::Make(path, Kind::Folder), m);
     }
     std::fs::create_dir(path).map_err(|e| format!("cannot create {path}: {e}"))
 }
 
 /// Moves `from` to `to`; an error when `to` exists (a change of case only is
-/// fine). This machine only.
+/// fine).
 pub fn rename(from: &str, to: &str, on: Option<&str>) -> Result<(), String> {
-    if machine(on).is_some() {
-        return Err(REMOTE_READ_ONLY.into());
+    if let Some(m) = machine(on) {
+        return remote_entry::on_machine(Act::Move(from, to), m);
     }
     let moved = if same_entry_other_case(from, to) {
         std::fs::rename(from, to)
@@ -2645,16 +2642,284 @@ mod tests {
         assert_eq!(names(&entries), ["README.md"]);
     }
 
+    /// The machine the next test asks: this one, answered by the stand-in `hc`.
+    #[cfg(unix)]
+    fn lab() -> Option<&'static str> {
+        crate::remote_write::testing::fake_hc();
+        Some("lab")
+    }
+
+    #[cfg(unix)]
+    fn read(path: &str) -> String {
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    /// What a folder holds, by name: a failed change leaves nothing else (no scratch name, no half-made entry).
+    #[cfg(unix)]
+    fn held(dir: &tempfile::TempDir) -> Vec<String> {
+        let mut found: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn files_on_another_machine_are_not_changed() {
+    fn a_file_is_made_on_a_machine_and_never_made_over() {
+        let on = lab();
+        let d = tempfile::tempdir().unwrap();
+        let f = p(&d, "new.txt");
+        create_file(&f, on).unwrap();
+        assert_eq!(read(&f), "");
+        // Whatever is at the name stays: its own bytes, a folder, a link, a link to nothing.
+        std::fs::write(&f, "mine").unwrap();
+        let (sub, live, dangling) = (p(&d, "sub"), p(&d, "live"), p(&d, "dangling"));
+        std::fs::create_dir(&sub).unwrap();
+        std::os::unix::fs::symlink(&f, &live).unwrap();
+        std::os::unix::fs::symlink("nowhere", &dangling).unwrap();
+        for at in [&f, &sub, &live, &dangling] {
+            let e = create_file(at, on).unwrap_err();
+            assert!(
+                e.contains("already exists") && e.contains(at.as_str()),
+                "{e}"
+            );
+        }
+        assert_eq!(read(&f), "mine");
+        assert_eq!(std::fs::read_dir(&sub).unwrap().count(), 0);
+        assert!(std::fs::symlink_metadata(&dangling).unwrap().is_symlink());
+        assert!(std::fs::symlink_metadata(&live).unwrap().is_symlink());
+        assert_eq!(held(&d), ["dangling", "live", "new.txt", "sub"]);
+        // A name is its bytes: nothing in it is read by the shell there.
+        for name in [
+            "a b",
+            "it's",
+            "say \"hi\"",
+            "two\nlines",
+            "$HOME",
+            "`x`",
+            "-dash",
+            "semi;colon",
+            "é",
+        ] {
+            let at = p(&d, name);
+            create_file(&at, on).unwrap();
+            assert!(Path::new(&at).is_file(), "{name:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_is_made_on_a_machine_and_never_made_over() {
+        let on = lab();
+        let d = tempfile::tempdir().unwrap();
+        let sub = p(&d, "sub");
+        create_dir(&sub, on).unwrap();
+        assert!(Path::new(&sub).is_dir());
+        std::fs::write(p(&d, "sub/kept"), "x").unwrap();
+        let (file, dangling) = (put(&d, "file", b"mine"), p(&d, "dangling"));
+        std::os::unix::fs::symlink("nowhere", &dangling).unwrap();
+        for at in [&sub, &file, &dangling] {
+            let e = create_dir(at, on).unwrap_err();
+            assert!(
+                e.contains("already exists") && e.contains(at.as_str()),
+                "{e}"
+            );
+        }
+        assert_eq!(read(&p(&d, "sub/kept")), "x");
+        assert_eq!(read(&file), "mine");
+        assert!(std::fs::symlink_metadata(&dangling).unwrap().is_symlink());
+        // One level, as here: a folder whose folder is not there is an error naming it, and makes nothing.
+        let missing = p(&d, "no/parent");
+        let e = create_dir(&missing, on).unwrap_err();
+        assert!(e.contains(&p(&d, "no")), "{e}");
+        assert!(!Path::new(&p(&d, "no")).exists());
+        assert!(create_file(&p(&d, "no/parent.txt"), on).is_err());
+        assert!(!Path::new(&p(&d, "no")).exists());
+        // A file is not a folder to make things in.
+        assert!(create_dir(&p(&d, "file/in"), on).is_err());
+        assert!(create_file(&p(&d, "file/in"), on).is_err());
+        for name in ["a b", "it's", "two\nlines", "$HOME", "-dash", "é"] {
+            let at = p(&d, name);
+            create_dir(&at, on).unwrap();
+            assert!(Path::new(&at).is_dir(), "{name:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_on_a_machine_never_replaces_what_is_there() {
+        let on = lab();
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (put(&d, "a.txt", b"mine"), put(&d, "b.txt", b"theirs"));
+        let (empty, full) = (p(&d, "empty"), p(&d, "full"));
+        std::fs::create_dir(&empty).unwrap();
+        std::fs::create_dir(&full).unwrap();
+        std::fs::write(p(&d, "full/x"), "x").unwrap();
+        let (live, dangling) = (p(&d, "live"), p(&d, "dangling"));
+        std::os::unix::fs::symlink(&b, &live).unwrap();
+        std::os::unix::fs::symlink("nowhere", &dangling).unwrap();
+        // A file, a folder (it is no place to move into either), a link, a link to nothing.
+        for to in [&b, &empty, &full, &live, &dangling] {
+            let e = rename(&a, to, on).unwrap_err();
+            assert!(
+                e.contains("already exists") && e.contains(to.as_str()),
+                "{e}"
+            );
+            assert_eq!(read(&a), "mine", "{to}");
+        }
+        assert_eq!(read(&b), "theirs");
+        assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(&full).unwrap().count(), 1);
+        assert!(std::fs::symlink_metadata(&dangling).unwrap().is_symlink());
+        assert!(std::fs::symlink_metadata(&live).unwrap().is_symlink());
+        // A folder over a folder, a folder over a file, a file over itself.
+        for to in [&full, &b] {
+            assert!(
+                rename(&empty, to, on)
+                    .unwrap_err()
+                    .contains("already exists")
+            );
+        }
+        assert!(rename(&a, &a, on).unwrap_err().contains("already exists"));
+        assert!(Path::new(&empty).is_dir() && Path::new(&a).is_file());
+        assert_eq!(
+            held(&d),
+            ["a.txt", "b.txt", "dangling", "empty", "full", "live"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_or_a_folder_is_renamed_on_a_machine_and_a_link_with_it() {
+        let on = lab();
+        let d = tempfile::tempdir().unwrap();
+        let a = put(&d, "a.txt", b"mine");
+        let c = p(&d, "c.txt");
+        rename(&a, &c, on).unwrap();
+        assert_eq!((read(&c), Path::new(&a).exists()), ("mine".into(), false));
+        // A folder moves with what is in it; into another folder too.
+        let (sub, deep) = (p(&d, "sub"), p(&d, "sub/deep"));
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(p(&d, "sub/deep/f"), "f").unwrap();
+        let renamed = p(&d, "sub2");
+        rename(&sub, &renamed, on).unwrap();
+        assert_eq!(read(&p(&d, "sub2/deep/f")), "f");
+        assert!(!Path::new(&sub).exists());
+        let inside = p(&d, "sub2/c.txt");
+        rename(&c, &inside, on).unwrap();
+        assert_eq!(read(&inside), "mine");
+        // A link is moved as a link, and one to a folder is not a folder to move into.
+        let (link, to_folder) = (p(&d, "link"), p(&d, "to-folder"));
+        std::os::unix::fs::symlink("sub2", &link).unwrap();
+        rename(&link, &to_folder, on).unwrap();
+        assert_eq!(std::fs::read_link(&to_folder).unwrap(), Path::new("sub2"));
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        // What is not there cannot be moved; its folder cannot be missing.
+        let e = rename(&p(&d, "ghost"), &p(&d, "x"), on).unwrap_err();
+        assert!(e.contains("ghost"), "{e}");
+        let e = rename(&inside, &p(&d, "no/where"), on).unwrap_err();
+        assert!(e.contains(&p(&d, "no")), "{e}");
+        assert_eq!(read(&inside), "mine");
+        assert!(!Path::new(&p(&d, "no")).exists());
+        // A name is its bytes.
+        for name in [
+            "a b",
+            "it's",
+            "say \"hi\"",
+            "two\nlines",
+            "$HOME",
+            "`x`",
+            "-dash",
+            "semi;colon",
+            "é",
+        ] {
+            let at = p(&d, name);
+            rename(&inside, &at, on).unwrap();
+            assert_eq!(read(&at), "mine", "{name:?}");
+            rename(&at, &inside, on).unwrap();
+        }
+    }
+
+    /// Whether names that differ in case are one name here (the folder is on a case-folding volume).
+    #[cfg(unix)]
+    fn folds_case(d: &tempfile::TempDir) -> bool {
+        std::fs::write(d.path().join("Case-Probe"), "").unwrap();
+        let folds = d.path().join("case-probe").exists();
+        std::fs::remove_file(d.path().join("Case-Probe")).unwrap();
+        folds
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_change_of_case_only_is_renamed_on_a_machine_that_folds_case_and_refused_on_one_that_does_not()
+     {
+        let on = lab();
+        let d = tempfile::tempdir().unwrap();
+        let from = put(&d, "readme.md", b"x");
+        if folds_case(&d) {
+            rename(&from, &p(&d, "README.md"), on).unwrap();
+            let Listing { entries, .. } = list_dir(&p(&d, ""), None, 10).unwrap();
+            assert_eq!(names(&entries), ["README.md"]);
+            // An accent is a case too, and the name stays one entry.
+            let accented = put(&d, "école.txt", b"y");
+            rename(&accented, &p(&d, "École.txt"), on).unwrap();
+            assert_eq!(read(&p(&d, "École.txt")), "y");
+        } else {
+            // Two names, two files: the second is not replaced because it reads like the first.
+            let other = put(&d, "README.md", b"theirs");
+            let e = rename(&from, &other, on).unwrap_err();
+            assert!(e.contains("already exists"), "{e}");
+            assert_eq!((read(&from), read(&other)), ("x".into(), "theirs".into()));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn what_a_machine_cannot_do_is_said_and_leaves_nothing_behind() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let file = put(&d, "a.txt", b"mine");
+        crate::remote_write::testing::fake_hc();
+        // Not connected, no sh there: hc's own words, and the name of what was asked.
+        for (machine, said) in [("offline", "not connected"), ("no-sh", "sh")] {
+            for e in [
+                create_file(&p(&d, "n.txt"), Some(machine)).unwrap_err(),
+                create_dir(&p(&d, "n"), Some(machine)).unwrap_err(),
+                rename(&file, &p(&d, "m.txt"), Some(machine)).unwrap_err(),
+            ] {
+                assert!(e.contains(said), "{machine}: {e}");
+            }
+        }
+        // Windows paths are not paths there.
+        assert!(
+            create_file(r"C:\x\n.txt", Some("lab"))
+                .unwrap_err()
+                .contains('/')
+        );
+        assert!(rename("relative", "/x", Some("lab")).is_err());
+        assert_eq!(held(&d), ["a.txt"]);
+        // A folder one cannot write in: told so, naming the machine, nothing made.
+        if unsafe { libc::geteuid() } != 0 {
+            let locked = p(&d, "locked");
+            std::fs::create_dir(&locked).unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let target = format!("{locked}/n.txt");
+            let e = create_file(&target, Some("lab")).unwrap_err();
+            assert!(e.contains("lab") && e.contains(&locked), "{e}");
+            assert!(create_dir(&format!("{locked}/n"), Some("lab")).is_err());
+            assert!(rename(&file, &target, Some("lab")).is_err());
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(held(&d), ["a.txt", "locked"]);
+            assert_eq!(std::fs::read_dir(&locked).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn an_empty_machine_name_is_this_machine() {
         let d = tempfile::tempdir().unwrap();
         let f = p(&d, "a b.txt");
-        let refused = Err(REMOTE_READ_ONLY.to_owned());
-        assert_eq!(create_file(&f, Some("box")), refused);
-        assert_eq!(create_dir(&f, Some("box")), refused);
-        assert_eq!(rename(&f, &p(&d, "c.txt"), Some("box")), refused);
-        assert!(!Path::new(&f).exists());
-        // An empty machine name is this machine.
         create_file(&f, Some("")).unwrap();
         assert_eq!(
             create_file(&f, Some("")),
