@@ -152,6 +152,17 @@ jobs:
             [ "$(jq length <<<"$found")" -le 1 ] || { echo "::error::more than one release for $TAG" >&2; return 1; }
             jq '.[0] // empty' <<<"$found"
           }
+          # Changes release <id>, naming its tag. GitHub gives a draft that is changed without its
+          # tag name a made-up one ("untagged-..."), and a release published under that name is
+          # another release, with a tag of its own. A change that leaves the release under any
+          # other tag than $TAG stops the stage.
+          patch_release() { # <id> <field flags of gh api>...
+            local id=$1 got
+            shift
+            gh api --method PATCH "repos/$GH_REPO/releases/$id" -f tag_name="$TAG" "$@" >/dev/null
+            got=$(gh api "repos/$GH_REPO/releases/$id" --jq .tag_name)
+            [ "$got" = "$TAG" ] || { echo "::error::release $id is under the tag $got after the change, not $TAG; nothing more is done to it" >&2; return 1; }
+          }
           # "<id> <state> <sha256 or ->" of the asset called $1 on release $RELEASE_ID; nothing when it is not there.
           asset_row() {
             gh api --paginate "repos/$GH_REPO/releases/$RELEASE_ID/assets?per_page=100" --jq ".[] | select(.name == \"$1\") | \"\(.id) \(.state) \((.digest // \"-\") | sub(\"^sha256:\"; \"\"))\""
@@ -243,7 +254,7 @@ jobs:
             release=$(release_json)
           else
             [ "$(jq -r .draft <<<"$release")" = true ] || { echo "::error::$TAG is published already; a published release is not changed"; exit 1; }
-            gh api --method PATCH "repos/$GH_REPO/releases/$(jq -r .id <<<"$release")" -F body=@"$RUNNER_TEMP/notes.md" >/dev/null
+            patch_release "$(jq -r .id <<<"$release")" -F body=@"$RUNNER_TEMP/notes.md"
           fi
           RELEASE_ID=$(jq -r .id <<<"$release")
           export RELEASE_ID
@@ -302,9 +313,9 @@ jobs:
         if: env.DRAFT == 'true'
         shell: bash
         run: |
-          set -euo pipefail
+          source "$RUNNER_TEMP/release-lib.sh"
           # make_latest defaults to true for a release that is newly published.
-          gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" -F draft=false -F prerelease="$PRERELEASE" -f make_latest=false >/dev/null
+          patch_release "$RELEASE_ID" -F draft=false -F prerelease="$PRERELEASE" -f make_latest=false
       - name: Check what the public gets
         shell: bash
         run: |
@@ -642,7 +653,7 @@ jobs:
           if ! grep -qx yuzora-update.json.sig "$RUNNER_TEMP/held"; then
             echo "::warning::$TAG has no signed manifest yet: installed betas are not offered this update"
           fi
-          gh api --method PATCH "repos/$GH_REPO/releases/$(jq -r .id <<<"$release")" -f make_latest=true >/dev/null
+          patch_release "$(jq -r .id <<<"$release")" -f make_latest=true
           [ "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "$TAG" ] || { echo "::error::GitHub does not report $TAG as Latest"; exit 1; }
       - name: Check the links that follow Latest
         shell: bash

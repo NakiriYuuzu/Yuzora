@@ -52,7 +52,7 @@ const WRITERS: Record<string, { if: string; needs: string | string[]; steps: str
   },
 };
 // $ok holds true or false; the rest is gh, jq, curl, sha256sum, the helper functions and plain shell.
-const WRITER_COMMANDS = ["$ok", "[", "asset_row", "basename", "break", "cat", "cd", "comm", "cp", "curl", "cut", "diff", "echo", "exit", "export", "gh", "grep", "held_sha256", "jq", "local", "ls", "mkdir", "printf", "read", "release_json", "return", "rm", "sed", "set", "sha256_of", "sha256sum", "sleep", "sort", "tee", "true", "upload_asset"];
+const WRITER_COMMANDS = ["$ok", "[", "asset_row", "basename", "break", "cat", "cd", "comm", "cp", "curl", "cut", "diff", "echo", "exit", "export", "gh", "grep", "held_sha256", "jq", "local", "ls", "mkdir", "patch_release", "printf", "read", "release_json", "return", "rm", "sed", "set", "sha256_of", "sha256sum", "shift", "sleep", "sort", "tee", "true", "upload_asset"];
 
 describe("who can do what", () => {
   test("it starts by hand and nothing else: no push, so no branch can start a run by being pushed", () => {
@@ -310,10 +310,19 @@ if [ "$1" = release ] && [ "$2" = upload ]; then
   exit 0
 fi
 if [ "\${method:-}" = DELETE ]; then id=\${2##*/}; jq --argjson i $id 'map(select(.id != $i))' "$D/assets.json" > "$D/assets.tmp" && mv "$D/assets.tmp" "$D/assets.json"; exit 0; fi
+# As GitHub does (seen on the v0.1.0 draft): a draft changed without its tag name gets a made-up one.
+if [ "\${method:-}" = PATCH ]; then
+  id=\${2##*/}; tag=""; draft=""; shift 2
+  while [ $# -gt 0 ]; do case "$1" in -f|-F) case "$2" in tag_name=*) tag=\${2#*=};; draft=*) draft=\${2#*=};; esac; shift 2;; *) shift;; esac; done
+  if [ -f "$D/tag_is_lost" ]; then tag=""; fi
+  jq --argjson i $id --arg t "$tag" --arg d "$draft" 'map(if .id == $i then (if $t != "" then .tag_name = $t elif .draft then .tag_name = "untagged-0123456789abcdef" else . end) | (if $d != "" then .draft = ($d == "true") else . end) else . end)' "$D/releases.json" > "$D/releases.tmp" && mv "$D/releases.tmp" "$D/releases.json"
+  exit 0
+fi
 case "$2" in
   repos/*/releases/*/assets\\?per_page=100) src="$D/assets.json";;
   repos/*/releases\\?per_page=100) if [ -f "$D/fail_list" ]; then echo "gh: HTTP 502 Bad Gateway" >&2; exit 1; fi; src="$D/releases.json";;
   repos/*/releases/assets/*) cat "$D/content_\${2##*/}"; exit 0;;
+  repos/*/releases/[0-9]*) jq --argjson i \${2##*/} '.[] | select(.id == $i)' "$D/releases.json" > "$D/one.json"; src="$D/one.json";;
   *) echo "fake gh: unexpected $*" >&2; exit 9;;
 esac
 if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "$src"; else cat "$src"; fi
@@ -401,6 +410,57 @@ if [ -n "$jq_expr" ]; then jq -r "$jq_expr" "$src"; else cat "$src"; fi
       writeFileSync(join(dir, "releases.json"), JSON.stringify([{ id: 9, tag_name: "v0.0.19" }]));
       draft(bin);
       expect(calls()).toContain("release create v0.1.0");
+    });
+  });
+
+  describe("a change to a release names its tag, or GitHub renames a draft", () => {
+    const env = (bin: string) => ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: dir, GH_REPO: "NakiriYuuzu/Yuzora", TAG: "v0.1.0", PRERELEASE: "false", NOTES: "notes", UPLOAD_PLAN: "a.txt\ta.txt", RELEASE_ID: "7", GITHUB_STEP_SUMMARY: join(dir, "summary.md") });
+    const step = (bin: string, job: string, name: string) => {
+      mkdirSync(join(dir, "artifacts"));
+      writeFileSync(join(dir, "artifacts/a.txt"), "hello");
+      return spawnSync("bash", ["-c", workflow.jobs[job].steps.find((s) => s.name === name)!.run!], { cwd: dir, env: env(bin), encoding: "utf8" });
+    };
+    const held = () => JSON.parse(readFileSync(join(dir, "releases.json"), "utf8"))[0];
+    const calls = () => readFileSync(join(dir, "calls.log"), "utf8");
+
+    test("the workflow changes a release in one place, and that place names the tag", () => {
+      const patches = text.split("\n").filter((line) => line.includes("--method PATCH"));
+      expect(patches).toHaveLength(1);
+      expect(patches[0]).toContain('"repos/$GH_REPO/releases/$id" -f tag_name="$TAG" "$@"');
+      expect(text).not.toMatch(/gh release edit/);
+    });
+
+    test("the draft stage run again leaves the draft under its tag", () => {
+      const bin = setup([]);
+      const r = step(bin, "draft", "Draft the release and upload");
+      expect(r.status, r.stderr).toBe(0);
+      expect(calls()).toContain("--method PATCH repos/NakiriYuuzu/Yuzora/releases/7 -f tag_name=v0.1.0 -F body=@");
+      expect(calls()).not.toContain("release create");
+      expect(calls()).toContain("release upload v0.1.0");
+      expect(held()).toMatchObject({ tag_name: "v0.1.0", draft: true });
+    });
+
+    test("publishing makes the draft public under its tag", () => {
+      const bin = setup([]);
+      const r = step(bin, "publish", "Publish without making it Latest");
+      expect(r.status, r.stderr).toBe(0);
+      expect(calls()).toContain("--method PATCH repos/NakiriYuuzu/Yuzora/releases/7 -f tag_name=v0.1.0 -F draft=false -F prerelease=false -f make_latest=false");
+      expect(held()).toMatchObject({ tag_name: "v0.1.0", draft: false });
+    });
+
+    test("a release that ends up under another tag stops the stage, for each of the three changes", () => {
+      for (const [job, name] of [["draft", "Draft the release and upload"], ["publish", "Publish without making it Latest"]]) {
+        const bin = setup([]);
+        writeFileSync(join(dir, "tag_is_lost"), "");
+        const r = step(bin, job, name);
+        expect(r.status, job).not.toBe(0);
+        expect(r.stderr, job).toContain("is under the tag untagged-0123456789abcdef after the change, not v0.1.0");
+        expect(calls(), job).not.toContain("release upload");
+      }
+      const bin = setup([]);
+      const r = spawnSync("bash", ["-c", `source ${lib}; patch_release 7 -f make_latest=true`], { env: env(bin), encoding: "utf8" });
+      expect(r.status, r.stderr).toBe(0);
+      expect(runs(workflow.jobs.latest)).toContain('patch_release "$(jq -r .id <<<"$release")" -f make_latest=true');
     });
   });
 
