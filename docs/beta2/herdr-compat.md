@@ -188,6 +188,20 @@ L9 另開同步 PR（`beta2/l9-upstream-sync`，**必須 merge commit 合併**�
 - 上游 v0.1.14 新增的 `window::tests::hidden_tabs_follow` 載入出貨版 `main.json`，mod 的 `init` 會呼叫真的 `hc machine ls --json`；`in_own_process` 原本沒隔離 `HC_SESSION`／`XDG_STATE_HOME`，測試會碰到使用者真實的 herdr-core 狀態目錄（沒有 server 時還會用 launchd 啟動它）。修法（`window.rs`，`yuzora(L9)` 註記）：子行程帶 `HC_SESSION=test-window-<name>-<pid>`、暫存的 `XDG_STATE_HOME`／`XDG_RUNTIME_DIR`，並移除 `HC_TERMINAL_SOCKET`／`HC_TERMINAL_ID`／`HC_SCOPE`；`open_window` 另有守衛，`HC_SESSION` 不是 `test-*` 就 panic，之後上游新增的 window 測試漏掉隔離會直接紅。再加一層：`in_own_process` 在暫存 home 建 `bin/hc` 假程式（`exit 1`，僅 unix）並放在子行程 `PATH` 最前面，window 測試不會執行真的 `hc`，因此不會用 launchd 留下孤兒 herdr-core。
 - 新外連：沒有新端點。`core_bin::ensure_core_bundle` 在 core 更新時補裝 macOS bundle，包含 Yuzora 自我更新後第一次啟動的自動 core 更新（`update.rs` `after_update` → `core_bin::update_to` → `ensure_core_bundle`）。做法是下載 `releases.herdr.dev/core/install.sh` 後用 `sh` 執行，仍是 D3 允許的 herdr-core 安裝與更新通道。
 
+### C1c. 同步到 v0.1.15 加兩個修正（v0.1.0）
+
+上游從 v0.1.14（`2405bf38`）同步到 `a547b16c`：正式 tag v0.1.15（`99508873`，42 個 commit）再加 tag 之後的 2 個 commit（squash `f618a292`、merge `21eba59d`）。ghostty pin 不變。
+
+- **為什麼不是停在 tag**：v0.1.15 的 `81389547` 把 spaces 側欄的 git 檢查改成所有 Space 同時跑；tag 之後的 `947ff0dc` 才加上「一次最多 6 個 Space」、`a547b16c` 讓一個 Space 的兩個讀取都結束才換下一個。幾百個 Space 會用光 app 的開檔數（macOS 從 Dock 啟動是 256）或一台機器的 16 個 exec。釘的是 SHA，不是會動的 `master`。
+- **8 個衝突**：`CHANGELOG.md`（Yuzora 的在最上面，上游 0.1.15 接在 beta.2 之後）、`Cargo.toml`（版本維持 `version.workspace = true`）、`Cargo.lock`（上游只拿掉 `as-raw-xcb-connection` 一行；v0.1.0 手動升的四筆還在）、`THIRD-PARTY-NOTICES`（重產）、`src/main.rs`、`defaults/mods/spaces/main.js`、`src/window.rs`（兩邊各在測試模組結尾加東西，都留）、`vendor/gpui-pre/src/assets.rs`（Yuzora 的 `with_scale_factor` 與上游的動畫方法都留）。
+- **離開安裝資料夾有兩份**：上游 0.1.15 的 `update::leave_install_folder()`（`331d6e31`）與 Yuzora v0.1.0 的 `yuzora::release::cwd::leave_install_dir()` 做同一件事。`main.rs` 兩個都呼叫，Yuzora 的在前（有 Windows runner 的探針與守衛測試），上游的在它之後找不到要離開的資料夾，是 no-op。上游的函式與檔案不動。
+- **spaces 側欄的 git 讀取**：上游改成 4 個 ref-only 的 plain `git`（兩個 `rev-parse`、`symbolic-ref`、`rev-list`）。Yuzora 的分支與 ahead／behind 仍來自 `yuzora:shell` 的 `gitStatus`（走信任閘門，promisor remote 用 `--no-lazy-fetch`），只採用上游那兩個指出 repo 的 `rev-parse`（並行）與它的失敗判斷（git 自己說不是 repo 才記成不是，其他的之後再問）。這個判斷只管那兩個 `rev-parse`：`gitStatus` 自己答不出來時（`symbolic-ref` 的結束碼不是 0 也不是 1，例如 dubious ownership）回的是 null，spaces 直接記成不是 repo、不會再問，這一點和同步前一樣，和上游（每 60 秒再問）不同。上游的 `rev-list HEAD...@{upstream}` 沒有採用：它在 partial clone 可能觸發 lazy fetch。
+- **上游新測試要改的三處**（都有 `yuzora` 標記）：`scripts/spaces.test.ts` 的 harness 補一個照 `yuzora-shell` 的 `git.rs` 回答的 `gitStatus`（沒有它 `check()` 會丟例外，每個 Space 都被當成不是 repo）、detached 的 `branch` 是 `null` 不是 `"(detached)"`、暫存資料夾取 `realpathSync`（macOS 的是連結）；`window::tests::layout_terminal_stream_loss` 把存下來的版面照載入時的樣子讀（補上 dock）再和畫面上的樹比。
+- **上游的 `ScrollHandle`（`9ec9cfbd`）不能取代 Yuzora 在 git diff 用的 `offset()` 與 `dragging`**：它是一般捲動區的 `scroll_to_item`，沒有讀位移，也沒有滑鼠按鍵狀態。三處 `yuzora(git-copy)` 補丁保留。
+- **沒有新的對外端點**：`sync-check` 的 URL 掃描只多出測試用的 `http://images.test/`。`macos_check.rs` 的 launchd job 是既有機制，這次是修它的啟動方式。
+- **本機沒跑的一個上游測試**：`macos_check::tests::checker_job_waits_for_demand_and_runs_once` 會在目前使用者的 GUI launchd domain 註冊一個暫時的 job（`/usr/bin/true`）再移除。本機用 `--skip` 略過，由 CI 的 macOS runner 跑。
+- **core 下限維持 0.1.11**（`app/distribution/core-version`，和上游一樣）。v0.1.0 的遠端存檔用 `hc exec --stdin`，0.1.19 才有（[files.md](files.md)），但只有這一個功能需要它，而且已經會說清楚：這台或那台機器的 core 太舊時，存檔被拒絕並顯示「saving needs a newer herdr-core: update it here and on that machine (hc update, hc machine update)」（`Refusal::CoreTooOld`，有測試）。遠端的新增與改名不用 `--stdin`。曾經把下限提高到 0.1.19（`63538bc3`），審查指出代價：`hc::check` 在 `after_update` 之前跑（`app/src/main.rs:142-158`），core 低於下限時自我更新後的第一次啟動不會自動升級 core，而是停在「Update herdr-core」畫面；離線、或 core 由 Homebrew、Nix、mise 管理的人按了也過不去，整個 app 不能用。維持 0.1.11 的話，這些人照常開啟，`after_update` 會把 core 升到同代最新（能升的時候），所以改回來了。core 0.1.20 是 core 自己的修正，不必改 app。
+
 ### C2. 同步流程與 `app/scripts/yuzora/sync-check`
 
 ```bash

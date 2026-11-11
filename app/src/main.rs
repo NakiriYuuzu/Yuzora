@@ -1,5 +1,5 @@
-// Windows: a window app, no console of its own (see `attach_console`).
-#![cfg_attr(windows, windows_subsystem = "windows")]
+// Windows: a window app, but tests inherit Cargo's console for their child processes.
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 mod bench;
 mod commands;
@@ -123,6 +123,8 @@ fn main() {
         .init();
 
     yuzora::release::cwd::leave_install_dir(); // yuzora(win-update): before the swap below and before hc connect starts herdr-core; Windows will not rename a folder that is a working directory
+    // yuzora(win-update): upstream's own leave (0.1.15) stays as a second try; after the line above it finds nothing to leave.
+    update::leave_install_folder();
     if update::apply_on_startup() {
         return;
     }
@@ -162,7 +164,8 @@ fn main() {
     }
 
     gpui_platform::application()
-        .with_assets(gpui_shell::AppAssets::new(mods::app_dir()))
+        // Mods run programs already; the user's own links (dotfiles, Nix) may point out.
+        .with_assets(gpui_shell::AppAssets::new(mods::app_dir()).following_links())
         .run(move |cx| {
             let fonts = settings::BUNDLED_FONTS.iter().map(|f| std::borrow::Cow::Borrowed(*f)).collect();
             if let Err(e) = cx.text_system().add_fonts(fonts) {
