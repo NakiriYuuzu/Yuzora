@@ -54,7 +54,8 @@ if there "$to"; then
 fi
 blame "$to"
 { [ -w "$fd" ] && [ -x "$fd" ]; } || { echo 'refused folder'; exit 0; }
-a=$(dev "$from") b=$(dev "$d")
+# stat looks at a link itself, and a rename goes through it: "/." leads to the folder that a link to one is
+a=$(dev "$from") b=$(dev "$d/.")
 if [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ]; then echo 'refused device'; exit 0; fi
 before=$(idof "$from")
 case $(mv --version 2>&1) in *'GNU coreutils'*) gnu=1 ;; esac
