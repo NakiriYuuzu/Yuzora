@@ -488,6 +488,7 @@ mod tests {
         ("app/src/macos_check.rs", "drop", 2, "launchctl: the file is `#[cfg(target_os = \"macos\")]` (upstream's mod check job)"),
         ("app/src/macos_check.rs", "worker", 1, "the checker itself (`current_exe`): macOS only, as above"),
         ("app/src/macos_check.rs", "submit", 2, "launchctl bootstrap and bootout: macOS only, as above"),
+        ("app/src/macos_check.rs", "request", 1, "launchctl print and kickstart (upstream 0.1.15): macOS only, as above"),
         ("app/src/core_bin.rs", "bundle_completion_writable", 1, "/bin/test: only the macOS core bundle completion calls it (`ensure_core_bundle`)"),
         ("app/src/update.rs", "relaunch_expected", 1, "the `#[cfg(unix)]` variant (`sh`); the Windows one uses `spawn::command`"),
         // Delegated: checked on their own below.

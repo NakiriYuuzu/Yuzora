@@ -5711,7 +5711,9 @@ mod tests {
         cx.update(|window, cx| view.update(cx, |this, cx| {
             let saved = |this: &mut super::AppWindow| -> crate::layout::Node {
                 this.save();
-                serde_json::from_str(&std::fs::read_to_string(super::layout_path("test")).unwrap()).unwrap()
+                let mut node: crate::layout::Node = serde_json::from_str(&std::fs::read_to_string(super::layout_path("test")).unwrap()).unwrap();
+                crate::yuzora::dock::inject(&mut node, "test"); // yuzora(dock): the dock never reaches the file; read it as a load does, to compare with the tree on screen
+                node
             };
             let original = this.chrome.clone();
             this.terms["terminal"].view.update(cx, |v, _| v.ended = Some("holder_lost".into()));
