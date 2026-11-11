@@ -1,0 +1,21 @@
+{
+  "hostKey": {
+    "title": "First connection to {host}",
+    "body": "The host key of {endpoint} isn't in known_hosts yet. Check the fingerprint through another channel (the server's console, its admin) before trusting it.",
+    "trust": "Trust and connect"
+  },
+  "changed": {
+    "title": "The host key of {host} changed",
+    "body": "Someone may be intercepting this connection (a man-in-the-middle attack), or the host was reinstalled. Unless you know why it changed, cancel.",
+    "now": "Now",
+    "before": "Recorded before",
+    "trust": "Trust the new key anyway"
+  },
+  "password": { "title": "Password for {host}", "retry": "That didn't work. Try again." },
+  "passphrase": { "title": "Passphrase for a key", "body": "{path} is encrypted.", "retry": "Wrong passphrase. Try again." },
+  "keyboard": { "title": "{host} asks" },
+  "remember": "Remember in the system keychain",
+  "cancel": "Cancel",
+  "submit": "Continue",
+  "gone": "This question was already answered or expired."
+}

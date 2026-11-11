@@ -1,0 +1,742 @@
+//! Result sets: what a query produced, kept here (not in the script) so the
+//! native grid can page through 100k rows without copying them across the
+//! script boundary.
+//!
+//! A result fills while its query streams; whoever shows it [`watch`]es it and
+//! redraws on each signal. Pending cell edits live on the result too, keyed
+//! by the row's position in `rows` (sorting only changes the view order).
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use std::time::Instant;
+
+use serde::Serialize;
+
+use crate::config::ConnectionConfig;
+use crate::model::{Cell, Column, ObjectRef};
+
+pub type ResultId = u64;
+
+/// Where edits of a result are written: the table it was read from, and the
+/// connection it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditTarget {
+    pub connection: String,
+    /// The connection's settings when the rows were read: saved since to
+    /// connect elsewhere, the edits are not written there.
+    pub config: ConnectionConfig,
+    pub database: Option<String>,
+    pub owner: String,
+    pub table: ObjectRef,
+    /// The primary key's columns, as indexes into the result's columns.
+    pub key: Vec<usize>,
+    /// Columns the database computes (generated, computed, an identity it
+    /// numbers itself): shown, never edited.
+    pub read_only: Vec<usize>,
+}
+
+/// Why a result can't be edited: every read-only result carries one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadOnly {
+    /// The rows of a query, not of one table.
+    Query,
+    /// The connection is set to read-only.
+    Connection,
+    /// The table has no primary key, or its key is not among the columns.
+    NoKey,
+    /// The table's key could not be read (the error).
+    NoInfo(String),
+    /// The rows did not all arrive (the error is on the result).
+    ReadFailed,
+    /// The rows and the table's description are of two states of the table (columns were renamed,
+    /// dropped or added in between): which row or column an edit means can't be told.
+    Changed,
+}
+
+impl ReadOnly {
+    /// The sentence the grid shows.
+    pub fn reason(&self) -> String {
+        match self {
+            ReadOnly::Query => crate::i18n::t("edit.query", &[]),
+            ReadOnly::Connection => crate::i18n::t("edit.read_only", &[]),
+            ReadOnly::NoKey => crate::i18n::t("edit.no_key", &[]),
+            ReadOnly::NoInfo(error) => crate::i18n::t("edit.no_info", &[("error", error.clone())]),
+            ReadOnly::ReadFailed => crate::i18n::t("edit.read_failed", &[]),
+            ReadOnly::Changed => crate::i18n::t("edit.table_changed", &[]),
+        }
+    }
+}
+
+/// Whether the cells of a result may be edited.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Editing {
+    /// A table's rows are still being read, or are in and wait for its description (its key);
+    /// what they are is not settled.
+    Loading,
+    Editable(Box<EditTarget>),
+    ReadOnly(ReadOnly),
+}
+
+impl Editing {
+    /// Why an edit can't start now (`None`: it can). `rows_complete`: the rows are all in, so what is
+    /// awaited is the key, not the rows.
+    pub fn blocked(&self, rows_complete: bool) -> Option<String> {
+        match self {
+            Editing::Loading if rows_complete => Some(crate::i18n::t("edit.reading_key", &[])),
+            Editing::Loading => Some(crate::i18n::t("edit.loading", &[])),
+            Editing::Editable(_) => None,
+            Editing::ReadOnly(why) => Some(why.reason()),
+        }
+    }
+}
+
+/// Where writing a result's edits back stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WriteState {
+    Idle,
+    /// Queued for the pane's connection or running on it; the stop ends it.
+    Writing(WriteStop),
+    /// The last write-back failed with this; build it with [`WriteState::failed`]
+    /// so it is never empty.
+    Failed(String),
+}
+
+impl WriteState {
+    pub fn failed(message: impl Into<String>) -> Self {
+        let message = message.into();
+        if message.trim().is_empty() {
+            WriteState::Failed(crate::i18n::t("edit.failed", &[]))
+        } else {
+            WriteState::Failed(message)
+        }
+    }
+}
+
+/// The way to end a write-back that has not finished.
+#[derive(Clone, Debug)]
+pub struct WriteStop(Arc<tokio::sync::watch::Sender<bool>>);
+
+impl WriteStop {
+    pub fn new() -> Self {
+        Self(Arc::new(tokio::sync::watch::channel(false).0))
+    }
+
+    pub fn stop(&self) {
+        self.0.send_replace(true);
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        *self.0.borrow()
+    }
+
+    /// Resolves once [`WriteStop::stop`] was called (at once if it already was).
+    pub async fn stopped(&self) {
+        let _ = self.0.subscribe().wait_for(|stopped| *stopped).await;
+    }
+}
+
+impl Default for WriteStop {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PartialEq for WriteStop {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for WriteStop {}
+
+#[derive(Debug)]
+pub struct ResultSet {
+    pub id: ResultId,
+    pub statement: String,
+    pub columns: Vec<Column>,
+    /// Rows in the order the server sent them.
+    pub rows: Vec<Vec<Cell>>,
+    /// The view order (indexes into `rows`) while sorted; empty = as sent.
+    pub order: Vec<u32>,
+    pub sort: Option<(usize, bool)>,
+    /// The query has finished producing this result.
+    pub complete: bool,
+    /// Stopped at the row cap: the query had more.
+    pub truncated: bool,
+    /// `count(*)` of the table, when the result is a table's rows.
+    pub total: Option<u64>,
+    pub affected: Option<u64>,
+    pub error: Option<String>,
+    pub started: Instant,
+    pub elapsed_ms: u64,
+    pub editing: Editing,
+    /// Changed cells: (row in `rows`, column) → new value.
+    pub edits: BTreeMap<(u32, u32), Cell>,
+    pub write: WriteState,
+    /// Bumped on every change, so a watcher can tell what it has seen.
+    pub version: u64,
+}
+
+impl ResultSet {
+    fn new(id: ResultId, statement: String) -> Self {
+        Self {
+            id,
+            statement,
+            columns: Vec::new(),
+            rows: Vec::new(),
+            order: Vec::new(),
+            sort: None,
+            complete: false,
+            truncated: false,
+            total: None,
+            affected: None,
+            error: None,
+            started: Instant::now(),
+            elapsed_ms: 0,
+            editing: Editing::ReadOnly(ReadOnly::Query),
+            edits: BTreeMap::new(),
+            write: WriteState::Idle,
+            version: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The row shown at view position `i`.
+    pub fn row_index(&self, i: usize) -> usize {
+        if self.order.is_empty() { i } else { self.order.get(i).map_or(i, |r| *r as usize) }
+    }
+
+    /// A cell as shown: its pending edit if any.
+    pub fn cell(&self, row: usize, column: usize) -> Option<&Cell> {
+        self.edits.get(&(row as u32, column as u32)).or_else(|| self.rows.get(row)?.get(column))
+    }
+
+    pub fn is_edited(&self, row: usize, column: usize) -> bool {
+        self.edits.contains_key(&(row as u32, column as u32))
+    }
+
+    pub fn editable(&self) -> bool {
+        matches!(self.editing, Editing::Editable(_))
+    }
+
+    pub fn target(&self) -> Option<&EditTarget> {
+        match &self.editing {
+            Editing::Editable(target) => Some(target),
+            _ => None,
+        }
+    }
+
+    /// Why this result is read-only (`None`: it is editable, or still loading).
+    pub fn read_only_reason(&self) -> Option<String> {
+        match &self.editing {
+            Editing::ReadOnly(why) => Some(why.reason()),
+            _ => None,
+        }
+    }
+
+    pub fn is_writing(&self) -> bool {
+        matches!(self.write, WriteState::Writing(_))
+    }
+
+    /// Ends the write-back in flight, if there is one.
+    pub fn stop_write(&self) {
+        if let WriteState::Writing(stop) = &self.write {
+            stop.stop();
+        }
+    }
+
+    /// Makes sure `error` shows on a result whose write-back it ended: a
+    /// failure already recorded (or another write-back running) stays.
+    pub fn show_failure(&mut self, error: &crate::error::DbError) {
+        if matches!(self.write, WriteState::Idle) {
+            self.write = WriteState::failed(error.to_string());
+            self.version += 1;
+        }
+    }
+
+    /// Why the last write-back failed, if it did.
+    pub fn write_failure(&self) -> Option<&str> {
+        match &self.write {
+            WriteState::Failed(error) => Some(error),
+            _ => None,
+        }
+    }
+
+    /// Whether a cell of `column` may be edited (not one the database computes).
+    pub fn column_editable(&self, column: usize) -> bool {
+        self.target().is_none_or(|e| !e.read_only.contains(&column))
+    }
+
+    /// More rows from the server. A sorted view takes them in where they
+    /// sort, after the rows already there that tie with them.
+    pub fn push_rows(&mut self, rows: impl IntoIterator<Item = Vec<Cell>>) {
+        let from = self.rows.len() as u32;
+        self.rows.extend(rows);
+        let Some(sort) = self.sort else { return };
+        let merged = {
+            let order = self.row_order(sort);
+            let mut added: Vec<u32> = (from..self.rows.len() as u32).collect();
+            added.sort_by(&order);
+            let mut merged = Vec::with_capacity(self.order.len() + added.len());
+            let (mut old, mut new) = (self.order.iter().peekable(), added.iter().peekable());
+            while let (Some(&&a), Some(&&b)) = (old.peek(), new.peek()) {
+                if order(&b, &a).is_lt() {
+                    merged.push(b);
+                    new.next();
+                } else {
+                    merged.push(a);
+                    old.next();
+                }
+            }
+            merged.extend(old.chain(new));
+            merged
+        };
+        self.order = merged;
+    }
+
+    /// How two rows (indexes into `rows`) compare under `sort`.
+    fn row_order(&self, (column, descending): (usize, bool)) -> impl Fn(&u32, &u32) -> std::cmp::Ordering + '_ {
+        let numeric = self.columns.get(column).is_some_and(|c| c.numeric);
+        move |a, b| {
+            let (x, y) = (self.rows[*a as usize].get(column), self.rows[*b as usize].get(column));
+            let o = match (x, y) {
+                (Some(x), Some(y)) => x.compare(y, numeric),
+                _ => std::cmp::Ordering::Equal,
+            };
+            if descending { o.reverse() } else { o }
+        }
+    }
+
+    /// Sorts the view by `column` (`None` restores the server's order).
+    pub fn sort_by(&mut self, sort: Option<(usize, bool)>) {
+        self.sort = sort;
+        self.order.clear();
+        if let Some(sort) = sort {
+            let mut order: Vec<u32> = (0..self.rows.len() as u32).collect();
+            order.sort_by(self.row_order(sort));
+            self.order = order;
+        }
+        self.version += 1;
+    }
+
+    /// Sets (or, back to the original value, clears) one pending edit. A
+    /// column the database computes takes none.
+    pub fn set_edit(&mut self, row: usize, column: usize, value: Cell) {
+        if !self.column_editable(column) {
+            return;
+        }
+        let original = self.rows.get(row).and_then(|r| r.get(column));
+        if original == Some(&value) {
+            self.edits.remove(&(row as u32, column as u32));
+        } else {
+            self.edits.insert((row as u32, column as u32), value);
+        }
+        self.clear_failure();
+        self.version += 1;
+    }
+
+    /// Keeps what was typed into a cell as a pending edit, if it is one.
+    /// `original` is the cell as shown when the editor opened, `initial` the
+    /// text it opened with, `meant` whether the person typed into it or pressed
+    /// Enter (see [`typed_value`]). `false`: nothing to keep.
+    pub fn type_into(&mut self, row: usize, column: usize, original: &Cell, initial: &str, text: String, meant: bool) -> bool {
+        let Some(value) = typed_value(original, initial, text, meant, self.clears_to_null(column)) else { return false };
+        self.set_edit(row, column, value);
+        true
+    }
+
+    /// Whether a cleared cell of `column` is NULL (see [`clears_to_null`](crate::model::clears_to_null)).
+    pub fn clears_to_null(&self, column: usize) -> bool {
+        self.target()
+            .zip(self.columns.get(column))
+            .is_some_and(|(target, c)| crate::model::clears_to_null(target.config.engine, &c.type_name))
+    }
+
+    /// Edits that are being written are not the result's to drop: they may
+    /// reach the database whatever is done here. Stop the write first.
+    pub fn discard_edits(&mut self) {
+        if self.is_writing() {
+            return;
+        }
+        self.edits.clear();
+        self.clear_failure();
+        self.version += 1;
+    }
+
+    /// An edit or a discard answers the last failure: it stops showing.
+    fn clear_failure(&mut self) {
+        if matches!(self.write, WriteState::Failed(_)) {
+            self.write = WriteState::Idle;
+        }
+    }
+
+    /// Makes the `written` edits the rows' values. An edit made while they
+    /// were being written stays pending.
+    pub fn commit_edits(&mut self, written: &BTreeMap<(u32, u32), Cell>) {
+        for (&(row, column), value) in written {
+            if let Some(cell) = self.rows.get_mut(row as usize).and_then(|r| r.get_mut(column as usize)) {
+                *cell = value.clone();
+            }
+            if self.edits.get(&(row, column)) == Some(value) {
+                self.edits.remove(&(row, column));
+            }
+        }
+        if let Some(sort) = self.sort {
+            self.sort_by(Some(sort));
+        }
+        self.write = WriteState::Idle;
+        self.version += 1;
+    }
+
+    pub fn summary(&self) -> Summary {
+        Summary {
+            id: self.id,
+            statement: self.statement.clone(),
+            columns: self.columns.len(),
+            rows: self.rows.len(),
+            total: self.total,
+            complete: self.complete,
+            truncated: self.truncated,
+            affected: self.affected,
+            error: self.error.clone(),
+            elapsed_ms: self.elapsed_ms,
+            editable: self.editable(),
+            not_editable: self.read_only_reason(),
+            edits: self.edits.len(),
+            writing: self.is_writing(),
+        }
+    }
+}
+
+/// What a script sees of a result.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Summary {
+    pub id: ResultId,
+    pub statement: String,
+    pub columns: usize,
+    pub rows: usize,
+    pub total: Option<u64>,
+    pub complete: bool,
+    pub truncated: bool,
+    pub affected: Option<u64>,
+    pub error: Option<String>,
+    pub elapsed_ms: u64,
+    pub editable: bool,
+    pub not_editable: Option<String>,
+    pub edits: usize,
+    /// A write-back of the edits is in flight.
+    pub writing: bool,
+}
+
+struct Entry {
+    set: Arc<Mutex<ResultSet>>,
+    /// Who owns it (a pane's key): released together.
+    owner: String,
+    watchers: Vec<async_channel::Sender<()>>,
+}
+
+struct Store {
+    next: ResultId,
+    entries: HashMap<ResultId, Entry>,
+}
+
+static STORE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store { next: 1, entries: HashMap::new() }));
+
+fn store() -> MutexGuard<'static, Store> {
+    STORE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A new empty result for `statement`, owned by `owner`.
+pub fn create(owner: &str, statement: &str) -> Arc<Mutex<ResultSet>> {
+    let mut store = store();
+    let id = store.next;
+    store.next += 1;
+    let set = Arc::new(Mutex::new(ResultSet::new(id, statement.to_owned())));
+    store.entries.insert(id, Entry { set: set.clone(), owner: owner.to_owned(), watchers: Vec::new() });
+    set
+}
+
+pub fn get(id: ResultId) -> Option<Arc<Mutex<ResultSet>>> {
+    store().entries.get(&id).map(|e| e.set.clone())
+}
+
+/// Locks a result (a poisoned lock still reads: a panic mid-write leaves rows, not garbage).
+pub fn lock(set: &Mutex<ResultSet>) -> MutexGuard<'_, ResultSet> {
+    set.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Wakes everyone watching `id` (coalesced: one pending signal each).
+pub fn changed(id: ResultId) {
+    let mut store = store();
+    if let Some(entry) = store.entries.get_mut(&id) {
+        entry.watchers.retain(|w| match w.try_send(()) {
+            Ok(()) | Err(async_channel::TrySendError::Full(())) => true,
+            Err(async_channel::TrySendError::Closed(())) => false,
+        });
+    }
+}
+
+/// A signal for every change to `id` (none if it is gone).
+pub fn watch(id: ResultId) -> Option<async_channel::Receiver<()>> {
+    let mut store = store();
+    let entry = store.entries.get_mut(&id)?;
+    let (tx, rx) = async_channel::bounded(1);
+    entry.watchers.push(tx);
+    Some(rx)
+}
+
+/// Drops one result.
+pub fn release(id: ResultId) {
+    store().entries.remove(&id);
+}
+
+/// Drops every result `owner` made.
+pub fn release_owner(owner: &str) {
+    store().entries.retain(|_, e| e.owner != owner);
+}
+
+/// What the inline editor's text makes of a cell, if anything: opened and
+/// left as it was, nothing. A NULL cell opens blank, so blank there means an
+/// empty string only once it was typed into or Enter was pressed (`meant`).
+/// In a column whose type has no empty value (`empty_is_null`) blank is
+/// NULL, shown as NULL before anything is written; a NULL cell left blank
+/// stays the NULL it was.
+fn typed_value(original: &Cell, initial: &str, value: String, meant: bool, empty_is_null: bool) -> Option<Cell> {
+    if empty_is_null && value.trim().is_empty() {
+        return (value != initial && !original.is_null()).then_some(Cell::Null);
+    }
+    (value != initial || (original.is_null() && meant)).then(|| original.edited(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_null_cell_can_become_an_empty_string() {
+        // Typed into (or Enter pressed on) a NULL cell left blank: an empty string.
+        assert_eq!(typed_value(&Cell::Null, "", String::new(), true, false), Some(Cell::text("")));
+        // Opened and left without a key: still NULL.
+        assert_eq!(typed_value(&Cell::Null, "", String::new(), false, false), None);
+        // A value left as it was is no edit, however it was left.
+        assert_eq!(typed_value(&Cell::Int(5), "5", "5".into(), true, false), None);
+        assert_eq!(typed_value(&Cell::text(""), "", String::new(), true, false), None, "an empty string stays one");
+        assert_eq!(typed_value(&Cell::text("a"), "a", "b".into(), false, false), Some(Cell::text("b")));
+        assert_eq!(typed_value(&Cell::Null, "", "x".into(), false, false), Some(Cell::text("x")));
+    }
+
+    #[test]
+    fn a_cleared_cell_of_a_type_without_an_empty_value_is_null() {
+        // Backspace and Enter on a number or a date: the NULL it shows, not an empty string for the server to guess at.
+        assert_eq!(typed_value(&Cell::Int(5), "5", String::new(), false, true), Some(Cell::Null));
+        assert_eq!(typed_value(&Cell::Int(5), "5", String::new(), true, true), Some(Cell::Null));
+        assert_eq!(typed_value(&Cell::text("2024-01-05 10:00:00"), "2024-01-05 10:00:00", "  ".into(), true, true), Some(Cell::Null));
+        // A NULL cell opened and left blank, or entered on, is the NULL it was: nothing to write.
+        assert_eq!(typed_value(&Cell::Null, "", String::new(), true, true), None);
+        assert_eq!(typed_value(&Cell::Null, "", String::new(), false, true), None);
+        // A value typed over still goes by the old rules.
+        assert_eq!(typed_value(&Cell::Int(5), "5", "7".into(), false, true), Some(Cell::Int(7)));
+        assert_eq!(typed_value(&Cell::Null, "", "x".into(), false, true), Some(Cell::text("x")));
+        // The character types keep the empty string they can hold.
+        assert_eq!(typed_value(&Cell::text("a"), "a", String::new(), true, false), Some(Cell::text("")));
+    }
+
+    #[test]
+    fn a_result_knows_from_its_column_and_engine_whether_clearing_means_null() {
+        let set = create("clears-to-null", "select");
+        let mut r = lock(&set);
+        r.columns = vec![Column::new("n", "int"), Column::new("s", "nvarchar"), Column::new("d", "timestamptz")];
+        r.rows = vec![vec![Cell::Int(5), Cell::text("a"), Cell::text("2024-01-05 10:00:00+08")]];
+        let target = |engine: &str| EditTarget {
+            connection: "c".into(),
+            config: serde_json::from_value(serde_json::json!({"name": "c", "engine": engine, "path": "t.sqlite", "host": "h", "user": "u"})).unwrap(),
+            database: None,
+            owner: "clears-to-null".into(),
+            table: ObjectRef { schema: String::new(), name: "t".into() },
+            key: vec![0],
+            read_only: Vec::new(),
+        };
+        r.editing = Editing::Editable(Box::new(target("mssql")));
+        assert_eq!((r.clears_to_null(0), r.clears_to_null(1), r.clears_to_null(2)), (true, false, false));
+        assert!(r.type_into(0, 0, &Cell::Int(5), "5", String::new(), true));
+        assert_eq!(r.cell(0, 0), Some(&Cell::Null));
+        r.editing = Editing::Editable(Box::new(target("postgres")));
+        assert_eq!((r.clears_to_null(0), r.clears_to_null(1), r.clears_to_null(2)), (false, false, true));
+        r.editing = Editing::Editable(Box::new(target("sqlite")));
+        assert_eq!((r.clears_to_null(0), r.clears_to_null(1), r.clears_to_null(2)), (false, false, false));
+        r.editing = Editing::ReadOnly(ReadOnly::Query);
+        assert!(!r.clears_to_null(0), "a result that is not a table's has no engine to ask");
+        drop(r);
+        release_owner("clears-to-null");
+    }
+
+    #[test]
+    fn an_edited_number_stays_a_number() {
+        // SQLite keeps what is bound in a column without affinity: 7 must go as an integer.
+        assert_eq!(typed_value(&Cell::Int(5), "5", "7".into(), false, false), Some(Cell::Int(7)));
+        assert_eq!(typed_value(&Cell::Float(1.5), "1.5", "2".into(), false, false), Some(Cell::Float(2.0)));
+        // Not of the cell's kind: text, for the server to convert or refuse
+        // (SQL Server would cut a float 7.5 to 7 in an int column, silently).
+        assert_eq!(typed_value(&Cell::Int(5), "5", "7.5".into(), false, false), Some(Cell::text("7.5")));
+        assert_eq!(typed_value(&Cell::Int(5), "5", "five".into(), false, false), Some(Cell::text("five")));
+        assert_eq!(typed_value(&Cell::Float(1.5), "1.5", "NaN".into(), false, false), Some(Cell::text("NaN")));
+        assert_eq!(typed_value(&Cell::text("5"), "5", "7".into(), false, false), Some(Cell::text("7")), "text stays text");
+    }
+
+    fn filled(owner: &str) -> Arc<Mutex<ResultSet>> {
+        let set = create(owner, "select");
+        {
+            let mut r = lock(&set);
+            r.columns = vec![Column::new("id", "int4"), Column::new("name", "text")];
+            r.rows = vec![
+                vec![Cell::text("10"), Cell::text("b")],
+                vec![Cell::text("9"), Cell::Null],
+                vec![Cell::text("100"), Cell::text("a")],
+            ];
+            r.complete = true;
+        }
+        set
+    }
+
+    #[test]
+    fn sorting_reorders_the_view_not_the_rows() {
+        let set = filled("t-sort");
+        let mut r = lock(&set);
+        r.sort_by(Some((0, false)));
+        let shown: Vec<_> = (0..3).map(|i| r.rows[r.row_index(i)][0].display().into_owned()).collect();
+        assert_eq!(shown, ["9", "10", "100"]);
+        r.sort_by(Some((1, true)));
+        assert_eq!(r.row_index(2), 1, "NULL sorts first, so last when descending");
+        r.sort_by(None);
+        assert_eq!(r.row_index(0), 0);
+    }
+
+    #[test]
+    fn a_sort_takes_in_the_rows_that_arrive_after_it() {
+        let set = filled("t-sort-stream");
+        let mut r = lock(&set);
+        r.complete = false;
+        r.sort_by(Some((0, false)));
+        r.push_rows(vec![vec![Cell::text("50"), Cell::Null], vec![Cell::text("1"), Cell::Null]]);
+        r.push_rows(vec![vec![Cell::text("10"), Cell::text("tie")]]);
+        let shown = |r: &ResultSet| (0..r.len()).map(|i| r.rows[r.row_index(i)][0].display().into_owned()).collect::<Vec<_>>();
+        assert_eq!(shown(&r), ["1", "9", "10", "10", "50", "100"]);
+        assert_eq!(r.row_index(3), 5, "ties keep the server's order");
+        r.sort_by(Some((0, true)));
+        r.push_rows(vec![vec![Cell::text("75"), Cell::Null]]);
+        assert_eq!(shown(&r), ["100", "75", "50", "10", "10", "9", "1"]);
+    }
+
+    #[test]
+    fn computed_columns_take_no_edits() {
+        let set = filled("t-read-only");
+        let mut r = lock(&set);
+        r.editing = Editing::Editable(Box::new(EditTarget {
+            connection: "c".into(),
+            config: serde_json::from_value(serde_json::json!({"name": "c", "engine": "sqlite", "path": "t.sqlite"})).unwrap(),
+            database: None,
+            owner: "t-read-only".into(),
+            table: ObjectRef { schema: String::new(), name: "t".into() },
+            key: vec![0],
+            read_only: vec![1],
+        }));
+        r.set_edit(0, 1, Cell::text("z"));
+        assert!(r.edits.is_empty(), "{:?}", r.edits);
+        assert!(!r.column_editable(1) && r.column_editable(0));
+        r.set_edit(0, 0, Cell::text("11"));
+        assert!(r.is_edited(0, 0));
+    }
+
+    #[test]
+    fn an_edit_back_to_the_original_value_is_no_edit() {
+        let set = filled("t-edit");
+        let mut r = lock(&set);
+        r.set_edit(0, 1, Cell::text("z"));
+        assert!(r.is_edited(0, 1));
+        assert_eq!(r.cell(0, 1), Some(&Cell::text("z")));
+        r.set_edit(0, 1, Cell::text("b"));
+        assert!(r.edits.is_empty());
+        r.set_edit(1, 1, Cell::text("x"));
+        let written = r.edits.clone();
+        r.set_edit(2, 1, Cell::text("during"));
+        r.commit_edits(&written);
+        assert_eq!(r.rows[1][1], Cell::text("x"));
+        assert_eq!(r.edits.len(), 1, "an edit made while writing stays pending");
+        assert!(r.is_edited(2, 1));
+    }
+
+    #[test]
+    fn a_failure_shows_unless_one_is_already_there_or_a_write_is_running() {
+        use crate::error::DbError;
+        let set = filled("t-failure");
+        let mut r = lock(&set);
+        r.show_failure(&DbError::Query("first".into()));
+        assert_eq!(r.write_failure(), Some("first"));
+        r.show_failure(&DbError::Query("second".into()));
+        assert_eq!(r.write_failure(), Some("first"), "the reason the write-back stopped with stays");
+        r.set_edit(0, 1, Cell::text("z"));
+        assert_eq!(r.write, WriteState::Idle, "an edit answers the failure");
+        r.write = WriteState::Writing(WriteStop::new());
+        r.show_failure(&DbError::NotEditable("pressed twice".into()));
+        assert!(r.is_writing(), "a write in flight is not replaced");
+        r.show_failure(&DbError::NotFound(String::new()));
+        r.write = WriteState::Idle;
+        r.show_failure(&DbError::NotFound(String::new()));
+        assert!(r.write_failure().is_some_and(|m| !m.is_empty()), "even an empty error shows words");
+    }
+
+    #[test]
+    fn edits_that_are_being_written_are_not_discarded_until_the_write_ends() {
+        let set = filled("t-discard-writing");
+        let mut r = lock(&set);
+        r.set_edit(0, 1, Cell::text("z"));
+        let stop = WriteStop::new();
+        r.write = WriteState::Writing(stop.clone());
+        r.discard_edits();
+        assert_eq!(r.edits.len(), 1, "a discard can't take back what may reach the database");
+        assert!(r.is_writing() && !stop.is_stopped(), "and it doesn't stop the write either");
+        r.write = WriteState::failed("stopped");
+        r.discard_edits();
+        assert!(r.edits.is_empty(), "once the write is over the edits are the pane's to drop");
+    }
+
+    #[test]
+    fn a_stop_ends_the_wait_it_belongs_to_and_only_that() {
+        let set = filled("t-stop");
+        let stop = WriteStop::new();
+        lock(&set).write = WriteState::Writing(stop.clone());
+        let other = WriteStop::new();
+        let waiting = std::thread::spawn({
+            let stop = stop.clone();
+            move || crate::runtime::block_on(stop.stopped())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!waiting.is_finished(), "nothing stopped it yet");
+        lock(&set).stop_write();
+        waiting.join().unwrap();
+        assert!(crate::runtime::block_on(async { tokio::time::timeout(std::time::Duration::from_millis(50), other.stopped()).await }).is_err());
+        crate::runtime::block_on(stop.stopped());
+    }
+
+    #[test]
+    fn watchers_are_woken_once_per_burst_and_released_with_their_owner() {
+        let set = filled("t-watch");
+        let id = lock(&set).id;
+        let rx = watch(id).unwrap();
+        changed(id);
+        changed(id);
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err(), "signals coalesce");
+        release_owner("t-watch");
+        assert!(get(id).is_none());
+        assert!(watch(id).is_none());
+    }
+}

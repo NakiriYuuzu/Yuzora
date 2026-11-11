@@ -1,0 +1,67 @@
+[package]
+name = "yuzora-files"
+description = "Yuzora L5: Files and the editor: the file tree, search, watchers, code editor and Markdown preview."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yuzora-core = { path = "../yuzora-core" }
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui-base = { path = "../../vendor/gpui-kit/crates/base" }
+gpui-shell = { path = "../../vendor/gpui-kit/crates/shell" }
+async-channel = "2"
+# ripgrep's JSON gives a line that isn't UTF-8 as base64.
+base64 = "0.22"
+futures = "0.3"
+ignore = "0.4"
+# Only to read an image's size and frames before GPUI decodes it (its formats).
+image = { version = "0.25", default-features = false }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+trash = "5"
+# Syntax highlighting: the runtime and one grammar per language (each only
+# depends on tree-sitter-language, so they share this runtime).
+streaming-iterator = "0.1"
+tree-sitter = "0.27"
+tree-sitter-bash = "0.25"
+tree-sitter-css = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-html = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-json = "0.24"
+tree-sitter-md = "0.5"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-sequel = "0.3"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-typescript = "0.23"
+tree-sitter-yaml = "0.7"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# A repo's SVG is drawn in a child held in a Job Object (src/svg/process.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[dev-dependencies]
+# To gzip an SVG (usvg's, already in the tree).
+flate2 = "1"
+gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
+# The app's JS engine (gpui-shell's), to run the mods' plain helpers in tests.
+quickjs = { package = "quickjs-jit", version = "0.12.11", git = "https://github.com/longbridge/quickjs-jit", rev = "96593cd7a54440ac060a391b8baea7e9a3cf1393" }
+tempfile = "3"
+
+# The SVG child's tests: the binary is its own child, so no libtest harness
+# writing to its stdout.
+[[test]]
+name = "svg_child"
+harness = false
+
+# The reload benchmark's own tests: it must list as the sidebar does, or its numbers are not the sidebar's.
+[[example]]
+name = "reload_cost"
+test = true

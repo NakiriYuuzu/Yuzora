@@ -1,0 +1,317 @@
+# L5 檔案＋編輯器
+
+> beta.4 起，Files／Git／Database／SSH 是右側 dock 的模式（`panel` 右邊的模式列，沒有 panel 的 layout 是抽屜），不再是左側欄。本文原稱「側欄」「側欄模式」的地方已改稱「右側模式」；截圖與 beta.2／3 時期的設計描述（例如圖中的左側欄）未重寫。
+
+beta.2 的檔案模式、程式碼編輯器、Markdown 預覽與圖片檢視。設計依據：設計稿 p2（檔案畫板）與 p6（右側模式「檔案」模式）。架構規則見 [architecture.md](architecture.md)、[lanes.md](lanes.md)。
+
+## 範圍與檔案
+
+| 路徑 | 內容 |
+| --- | --- |
+| `app/crates/yuzora-files/src/lib.rs` | `yuzora:files` HostModule：函式、3 個原生元件、TypeScript 宣告 |
+| `src/highlight/` | tree-sitter 上色：14 種語言、`InputHighlighter` 實作、One Dark 色盤（mod 以主題色覆寫）、無狀態 `highlight()` API |
+| `src/editor.rs` | 可重用的程式碼編輯器：`new_code_editor()`、`code_editor()`、`Look` |
+| `src/docs.rs` | 開啟中的文件（每個檔案一份 buffer）、存檔衝突檢查、外部變更、搜尋取代、`Editor` 元件 |
+| `src/markdown.rs` | `Markdown` 元件（gpui-base `TextView`，GFM） |
+| `src/image.rs` | `ImageView` 元件（PNG／JPEG／GIF／WebP／BMP／TIFF／ICO／SVG） |
+| `src/svg.rs`、`src/svg/` | repo 的 SVG 交給子行程點陣化：父行程的請求、快取與並行上限（`svg.rs`）、子行程的監管與資源上限（`process.rs`）、協定（`wire.rs`）、子行程本身（`child.rs`） |
+| `src/fsops.rs`、`src/git.rs`、`src/search.rs` | 檔案操作、輕量 `git status`、模糊檔名搜尋與內容搜尋（ripgrep，本機沒有 rg 時用內建搜尋）；本機或 `hc exec --on` |
+| `app/defaults/mods/yuzora-sidebar-files` | 右側模式「檔案」模式（含自己開的右鍵 popup） |
+| `app/defaults/mods/yuzora-editor` | 編輯器 pane |
+| `app/defaults/mods/yuzora-markdown` | Markdown pane（預覽／原始碼切換） |
+| `app/defaults/mods/yuzora-files-image` | 圖片與 SVG 檢視 pane |
+
+上游程式碼的改動都有 `// yuzora(L5):` 註記：`app/src/main.rs`（SVG 子行程的入口，在 `main()` 的開頭）、vendored gpui-pre 的 `svg_renderer.rs`（`<image>` 一律不載入、`ParsedSvg::tree()`）與 `assets.rs`（`RenderImage::with_scale_factor`）；v0.1.0 開檔改版（#259）動了兩個上游檔，都標了 `// yuzora(v0.1.0 files-open):`：`app/src/window.rs` 的 `publish`（mod pane 的 `props` 與 `started` 也放進 `panes()`；產品程式 4 行新增、2 行刪除，都在 1742–1745 行，另在 `#[cfg(test)]` 裡有 133 行測試 `pane_props_listed`、`pane_replaced_in_place`，與 1 行 `include!` 加上新檔 `app/src/window/pane_replace_tests.rs`），與 `app/defaults/herdr.d.ts` 的 `PaneInfo`（`props`、`started` 與它們的說明：10 行新增、1 行刪除）。#259 也動了 L5 自己的 crate 裡的 Rust 產品程式 `app/crates/yuzora-files/src/docs.rs`（不是上游檔：產品程式 29 行新增、7 行刪除，`here_is_windows`、`backslash_separates`、`renamed(…, backslash)`，讓 Windows 路徑的改名認 `\`；測試另有 104 行新增、7 行刪除），所以「沒有動 Rust 產品程式與上游檔」不成立。共用檔只改了各自的 L5 標記區：`README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md`，以及 `app/CHANGELOG.md` 的 0.1.0-beta.2 條目。
+
+## 設計
+
+### 三層分工
+
+- **Rust（`yuzora-files`）**：所有磁碟 I/O、git、搜尋都在 worker thread；本機讀檔與「能不能寫」的檢查一律以 nonblocking 開檔、再透過 handle 確認是一般檔案（`open_regular`），檢查後才被換成 FIFO 或裝置也不會卡住 worker；編輯器、Markdown、圖片是 `HostModule::component` 原生元件。
+- **JS mods**：版面、標頭、橫幅、搜尋列、右鍵選單、開檔策略。使用者可以 `mod.clone` 修改。
+
+### 文件（`docs.rs`）
+
+- 一個檔案（機器＋路徑）在整個 app 只有一份 `DocView`（GPUI global 的 registry），所有 pane 共用。`openDocument` 每呼叫一次加一個參考，`releaseDocument` 減一。
+- **只有一個 pane 畫編輯器**（owner）。同一個檔案在另一個 pane 開啟時顯示「在這裡編輯」，按下才接手；避免同一個 GPUI entity 在同一個 frame 被畫兩次。
+- 載入：`fsops::read_text`，換行正規化為 LF，記住原本是 LF／CRLF 與 BOM，存檔時還原。
+- **存檔**：同資料夾的暫存檔（`.yuzora-save-<32 hex>`）fsync 後 rename 蓋過去（蓋過既有檔案時，暫存檔先以 0600 建立，最後一次比對完、rename 之前才套用原檔的權限：寫入期間原檔擋掉的人打不開它；存檔前確認可寫入時也以一般檔案開啟，換成 FIFO 不會等），保留權限、owner、ACL 與延伸屬性（Finder 標籤、resource fork；macOS 用 `fcopyfile`，Linux 逐一複製 xattr，POSIX ACL 也在其中，新檔自己從資料夾繼承、原檔沒有的會移掉）；Windows 目前只保留唯讀屬性，ACL 與其他屬性會變成資料夾繼承的（待改用 `ReplaceFileW`）。資料夾不能建暫存檔、或 owner、ACL、延伸屬性保不住時退回就地寫入：先把舊內容分塊複製到備份（不整份讀進記憶體；同資料夾，資料夾不可寫時放 app home 的 `backups/files`（0700）；一律新建檔案（O_EXCL，不寫進既有路徑或 symlink），只有擁有者可讀），新內容寫完才刪；寫入失敗時寫回舊內容（從建立備份時的同一個 handle 讀回，不用名稱重開：資料夾可能別人也能寫入），連寫回都失敗就留下備份並在錯誤裡指出位置。symlink 寫到它指向的檔案；指向的檔案已刪除時（還原），沿著連結寫回原本的位置。寫入前比對載入時的 `{len, mtime}`，不同就回報衝突、不寫入；一樣時再比對內容 hash（時間精度粗的檔案系統上，同長度的改寫可能 stamp 不變）。暫存檔寫完、rename 之前再比對一次（就地寫入則是備份複製完、覆寫之前），寫入或複製備份期間別人改了檔案也會回報衝突並保留對方的內容；rename 沒有「比對後才替換」的原子操作，只有最後一次比對到 rename 之間的改動仍會被蓋掉。
+- **外部變更**：本機用 herdr 的 `watchFolder`（檔案所在資料夾）＋15 秒輪詢，遠端 5 秒輪詢，呼叫 `checkDisk`。stamp 變了才讀內容並比對 hash。只到秒的 stamp（遠端的 `stat`、時間精度粗的檔案系統）在同一秒內被改寫成同樣長度時不會變；更細的 stamp 也一樣，在時鐘的同一個 tick 內（stamp 只到毫秒，Linux 的 kernel tick 可能好幾毫秒）改寫也不會變。所以只到秒的 stamp，以及看到時修改時間還不到 2 秒的 stamp，在第一次看到 2 秒後的讀取確認內容相同之前，每次檢查都讀內容；這段期間 chmod 也照樣會被發現。檢查開始後文件被重新命名的，結果不套用（載入也一樣，改用新路徑重讀）：
+  - 內容相同（touch）：只更新 stamp。
+  - 沒有未儲存變更：自動重新載入，保留游標與捲動位置。
+  - 有未儲存變更：標成衝突，橫幅提供「重新載入（捨棄我的）／保留我的／覆寫」。衝突橫幅的底色與邊框取 `tokens().status.blocked` 的 `header_bg`／`pane_border`（與 L1 等待中 pane 的標頭相同，淺色主題自動換成淺色版本），文字是 `th.blocked`。
+  - 檔案消失：橫幅提供「重新儲存」。
+  - 只改權限（chmod 不動大小與時間）：本機檢查也比對權限位元，變了才重新判斷能不能寫，編輯器跟著切換唯讀。
+- **「<Agent> 也在改」**：文件記住最後一次被外部修改的時間（`externalAt`）。3 分鐘內，若有 agent 狀態為 working、且它所在 pane 的 cwd 包含這個檔案（Windows 路徑兩種斜線都認、不分大小寫），標頭顯示該 agent 的名稱：`raised` 底、`muted` 字，前面一個品牌色圓點（`tokens()` 的 agent 品牌色，沒有時用 `th.blocked`）。品牌色直接當文字在淺色底上不到 4.5:1，所以只用在圓點。
+- 關閉有未儲存變更的 pane：buffer 保留在記憶體（toast 提示），重新開啟同一檔案即可找回；Yuzora 結束才會遺失。
+- 大檔保護：超過 16 MiB 不開；超過 2 MiB 以純文字開啟（關閉上色與摺疊）；含 NUL 的二進位檔不開；非 UTF-8 以唯讀開啟。重新讀取時（外部變更、Reload），檔案變成二進位或超過上限就不再顯示編輯器，未存的修改一併丟掉，不會再被存回去；大小跨過 2 MiB 時重建編輯器，上色與摺疊跟著開或關。
+- 搜尋取代：用 gpui-base 內建的搜尋引擎（`set_search_query`、`next/previous_search_match`、`replace_*`），關掉它的內建面板（`searchable(false)`），讓 ⌘F 冒泡到 JS 的搜尋列。文件還在載入時輸入的查詢會記住，編輯器建立後再套用。
+
+### 上色（`highlight/`）
+
+- tree-sitter 0.27 與 13 個語法 crate：rust、typescript／tsx、javascript（含 JSX）、json、toml、yaml、markdown（block 語法）、python、go、sql（tree-sitter-sequel）、bash、css、html。
+- 增量解析：`InputEdit` 轉成 `tree_sitter::InputEdit`，用舊 tree 重新解析（一批 edit 只重解析一次）；`styles(range)` 只對可見範圍跑 `QueryCursor`。debug 建置下 2 MiB 的 Rust 全文解析約 0.9 秒、增量約 80 ms、一屏約 1–2 ms。
+- capture 名稱對應到固定的語意名稱（keyword、function、type、string…），由 `SyntaxPalette`（`HighlightStyleResolver`）決定顏色；預設 One Dark（設計稿的配色）。編輯器與 Markdown 由 `doc-pane.js` 的 `SYNTAX` 傳入主題色（`syntax: {名稱: 色碼}`，對應到 `ansi1`–`ansi14` 與 `dim`），淺色主題也看得清楚：One Dark 有上色的每個名稱都列出來（覆寫依前綴比對，只列 `function` 的話 `function.builtin` 也會變成 function 的色）。淺色主題的目前行用 hover 與背景各半，程式碼在上面仍有 4.5:1；深色主題維持 hover。語言徽章同樣是主題色的名稱（`languages()` 的 `color`、文件的 `badgeColor`）。
+- 同一段文字有多個 capture 時：範圍最小的優先，一樣大時比 pattern 的限定程度（節點數＋predicate），再相同才取後面的。上游各語言的查詢對先後順序的假設互相矛盾（JS 要後面的贏、JSON 與 Go 要前面的贏），單一規則無法全對。
+- 上游查詢的兩處執行期修補（各有測試）：tree-sitter-sequel 把數字寫成 Lua 的 `%d`，換成 `[0-9]`；tree-sitter-toml-ng 的 `(pair (bare_key)) @property` 會把整個 pair 上色，改成 `(pair (bare_key) @property)`。
+- 摺疊範圍來自語法樹（成對括號跨行的節點、python `block`、markdown `section`…）。
+- Markdown 只用 block 語法：fenced code 依 info string 上色，`*強調*`、連結等 inline 語法不上色。
+
+### Markdown 與圖片
+
+- `Markdown` 元件跟著文件的文字版本（每次編輯或重新載入加一）重畫，游標閃爍不會讓它重抓全文；同一份文件在原始碼與預覽間切換時即時同步。
+- 圖片只讀本機的一般檔案（不是資料夾、裝置或 FIFO）且不超過 32 MiB；點陣圖解碼後不超過 512 MiB，SVG 交給子行程畫（見下方「repo 的 SVG」）；網路、`data:`、Windows UNC（`//host/share`）與遠端文件的圖片一律不讀。檢查在 worker 做：讀出 bytes（最多 32 MiB，不多讀）、檢查解碼大小，交給 GPUI 的就是這份 bytes（SVG 是子行程用它畫好的圖）而不是路徑，所以讀完之後檔案變大或被換掉也繞不過限制。畫面只讀快取，10 秒後重新 `stat`，stamp 變了才重讀，同一路徑換了圖也會更新；最後一個 frame 沒畫到、而且 1 分鐘沒畫到的圖片連同 bytes 放掉（SVG 連同它的 texture）（之後沒有新的 frame 也會在 1 分鐘後放掉；捲出畫面的圖片捲回來時重讀）。所以圖片在檢查回來後才出現。畫面上有找不到的圖片時，10 秒後會自己重畫再找一次，之後才建立的圖片也會出現。相對圖片從文件所在的資料夾找；文件被重新命名或移到別的資料夾時跟著換。Windows 上 `file:///C:/…` 指的是 `C:/…`。連結只開 http、https、mailto。
+- 預覽的文字、連結、程式碼底色跟隨目前的主題（`theme()` 的 foreground、muted、ansi4、raised、border）；code block 的語法色和編輯器相同（`syntax`），換主題時 code block 重新上色（文字的上色快取以 highlighter 為 key，只有語法色變了才換一個）。
+- 圖片 pane：PNG／JPEG／GIF／WebP／BMP／TIFF／ICO／SVG。GPUI 會把 GIF、動態 WebP 的每一幀都解碼成整張畫布（每像素 4 bytes）並留著，所以先用檔頭的尺寸與幀數（GIF 的 image block、WebP 的 `ANMF` chunk，不解碼）估算，超過 512 MiB 就不顯示；檔頭解析不了的交給解碼器。SVG 見下一節。
+
+  檢視有「符合」與「100%」（原尺寸，比 pane 大時可捲動）、對比底色（`th.solid`：淺色主題是深底、深色主題是淺底，上面的提示文字用 `solid_foreground`）；檔案變了自動重新顯示：本機的 watch 事件指到這個檔案就重讀（不看大小與時間）；遠端只有秒級時間，看到新的 stamp 後 2.5 秒再讀一次，補上同一秒內的改寫。遠端圖片同樣只讀一般檔案。
+
+### repo 的 SVG（子行程點陣化）
+
+在 App 行程裡解析 repo 的 SVG，前三輪審查每補一種上限（巢狀深度、參照循環、節點數、layer 與 filter 的像素預算），下一輪就找到新的放大方式，用特製的小檔案耗盡記憶體、CPU 或 stack，讓整個 App 中止。所以圖片 pane 與 Markdown 預覽的 SVG 一律交給子行程點陣化，App 本體不解析，原本的檢查與預算都已刪除。
+
+- **子行程**：同一支執行檔（`std::env::current_exe()`）加隱藏參數 `--yuzora-rasterize-svg`。`app/src/main.rs` 的 `main()` 一開頭看到這個參數就交給 `yuzora_files::svg::child_main()`，不做其他初始化。沒有新增 binary，打包不變。
+  - 子行程（`src/svg/child.rs`）從 stdin 讀一份 SVG，用 GPUI 自己的 `SvgRenderer` 在 16 MiB stack 的 thread 上畫（usvg＋resvg、相同的字型；`<image>` 一律不載入，見下方），長邊不超過 4096 px（GPUI 畫 SVG 用兩倍尺寸），寫到 stdout 後結束。
+  - env 清空，只留找系統字型需要的變數：macOS 留 `HOME`；Linux 留 `HOME`、`XDG_CONFIG_HOME`、`XDG_DATA_HOME`、`XDG_DATA_DIRS`、`FONTCONFIG_FILE`、`FONTCONFIG_PATH`；Windows 留 `SystemRoot`、`USERPROFILE`。
+  - Unix 上子行程先設 `alarm(10)`：父行程不在了（例如 App crash），它也不會一直跑下去。
+- **父行程**（`src/svg.rs`、`src/svg/process.rs`）只做不需要解析的檢查：大小不超過 32 MiB；開頭是 gzip magic（`1f 8b`）或副檔名是 `.svgz` 就拒絕（usvg 會整份解壓，沒有上限）。usvg、resvg、roxmltree、simplecss 都不是 `yuzora-files` 的依賴，父行程的程式碼也不呼叫 `SvgRenderer`；測試會檢查這兩點。
+  - 收到的 RGBA 換成 GPUI 用的 BGRA，scale 和 GPUI 畫的 SVG 一樣是 2（vendored gpui-pre 的 `RenderImage::with_scale_factor`）。一般 SVG 的結果和改版前在 App 裡畫的逐 byte 相同（整合測試比對）。
+- **協定**（`src/svg/wire.rs`，數字都是 little-endian u32）：
+  - stdin：`YZSVGIN1`、長邊上限、SVG 的長度，接著是 SVG。
+  - stdout：`YZSVGPX1`、狀態（0 畫好、1 usvg 讀不了或畫不出來）、寬、高；畫好時接著是寬×高×4 bytes 的 RGBA（straight alpha）。
+  - 兩邊都只讀 header 指定的長度，不等 EOF：pipe 的一端被別的子行程意外繼承時，也不會卡住。
+
+#### 上限（`src/svg.rs` 的常數）
+
+| 常數 | 值 | 做法 |
+| --- | --- | --- |
+| `TIMEOUT` | 5 秒 | 牆鐘時間，從子行程啟動起算（排隊的時間不算），超過就殺。 |
+| `MEMORY_LIMIT` | 512 MiB | macOS：每 10 ms 用 `proc_pid_rusage` 讀 `phys_footprint`，超過就殺。Linux：`pre_exec` 裡 `setrlimit(RLIMIT_AS)`。Windows：Job Object 設 `JOB_OBJECT_LIMIT_PROCESS_MEMORY` 與 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，送出任何資料前就把子行程放進 job。 |
+| `MAX_EDGE` | 4096 px | stdout 最多讀 header 加上寬×高×4。header 的寬或高超過上限（或是 0），或在那之後多送任何一個 byte，都算輸出格式錯誤。 |
+| `CONCURRENT` | 2 | 同時最多 2 個子行程，其餘排隊。 |
+| `MAX_SVG_BYTES` | 32 MiB | 和圖片的大小上限相同。 |
+
+- 每個子行程在父行程佔用的記憶體：像素最多 64 MiB，加上 64 KiB 的讀取緩衝與 4 KiB 的 stderr。
+- spawn 時持有行程內的一把鎖：macOS 的 std 先建 pipe，再設 close-on-exec，平行 spawn 時，另一個子行程可能繼承到這個 pipe 的一端。std 在 `spawn` 裡就關掉父行程中屬於子行程的那一端，所以這一步在鎖內完成。
+- 子行程樹：Unix 上子行程是自己 process group 的 leader，Windows 上它在自己的 Job Object 裡。殺子行程時連同它啟動的行程一起殺；子行程自己結束時，剩下的行程也一併清掉。
+
+#### 失敗時
+
+- 逾時、超過記憶體、crash（非 0 結束或被 signal 終止）、輸出格式錯誤：殺掉子行程樹，回傳原因。Linux 與 Windows 上，超過記憶體上限時配置會失敗，Rust 會在 stderr 寫 `memory allocation of …` 後 abort，父行程據此判為記憶體不足（stderr 只留前 4 KiB）。
+- 圖片 pane 顯示佔位圖（灰框打叉，由父行程直接產生，不是 SVG）和原因：`image.svg_timeout`、`svg_memory`、`svg_crashed`、`svg_output`、`svg_invalid`、`svg_spawn`、`svgz`，都在 `i18n/en.json`。
+- Markdown 預覽顯示同一張佔位圖。`TextView` 的圖片欄位只接受圖片，原因的文字無法放進預覽。
+- 不自動重試。結果依內容的 hash 快取（行程內隨機金鑰，無法造出相撞的檔案），同一份 SVG 只 spawn 一次，失敗的結果也記著；檔案內容改了才重畫。多個請求同時要同一份 SVG 時，等第一個的結果。快取最多 128 MiB 的像素、512 筆，先進先出。取消與子行程無法啟動的結果不快取。
+- 取消：圖片 pane 換檔或關閉、Markdown 預覽關閉或換文件時，排隊中的請求直接放棄，畫到一半的子行程被殺。
+
+#### `<image>` 與 mod 的 SVG
+
+SVG 裡的 `<image>` 一律不跟：usvg 預設會把它指的任何本機路徑整個讀進來（不管大小，`/dev/zero`、FIFO、UNC 分享都會照讀）；data URI 也一律不解：點陣圖會被 resvg 依檔頭宣稱的尺寸解碼（60000² 的 PNG 只要幾十 bytes），SVG 會用同一個 resolver 一層層 parse（75 層就讓 GPUI 的解碼 thread 爆 stack、整個 app 結束；50 次 `<use>` 同一個內嵌 SVG 要 25 秒 CPU），gzip 的也照樣整份解壓。所以 vendored gpui-pre 的 `SvgRenderer`（`svg_renderer.rs`，`// yuzora(L5):`）改用自己的 `image_href_resolver`，什麼都不載入；同一處的 `ParsedSvg::tree()` 讓子行程讀出尺寸，決定縮放。這是全域設定，所有 mod 的 `svg()`／`img()` 也一樣；內建的 SVG 都沒有用到 `<image>`。mod 自己的 SVG 仍由 GPUI 在 App 裡解碼（它們是 app 或 mod 的資產，不是 repo 的檔案），不經子行程。畫好的 SVG 是一張 texture：換圖、圖片不再顯示、pane 或預覽關掉時用 `drop_image` 放掉。
+
+#### 已知限制
+
+- Linux 的 `RLIMIT_AS` 限制的是位址空間：執行檔、shared library、thread stack 的 mapping 都算在 512 MiB 裡，實際能用的 heap 比 macOS、Windows 少。App 本體在 Linux 上的基本用量尚未量測。
+- macOS 的記憶體上限靠輪詢：兩次輪詢之間（10 ms）子行程可能多配置一些才被殺。
+- 每個子行程第一次畫文字時都要載入系統字型。
+- Windows 的 Job Object 實作只做過交叉編譯檢查，沒有實際執行（`app-ci.yml` 的 Windows job 只跑 console 視窗測試，不跑這裡的）。
+
+### 右側模式（`yuzora-sidebar-files`）
+
+- 跟隨目前 focused pane 的 Space 與 cwd（沿用上游 `files` mod 的定位方式）；focused 的是工具 pane（沒有 cwd）時保留原本的資料夾。在 repo 裡時以 `git rev-parse --show-toplevel` 為根。換到別的資料夾時，取消正在輸入的新增或重新命名（它屬於原本的資料夾）；搜尋開著時，在新的根目錄重跑；樹重新整理時（watch 事件、手動、遠端的 10 秒輪詢）也重跑，檔名清單重新列出。本機有 watch 時，10 秒計時不重跑搜尋。
+- 標題（2026-11-03 改版，B1「路徑卡」，取代同日的設計 D；標題列和其他右側模式一樣）：
+  - 標題列：照資料庫、SSH 模式的寫法，高 32、左右 12：左邊是「檔案」（右側模式變窄時先截斷），右邊 6 顆 22×22 ghost 圖示鈕（間距 2）：新增檔案、新增資料夾、重新整理、全部收合、搜尋、顯示隱藏檔（記在 localStorage；切換時重跑搜尋）。按鈕平常沒有底色、muted 字，hover 時 `hover` 底＋foreground，開著的 toggle 用 `selected` 底＋foreground；按鈕不縮，不換行也不溢出。遠端 Space 的新增檔案、新增資料夾與本機一樣可用（v0.1.0 R2）。不再顯示 Space 徽章。
+  - 路徑卡（標題列下方 4px、左右 10px；`raised` 底、1px `border`、圓角 7）：第一行是資料夾 icon、上層路徑（`~` 形式、結尾帶分隔符、dim）與資料夾名稱（粗體），空間不夠時先縮上層路徑，名稱盡量完整；最右邊是「本機」或機器名的 chip（`hover` 底，和卡片的 `raised` 分得開）。第二行是 git 分支 icon＋分支名（accent、11.5px、過長截斷），不是 repo 或沒有分支時不顯示。拆法在 `paths.js` 的 `heading()`（純函式）：家目錄本身顯示 `~`、根目錄（`/`、`C:\`）只有名稱；`~` 只用在本機，遠端路徑照原樣。沒開資料夾時沒有路徑卡，樹照舊顯示空狀態。
+  - 沒有新 token，卡片上的字都用主題色：dim、foreground、accent 在 `raised` 上，深色 5.84／12.37／6.17、淺色 6.34／16.70／6.00；chip 的 muted 在 `hover` 上，深色 6.10、淺色 6.55。由 `yuzora-core` 的 `both_yuzora_themes_read_at_wcag_aa` 守著。
+- 樹：`uniform_list` 虛擬捲動，每個資料夾最多 2000 項（本機列資料夾時邊讀邊排序，只留前 2001 項，超大的資料夾也不會整份放進記憶體）、總共 20000 列（超過時樹下方提示收合一些資料夾）；根目錄被截斷、而且留下的 2000 項都是隱藏檔（隱藏檔沒有顯示）時，樹不寫「沒有檔案」，改提示前 2000 項都是隱藏檔；名稱不是 UTF-8 的項目不列出（本機與遠端都一樣：用替代字元拼出的路徑可能指到旁邊的檔案；git 狀態裡這種路徑也不標記），讀不到類型的項目也不列出、讀到一半失敗就停（讀的期間被刪掉的不算），這些情況樹下方都會提示有項目無法讀取或顯示；git 標記 M／A／D／U／?，收合的資料夾若含變更顯示 `•`；變更超過 20,000 個路徑（或 git 的輸出超過 16 MiB）時，樹下方提示「變更太多，有些變更的檔案沒有 Git 標記」。每列依類型顯示 icon（`icons/files/*.svg`，自己畫的 16×16、stroke 1.4 單色遮罩，與模式列一致）：資料夾分開啟／收合，常見副檔名與特殊檔名（`Cargo.toml`、`package.json`、`Dockerfile`、`.gitignore`、lock 檔⋯）各有 icon，其他用預設檔案 icon。對照表在 `icons.js`（純函式，mod 載入時建表一次，每列只查表），顏色是主題色的名稱（`ansi0`–`ansi15`、`muted`、`dim`），淺色與深色主題都跟著換；搜尋結果用同一個對照表。`watchFolder` 監看根目錄＋10 秒重新整理；收合過的資料夾再展開時，先顯示上次的內容並重新列出。根目錄重新列出失敗時（被刪除或沒有權限），樹上方顯示錯誤，下面是上次列出的內容。
+- 未信任的資料夾：repo 自己的設定會執行程式（例如 `git status` 時跑 clean filter），而且還沒在 Git 模式信任時，不執行 `git status`（遠端也一樣）。偵測規則與信任清單沿用 L2（`yuzora-core`）。這時分支用 `symbolic-ref`、ahead／behind 用 `rev-list --left-right --count` 取得，這兩個指令都不碰工作樹。partial clone（promisor remote）缺 commit 時，`rev-list` 會用 repo 自己的 ssh command 去 fetch，所以改加 `--no-lazy-fetch`（git 2.44 以上；更舊的 git 不顯示 ahead／behind）。樹上不顯示 Git 標記，改顯示一行「未信任的資料夾，在 Git 模式信任後才會顯示 Git 標記」。信任後，10 秒內的下一次重新整理就會出現標記。遠端的檔名搜尋清單也一樣：未信任時不用 `git ls-files`（它會讀工作樹與 index，partial clone 的 sparse index 展開時還可能 fetch），改用 `rg --files` 或 `find`。判斷在 `git.rs` 的 `work_tree_open`，`gitStatus` 與檔名清單共用。信任檢查讀的是從 top level 找到的 repo，但 `core.worktree` 可以讓 top level 指到另一個 repo（例如 `evil/.git` 設了 filter，工作樹卻是乾淨的 `clean`），這時檢查的是 `clean`，`git status` 卻用 `evil` 的設定。所以先比對兩邊的 `rev-parse --absolute-git-dir`（從資料夾本身、從 top level），不同就當成未信任，信任 top level 也不會打開。檢查本身（L2 的 `git_trust::pending`）在未信任時每次都跑：讀 repo 的設定，並用 `ls-files -s` 掃 submodule（`GIT_NO_LAZY_FETCH=1`）。
+- 不論信任與否，yuzora-files 跑的每個程式（本機與 `hc exec --on`）都帶 `GIT_NO_LAZY_FETCH=1` 與空的 `GIT_ALLOW_PROTOCOL`（`fsops::OFFLINE`，一律經 `fsops::run`）。檔案樹的標記與搜尋不需要連任何 remote：partial clone 缺物件時 git 不去 fetch，也不會依 promisor remote 的 URL 叫起 remote helper（例如 `zz://…` 對應 PATH 上的 `git-remote-zz`）；`GIT_ALLOW_PROTOCOL` 是環境變數，repo 的 `protocol.*.allow` 放寬不了。空值連 file 也不放行，所以也擋住 2.44 以前不認得 `GIT_NO_LAZY_FETCH` 的 git：promisor 是本機 repo 時，它會走 file transport 去抓，並執行 repo 自己設定的 `uploadpack`（原本放行 file 時擋不住，`offline_stops_an_older_git_fetching_from_a_local_promisor` 以拿掉 `GIT_NO_LAZY_FETCH` 的 git 模擬）。代價：缺 tree 的 clone（`--filter=tree:0`）裡 `git status` 會失敗，不會去 fetch。帶環境變數用的是 `yuzora_core::remote::ExecRequest::env`（遠端轉成 `hc exec --env`）。
+- 樹的狀態與切換（v0.1.0 F1）：`tree-state.js` 是沒有 import 的純模組（主機呼叫由 `main.js` 傳入），`main.js` 只負責畫。每個（機器、資料夾）一份狀態，面板只有三種（`panel()`）：沒有資料夾、`empty`（根目錄還沒列過；只有這時寫「Loading files…」，列根目錄失敗就寫原因）、`showing`（已有根目錄的列，新鮮度是 `fresh`／`revalidating`／`{stale: 原因}`）。有快取卻顯示 loading 因此無法表示。
+  - 切回看過的 Space、或重新打開 Files：第一個畫面就是上次的樹（展開與選取都在），同時在背景重讀。讀回來的結果逐項比對（名稱、種類、連結、隱藏；檔案大小變了不算），只有變了的資料夾才換、才重畫；沒變就不重畫（10 秒計時也不再每次重畫）。
+  - 第一次顯示：git、根目錄與已展開的資料夾同時發出（列資料夾最多 6 個同時），根目錄列到就畫，git 標記之後補上。樹的根在 git 回答前先用資料夾本身。git 說 repo 的 top 在別處（資料夾是 repo 的子目錄）時，**畫面上的樹不動、照常可點**（展開與選取也留著），同時 repo top 的根目錄立刻開始列，不等舊根的其他列表（`pass`：git 的回答一到就發出，與舊根的列表並行）；top 的根目錄列到時，新的樹整份取代舊的（展開與選取是相對於舊的根，隨舊的樹一起換掉）。所以沒有「Loading files…」的空檔：樹先是資料夾自己的，之後換成 repo 的。最終的樹出現的時間是 `git ＋ 列一次 top`（不論 git 與資料夾的列表誰先回來），第一次拿到可用的樹仍是資料夾的根目錄列到的時間。遠端的 `gitStatus` 還是 4 個循序 `hc exec`，但不再擋在列目錄前面。
+  - 根由 git 最近的回答決定，每次重讀都看：回答「在 `/repo`」就是 `/repo`。回答「不在 repo 裡」要連續 2 次（`MISSES`）才讓根回到資料夾本身，而且只算 git 曾經回答過 top 的樹：Rust 把 git 起不來（spawn 失敗）與 `rev-parse` 任何非 0 都回成「不在 repo 裡」（`git.rs` 的 `toplevel`，信任關卡所在，沒有改），一次這樣的回答不該讓使用者展開的資料夾收起來兩次。真的不在 repo 了（`.git` 被刪）時，第二次重讀（10 秒計時或下一個 watcher 事件）就回到資料夾本身，沒有手動重新整理的特例。git 失敗（逾時、斷線；`failed` 不是 null）不算回答，根留在原處。cwd 與 git 的 top 寫法不同時（`C:\x` 與 `C:/x`、結尾斜線、macOS 的 `/tmp` 與 `/private/tmp`、`/var`、`/etc`）當成同一個資料夾：不換根、不重畫，樹只換成 git 的寫法，展開與選取都留著，已列出的列表照用；其他的符號連結（家目錄底下的 `~/proj` 指到別處）JS 看不出來，當成不同的資料夾，走上面的換樹。換樹（`replace`）只有一處，它把 `tree`、`root`、`open`、`selected` 一起換掉，被換下來的樹留在 `left`（只留一份，不在畫面上的資料夾會丟掉）。
+  - 一列的路徑在它被列出來的那一刻就定了：樹自己帶著列出它時的根（`tree.root`），`visible()` 把每一列的絕對路徑（`abs`）算出來，列表的 key、點擊、展開、選取、右鍵選單、`stat` 確認、git 標記與資料夾上的圓點（`dirMarks`，以絕對路徑為鍵）都用同一個 `abs`，不再事後拿 entry 的 `root` 去算。**點擊不會無聲消失**：點擊用 `abs` 找列；樹剛被換掉、畫面還沒更新時，舊畫面送來的點擊找不到列，就查被換下來的那棵樹（`listed`）：是那棵樹列過的檔案，就照 `stat` 確認、在點擊時的 Space 開它（開的是舊畫面上那個檔案，不是新根的同名檔）；不是任何樹列過的路徑才不動作。右鍵選單同樣。確認「檔案還在」之後從樹拿掉一列、或展開失敗後關閉資料夾，都只動它被列出來的那個根的樹。popup 送回主模式的新增與重新命名要求帶著當時的根，主模式認樹現在的根、剛被換掉的根與待換的根（`owns`），所以在暫時的樹上打開的選單，換樹之後照樣執行（用要求裡的絕對路徑）。
+  - 還剩的窗口：只有「按下與放開之間，列正好被換掉」會丟掉點擊。GPUI 要按下和放開落在同一個元素上才發 click，換樹時列的位置會變（`sub/` 底下的檔案縮進、上面多出 repo 根的列），元素 id（`abs`）雖然不變，放開時游標下已經是別的列。每個（機器、資料夾）第一次顯示且資料夾在 repo 子目錄時才有，只發生一次，窗口是一次按壓的長度（約 100 ms）。資料夾列（不是檔案）在「舊畫面送來的點擊」這個約一個畫面長的窗口裡不動作：換掉的樹裡的資料夾在新樹可能是收合的，沒有可展開的列。
+  - 每次讀取（列資料夾、`gitStatus`）取一個遞增序號，結果只有比該項目已套用的新才套用（展開資料夾與重新整理同時列同一個資料夾時會碰到），而且只落在它自己的那份狀態：狀態已被擠出或 Space 已關閉就丟掉。同一份狀態同時只有一個重新整理在跑；重讀期間（git 還在回答、或切走又切回）收到的重讀要求不會被丟掉，它們合併成一次，在這一輪結束後補跑，所以樹最後一定反映最後一次要求之後的狀態（watcher 事件、手動重新整理、切回都一樣）。**10 秒計時的要求是例外**：讀取還在跑時它不排隊，10 秒後會再問一次。排進去的話，一輪超過 10 秒的讀取（慢的遠端，一次 `gitStatus` 就是 4 個循序 `hc exec`）會一輪接一輪永不結束：`reloading` 一直為真（畫面一直是「重新驗證中」、每次點檔都先 `stat`），watcher 與搜尋更新也永遠跑不到。計時器的要求不會因此漏掉變更：下一次計時就是下一次讀取。每一輪讀取結束時，`reload` 的 `settled({ ok, timed, moved })` 就被呼叫一次，即使還有補跑的一輪在等（watcher 的事件接連不斷時，補跑也會一輪接一輪）：`ok` 是根目錄列得出來、`timed` 是這一輪回答的要求來自計時器、`moved` 是這一輪讓樹的根換了。`main.js` 在這裡設定 watcher 與重跑開著的搜尋。
+  - 上限：保留最近顯示的 8 份樹，連同它們的列表項目、git 標記與標記上方的資料夾（`dirMarks`）合計 60,000 個；多出來的丟掉樹，但記得根、展開與選取（最多 64 個資料夾）。正在顯示的那一份不受上限：它的重讀結束後若也被丟掉，畫面會回到「Loading files…」，所以單一份很大的樹可以超過 60,000，上限限制的是除了它以外還留著多少。「每個資料夾最多 2000 項」、「有些項目無法讀取」的提示只算畫面上畫得出來的資料夾（根與展開中的），收合後的資料夾不再影響提示。Space 關閉時（10 秒計時檢查）清掉它的資料夾。
+  - 信任關卡不變：每次重新讀取都呼叫 `gitStatus`（信任檢查在 Rust 裡，`git::status`），快取不回答它。快取裡的標記只是上一次的答案：未信任的資料夾本來就沒有標記；信任被收回時，新答案一到標記就清掉。
+  - 過期的列：重新讀取還沒完成時點到檔案，先 `stat` 確認還在；確定不在就從清單拿掉並提示（`error.gone`），不會開出空檔。確認有三種結果：在、不在、說不準（`stat` 失敗，例如遠端斷線）。說不準不等於在，也不等於不在：列不動、不提示，直接開檔，讓編輯器 pane 自己讀檔並顯示失敗原因（`message.failed`）。等待確認最多 1.5 秒（`CHECK_MS`，由測試釘住），逾時同樣直接開，使用者不會為了斷線的機器等 10 秒的 `stat` 逾時；逾時後才回來的「不在」仍會把那一列拿掉。點擊之後側欄換了 Space（或資料夾，兩個 Space 共用同一個資料夾時也算），這次點擊作廢：不開檔、也不提示，所以檔案不會開在使用者後來切到的 Space。檔案照點擊的順序開：前面的點擊還在確認時，後面的點擊（即使樹已是最新的）等它確認完才開，所以最後點的那個檔案最後開、最後拿到焦點，沒有任何一次點擊被丟掉；代價是前面那個檔的確認很慢（遠端）時，後面的最多多等一個 `CHECK_MS`。上次重讀失敗的樹（`{stale}`）也先確認，和重讀中的樹一樣。展開資料夾列不出來時也檢查，確實不在就移除。
+  - 捲動位置：同一份狀態重讀時不動。`uniform_list` 的捲動位置是 GPUI 以 id 保管的，JS 讀不到也設不了，所以切到別的資料夾、或離開 Files 模式再回來，會回到最上面（切換前就是如此）；每份狀態用自己的 list id（`tree:<機器>|<資料夾>`），不會把別的資料夾的位置帶過來。要還原得換成 `v_virtual_list`＋`VirtualListScrollHandle` 並記下頂端的列，需要實機看版面，這一版沒做。
+  - 量測（無視窗）：`app/crates/yuzora-files/examples/reload_cost.rs`＋`app/scripts/files_bench.py`：2 種 repo 大小（約 5k、30k 檔）× 展開 0 或 8 個資料夾 × 本機或模擬遠端（隔離的 hc session，`--via 'sh -c'`；`--rtt-ms` 替每次 `hc` 加延遲），輸出 T_tree（根目錄的列可畫）、T_full（所有已展開資料夾列完且 git 標記到齊）、子行程數與 `hc` 往返數；舊序列與新序列交錯執行，機器忙時兩邊受同樣影響。新序列的列資料夾 worker（最多 6 條，`spread`）取下一個資料夾時不持有佇列的鎖，所以列表真的同時進行；`reload_cost` 的測試 `the_workers_list_at_once` 守著這點（`test = true`，`cargo test` 會跑）。
+
+- 搜尋：檔名（模糊比對，`.gitignore` 生效，清單快取 15 秒（從開始列的時間算；較早開始、較晚結束的清單不會蓋掉較新的），最多列 200,000 個檔案，超過時提示「只搜尋了前 200,000 個檔案」；符合的檔案超過 200 個時只顯示分數最高的 200 個，並提示「只顯示前 200 筆結果」）與內容（有 `rg` 就用 ripgrep；本機沒有時改用內建搜尋：`ignore`＋`regex`、同樣的規則，每個檔案最多讀 2 MiB（檢查大小之後檔案又變大也一樣），內容不全是 UTF-8 的檔案照樣搜尋（壞掉的 byte 顯示成 U+FFFD，和 rg 的行一樣），一行有很多比對時只標出顯示的前 300 字內的比對（不在後面多花時間）；遠端沒有 `rg` 時顯示提示）。ripgrep 把不是 UTF-8 的行給成 base64 `bytes`：解碼後以替代字元顯示；不是 UTF-8 的路徑沒辦法用名稱開啟，不列出（內建搜尋、本機與遠端的檔名清單也一樣，不用替代字元拼出可能指到別的檔案的路徑，並提示結果不完整）。有檔案或資料夾讀不到時（ripgrep exit 2、路徑不是 UTF-8、`find` 或 git 失敗（還沒列出任何檔案也算）、本機走訪錯誤），保留找到的結果並提示「有些檔案或資料夾無法讀取，結果可能不完整」。點內容結果會開檔並跳到該行。結果帶著搜尋當時的根（`root`）：搜尋進行中樹的根換了（git 說了 repo 的 top），結果仍在它找到的地方開檔（`<資料夾>/x.txt`，不是 `<top>/x.txt`）。結果以絕對路徑為鍵（和樹的列一樣）：根換了、搜尋重跑之後，舊畫面送來的點擊找不到新結果的同名檔，不會開到新根底下的同名檔案，而是不動作。一輪讀取讓根換了時，開著的搜尋在新的根重跑（舊搜尋的答案因序號過期不使用），資料夾有 watcher 看著、而這一輪是計時器的也一樣。
+- 右鍵：同一個 mod 以 popup 開啟自己（`props().menu`）。開啟、在側邊開啟（Open to the Side，只有檔案列）、在終端機開啟、新增檔案／資料夾、重新命名、刪除到垃圾桶、複製路徑／相對路徑、在 Finder（檔案總管／檔案管理員）中顯示。新增與重新命名透過 `shared("yuzora.files.request")` 交回主模式，在樹上方顯示輸入列；遠端 Space 的新增檔案、新增資料夾與重新命名可用，刪除到垃圾桶與在檔案管理員中顯示仍只有本機（選單項目停用）。請求帶機器名稱（`on`）與根目錄，主模式只接受機器與根目錄都是自己這棵樹的請求。輸入列屬於開始輸入時那一列所在的（機器、資料夾的樹）：開始輸入時記下機器、Space 與那棵樹，按下 Enter 時即使樹換了根（git 說了別的 root）或 Space 換了，新增、重新命名、通知開著的圖片 pane、重新整理都用開始時的機器與那棵樹；Space 已經換掉就不在別的 Space 的 pane 開新檔案。重新命名不會覆蓋已存在的檔案或資料夾：macOS 與 Linux 用一次系統呼叫完成（`renamex_np(RENAME_EXCL)`／`renameat2(RENAME_NOREPLACE)`），檢查與搬移之間不會被別的程式搶先建立同名檔案；其他平台與不支援的檔案系統則先檢查目標。新路徑上還開著文件時（檔案已刪除、pane 還在），拒絕重新命名並請先關掉它，避免同一個檔案出現兩份緩衝。開著的文件（該檔案或資料夾底下的）正在存檔時拒絕重新命名；重新命名進行中，這些文件也不能存檔（回 `busy`），存檔不會寫回舊路徑。重新命名後，開著的文件（只算該路徑本身與它底下的；只有這台機器是 Windows 時，這台機器上的路徑才把 `\` 當分隔符，其他平台的 `foo\a.txt` 是 `foo` 旁邊的檔案。另一台機器上的檔案經 `sh` 改，路徑是 Unix 路徑，一律只以 `/` 分段，不論 app 跑在哪個系統：Windows 的 app 在 Unix 機器上把 `/r/foo` 改名，`/r/foo\notes.txt` 的文件不會跟著動；測試用 `here_is_windows()` 在任何系統上當作 Windows 的 app 來跑）會換到新路徑，pane 繼續顯示，不會被當成已刪除；換了副檔名時，語言徽章與上色跟著新檔名，編輯器（含未存的修改與復原紀錄）不變。
+
+### 開檔
+
+- 圖片／SVG → `yuzora-files-image`；`.md` → `yuzora-markdown`（預設預覽）；其他 → `yuzora-editor`。
+- `openFile(path, on, { place, line, column })` 的 `place` 是封閉的兩個值，`"tab"`（預設）與 `"side"`，其他值丟錯。`"tab"`：目前顯示的 Space 裡已有 pane 顯示同一個檔案時，切到那個 pane（切到那個 tab）；別的 Space 的 pane 不算，在這個 Space 開新 tab。沒有的話開新 tab：`tab.new {name: <檔名>, space, mod, props}`，tab 只有這一個 pane（沒有空的終端機 pane），接在目前 tab 之後並成為作用中的 tab，tab 名稱是檔名（開出來之後不跟著重新命名）。`"side"`：一律把 focused pane 往右分割，檔案已經開在別的 tab 或 pane 也一樣（同一個文件同時只有一個 pane 編輯，第二個 pane 顯示「Edit here」）；沒有 focused pane 時改開新 tab。`space` 是點擊當下顯示的 Space：命令在 mod 的 `run()` 之後才執行，這時顯示的 Space 已經換了也不會開錯地方。點檔案、搜尋結果、內容搜尋的行、右鍵「Open」、新增檔案之後都是 `"tab"`；右鍵「Open to the Side」（只有檔案列有，本機與遠端 Space 都有，圖片也適用）是 `"side"`。
+- 哪個 pane 顯示這個檔案（`open.js` 的 `docPane`／`imagePane`）：只看目前顯示的 Space 的 pane（`spaces()` 的 active Space 有哪些 tab，`panes()` 的每個 pane 帶 `tab`）。重啟之後只有顯示中的 tab 會啟動它的 mod pane，從來沒有被看過的 tab 的 pane 沒有 mod 副本、也沒有文件，只有 layout 記得它們放哪個檔案，所以 `window.rs` 的 `publish` 把 mod pane 的 `props` 與 `started`（有沒有一份 mod 副本在跑）放進 `panes()`（上游檔，標了 `yuzora(v0.1.0 files-open)`）。`documentFor` 與 `paneDocument` 只說文件被哪個 pane 看過，說不出一個 pane 有沒有跑過，所以 pane 的狀態以 `started` 為準，再看有沒有文件認領它：
+
+  | pane 的狀態 | 點檔案（無行號） | 點檔案（有行號，例如搜尋結果） | 改名（props 在舊路徑底下） |
+  | --- | --- | --- | --- |
+  | 沒啟動（`started` 為假：tab 重啟後沒被顯示過；只有 props，沒有文件，沒有狀態可失去） | `pane.focus` | 換成帶 `line`／`column` 與新 `opened` 的新 pane（`pane.split`、`pane.close`、`tab.select`，順序固定，舊的才不會啟動一下），和沒開過的檔案一樣 | 換成新路徑的 pane，不論別的 pane 有沒有這個檔案的文件 |
+  | 啟動，沒有文件認領它（還沒有編輯器焦點、按鍵或 `focus` 命令；拿過 pane 焦點的 Markdown 預覽與顯示「Edit here」的 pane 也在這一列） | `pane.focus`＋`focusDocument` | `pane.focus`＋`revealLine` | 登記成改名後文件的 pane（`notePane`）；文件已經認領了另一個還在 `panes()` 裡的 pane 時，換成新路徑的 pane |
+  | 啟動，有文件認領它（拿過焦點；文件可能已改名，props 是舊名字） | 同上（文件記得的 pane 優先） | 同上 | 不動，文件自己跟著改名 |
+  | 圖片（沒有文件） | `pane.focus` | `pane.focus` | 一律換成新路徑的 pane |
+
+  找的順序：文件記得最後看到它的 pane（`documentFor` 的 `pane`，要在目前 Space 的 `panes()` 裡）；否則 props 指到這個檔案（`path` 與 `on` 都相同）、mod 是編輯器或 Markdown（Git diff pane 的 props 也有 `path`，不算）、而且沒有文件認領的 pane，已啟動的排在沒啟動的前面（另一個 pane 開著文件，不代表沒啟動的這個也開了）；圖片沒有文件，只用 props 找。文件記的 pane 不是 pane 自己登記的：pane 不知道自己的 pane id，只能在能確定自己拿著鍵盤時（編輯器取得焦點、收到按鍵或 `focus` 命令）把文件記到 `focused().pane`。「剛開啟」不算：文件載入完成時（最多 10 秒後）鍵盤可能已經在後來開的 pane 上，這樣記會讓點第一個檔案跳到第二個檔案的 tab（#259 審查 P2-1）。同一個檔案有兩個 pane 時（只有舊 layout、別的 mod 或「Open to the Side」開的才有）用文件最後看到的那個，沒有就用已啟動的第一個。
+- 重新命名之後：開著的文件跟著改名、留在原來的 pane，pane 的 props 卻改不了，仍是舊名字，所以 `moved()` 在側邊欄改完名之後依上表處理每個 props 指到該檔案（或它上層資料夾）的編輯器、Markdown 與圖片 pane，不分 Space：已啟動而沒有文件認領的，登記到新名字的文件上，新名字才找得到它；`paneDocument` 讓舊名字不會又比對到這個 pane（在舊名字另建一個新檔案是新檔案，開新 tab），也不會有人把別的檔案的文件記到它身上。文件只能認領一個 pane，所以同一個檔案有兩個已啟動的 pane 時（「Open to the Side」，或兩個 Space 都開過），只有文件已經認領的那個（還沒有的話，依序處理到的第一個：`panes()` 的順序，有鍵盤的 pane 排在最後）留下，其餘的也換成新路徑的 pane：留著的話它們的 props 仍是舊名字、又沒有文件認領，之後在舊名字另建的檔案會被切到它，而它顯示的是改名後的檔案，標頭寫新名字、tab 寫舊名字（#259 審查 r2 P2-1）。換掉一個已啟動的 pane 只丟它自己的 view 狀態（預覽／原始碼、搜尋列）：開著的文件，含未存的修改，在 `Docs` 裡，新 pane 用新路徑開回同一份。沒啟動的 pane 沒有文件會跟著改名，圖片 pane 根本沒有文件，這兩種也換成新路徑的 pane：在舊 pane 右邊開一個新路徑的 pane、再關掉舊的，新 pane 在 tab 裡的順序與舊 pane 相同（大小、zoom 與記得的焦點在顯示中的 tab 保留，在未顯示的 tab 不一定，見下一條）。全域的鍵盤焦點不變：被換掉的是有鍵盤焦點的 pane 時，它最後才換，所以鍵盤在它的新 pane 上（一次換同一個 tab 的好幾個 pane 也是）。不換沒啟動的 pane，它之後啟動時會開一個已經不存在的檔案（編輯器顯示「Can't open this file」，沒有 Restore 鈕）。換的新 pane 不帶原本的 `line`／`column`；tab 名稱留著舊檔名。
+- 換 pane 不是原地替換，顯示中的 tab 與未顯示的 tab 不一樣（#259 審查 r2 P2-2；`window::tests::pane_replace_limits` 在真的 `AppWindow` 上釘住下面全部）。改名換掉的 pane（沒啟動的、圖片、同一個檔案多出來的）與搜尋命中沒啟動的 pane，用的都是 `pane.split` 加 `pane.close`，這兩個命令保留 pane 的位置，不保留三樣東西：大小（新 pane 只分到舊 pane 份額的一半，舊 pane 關掉時它那一半交給它前面的兄弟，`layout.rs` 的 `split` 與 `remove_inner`；舊 pane 不是那一排的第一個時，三個 pane 的 1/2、1/4、1/4 換掉中間那個變成 5/8、1/8、1/4，`[shell | 檔案]` 的 50/50 變成 75/25）、tab 的 zoom（`split_with` 清掉它）、tab 記得的焦點（split 把焦點交給新 pane，`pane.close` 只在關掉的正好是焦點時才換焦點）。`run()` 回 `null`，mod 不知道新 pane 的 id，所以要看新 pane 在哪個 tab：
+  - 顯示中的 tab（`replace()` 的 `here`：`focused().pane` 有值，而且舊 pane 在 `focused().tab` 裡）三樣都保留。split 做出的 pane 就是 focused pane，`pane.swap` 與 `pane.zoom` 不指定 pane 時預設用 focused pane，所以不必知道 id：split 之後 `pane.swap {target: <舊 pane>}` 讓新 pane 取得舊 pane 的位置與份額，再 close。tab 原本有 zoom（`panes()` 的 `zoomed`）時，`moved()` 用 `pane.zoom {pane: <原本 zoom 的 pane>}` 加回去，被換掉的正好是 zoom 的那個 pane 時用 `pane.zoom {}`（zoom 新 pane），最後的 `pane.focus` 把焦點還給原本的 pane。搜尋命中那條路只有 swap：點到被 zoom 蓋住的 pane 要的是看見它，不加回 zoom。
+  - 未顯示的 tab，或有 layout 的 terminal block 拿著鍵盤（沒有 focused pane）時，focused pane 不是新 pane，三樣都不保留：換掉的檔案 pane 在重啟後沒顯示過的 tab 裡（`started` 為假）時，大小變成上面那樣，tab 的 zoom 取消，tab 記得的焦點變成新 pane（切回那個 tab，鍵盤在檔案上，不在原本的終端機）。顯示中的 tab 與全域焦點由 `moved()` 最後的 `pane.focus` 還原。
+  在未顯示的 tab 只用 mod 有的命令保留不了，試過：`pane.swap {pane, target}` 要新 pane 的 id（有 id 的話 split、swap、close 之後大小原樣不變，測試有量到）；`pane.swap {direction}` 不用 id，但只能用在顯示中的 tab（對未顯示的 tab 回「needs a pane in the shown tab」）；`pane.focus {pane}` 與事後的 `pane.zoom {pane}` 要 id，而且 `pane.focus` 會選取那個 tab 並啟動它所有還沒啟動的 pane，等於把還原時不啟動的 tab 一個個啟動（測試有量到），`pane.zoom` 加回去之後 tab 的焦點仍在被蓋住的新 pane 上。要在這種 tab 也保留，host 要提供原地換 props 的命令（沒啟動的 pane 沒有 copy，`sync` 發現 props 變了才重建；pane id、位置、大小、zoom、焦點都不變），或讓 `pane.split` 回新 pane 的 id。這要動 `window.rs`（上游檔）與命令清單，沒有放進 #259，要不要做由總指揮決定。
+- 帶 `line` 開 `.md`（例如內容搜尋的結果）時以原始碼開啟並跳到該行；預覽／原始碼的偏好不變。檔案已經開在預覽的 pane 時，右側模式用 `revealLine` 告訴文件，那個 pane 換成原始碼，等它的編輯器建好後再跳過去（同樣 10 秒內有效）；pane 開啟之前的請求不套用。文件還在載入（還沒有編輯器）時，這一行先記在文件上，編輯器建好時（10 秒內）再跳過去。
+- 路徑 helper（`yuzora-sidebar-files/paths.js`）：Windows 路徑（`C:\…`、`\\server\…`）`/` 與 `\` 都當分隔符；其他平台的 `\` 是檔名的一部分。
+- 跳行與聚焦只在開啟後 10 秒內套用（props 的 `opened`），重啟還原 pane 時不再跳；還原出來、還沒啟動的 pane 被搜尋結果點到時，換成帶 `line` 與新 `opened` 的新 pane（見上表），所以會跳，Markdown 也以原始碼開。手動 `pane.split` 只帶 `line`、沒有 `opened` 時也會跳：跳過的請求（機器＋路徑＋行列）記在 `shared("yuzora.files.went")`，紀錄早於這次啟動（`startedAt()`）就是重啟還原的 pane，不再跳也不搶焦點；同一次執行裡再開同樣的請求則照跳。紀錄保留 7 天。
+
+### 共享狀態
+
+- `yuzora.badge.files`：未儲存的文件數（沒有時 `null`）。
+- `yuzora.status.files`：有未儲存文件時 `{text: "N 個未儲存", tone: "blocked"}`，否則 `null`。
+- `yuzora.files.request`、`yuzora.files.refresh`：右側模式 popup 與主模式之間的請求。
+
+## 可重用 API（給其他 lane）
+
+Rust：
+
+```rust
+use yuzora_files::{editor, highlight};
+
+// 一個帶上色的編輯器（L3 的 SQL 編輯器）
+let look = editor::Look::default();
+let state = editor::new_code_editor(editor::CodeEditorOptions { lang: Some(highlight::Lang::Sql), text: "select 1", ..Default::default() }, &look, window, cx);
+// 畫出來
+editor::code_editor("sql-editor", &state, &look, cx)
+
+// 無狀態上色（例如 diff 裡的程式碼）
+let spans: Vec<(Range<usize>, &'static str)> = highlight::highlight(highlight::Lang::Rust, "fn main() {}");
+```
+
+JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocument`／`documentState`／`documentChanged`／`saveDocument`…、`Editor.new(id, {doc, owner})`、`Markdown.new(id, {doc})`、`ImageView.new(id, {path})`、`listDir`、`gitStatus`、`findFiles`、`grep`。
+
+## 遠端 Space
+
+- 讀取與瀏覽：`listDir`、`gitStatus`、`findFiles`（`git ls-files`（未信任的資料夾不用），扣掉工作樹已刪除的檔案／`rg --files`／`find`）、`grep`（遠端 `rg`）、開檔、圖片，都走 `yuzora_core::remote`（`hc exec --on`，各自的 timeout）。遠端 `stat` 只在確認不存在時才回報「不存在」：往上找到第一個存在的資料夾，而且能進入。路上有進不去的資料夾時回傳錯誤，文件不會被標成已刪除，與本機相同。遠端既沒有 git 也沒有 rg 時，`find` 不認得 ignore 檔：`findFiles` 回傳 `unfiltered: true`，右側模式提示結果包含被忽略的檔案。
+- **存檔、新增、重新命名已支援，刪除還沒有**（v0.1.0 R1、R2）。遠端文件可以編輯，存檔走 `hc exec --on <機器> --stdin -- sh -c <腳本> sh <路徑> …`（`yuzora_core::remote::ExecRequest::stdin`；hc 0.1.19 起有 `--stdin`，上限 8 MiB、二進位安全）。新內容只走 stdin，路徑只走 argv，腳本不拼進任何輸入。`createFile`／`createFolder`／`rename` 帶機器名稱走下面「新增與重新命名」的腳本（R2）；刪除沒有遠端版本（R3），選單的「移到垃圾桶」在遠端停用。
+  - 腳本（`remote_write.rs` 的 `WRITE_SCRIPT`，POSIX `sh`，本機與遠端同一份）的順序：解開符號連結（寫到連結指向的檔案，連結本身保留，與本機相同）→ 共用的「能不能存」判斷（`save_gate!` 的 `blocked`；開檔的 `READ_SCRIPT` 用同一份）：不是一般檔案、檔案或資料夾不可寫、檔案有 ACL 而帶不過去、owner 不是自己、group 不是自己所屬的群組，任何一項成立就拒絕（root 不看 owner 與 group）→ 在同資料夾建立**只有擁有者進得去的暫存資料夾** `.yuzora-save-<32 位小寫 hex>/`（`mkdir` 之後立刻 `chmod 700`，再拿掉資料夾從上層繼承來的 ACL），暫存檔放在裡面、同名（與本機暫存檔同一樣式，`is_scratch_name` 與 `LIST_SCRIPT` 都不列出）、`umask 077`，收完 stdin，位元組數與送出的不符就放棄（不換入）→ 讓暫存檔的 owner、group、ACL 與 mode 和原檔相同（下一點）→ **換入前最後一步**比對遠端現況與開檔時的 size、mtime 秒與 POSIX `cksum` 的 CRC32，不符就回報衝突 → 換入前確認目標不是資料夾（是就拒絕），單一 `mv -f` 換入，換入後若目標變成資料夾（`mv` 把檔案搬進去了）就刪掉搬進去的暫存檔並回報失敗。新 stamp 在換入前由暫存檔取得（rename 保留 mtime 與大小），所以換入後沒有再被改寫的空窗。
+  - **存檔之後，檔案的存取權限（含 ACL）不比存檔之前寬；暫存檔從建立到換入的每一刻，原檔擁有者以外的人打不開**（v0.1.0 R1 審查 F1）。Linux 的資料夾有 default ACL 時，核心不理 umask，shell 的 `>` 用 0666 建檔，新檔直接繼承那份 ACL；之後 `chmod` 又把 ACL 的 mask 設成 group 位元，具名使用者與群組就拿到原檔沒有給的權限（`ls -l` 看不出來）。所以：暫存資料夾先 `chmod 700`（mask 變成 `---`，具名項目全部失效），再 `setfacl -b`（macOS 是 `chmod -N`）拿掉它繼承來的 ACL，建在裡面的檔案不帶 ACL，而且除了擁有者沒有人走得進去。換入前：原檔有 ACL（有 `getfacl` 就問它，否則看 `ls`：Linux 的 `+`、macOS 的編號項目）時，有 `getfacl` 與 `setfacl` 就用 `getfacl -c 原檔 | setfacl --set-file=- 新檔` 把同一份 ACL 帶過去（再 `chmod`，mask 與原檔相同；只用 `stat` 的 mode 會讓 owning group 拿到 mask 的權限），沒有就拒絕（`refused acl`）。原檔沒有 ACL 時，新檔必須是 mode 600（`umask 077` 建的檔，被 default ACL 接手時不是）而且工具看不出 ACL，否則再試一次 `setfacl -b`／`chmod -N`，還是不乾淨就拒絕。不需要工具的判斷是「新檔的 mode 不是 600」：沒有 `getfacl` 的 BusyBox 也靠它擋下資料夾的 default ACL。強制存檔遇到檔案不見而新建時，新檔不帶資料夾的 default ACL，mode 是這台機器上新檔案的 mode。Linux 的 Docker 回歸測試（`tests/docker/remote-acl.sh`）與 macOS 的可繼承 ACE 測試守著這一點。
+  - 暫存資料夾被掉包（Codex 安全審查 P1，v0.1.0）：對檔案所在資料夾有寫入權的另一個使用者（資料夾沒有 sticky bit）可以在暫存資料夾出現後把它改名搬走，在原名稱放一個連結，指向自己的資料夾，裡面在暫存檔的名稱上放 FIFO（`set -C` 不擋 FIFO），存檔的內容就會寫給他。腳本在 `mkdir` 之後先照名稱 `chmod 700`（父資料夾的 default ACL 可能讓擁有者自己進不去剛建的資料夾），再 `cd -P` 進暫存資料夾，之後寫入與檢查一律用 `.` 與 `./<名稱>`，不再用路徑重新找它（只有結束時的 `rmdir` 還用路徑）。一定要 `-P`：資料夾的路徑可能在連結之後帶 `..`（部署目錄的 `current/.env -> ../../shared/.env`），不加 `-P` 的 `cd` 照字面消掉 `..` 會找不到（審查 P1；測試 `a_link_that_climbs_out_of_a_linked_folder_is_written_through`）。進去之後確認它是剛建的那個：`chmod 700 .` 對別人的資料夾會失敗（root 可以 chmod 任何東西，所以 root 另外比對擁有者）；自己擁有、但不是剛建的那個資料夾，以「裡面有東西」分辨（`chmod` 之後別人放不進去）。不是的話存檔失敗，訊息是「… is not the folder just made」，原檔不動。被掉包時，搬走的那個空暫存資料夾與攻擊者放的連結會留在原資料夾。測試 `a_scratch_folder_swapped_for_a_link_to_someone_elses_never_sends_them_the_bytes` 在 `mkdir`、照名稱的 `chmod`、`chmod 700 .` 之後各掉包一次（同一個使用者，用假的 `mkdir`／`chmod`）：修正前「別人」的 FIFO 讀到整份內容，修正後讀不到。兩個真實使用者（Ubuntu 24.04 容器，資料夾 777）：修正前 300 次存檔 16 次成功，檔案最後被換成攻擊者的 FIFO；修正後 280 次成功、20 次回上面那句、檔案完好（最終版腳本；`cd` 本身失敗時訊息是 shell 的 `can't cd to …`）。已知會被拒絕的少見情況：root 在建出來的資料夾擁有者不是 0 的掛載上存檔（例如 NFS root_squash，推論）。兩個真實使用者下「讀到內容」沒有重現（攻擊程式沒打中 `chmod` 之後、寫入之前的那一小段）。
+  - 原子性：新內容完整寫進暫存檔之後才換入，換入是一次 rename，遠端的檔案不是舊的就是新的。任何一步失敗（連線斷、逾時、磁碟滿、權限不足、`chmod` 失敗），暫存資料夾與檔案由 `trap` 刪除；被 SIGKILL（逾時）時會留下 `.yuzora-save-<32 位小寫 hex>/`（裡面一個同名檔案，內容是完整的新內容）。名稱符合暫存檔樣式，樹與搜尋都不列，下次存檔不會清它，但 `yuzora-git` 與 `yuzora-shell` 不過濾：`git status` 會列出 `?? .yuzora-save-…/`，`git add -A` 會把它加進去。這一版不自動清理（刪檔有風險）。手動清理：確認那個資料夾沒有存檔正在進行之後，在遠端 `rm -r <資料夾>/.yuzora-save-<hex>`，或 `find <資料夾> -maxdepth 1 -name '.yuzora-save-*' -exec rm -r {} +`。
+  - 衝突：stamp 加 CRC32 都相同才算沒變（stamp 相同、內容不同也擋下，碰撞機率約 2⁻³²）。比對與換入在同一支腳本裡，衝突時遠端檔案不動，走本機既有流程（保留我的、重新載入、覆蓋）。FNV（`TextFile::hash`，本機用）在 `sh` 裡算不出來，所以遠端讀檔另外記 `TextFile::crc`。「覆蓋」與「再存一次」（強制存檔）不比對，檔案不見時會建立。比對與 `mv` 之間仍有一次行程啟動的窗口，在這之間寫進去的內容會被蓋掉，與本機的 rename 相同。
+  - 拒絕（`Refusal`，原因顯示在存檔失敗的通知裡，不會靜默失敗）：超過 8 MiB（送出前就拒絕）、路徑不是以 `/` 開頭、那台機器沒有 `sh`（Windows，hc 回 `cannot start sh`）、herdr-core 太舊（hc 不認得 `--stdin` 時把它當成程式名稱，回 `cannot start --stdin`；對方 core 收到卻沒轉給程式時，腳本發現收到的位元組數少於送出的）、資料夾不可寫、檔案不可寫、檔案屬於別的使用者（owner 不是自己；換入會改 owner，本機會退回就地寫入，遠端沒有）、檔案的群組不是自己所屬的群組（新檔拿不到那個群組，與屬於別的使用者是不同的原因與訊息；BSD 與 macOS 上資料夾的群組不算，新檔本來就拿資料夾的群組）、ACL（檔案有 ACL 而那台機器沒有 `getfacl` 與 `setfacl` 可以帶過去，或資料夾會給新檔一份拿不掉的 ACL）、不是一般檔案、目標在換入前變成資料夾。能力用 hc 的回應判斷，沒有寫死版本號。
+  - 遠端檔案開啟時唯讀的條件：與存檔拒絕的是同一份判斷（`blocked`，開檔與存檔都用 `save_gate!`，所以開檔時說可以編輯的檔案，不會因為一個開檔時就能知道的原因在存檔時被拒絕），加上檔案大於 8 MiB。也就是檔案或所在資料夾不可寫、owner 不是自己（root 例外）、group 不是自己所屬的群組、ACL 帶不過去。符號連結看連結指向的檔案所在的資料夾。唯讀時只顯示既有的「Read-only」標籤，沒有原因文字。權限在開檔之後才改變時，存檔才會被拒絕並說明原因（本機有 chmod 偵測，遠端沒有）。路上有進不去的資料夾時，存檔回傳錯誤（「cannot look inside …」），不會把檔案標成已刪除：只有上層資料夾存在而且進得去、檔案確實不在，才回報檔案已刪除（與遠端讀取的 `stat` 同一個規則）。
+  - 已知限制：換了 inode，所以 extended attributes、SELinux context 不保留，硬連結會分開（本機的原子存檔對 xattr 會退回就地寫入，遠端不這麼做，因為就地寫入不是原子的）。POSIX ACL 在有 `getfacl` 與 `setfacl` 的機器上會帶過去；macOS 的 ACL 帶不過去，所以有 ACL 的檔案在 macOS 遠端開成唯讀。看得出 ACL 的方法是 `getfacl`、其次 `ls`；沒有 `getfacl` 的 BusyBox 看不到原檔自己的 ACL（存檔會丟掉它，owning group 可能拿到 mask 的權限），也要等存檔時才知道資料夾有 default ACL（開檔時是可編輯，存檔被拒絕並說明）；資料夾的 default ACL 的 mask 是 `---` 而且沒有工具時抓不到。其他 BSD 的 `getfacl` 不認得 `-c`，會被當成「有 ACL 而帶不過去」而拒絕存檔（沒有實測）。沒有 fsync（遠端 `sh` 沒有可攜的做法）；連線在換入之後、答覆回來之前斷掉時，編輯器會顯示失敗，但檔案其實已經寫入，下一次檢查會看到磁碟內容與記憶不同而跳衝突提示（保留我的或重新載入都不會丟內容）；Linux 上資料夾有 setgid 而使用者不在那個群組時，新檔拿的是使用者自己的群組（暫存資料夾的 setgid 被 `chmod 700` 清掉），檔案的群組不是使用者所屬的群組時開成唯讀。實測過的 shell 與系統：macOS 的 `sh`／`dash`／`bash --posix`、Alpine（BusyBox）、Ubuntu 24.04（GNU coreutils，`dash` 與 `bash --posix`）、Ubuntu 25.10（uutils）。
+- **新增與重新命名**（v0.1.0 R2，`remote_entry.rs`，腳本在 `remote_entry/`）：`createFile`／`createFolder`／`rename` 帶機器名稱時，各跑一支 POSIX `sh` 腳本（`hc exec --on <機器> -- sh -c <腳本> sh <路徑> …`，路徑只走 argv，沒有 stdin），腳本回一行：`done`、`exists`、`gone`、`refused folder|nofolder|device|rename`、`refused tool <mkdir|mv|stat|rm|rmdir>`。用戶端嚴格解析，不是這幾種的答覆、非 0 的結束都當成「不知道有沒有做」。送出前先擋：路徑要以 `/` 開頭、沒有 NUL、最後一段不是空、`.`、`..`（Windows 路徑不是路徑）。
+  - **已存在就拒絕**：新增檔案是 `set -C`（noclobber）下的 `: > 路徑`，新增資料夾是 `mkdir`；兩者都由系統決定「名稱沒人用才建」，同時有多個人建同一個名稱只有一個成功。名稱上的符號連結（含指到不存在的）與 FIFO 也算被佔用（檔案先看一眼，才不會在 FIFO 上等）。答「`<路徑> already exists`」，原本的東西不動。
+  - **新建的權限與使用者自己在那台機器 `touch`、`mkdir` 得到的一樣**：腳本用的是同樣的系統呼叫，在腳本啟動時的 umask 下，建完之後不改任何東西（沒有 `chmod`、`chown`、`setfacl`、也沒有暫存檔）。所以 mode、群組（setgid 資料夾給的群組）、資料夾傳下來的 default ACL 或可繼承 ACE，結果都和 `touch`／`mkdir` 相同，不會更寬。umask 是 `hc exec` 啟動腳本時的 umask，與 R1 強制存檔新建檔案的「新檔 mode」同一個慣例；若使用者的 shell rc 設了更嚴格的 umask，hc 看不到。重新命名保留同一個項目，所以 mode、owner、ACL 都不變。
+  - **重新命名不覆蓋、不跟隨**（PR #256 審查 P1、P2）：目標已存在（含符號連結、指到不存在的連結、資料夾）就回 `exists`，來源與目標都不動。難處在檢查與搬移之間：一般的 `mv` 把目標當成「要搬進去的資料夾」（目標是資料夾，或指向資料夾的連結），目標是檔案時直接蓋掉。能寫同一個資料夾的人（沒有 sticky 位元的共用資料夾）可以在這之間把目標換成指向使用者其他資料夾的連結，來源就被搬進那裡，蓋掉裡面同名的檔案（macOS 與 Alpine 重現過：`victim/entry` 從 `precious` 變成 `mine`，GNU `mv -f` 在 Ubuntu 同樣）。所以腳本不用一般的 `mv`，檔案、連結、資料夾都一樣，依機器分三種：
+    - **GNU coreutils 的 `mv`**（`mv --version` 說 `GNU coreutils`）：`mv -nT`。`-n` 讓核心判斷「目標沒人用才搬」，即 `renameat2(…, RENAME_NOREPLACE)`，一次系統呼叫，沒有窗口，也不必先佔名稱（在容器用 `strace` 看到：8.32、9.4、9.7）。`-T` 讓目標永遠只是名稱，不會被當成要搬進去的資料夾。核心或檔案系統不支援 `RENAME_NOREPLACE` 時 coreutils 退回「先看再搬」，窗口回來，但 `-T` 仍然不跟隨連結（推論，沒有這種檔案系統可測）。`mv --help` 列出 `--no-copy` 時（9.4 起）加上它：`mv --no-copy -nT`，理由在下面「裝置編號相同卻不能改名」。沒有 `--no-copy` 的 GNU `mv`（8.32 等），來源是**資料夾而且機器有 `perl`** 時，不交給 `mv`，改走下一項（`rename(2)` 本身）；來源是檔案或連結仍然用 `mv -nT`（原子）。資料夾改走下一項的代價是回到「佔名稱再換入」的窗口，但資料夾來源的 `rename(2)` 只可能取代一個空資料夾，不可能取代檔案、連結或有內容的資料夾（POSIX 的規定；macOS 與 Ubuntu 24.04 的 `perl` 實測：目標是檔案、指向資料夾的連結、懸空連結都是 `ENOTDIR`，非空資料夾是 `ENOTEMPTY`，空資料夾才換掉），所以窗口裡最壞是有人在那幾毫秒內剛建的空資料夾被換掉。
+    - **其他的 `mv`（macOS 的 BSD、BusyBox、uutils）**：它們的 `-n` 都是 `stat` 之後 `rename`（macOS 的 `mv` 匯入的是 `stat`、`lstat`、`rename`，沒有 `renamex_np`；Alpine 的 `strace` 是 `newfstatat` 接 `renameat`），而且 BSD 沒有 `-T`；BusyBox 的 `-T` 對「非資料夾的來源、目標是資料夾或指向資料夾的連結」直接拒絕，對資料夾來源則只是呼叫 `rename(2)`（目標是空資料夾成功、非空資料夾 `Directory not empty`、指向資料夾的連結 `Not a directory`，Alpine 3 實測）。所以腳本先把目標的名稱**佔下來**：來源不是資料夾就建一個空檔（`set -C`，同新增檔案），是資料夾就 `mkdir` 一個空資料夾；此後別人再建同名項目都會失敗。再用只做 `rename(2)` 的呼叫換過去：有 `perl` 就 `perl -e 'rename($ARGV[0], $ARGV[1]) …'`（macOS 內建，Linux 大多有），沒有就 `mv -fT`（`mv --help` 有 `-T` 才用）。`rename(2)` 只會取代非資料夾的項目或空資料夾，名稱被換成符號連結時不跟隨（檔案來源：取代連結本身，資料夾來源：`ENOTDIR` 失敗；BusyBox 的 `-T` 對指向資料夾的連結直接拒絕，連結不動），換成非空資料夾時失敗（`ENOTEMPTY`）。
+    - **以上都沒有**（`mv` 不是 GNU 也沒有 `-T`，又沒有 `perl`，例如沒有 perl 的 BSD）：回 `refused rename`，訊息說出機器缺什麼，什麼都不動。不退回一般的 `mv`。
+    - 佔名稱留下的窗口：有人在那幾毫秒內把我們佔的空檔（或空資料夾）刪掉、換成自己的項目，我們的 `rename` 會取代那個非資料夾的項目或空資料夾。使用者要求改名時就已經在那裡的東西，一律先被 `exists` 擋下，不在這個窗口裡。佔來的名稱被別人寫進內容（空檔不再是空的）或放進東西（資料夾不再是空的）時，就不再算我們的：不被取代（資料夾）、也不被刪。要連這個窗口都沒有，只能用上一種的 `renameat2`；做不到的機器上，硬連結（`ln` 再 `rm`）是另一條路，沒有採用：它在 Linux 的 `protected_hardlinks`（預設開）下不能連結別人的檔案，而共用資料夾裡最常需要改名的就是別人的檔案（實測：Ubuntu 25.10 容器 `protected_hardlinks=1`，一般使用者 `ln` root 的 0644 檔案被拒絕，同一個檔案 `mv -nT` 成功）；macOS 的 `link` 會跟隨符號連結來源（實測，要改用 `ln -P`，而 `ln` 會把已存在的資料夾當成要連結進去的地方）；資料夾不能硬連結。
+    - **失敗時把佔的名稱還回去**（P2）：搬移失敗、來源在搬移前被別人改名或刪掉（回 `gone`，不再是「被搬進資料夾」）、或腳本被通知結束（HUP／INT／TERM；`trap` 要等 `mv`／`perl` 結束才跑，stderr 說「stopped before it was done: it may or may not have been」）。成功與否看 `mv`／`perl` 自己的結束碼與來源是否還在。結束碼是 0、來源也不在之後，腳本再確認目標上的是搬過去的那一個（`device:inode` 與搬之前的來源相同）；不同就回報失敗，訊息說它「被複製而不是改名（`mv` 在系統不能改名時會這樣），或其中一個在途中被換掉」，兩者在那一刻分不出來，所以兩個都說。只還我們佔的那一個：要同時是同一個 `device:inode`、而且是空的一般檔案（資料夾是 `rmdir`，非空不會刪）。`stat` 給不出 `device:inode` 的機器（`%d:%i` 那種問法失敗）上無從確認，什麼都不刪：佔的名稱留著，回報說它還在、為什麼（失敗訊息接著說「`<名稱>` is left in place: …」），請使用者看過再刪；來源已經不見時也一樣，回報成失敗而不是 `gone`，因為 `gone` 只是一行答案，帶不了這件事；腳本被通知結束時，結束前的 `trap` 在 stderr 印同一句。光比 `device:inode` 不夠，檔案系統會把剛釋放的 inode 編號給下一個新項目（Alpine 實測：被換進來的符號連結拿到佔位檔的編號，只比編號會把它當成我們的而刪掉）。SIGKILL（hc 逾時）跑不了 `trap`，會留下佔的名稱（空檔或空資料夾，名稱就是目標名稱，看得到）；時間是佔名稱到 `rename` 完成之間，毫秒級。
+    - 各機器的做法與依據（實測：在本機或一次性容器跑過；讀碼；推論）：
+
+      | 機器 | 做法 | 原子地不取代 | 不跟隨被換掉的名稱 | 依據 |
+      | --- | --- | --- | --- | --- |
+      | GNU coreutils 9.4、9.5、9.7（Ubuntu 24.04、25.10，Debian 13） | `mv --no-copy -nT` | 是（`renameat2`） | 是（`-T`） | 實測，容器測試；`strace` 看到加了 `--no-copy` 之後仍是 `renameat2(…, RENAME_NOREPLACE)` 的是 9.4、9.7，9.5 只跑了容器測試 |
+      | GNU coreutils 8.32（Ubuntu 22.04）沒有 `--no-copy` | 檔案與連結 `mv -nT`；資料夾而且有 `perl`：佔名稱，`perl` 的 `rename` | 檔案與連結是（`renameat2`），資料夾否 | 是 | 實測，容器測試；`strace` 看到 `renameat2(…, RENAME_NOREPLACE)` |
+      | uutils `mv` 0.2.2（Ubuntu 25.10 的 `/usr/lib/cargo/bin/coreutils/mv`，`--version` 不說 GNU，`--help` 有 `-T`） | 佔名稱，`mv -fT` | 否 | 是 | 實測，容器測試（藏起 perl） |
+      | BusyBox 1.37.0（Alpine 3.24） | 佔名稱，`mv -fT` | 否 | 是（指向資料夾的連結被拒絕） | 實測，容器測試 |
+      | macOS 27 的 BSD `mv` | 佔名稱，`perl` 的 `rename` | 否 | 是 | 實測，本機 |
+      | 有 perl 的任何機器 | 佔名稱，`perl` 的 `rename` | 否 | 是 | 實測，Ubuntu、Debian 容器用假的 BSD `mv` 逼走這條路 |
+      | 沒有 GNU `mv`、`-T`、`perl` | `refused rename` | — | — | 實測，假的 BSD `mv`、PATH 上沒有 perl |
+      | 舊到不認得 `-n` 或 `-T` 的 GNU `mv` | GNU 這條（腳本只看 `--version` 說 `GNU coreutils`，不查版本，也不查 `-n`、`-T`）：`mv` 失敗，回它自己的話，不退回別的做法 | — | — | 讀碼，沒測 |
+      | 沒有 `-T` 的舊 BusyBox | 有 perl 走 perl，沒有就 `refused rename` | 否 | 是 | 讀碼，沒測 |
+      | FreeBSD、OpenBSD | `mv` 沒有 `-T`、perl 不在基本系統：`refused rename` | — | — | 推論，沒測 |
+      | 不支援 `RENAME_NOREPLACE` 的檔案系統（NFS 等） | GNU：先看再搬（窗口回來），`-T` 仍然不跟隨 | 否 | 是 | 讀碼與推論，沒測 |
+    - 只換大小寫：用戶端比對小寫相同（與本機 `same_entry_other_case` 同一個條件），腳本再用 `stat` 的 `device:inode`（不跟隨連結）確認目標與來源是同一個項目才改名，同樣不經過一般的 `mv`（`perl` 的 `rename`，沒有 perl 才 `mv -fT`）。大小寫不分的檔案系統（macOS 預設的 APFS）成功；大小寫分的檔案系統上這是兩個項目，回 `exists`（兩個指到同一個檔案的連結也是兩個項目，不會被當成同一個）。沒有 perl 的 BusyBox 在大小寫不分的檔案系統上改資料夾的大小寫沒有測過（需要大小寫不分的檔案系統）。BusyBox 的 `mv -fT` 對資料夾來源只呼叫 `rename(2)`（Alpine 實測，見上），只拒絕「非資料夾的來源、目標是資料夾」，所以沒有證據說同一個項目改大小寫會被擋；先前寫的「會被 `-T` 拒絕」沒有依據，已刪。
+    - 搬到另一個檔案系統（`mv` 會變成複製）：拒絕（`refused device`），與本機的 `EXDEV` 一樣不複製。目標資料夾的裝置用 `stat "$d/."` 讀，穿過符號連結：`stat` 對符號連結看的是連結自己，而側邊欄把指向資料夾的連結當成資料夾（`fsops.rs`），目標資料夾可以就是那個連結。不穿過時，指向另一個檔案系統的連結資料夾裡改名會被誤拒絕（PR #256 審查 P1），從外面搬進去反而通過檢查、由 `mv` 複製。來源端不穿過：被搬的是連結本身時，要看的是連結自己所在的檔案系統。`make.sh`（新增）沒有裝置檢查，在連結資料夾裡新增一直可以（單元測試與容器測試都守著）。
+    - 裝置編號相同卻不能改名（`EXDEV`，審查 P2-1）：overlay 檔案系統上映像層裡的資料夾（`redirect_dir` 沒開，Docker 預設；把容器當機器時），以及跨 bind mount（`rename(2)` 的 man page：不同掛載點之間不能 rename，即使是同一個檔案系統；bind mount 沒有測）。GNU `mv` 的回應是複製。實測（Docker Desktop 的 overlay，一般使用者，`/usr/local/share` 這種映像層資料夾）：修正前，22.04（8.32）、24.04（9.4）、25.10（9.5）、Debian 13（9.7）都留下一份複製、來源也還在，答「already exists」；root 做同一件事（24.04；審查重現過，我也用 `mv -nT` 直接跑過）則是複製之後刪掉來源，`mv` 結束碼 0，腳本回「replaced meanwhile」。修正後：9.4 以上帶 `--no-copy`，失敗並說 `Invalid cross-device link`；8.32 且有 perl 的資料夾改走 `perl` 的 `rename(2)`，失敗並說同一句；兩者都沒有複製，來源不動、新名稱沒有東西（容器矩陣第 17 節，各映像都過）。仍會複製或說不清楚的，都沒有修：
+      - 沒有 `--no-copy` 的 GNU `mv`（8.32 等）而且沒有 `perl` 的資料夾，與這種 `mv` 對檔案或連結跨 bind mount（後者是推論）：`mv -nT` 會複製，結果看做的人刪不刪得掉來源：刪得掉（例如 root）時來源不見、新名稱是複製品，最後的檢查說「被複製或被換掉」（不再只說被換掉）；刪不掉（一般使用者改映像層裡 root 擁有的資料夾，Ubuntu 22.04 實測）時來源原封不動、新名稱留下一份複製，答的是「已存在」。
+      - uutils `mv`（沒有 `--no-copy`）：Ubuntu 25.10 容器實測，資料夾被複進我們佔的空資料夾，來源被刪，最後的檢查說「被複製或被換掉」（以 root 測的；一般使用者刪不掉來源時應該和上一條一樣答「已存在」，推論，沒測）。Ubuntu 25.10 的預設 `mv` 是 GNU 9.5（`/usr/bin/mv` 連到 `gnumv`），只有把 uutils 的 `mv` 排到 PATH 前面才會遇到。
+      - BusyBox：Alpine 實測安全地失敗，原因是我們佔的空資料夾：BusyBox 的複製要先移除目標，目標是資料夾，移除失敗（訊息是 BusyBox 的原話，`can't remove '…': Is a directory`），沒有複製。沒有先佔名稱時它會複製（實測），所以這個保護是佔名稱的副作用，不是設計。BusyBox 的 `stat -f -c %T` 回 `UNKNOWN`，認不出 overlay，所以沒有用檔案系統種類來判斷。
+  - 失敗訊息（`Problem::describe`，不會靜默失敗）：目標已存在、來源不見、資料夾不存在或不是資料夾（寫出資料夾路徑）、資料夾不可寫或不可進入（重新命名把兩邊的資料夾都列出）、跨檔案系統、機器缺少 `mv`／`stat`／`rm`／`mkdir`／`rmdir`（指名；`mkdir` 與 `rmdir` 在非 GNU 的機器、以及沒有 `--no-copy` 的 GNU `mv`（8.32）加 `perl` 的機器改資料夾名稱時需要；後者在磁碟或 inode 配額用完時佔不到名稱，改名會失敗，來源不動）、沒有可以不跟隨地改名的程式（`refused rename`）、沒有 `sh`（Windows）、連線中斷或逾時（hc 的原話；逾時 30 秒，訊息說明不知道有沒有做完，請重新整理）。新增失敗什麼都不會留下（新增是單一系統呼叫，沒有暫存檔）。
+  - 同一組腳本裡其他「先檢查再動作」的地方（審查 P1 之後逐一看過）：
+    - 新增資料夾是單一 `mkdir`，沒有檢查與動作之間的窗口。新增檔案先看一眼（為了不在 FIFO 上等）再 `: >`：`set -C` 的 `: >` 只對一般檔案用排他建立，名稱若是 FIFO 或指向裝置檔的連結，shell 照開不誤（`: > 指向 /dev/null 的連結` 回 0：macOS 的 `sh`／`bash`、Alpine 的 ash、Ubuntu 的 `dash`／`bash --posix` 都實測過）。所以在那一瞬間（微秒）名稱被換成 FIFO 時會卡到 hc 的 30 秒逾時、換成指向裝置檔的連結時會誤答 `done` 但沒建出東西；兩者都沒有寫入、取代或留下任何東西，所以沒有改（那個窗口沒辦法確定地重現，不能附上會變紅的測試）。
+    - 存檔（`remote_write.rs`）在 `[ -d "$t" ]` 之後才 `mv -f`，同樣有目標被換成資料夾或指向資料夾的連結的窗口。搬進去的是 128 位元隨機的暫存檔名，不可能蓋掉任何東西，事後 `rm` 掉並回報「it became a folder」，已有測試（`a_target_that_becomes_a_folder_while_the_save_runs_gets_nothing_put_in_it`）。存檔本來就是取代原檔，不需要不取代的 rename。留下的只有：SIGKILL 剛好落在那一瞬間，會在別的資料夾留下隨機名稱的暫存檔（讀碼）。
+  - 開著的文件：`docs::rename` 與 `moved` 認機器，只有同一台機器上的文件（`DocKey.on`）跟著換路徑，且保留機器；未存的修改與復原紀錄不變，之後的存檔寫到新路徑（rename 保留 mtime、大小與內容，所以存檔的比對仍相符）；新路徑上同一台機器還開著一份（檔案已刪除）時拒絕。別台機器與本機的同路徑文件不受影響。
+  - 不走 SFTP：L4 的 SFTP 路線不再是前提。
+
+## 驗證
+
+- `cargo test --locked -p yuzora-files`（單元測試 354 個，另有 6 個 `#[ignore]`（真 hc 的端到端、傾倒腳本、Docker 的 Linux ACL 測試、既有的 `console_probe` 子行程，加上 R2 的 Docker 測試與真 hc 端到端）、`tests/svg_child.rs` 的 13 個與 `reload_cost` 範例的 2 個）：上色（每種語言的首選 query 都能編譯並產生 span、增量解析＝重新解析、摺疊、色盤）、檔案操作（大資料夾邊讀邊截斷、原子存檔、衝突（含 stamp 相同但內容不同、寫入期間被改）、CRLF／BOM、二進位與大檔、遠端 sh 腳本在本機跑出與原生相同的結果、遠端存檔（位元組原樣含 NUL 與非 UTF-8、CRLF 與 BOM、衝突含 stamp 相同內容不同與存檔期間被改、任一步失敗與逾時後原檔不動且沒有暫存檔、mode、符號連結、怪檔名、拒絕原因、舊 core 與沒有 sh、8 MiB 上限、`cksum` 與 `posix_crc` 一致、進不去的資料夾是錯誤而不是已刪除（含文件層）、開檔說可以編輯的檔案存檔不會因開檔時就知道的原因被拒絕（檔案或資料夾不可寫、別人的檔案、不屬於的群組）、目標在換入時變成資料夾（資料夾或指向資料夾的連結）什麼都不會搬進去、macOS 資料夾的可繼承 ACE 不會帶到暫存檔與存完的檔案、有 ACL 而帶不過去的檔案開成唯讀並拒絕存檔，用假 `hc` 走 `--stdin` 的整條路徑；真 hc 的端到端與 Docker 的 Linux 測試（`YZ_DOCKER=1 cargo test --locked -p yuzora-files --lib -- --ignored --exact remote_write::tests::linux_acls_on_real_machines --nocapture`：Alpine、Ubuntu 24.04 的 `dash` 與 `bash --posix`、Ubuntu 25.10 的 uutils，用 `tests/docker/remote-acl.sh` 以一般使用者跑腳本，資料夾的 default ACL 不放寬權限、暫存檔別人打不開、檔案自己的 ACL 帶過去、沒有 ACL 工具時拒絕）是 `#[ignore]` 測試）、名稱不是 UTF-8 的項目不列出並提示（遠端解析時其他檔案的大小不錯位；本機要能建立這種檔名的檔案系統，APFS 上略過）、讀不到類型或讀到一半失敗的項目（假的資料夾項目）、原子存檔保留延伸屬性與 ACL（確認換了 inode；ACL 只在 macOS 驗）、就地寫入在備份複製完才比對（複製期間的外部修改不被覆寫、備份刪掉）、存檔的暫存檔在換上去之前只有擁有者能開（本機；遠端另外見下）、遠端圖片只讀一般檔案、圖片解碼大小（GIF 幀數、WebP `ANMF`）、SVG 的 `<image>`（用 GPUI 自己的 `SvgRenderer`、在 536,576 bytes 的 stack 上畫：真實紅色 PNG 的絕對路徑、開頭是紅色 PNG 的 64 MiB 檔案、Windows 的 `\\?\` 長路徑都不讀；FIFO 不會卡住、`/dev/zero` 不會讀；data URI 的點陣圖、60000² 檔頭的 PNG、內嵌的 SVG（base64 與百分比編碼）、gzip 都不解，75 層內嵌不會爆 stack）、repo 的 SVG 由子行程畫（單元測試的子行程是一律回一個綠色像素的 `sh`：圖片 pane 與 Markdown 預覽畫紅色的 SVG 得到綠色，本行程畫 SVG 的次數為 0；父行程的程式碼不出現 usvg、resvg、roxmltree、simplecss、`SvgRenderer`，這些也不是 crate 的依賴；gzip 與 `.svgz` 不啟動子行程；畫不出來的 SVG 在 Markdown 顯示佔位圖、檔案沒變不重試；預覽關閉時取消；圖片 pane 換檔或關閉時取消；協定的 header 與長度檢查；快取的位元組與筆數上限）、Markdown 的 SVG 換掉、放掉與預覽關掉時釋放 texture、遠端的新增與重新命名（R2，`remote_entry.rs`、`fsops.rs`、`docs.rs`，假 `hc` 在本機跑腳本：新檔與新資料夾的權限與本機 `touch`／`mkdir` 在 umask 022／077／002／027／007／000 下相同、資料夾的 setgid 群組與 macOS 的可繼承 ACE 一樣帶下去；已有的名稱（含符號連結、懸空連結、FIFO）一律回「已存在」，12 個同時新增或同時改名同一個名稱只有一個成功；改名在 GNU 的 `mv` 用 `mv -nT`，其他機器先佔住目標名稱（檔案是 noclobber 的空檔，資料夾是 `mkdir`）再用 `perl` 的 `rename` 或 `mv -fT` 換入；目標在換入前被換成指向資料夾的連結時，什麼都不會進那個資料夾，剛出現的名稱不被取代，資料夾不會被搬進剛出現的資料夾；失敗、來源在搬移前消失（回 `gone`）、被 TERM 中止時把佔的名稱還回去，不刪掉別人換進來的項目（連 `device:inode` 相同也不刪，用假的 `stat` 重現編號被重用）；沒有 GNU `mv`、`-T` 與 `perl` 時回 `refused rename`；只改大小寫在不分大小寫的檔案系統成功、在分大小寫的拒絕；跨裝置拒絕而不是複製（連結資料夾以它指向的資料夾所在的檔案系統判斷：用依位置回報裝置的假 `stat`，指向另一個檔案系統的連結資料夾裡可以改名與新增、從外面搬進去或搬出來被拒絕而不是複製、連結本身可以在原地改名）；GNU `mv` 有 `--no-copy` 就帶上、沒有而且來源是資料夾又有 perl 時不交給 `mv`、檔案與連結照舊用 `mv -nT`、複製的結果不被說成被別人換掉（用回報自己是 GNU 的假 `mv`）；`stat` 給不出 `device:inode` 時不刪佔的名稱而且說還留著（改名失敗、別人換進空檔、別人換進空資料夾、來源消失時回失敗而不是 `gone`、被 TERM 中止；用給不出的假 `stat`）；缺 `mkdir`／`mv`／`stat`／`rm`／`rmdir` 時點名；不是 UTF-8 的怪檔名與換行；答案行嚴格解析（缺換行或不認得的程式名都不算）；沒有 sh 或離線時說清楚且沒有殘留；開著的遠端文件跟著改名（檔案或上層資料夾）、未存的編輯不丟、下一次存檔寫到新路徑，只動同一台機器的文件，改名與存檔不重疊；`YZ_DOCKER=1 cargo test --locked -p yuzora-files --lib -- --ignored --exact remote_entry::tests::linux_entries_on_real_machines --nocapture` 在 Alpine 3（BusyBox）、Ubuntu 22.04（GNU 8.32，沒有 `--no-copy`）、Ubuntu 24.04（GNU，`dash` 與 `bash --posix`）、Ubuntu 25.10（GNU，另有 uutils 的 `mv`）、Debian stable-slim（GNU） 以一般使用者跑 `tests/docker/remote-entry.sh`，含 default ACL、setgid、20 個同時新增、競爭 shim（名稱剛被別人建立、被換成指向資料夾的連結、來源消失、搬移失敗，每個各以機器自己的 `mv`、假的 BSD `mv` 加 perl、有 `-T` 沒 perl、uutils 的 `mv` 四種做法跑）、跨裝置（tmpfs）、指向另一個檔案系統的連結資料夾與 overlay 檔案系統上映像層的資料夾（第 16、17 節）、缺工具與沒有可用的改名程式；`YZ_REAL_HC=<hc 的路徑> YZ_REAL_MACHINE=<機器名>`的 `a_real_hc_makes_and_renames_end_to_end` 對真的 `hc exec --on` 走完新增與改名）；側邊欄 mod 的 bun 測試涵蓋工具列與右鍵選單在遠端 Space 的新增檔案、新增資料夾、重新命名，編輯屬於列所在的（機器、資料夾），切換 Space 或樹重畫時不會改到別處）、git porcelain 解析（不是 UTF-8 的路徑不標記）與真 repo（不改動 `.git`；遠端清單扣掉已刪除的追蹤檔；未信任的資料夾不跑 repo 的 clean filter、只讀 refs 時不 lazy fetch、遠端檔名清單不用 git，信任後 git 照常執行；promisor 的 URL 指到 PATH 上的 remote helper、又缺物件時，`git status` 與 sparse index 的 `ls-files` 都不叫起它，原本的請求會叫起（oracle）；每個請求都帶 `OFFLINE`，而且只有 `fsops::run` 對外執行程式；`core.worktree` 指到另一個 repo 時，信任 top level 也不會跑那個資料夾的 filter）、模糊搜尋排序（超過上限時回報還有更多）與檔名清單快取（舊的不蓋新的）、rg JSON 解析（含空字串比對的欄位、不是 UTF-8 的行與路徑）與內建搜尋（一行很多比對時只看顯示範圍；不全是 UTF-8 的檔案照樣找得到；不是 UTF-8 的路徑不列出：要能建立這種檔名的檔案系統，APFS 上略過）、文件載入／外部變更自動重載（含 stamp 同一秒內的改寫、剛修改的 stamp 在毫秒內被改寫、確認期間的 chmod）／刪除／共享／釋放、改名前開始的檢查不套用、存檔與重新命名不重疊、載入中要求的行在編輯器建好後套用、開檔不等 FIFO、在測試視窗裡真的編輯後遇到外部變更（衝突、保留我的、存檔）與存檔時才發現變更或檔案已刪、Markdown 圖片與連結規則（交給 GPUI 的是檢查過的 bytes、同一路徑換圖會更新、沒有副檔名時看 bytes 判斷格式、不再畫到的圖片放掉）、i18n 兩語系 key 一致、HostModule 宣告一致、兩份 `doc-pane.js` 相同、程式碼顏色在兩個 Yuzora 主題都讀得清楚（在 QuickJS 跑 `doc-pane.js` 的 `SYNTAX`／`syntax`／`mix`：One Dark 有上色的名稱都有主題色；淺色主題在背景、code block、目前行上都 ≥ 4.5，語言徽章也是；深色主題不低於 One Dark 與原本的徽章色）、`mix` 混色、Markdown code block 用傳入的語法色且只在語法色變了才換 highlighter、「<Agent> 也在改」的資料夾比對（在 QuickJS 跑 `doc-pane.js` 的 `within`／`editingAgent`：Windows 兩種斜線、大小寫、UNC，其他平台反斜線是檔名的一部分）、右側模式路徑 helper（在 QuickJS 跑 `paths.js`：Windows 與 POSIX 路徑；路徑卡的資料夾名稱與上層路徑：家目錄、根目錄、根目錄下的資料夾、遠端路徑、沒有分支、上層路徑結尾的分隔符、Windows 兩種斜線）、檔案 icon 對照（在 QuickJS 跑 `icons.js`：類型、特殊檔名、資料夾、只用主題有的顏色、每個 icon 都有 16×16 的 SVG、2 萬列查表不到 1 秒）、`revealLine` 每次都是新的請求、開檔的位置與圖片 pane（在 QuickJS 跑 `open.js`，假的 Herdr 照 `window.rs`：`run()` 排隊、`tab.new` 選取新 tab 與它的 Space、分割只在自己的 tab 內取得焦點、`pane.focus` 切到那個 tab。預設開在目前 tab 之後的新 tab，tab 只有該檔的 pane、名稱是檔名；各種檔案類型；「在側邊」分割目前的 tab（檔案已經開在別處、或在沒啟動的 pane 也一樣）、沒有 focused pane 時開新 tab；已開著的檔案（目前 Space 的任何 tab）切過去而不重開，帶 `line` 時跳到那一行，別的 Space 開著的則在目前 Space 開新 tab；重啟後 layout 還原出來的 pane 也一樣（編輯器、Markdown、圖片三種；在顯示中的 tab 旁邊、從來沒顯示過的 tab、遠端 Space 的 `lab/…` pane id；只認同一台機器、同一種 mod 的 pane），檔案被改名之後新名字找得到那個 pane（含資料夾改名），舊名字另建的新檔案則開新 tab，帶 `line` 點到還沒啟動的 pane 時換成帶行號的新 pane 並顯示它的 tab（連點兩個結果以最後一個為準），兩個 pane 顯示同一個檔案時先用文件最後看到的那一個、再來已啟動的、最後才是沒啟動的；遠端 Space 開在該 Space；點擊後、命令執行前換了 Space 仍開在點擊的 Space；不認得的位置丟錯、什麼都不開；圖片開在 tab 後再點一次切過去，改名後圖片 pane 換成新路徑且留在原位、焦點不變（資料夾改名也是），不在目前 tab 的圖片改名後仍找得到自己的 pane，還沒啟動的編輯器與 Markdown pane 改名後也換成新路徑（兩個 pane 同檔、只有一個啟動時也是，不論 `panes()` 的順序），文件改過名的 pane 之後不會被記上別的檔案的文件，其他 mod 的 pane 不動，改名不分 Space，同一個 tab 換掉好幾個 pane 時鍵盤留在原本有鍵盤的那個的新 pane，已關掉的 pane 不重開）；`doc-pane.js` 本身也在 QuickJS 跑（`init`、`settle`、`key`，主機呼叫是假的）：剛開啟的 pane 不把文件記到拿著鍵盤的別的 pane，編輯器取得焦點或收到按鍵時才記，帶 `line` 的 props 在 10 秒內開啟的 pane 跳到該行（Markdown 以原始碼開）、重啟還原的不跳；`app/src/window.rs` 的視窗測試用真的 `AppWindow` 驗證不在顯示中的 tab 的 mod pane 也列出 props、`started` 為假而它的 mod 還沒啟動（顯示後才啟動、`started` 為真，tab 收起來後仍為真），以及換掉沒啟動的 pane 的那串命令（`pane.split`、`pane.close`、`tab.select`）：舊的從沒啟動、新的帶著給的 props 啟動並拿到 tab 的鍵盤；側邊欄 mod 的 bun 測試另用真的 `open.js` 對一個記錄 `run()` 的假 Herdr，涵蓋點擊、搜尋結果（帶行號）、新增檔案、右鍵「Open」與「Open to the Side」（本機與遠端、檔案與圖片）、資料夾列沒有這兩項。
+- `cargo test --locked`（app workspace）：上游 `shipped_initial_descriptions` 會以空 props 與 fixture props 各渲染每個內建 mod 一次，4 個 L5 mod 都包含在內。
+- `scripts/yuzora/check-mods`：全部 yuzora mod 通過。
+- 隔離實機（lanes.md 的 `env -i`、暫存 app home 與 `HC_SESSION`），用 `herdr-app do`／`shot` 操作與留證：
+  - `l5-01-files.png`：檔案模式的樹與變更標記（B1 改版前拍的，標題還是舊的 Space 徽章與 `路徑 · 分支`；現在的標題列與路徑卡見 `l5-20`／`l5-21`）。
+  - `l5-02-editor.png`：`pane.split` 開 TSX，tree-sitter 上色、檔案列、狀態列。
+  - `l5-03-markdown.png`：CLAUDE.md 預覽（標題、清單、inline code、表格、上色的 code block、本機 SVG 圖片）。
+  - `l5-04-image.png`：PNG 檢視；右側模式同時因 `watchFolder` 自動出現新檔的標記。
+  - `l5-05-external-change.png`：在 app 外改寫開著的 TSX，編輯器自動重新載入（第 8–9 行）。
+  - `l5-06-git-marks.png`：在 app 外修改 README.md、刪掉 package.json，樹即時更新（`M`、檔案消失）。
+  - `l5-07-goto-line.png`：`pane.split` 帶 `line: 15, column: 7` 開檔，游標在 Ln 15, Col 7，編輯器取得焦點。
+  - `l5-08-markdown-goto-line.png`：帶 `line: 20` 開 `.md`，以原始碼開啟、游標在 Ln 20。
+  - `l5-10-goto-line-by-hand.png`：`pane.split` 只帶 `line: 15, column: 7`（沒有 `opened`）開檔，游標在 Ln 15, Col 7；重啟後這個 pane 停在 Ln 1，焦點留在原本的 pane。
+  - `l5-11-untrusted-folder.png`：repo 自己的設定有 clean filter（會留下標記檔）、資料夾未信任：樹上方顯示「未信任的資料夾…」，沒有 Git 標記，路徑卡仍有分支；標記檔沒有出現（2026-11-03 接上 #194 的 `git_trust` 後重拍）。
+  - `l5-12-trusted-folder.png`：在 `trusted.json` 加入這個資料夾後，下一次重新整理出現 `M` 與資料夾的 `•`，標記檔出現（信任後 `git status` 照常執行 filter）。
+  - `l5-09-image-actual-size.png`：2400×1600 的圖以 100% 顯示（下方 pane，暫時的 probe mod），從左上角原尺寸排版、可捲動，不再置中裁切。
+  - `l5-13-file-icons.png`：檔案樹的類型 icon（深色主題 yuzora-dark）：收合的資料夾、程式碼（Rust 琥珀、TS 藍、JS 黃、Go／Python）、圖片、shell、lock、`Cargo.toml`／`package.json`、設定檔、`Dockerfile`、Markdown 與純文字、沒有對照的 `LICENSE`。
+  - `l5-14-file-icons-light.png`：同一個資料夾在淺色主題 paper：顏色換成主題的深色 ANSI，在白底上同樣清楚。
+  - 淺色主題 yuzora-light（Yuzora 的 UI 文字在淺色主題都要清楚）：
+    - `l5-15-light-editor.png`：TSX 的語法色、語言徽章、目前行、狀態列（右下顯示目前的主題名稱）；右側模式的樹與 git 標記。
+    - `l5-16-light-markdown.png`：Markdown 預覽中 Rust 與 TS 的 code block，各種 token 在 code block 底色上都清楚。
+    - `l5-17-light-banner.png`：在 app 外刪掉開著的檔案，警告橫幅是淺琥珀底、深琥珀字（`tokens().status.blocked`）。
+    - `l5-18-light-image.png`：圖片 pane 的 `IMG` 徽章與切換鈕。「對比背景」開啟時的畫面要點擊才能切換，沒有截圖（`solid_foreground` 在 `solid` 上是 17.7:1）。
+    - `l5-19-dark-editor.png`：同一個檔案在 yuzora-dark，作為對照。
+    - 右側模式右鍵選單的刪除項目（`ansi1`）要右鍵才會出現，沒有截圖；用色碼計算是 popover 上 5.69、hover 上 4.60。
+  - 檔案模式標題改版（B1）：
+    - `l5-20-sidebar-header-dark.png`（yuzora-dark）、`l5-21-sidebar-header-light.png`（yuzora-light）：標題列的「檔案」與 6 顆圖示鈕（「顯示隱藏檔」開著，`selected` 底；樹裡多了 `.yuuzu`）、路徑卡（上層路徑 `/private/tmp/yz-l5-run/` 放不下時先截斷、資料夾名稱 `demo` 完整、「本機」chip、分支 `feat/gpui-dock`）。
+    - 沒有截圖的：hover、遠端時停用的新增鈕、沒有分支時第二行消失、右側模式再變窄時截斷「檔案」（要點擊或拖動）。遠端與沒有分支的資料由 `heading()` 的單元測試涵蓋（遠端路徑不用 `~`、沒有分支、上層路徑與名稱的拆法），排版靠 `flex_none`／`min_w(0)`／`truncate`。
+- `tests/svg_child.rs`（`harness = false`：測試執行檔自己就是子行程，另外扮演各種出錯的子行程）：
+  - 一般 SVG（矩形、漸層加虛線、中英文字、opacity group）由子行程畫出的結果，和在本行程用 GPUI 的 `SvgRenderer` 畫的逐 byte 相同；超過長邊上限的縮小方式也相同。usvg 讀不了的回 `svg_invalid`。
+  - 只睡覺的子行程 2 秒逾時並被殺；一直配置記憶體的子行程在記憶體上限被殺，不是等到逾時；crash 回 `svg_crashed`；亂寫與只送一半的回 `svg_output`。
+  - 子行程啟動的行程（逾時與 crash 兩種結束）都一起被殺。6 個請求同時進來，最多 2 個子行程在跑。取消時，排隊中的請求不啟動子行程，畫到一半的被殺。
+  - 同一份 SVG 只 spawn 一次（兩個請求同時要也一樣），失敗的不重試。在 header 之後一直送資料（最多 256 MiB）的子行程，在第一個多餘的 byte 就被拒，本行程的峰值記憶體增加不到 32 MiB；header 宣稱 100000² 的，不配置記憶體就拒絕。
+  - 常數就是文件寫的值；整個測試過程中，本行程沒有畫過任何 SVG。
+- SVG 子行程的 mutation 抽查（每次只改一處，跑對應的測試）：拿掉逾時、拿掉 macOS 的記憶體 watchdog、拿掉並行上限、讓圖片 pane 或 Markdown 預覽在本行程畫、讓父行程直接呼叫子行程的繪製函式、拿掉 stdout 的讀取上限、拿掉 process group 的 kill，對應的測試都會失敗。
+- SVG 子行程的跨平台檢查：
+  - macOS：上面的測試全部實際執行；也用實際建置的 App 執行檔當子行程（`env -i`）畫出一般 SVG，usvg 讀不了的回狀態 1，不是請求的輸入以 2 結束。
+  - Linux：`src/svg/process.rs` 與 `wire.rs` 原封不動，放進一個小的 runner，交叉編譯成 aarch64 Linux 執行檔，在 Ubuntu 24.04 container 裡跑：子行程的 `RLIMIT_AS` 是 512 MiB、env 已清空；一直配置記憶體的子行程回 `svg_memory`；逾時、crash、輸出過多、子行程樹（兩種結束）、取消都和 macOS 相同。這個 runner 不含 GPUI，所以 GPUI 執行檔在 512 MiB 位址空間下的實際表現，要等 `app-ci.yml` 的 Linux job 跑 `tests/svg_child.rs` 才知道。
+  - Windows：`process.rs`（Job Object、thread 讀寫）只做 `x86_64-pc-windows-msvc` 的型別與 clippy 檢查，沒有實際執行。
+- 沒有在實機驗的（需要鍵盤或滑鼠；未取得 computer-use 授權）：輸入後的未儲存標記與存檔、衝突橫幅、⌘F 搜尋取代、右鍵選單、樹的展開、右側模式搜尋、Markdown 原始碼切換、「<Agent> 也在改」。其中存檔與衝突判斷有 `fsops` 單元測試，互動本身都沒有在實機驗過。
+
+## 已知限制
+
+- 混用 LF 與 CRLF 的檔案：載入時以第一個換行決定，存檔時整份統一成那一種（與 VS Code 相同）。沒有修改時 ⌘S 不會寫入（是否修改在按下時向 Rust 重讀，剛打完字馬上按也算數）。
+- 沒有未儲存變更時的自動重新載入用 `set_value`，會清掉該文件的 undo 歷史。
+- 修改 app home 裡這幾個 mod 造成的熱重載不會呼叫 `close()`：已開的文件多一個參考（Yuzora 結束前不會釋放），舊的 owner 留在文件上，重載後的 pane 要按「在這裡編輯」接手。
+- 右側模式的檔名與內容搜尋只丟掉過期結果，背景工作不會取消；大 repo 剛輸入時可能同時跑多個完整列舉。
+- 有未儲存變更且檔案已從磁碟刪除時，只能「重新儲存」，沒有「捨棄」。
+
+## 延後項目
+
+#192 的 Codex P2 與 nit 先延後，合併後由 L5 另開 PR 處理。
+
+### 仍延後（等 Windows CI）
+
+- Windows 存檔保留 ACL 與其他屬性：目前 rename 換檔後只保留唯讀屬性，ACL 變成資料夾繼承的。改用 `ReplaceFileW`（保留 DACL、屬性、建立時間），失敗時（`ERROR_UNABLE_TO_MOVE_REPLACEMENT`）要把暫存檔放回原位，不能刪；需要 CI 在 Windows 編譯並測試 app（第 24 輪）。
+- ~~Windows 上 `doc-pane.js` 的 `parent` 只認 `/`~~ **已處理（beta.3 win-misc PR）**。Windows CI（windows-2022，run 41770056432）驗證：`watchFolder` 本身 1 秒內有收到變更，但 `next_change` 的 `canonicalize` 讓回報的路徑帶 `\\?\`，永遠和 JS 的 `C:\…` 不相等；`parent`、圖片標題 `split("/")` 也只認 `/`。修正：`next_change` 回傳 `yuzora_core::paths::plain` 後的路徑（`app/src/files.rs`，`// yuzora(L5):`）；編輯器、Markdown、圖片三個 mod 的 `isWin`／`parent`／`isRoot`／`baseName`／`samePath`（Windows 兩種斜線、不分大小寫；其他平台只認 `/`），測試 `the_panes_follow_files_by_windows_paths_too`（QuickJS）與 app 的 `a_watched_windows_folder_reports_plain_paths_within_a_second`（Windows）。
+
+### 已處理（follow-up PR）
+
+- `gitStatus` 失敗的提示：`yuzora-sidebar-files/git-state.js` 的 `readGit` 把「回 null（不是 repo）」和「拋錯（git 失敗、逾時）」分開，後者記在狀態的 `git.failed`（`info()` 的 `gitFailed`），樹下方顯示 `git.failed`（中英文都有）；分支與標記照舊清掉。測試：`yuzora-files/src/lib.rs` 的 QuickJS 測試 `sidebar_git_state_tells_a_failure_from_not_a_repo`（CI 會跑），加上 `the_files_sidebar_is_wired_to_git_failures_and_long_queries` 以 `include_str!` 守 `main.js` 的接線（只守字面）。
+- 遠端檔名清單的兩個 `rg --files` 加 `--no-config`（`search.rs` 的 `LIST_SCRIPT`），不再讀 `RIPGREP_CONFIG_PATH`；`the_list_script_*` 測試守著呼叫的參數。
+- 遠端列資料夾不展開整個 glob：`fsops.rs` 的 `LIST_SCRIPT` 改用 `find . ! -name . -prune` 串流逐筆讀，到 `max + 1` 筆就 `break`（find 因 SIGPIPE 自己結束）。名稱含換行的項目分不開，`find` 對它印 `?`（真名稱一定以 `./` 開頭），腳本輸出 `?` 項目，`parse_listing` 設 `Listing.skipped`，右側模式顯示「有些檔案無法讀取」（`a_name_with_a_newline_is_reported_as_left_out`）。遠端沒有 `find` 時 exit 3，不會看起來像空資料夾。BSD find（macOS 遠端）會先讀完整個資料夾才輸出第一筆，所以成本仍隨資料夾大小成長，只是不再展開整個 glob、輸出也只到 `max + 1`。測試 `list_script_stops_reading_at_the_limit` 用永不結束的假 `find` 證明腳本會停。
+- `fuzzy_match` 的配置上限：`m × n` 超過 `MAX_MATCH_CELLS`（2²⁰）時不建表，改回最左的子序列比對，分數為 `-路徑長度`（通常低於正常比對）；不是子序列照樣回 `None`。測試 `an_oversized_match_falls_back_to_a_cheap_one`。查詢本身也有長度上限：去掉空白後超過 `MAX_QUERY_CHARS`（256）就不比對（`fuzzy_filter` 回空，`findFiles` 直接回 `tooLong: true`，不列舉檔案），右側模式顯示 `search.too_long`（兩語系），測試 `a_query_past_the_length_limit_matches_nothing`。
+- Markdown 預覽的圖片不再在同一個 blocking loop 逐張處理：`markdown.rs` 的 `read_images` 用最多 `IMAGE_WORKERS`（= `svg::CONCURRENT`）條執行緒並行讀，每張讀完就記錄、重畫；點陣圖排在 SVG 前面，不會被慢的 SVG 擋住（`a_bitmap_is_not_kept_waiting_by_svgs_that_are_slow_to_draw`）。一個預覽因此可以同時佔住全部 SVG 名額，其他 pane 的 SVG 最多多等一個逾時時間，這是取捨。`check_images` 在兩張圖之間逐張回報這件事，測試環境的 `docs::blocking` 是同步執行，觀察不到，只用 `the_preview_is_wired_to_the_checked_helpers` 以字面守接線。SVG 仍然經 `svg::draw` 的子行程與它的 watchdog、並行上限，沒有繞過。測試 `images_are_read_a_few_at_once_and_answered_as_each_is_done`。
+- `image_source` 抽成 `source_of`（render 的閉包只剩呼叫它，同一個 wiring 測試守著；沒有畫出整個 `MarkdownView` 的 gpui 測試），測試 `the_preview_never_hands_a_path_to_gpui`：沒有答案時是空路徑，有答案時是畫好的像素（`ImageSource::Render`），遠端文件不讀本機；把 `.svg` 路徑交給 GPUI 會失敗。
+- CHANGELOG（`app/CHANGELOG.md`、`app/CHANGELOG.zh-TW.md`）的 SVG 條目改成：原因由圖片檢視說明，Markdown 預覽只有佔位圖。
+
+## 待辦
+
+- 遠端刪除（R3，見上）。
+- 編輯器 gutter 的變更標記（新增／修改／agent 修改的行，設計稿 p2 左側色條）：需要 L2 的 diff API。
+- git 標記改用 `yuzora:git`（L2 合併後）。
+- Markdown 預覽：相對連結（`./other.md`）開檔、遠端檔案的相對圖片、fenced code 以外的 inline 語法上色（tree-sitter-md inline 語法）。
+- 拖放檔案到右側模式（複製／移動）。
+- pane 標頭整合：目前編輯器 pane 自己畫 28px 檔案列；L1 的 pane 標頭可依 `mod.json` 的 `"yuzora": {"pane": {"header": "own"}}` 隱藏或改用 `documentState` 顯示檔名。

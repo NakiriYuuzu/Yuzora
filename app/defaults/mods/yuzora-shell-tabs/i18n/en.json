@@ -1,0 +1,30 @@
+{
+  "tab": {
+    "new": "New tab",
+    "close": "Close tab",
+    "terminal": "Terminal"
+  },
+  "menu": {
+    "where": "Place it",
+    "right": "Right",
+    "down": "Below",
+    "tools": "Tool panes",
+    "no_tools": "No tool panes installed yet.",
+    "terminal": "New terminal",
+    "agents": "Agents",
+    "checking": "Checking installed agents…",
+    "failed": "Couldn't list agents",
+    "no_agents": "No agents found on this machine.",
+    "not_installed": "not installed",
+    "needs_space": "Needs a Space"
+  },
+  "window": {
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "close": "Close window"
+  },
+  "panel": {
+    "files": "Files",
+    "changes": "Changes"
+  }
+}

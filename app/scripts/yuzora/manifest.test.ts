@@ -1,0 +1,162 @@
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { TARGETS, UNLISTED_TARGETS, archiveName, channelOf, checkVersion, downloadsFor, listedTargets, parseCli, tauriManifest, unlistedTargets, yuzoraManifest } from "./manifest";
+
+function dist(files: Record<string, string>) {
+  const dir = mkdtempSync(join(tmpdir(), "yuzora-manifest-"));
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+  return dir;
+}
+
+const when = new Date("2026-11-03T01:02:03.456Z");
+const tauriSig = Buffer.from("untrusted comment: signature from tauri secret key\nRUR...\ntrusted comment: timestamp:1\nxx==\n").toString("base64");
+
+describe("yuzora-update.json", () => {
+  test("lists every archive with its sha256, the changelog, and the channel of the version", () => {
+    const dir = dist({
+      [archiveName("0.1.0-beta.3", "macos-aarch64")]: "mac",
+      [archiveName("0.1.0-beta.3", "windows-x86_64")]: "win",
+      [archiveName("0.1.0-beta.2", "linux-x86_64")]: "an older one",
+      "changelog.md": "## [0.1.0-beta.3]",
+      "Yuzora-macos-aarch64.dmg": "dmg",
+    });
+    const doc = yuzoraManifest(dir, "0.1.0-beta.3", downloadsFor("0.1.0-beta.3", undefined), when) as any;
+    expect(doc).toMatchObject({ schema: 1, name: "yuzora", version: "0.1.0-beta.3", channel: "beta", pub_date: "2026-11-03T01:02:03Z" });
+    expect(Object.keys(doc.targets)).toEqual(["macos-aarch64", "windows-x86_64"]);
+    expect(doc.targets["macos-aarch64"]).toEqual({
+      url: "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0-beta.3/yuzora-0.1.0-beta.3-macos-aarch64.tar.gz",
+      // sha256("mac")
+      sha256: "348a629f5ceed032c3e8706ec47d9bfafb00fb4250b018dd965435ca50cb836e",
+      size: 3,
+    });
+    expect(doc.notes.url).toEndWith("/v0.1.0-beta.3/changelog.md");
+    expect(doc.localized_notes).toBeUndefined();
+  });
+
+  test("the Chinese changelog goes under localized_notes, by the app's locale", () => {
+    const dir = dist({ [archiveName("0.1.0-beta.3", "linux-x86_64")]: "x", "changelog.md": "en", "changelog.zh-TW.md": "zh" });
+    const doc = yuzoraManifest(dir, "0.1.0-beta.3") as any;
+    expect(Object.keys(doc.localized_notes)).toEqual(["zh-TW"]);
+    expect(doc.localized_notes["zh-TW"]).toEqual({
+      url: "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0-beta.3/changelog.zh-TW.md",
+      // sha256("zh")
+      sha256: "60cae1d01739facc4543771db2e8fbc4d1ebe5fc66284a5b8b4bd1ed585f452e",
+      size: 2,
+    });
+    expect(doc.notes.url).toEndWith("/v0.1.0-beta.3/changelog.md");
+  });
+
+  test("stable versions are on stable; odd versions, targets and empty folders fail", () => {
+    expect(channelOf("0.1.0")).toBe("stable");
+    expect(channelOf("0.1.0-beta.2")).toBe("beta");
+    expect(() => checkVersion("0.1")).toThrow();
+    expect(() => checkVersion("v0.1.0")).toThrow();
+    expect(() => yuzoraManifest(dist({}), "0.1.0")).toThrow("no yuzora-0.1.0-*.tar.gz");
+    expect(() => yuzoraManifest(dist({ [archiveName("0.1.0", "macos-x86_64")]: "intel" }), "0.1.0")).toThrow("not a target Yuzora ships");
+  });
+
+  test("a test server's downloads", () => {
+    const doc = yuzoraManifest(dist({ [archiveName("0.1.0", "linux-x86_64")]: "x" }), "0.1.0", downloadsFor("0.1.0", "http://127.0.0.1:8/R/download/v0.1.0/")) as any;
+    expect(doc.targets["linux-x86_64"].url).toBe("http://127.0.0.1:8/R/download/v0.1.0/yuzora-0.1.0-linux-x86_64.tar.gz");
+  });
+});
+
+describe("yuzora-update.json without some targets", () => {
+  const all = (version: string) => Object.fromEntries(["macos-aarch64", "windows-x86_64", "linux-x86_64", "linux-aarch64"].map((t) => [archiveName(version, t), t]));
+
+  test("lists every target by default and leaves out the excluded ones", () => {
+    const dir = dist({ ...all("0.1.0"), "changelog.md": "en" });
+    const full = yuzoraManifest(dir, "0.1.0") as any;
+    expect(Object.keys(full.targets)).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64", "windows-x86_64"]);
+    const doc = yuzoraManifest(dir, "0.1.0", downloadsFor("0.1.0", undefined), when, ["windows-x86_64"]) as any;
+    expect(Object.keys(doc.targets)).toEqual(["linux-aarch64", "linux-x86_64", "macos-aarch64"]);
+    expect(JSON.stringify(doc)).not.toContain("windows");
+    expect(doc.notes.url).toEndWith("/v0.1.0/changelog.md");
+  });
+
+  test("the excluded target's archive is still in the folder, for the release to upload", () => {
+    const dir = dist(all("0.1.0"));
+    yuzoraManifest(dir, "0.1.0", downloadsFor("0.1.0", undefined), when, ["windows-x86_64"]);
+    expect(readFileSync(join(dir, archiveName("0.1.0", "windows-x86_64")), "utf8")).toBe("windows-x86_64");
+  });
+
+  test("a target Yuzora does not ship, or nothing left to offer, is an error", () => {
+    const dir = dist(all("0.1.0"));
+    expect(() => yuzoraManifest(dir, "0.1.0", downloadsFor("0.1.0", undefined), when, ["macos-x86_64"])).toThrow("not a target Yuzora ships");
+    expect(() => yuzoraManifest(dir, "0.1.0", downloadsFor("0.1.0", undefined), when, ["macos-aarch64", "windows-x86_64", "linux-x86_64", "linux-aarch64"])).toThrow("besides the excluded");
+  });
+
+  test("the same inputs write the same bytes once pub_date is pinned", () => {
+    const dir = dist({ ...all("0.1.0"), "changelog.md": "en" });
+    const write = () => JSON.stringify(yuzoraManifest(dir, "0.1.0", downloadsFor("0.1.0", undefined), new Date("2026-11-12T03:04:05Z"), ["windows-x86_64"]));
+    expect(write()).toBe(write());
+    expect(write()).toContain('"pub_date":"2026-11-12T03:04:05Z"');
+  });
+
+  test("the command line", () => {
+    expect(parseCli(["yuzora", "dist"])).toMatchObject({ kind: "yuzora", dir: "dist", exclude: [] });
+    const cli = parseCli(["yuzora", "dist", "--exclude", "windows-x86_64, linux-aarch64", "--pub-date", "2026-11-12T03:04:05Z"]);
+    expect(cli.exclude).toEqual(["windows-x86_64", "linux-aarch64"]);
+    expect(cli.date.toISOString()).toBe("2026-11-12T03:04:05.000Z");
+    expect(() => parseCli(["yuzora"])).toThrow("usage");
+    expect(() => parseCli(["other", "dist"])).toThrow("usage");
+    expect(() => parseCli(["tauri", "dist", "--exclude", "windows-x86_64"])).toThrow("--exclude is for the yuzora manifest");
+    expect(() => parseCli(["yuzora", "dist", "--pub-date", "tomorrow-ish"])).toThrow("is not a date");
+  });
+});
+
+describe("which targets a version's manifest lists", () => {
+  test("0.1.0 leaves Windows out and lists the other three, in the order the app ships them", () => {
+    expect(unlistedTargets("0.1.0")).toEqual(["windows-x86_64"]);
+    expect(listedTargets("0.1.0")).toEqual(["macos-aarch64", "linux-x86_64", "linux-aarch64"]);
+  });
+
+  test("a version that has no row lists every target", () => {
+    for (const version of ["0.1.1", "0.2.0", "0.1.0-beta.4"]) {
+      expect(unlistedTargets(version), version).toEqual([]);
+      expect(listedTargets(version), version).toEqual(["macos-aarch64", "windows-x86_64", "linux-x86_64", "linux-aarch64"]);
+    }
+  });
+
+  test("every row names targets Yuzora ships, once each, and leaves at least one listed", () => {
+    for (const [version, targets] of Object.entries(UNLISTED_TARGETS)) {
+      checkVersion(version);
+      expect(new Set(targets).size, version).toBe(targets.length);
+      for (const target of targets) expect(TARGETS, version).toContain(target);
+      expect(listedTargets(version).length, version).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("latest.json for the Tauri app", () => {
+  test("points darwin-aarch64 at the macOS archive and windows-x86_64 at the installer", () => {
+    const mac = archiveName("0.1.0-beta.2", "macos-aarch64");
+    const dir = dist({ [mac]: "m", [`${mac}.sig`]: tauriSig, "Yuzora-windows-x64-setup.exe": "w", "Yuzora-windows-x64-setup.exe.sig": tauriSig });
+    const doc = tauriManifest(dir, "0.1.0-beta.2", "notes", downloadsFor("0.1.0-beta.2", undefined), when);
+    expect(doc.version).toBe("0.1.0-beta.2");
+    expect(Object.keys(doc.platforms)).toEqual(["darwin-aarch64", "windows-x86_64"]);
+    expect(doc.platforms["darwin-aarch64"].url).toBe(`https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0-beta.2/${mac}`);
+    expect(doc.platforms["windows-x86_64"]).toEqual({ url: "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0-beta.2/Yuzora-windows-x64-setup.exe", signature: tauriSig });
+    // Never an Intel Mac entry (AGENTS.md).
+    expect(JSON.stringify(doc)).not.toContain("darwin-x86_64");
+  });
+
+  test("refuses a half manifest: a missing file or signature, or a plain minisign one", () => {
+    const mac = archiveName("0.1.0-beta.2", "macos-aarch64");
+    expect(() => tauriManifest(dist({ [mac]: "m", [`${mac}.sig`]: tauriSig }), "0.1.0-beta.2", "n")).toThrow("Yuzora-windows-x64-setup.exe is missing");
+    expect(() => tauriManifest(dist({ [mac]: "m", "Yuzora-windows-x64-setup.exe": "w", "Yuzora-windows-x64-setup.exe.sig": tauriSig }), "0.1.0-beta.2", "n")).toThrow(`${mac}.sig is missing`);
+    expect(() => tauriManifest(dist({ [mac]: "m", [`${mac}.sig`]: "untrusted comment: x", "Yuzora-windows-x64-setup.exe": "w", "Yuzora-windows-x64-setup.exe.sig": tauriSig }), "0.1.0-beta.2", "n")).toThrow("not a Tauri updater signature");
+  });
+
+  test("the Windows installer's old-app prompt matches the current migration status", () => {
+    const nsi = readFileSync(join(import.meta.dir, "../../distribution/yuzora/windows/yuzora.nsi"), "utf8");
+    const en = nsi.match(/^LangString OldApp \$\{LANG_ENGLISH\} "(.*)"$/m)?.[1] ?? "";
+    expect(en).toContain("does not delete your old data");
+    expect(en).toContain("does not bring connections and settings over automatically yet");
+    expect(en).not.toContain("can bring it over");
+    // English only: the installer carries no other language.
+    expect(nsi).not.toMatch(/TRADCHINESE|TradChinese/i);
+  });
+});

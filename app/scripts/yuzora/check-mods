@@ -1,0 +1,38 @@
+#!/bin/bash
+# yuzora: `herdr-app check` every Yuzora mod in defaults/mods (or the ones
+# named), each on a copy: check writes gpui-kit.d.ts and jsconfig.json into the
+# folder it checks, and build.rs would ship them from defaults/mods.
+#
+#   scripts/yuzora/check-mods [yuzora-sidebar-git ...]
+#
+# The binary defaults to $CARGO_TARGET_DIR (or target)/debug/herdr-app; set
+# HERDR_APP_BIN for another. The app home is a throwaway folder.
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")/../.." && pwd)
+bin=${HERDR_APP_BIN:-${CARGO_TARGET_DIR:-$here/target}/debug/herdr-app}
+[[ -x $bin ]] || { echo "no binary at $bin (cargo build first)" >&2; exit 1; }
+
+names=("$@")
+if [[ ${#names[@]} -eq 0 ]]; then
+  for d in "$here"/defaults/mods/yuzora-*/; do names+=("$(basename "$d")"); done
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+export YUZORA_APP_HOME=$tmp/home
+
+failed=0
+for name in "${names[@]}"; do
+  src=$here/defaults/mods/$name
+  [[ -f $src/mod.json ]] || { echo "$name: no defaults/mods/$name/mod.json" >&2; failed=1; continue; }
+  cp -R "$src" "$tmp/$name"
+  if out=$("$bin" check "$tmp/$name" 2>&1); then
+    echo "$name: $(tail -1 <<<"$out")"
+  else
+    echo "$name: check failed" >&2
+    sed 's/^/  /' <<<"$out" >&2
+    failed=1
+  fi
+done
+exit $failed

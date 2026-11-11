@@ -1,237 +1,263 @@
 <div align="center">
 
-<img src="src-tauri/icons/128x128@2x.png" width="112" alt="Yuzora icon" />
+<img src="app/assets/icons/yuzora.png" width="112" alt="Yuzora icon" />
 
 # Yuzora
 
-**Build with agents. Run on HERDR.**
+**Build with agents. Run on herdr-core.**
 
-<samp>AI coding agent workspace for macOS and Windows, powered by HERDR</samp>
+<samp>A native workspace for CLI coding agents, built on herdr-app</samp>
 
 <br />
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
-[![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
+[![App CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/app-ci.yml?branch=beta2/integration&style=flat-square&label=beta.2%20app&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/app-ci.yml)
 ![Version](https://img.shields.io/badge/version-0.1.0--beta.1-86b81f?style=flat-square&labelColor=1b1a17)
-![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
-![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
+![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux%20%28experimental%29-57534b?style=flat-square&labelColor=1b1a17)
 
 <samp>English · <a href="README.zh-TW.md">繁體中文</a> · <a href="https://github.yuuzu.net/Yuzora/en/">Website</a></samp>
-
-<br />
-<br />
-
-<img src="docs/readme/hero-en.gif" width="880" alt="Yuzora v0.0.13 demo tour: Spaces, HERDR terminal, Git diff, SQL results and appearance settings" />
 
 </div>
 
 <br />
 
-> Yuzora is an **AI coding agent workspace for macOS and Windows**, built with Tauri.
-> Run your CLI agents, such as Claude Code, Codex or Pi, in persistent HERDR terminal Sessions.
-> Keep your code editor, Git diffs, SSH/SFTP, WSL, SQL databases and HTML preview in one
-> local-first desktop app. Agent CLIs and their accounts are managed by you.
+> **v0.1.0 is the first stable release of the new Yuzora.** Yuzora is now a native app built on
+> [herdr-app](https://github.com/herdrdev/herdr-app) (Rust · GPUI · libghostty · QuickJS mods), in [`app/`](app/).
+> v0.1.0-beta.1 and older are the Tauri app in `src-tauri/` and `src/`, kept in the repository as a porting
+> source. Architecture: [docs/beta2/architecture.md](docs/beta2/architecture.md).
 
-<br />
+Yuzora runs your CLI coding agents (Claude Code, Codex, Pi and the other agents herdr recognizes) in herdr-core
+terminals that keep running when the window closes, and puts Git, files, databases and SSH / SFTP next to them in
+the same window.
+
+<p align="center">
+  <img src="docs/readme/workspace-en.png" width="880" alt="Yuzora beta.2: the workspace sidebar lists three Spaces and their agents, and one tab is split into an agent's terminal, a Git diff and a table" />
+</p>
+
+<sub>This screenshot is from beta.2 and is due for a retake: since beta.4 the left side is Herdr's own Spaces and agents lists under its "Herdr" header, and the Files, Git, Database and SSH modes are on the right.</sub>
 
 ## Features
 
-### What's new in v0.0.16
+- **Spaces and agents.** A Space is a folder on this computer or on a herdr machine reached over SSH. The left side
+  (Herdr's own Spaces and agents lists) groups Spaces by machine, nests worktrees under their repo and shows each agent's state, with the agents that need you first.
+- **Mixed splits.** The new-pane menu (command `yuzora-shell-tabs.new-pane`) puts a tool pane (Git, editor, database, SFTP…), a terminal or an agent right of or
+  below the focused pane, in the same tab.
+- **Git** modeled on IntelliJ IDEA Community, with the staging area: changes and commits in the right-hand dock, a diff pane
+  that stages hunks and lines, the log with its branch graph, branches, push, three-way merge, interactive rebase
+  and annotate. Folders whose own Git config runs programs ask for your trust first.
+- **Files and editor.** A file tree with Git marks and file-name and content search, a code editor with tree-sitter
+  highlighting, a Markdown preview, and an image and SVG viewer (a repo's SVG is drawn in a separate process, with
+  time and memory limits). Files on a remote machine can be edited and saved since 0.1.0. There is no language server (LSP).
+- **Databases**: PostgreSQL, SQL Server and SQLite, with a schema tree, a data grid that writes edited cells back in
+  one transaction, the table structure and a SQL pane.
+- **SSH / SFTP**: hosts from `~/.ssh/config`, Yuzora's own hosts and herdr machines; host keys checked by
+  fingerprint; side-by-side SFTP whose transfers resume.
+- **Settings, mods and templates.** Yuzora's own UI is herdr mods you can clone and change, and the Mods page
+  installs others after a trust warning. herdr-core agent templates can be edited and started from Settings.
+- English interface only (this README and the changelog also come in Traditional Chinese), light and dark themes, following the system by default.
+- **Nothing is collected.** Telemetry is off and feedback opens a GitHub issue. An installed release checks this
+  repository's GitHub Releases for updates and `releases.herdr.dev` for herdr-core's.
 
-- HERDR tools for Worktrees, pane moves, Agents, Integrations, Sessions and Plugins, plus opt-in Agent notifications and the Open Herdr Window view.
-- Windows x86_64 SSH hosts with their own helper, named pipes and native paths.
-- Redesigned database workbench with database selection after connecting, explicit cell editing and a table structure editor.
-- Background search for large documents, virtualized database rows, stable Spaces/Agents ordering and resource cleanup.
-- SSH password compatibility, Git unstage fixes for new repositories, clearer branch notices and responsive graph metadata.
+<p align="center">
+  <img src="docs/beta2/evidence/l2-diff.png" width="436" alt="Yuzora's Git mode: staged and unstaged changes and the commit box in the sidebar, and a side-by-side diff pane with buttons to stage or discard a hunk" />
+  <img src="docs/beta2/evidence/l2-log.png" width="436" alt="Yuzora's Git log pane: filters for branch, author, date, path and message, and commits with branch and tag labels beside the branch graph" />
+</p>
 
-### What's new in v0.0.15
+<p align="center">
+  <img src="docs/readme/files-en.png" width="880" alt="Yuzora's Files mode: the repo's tree with Git marks in the sidebar, and the agent's terminal split with the code editor and a Markdown preview" />
+</p>
 
-- Configurable tab shortcuts, including Ctrl+Tab and direct selection of tabs 1–9.
-- Preview saved workspace HTML from local, WSL and SSH folders; select browser elements and copy context for AI edits.
-- HERDR 0.9.1 integration, terminal focus and rendering fixes, plus Git operation and WSL save fixes.
+Not in the new app: the Browser, Companion and AgentZone of the Tauri app.
 
-### What's new in v0.0.14
+## Download and install
 
-- Drag Spaces to reorder them within HERDR Sessions that expose `workspace.move`.
-- Recover the same HERDR terminal Session automatically after uncertain input delivery.
-- Smoother WSL and HERDR scrolling with capability-gated scrollbars and burst coalescing.
+Download v0.1.0 from [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) or from the website. On macOS and Linux, beta.2 to beta.4 update themselves to it. On Windows, a beta can't update itself: close Yuzora, download the installer, run it over your install, and read the Windows note in the [release notes](CHANGELOG.md).
 
-### What's new in v0.0.13
-
-- Stable and Preview update checks now select the newest signed release by SemVer, with compatibility fallback for older Yuzora hosts.
-- WSL folder reveal now falls back to the Windows Explorer `\\wsl.localhost`／`\\wsl$` namespace when shell selection cannot foreground Explorer.
-
-### What's new in v0.0.10
-
-- A Files | GIT workspace-tools card with new-file/new-folder actions, full-path copying, and Finder or Explorer reveal.
-- Dynamic-width Git Graph with horizontal scrolling, large-document continuous rendering, and directly operable HERDR, diff, and minimap scrollbars.
-- Configurable keyboard shortcuts and GitHub, Yuzora, and One syntax themes across common language and file-extension mappings.
-
-- Faster Git status, branch lists and diff loading; smoother switching between open HERDR terminals while keeping their output and connections.
-- A persistent Bot animations switch under Appearance; lower-spec devices default to static companions, with system reduced motion respected.
-- Themed editor and diff scrollbars, a resizable database sidebar, and a clear commit history / branch graph button.
-- Whole-block multiline paste, optional copy on selection, and Option/Alt+V image paste to the terminal's host.
-- Native Windows HERDR, opt-in WSL, and safer workspace trust, paths and reconnection across local and SSH hosts.
-- Updated branding and an [interactive browser demo](https://github.yuuzu.net/Yuzora/demo/) deployed with the website through GitHub Actions Pages.
-
-See the [Changelog](CHANGELOG.md) for the complete release notes and limitations.
-
-<table>
-<tr>
-<td valign="middle" width="38%">
-
-<sub><samp>01 · ADE × HERDR</samp></sub>
-
-### From Space to agent terminal
-
-The Space and Agent sidebar projects HERDR Spaces, named Sessions, Attention and Agents. Selecting an agent focuses its owning Session and Space, then opens the corresponding HERDR terminal page. Each Yuzora page maps to one HERDR tab and recursively renders its BSP panes. Mutating actions are capability-gated.
-
-<code>Spaces</code> <code>named Sessions</code> <code>BSP terminal</code>
-
-</td>
-<td valign="middle" width="62%">
-
-<img src="docs/readme/ade-herdr-en.png" alt="Yuzora v0.0.9 AppShell demo with Spaces and Agents, HERDR terminal and workspace tools" />
-
-</td>
-</tr>
-</table>
-
-<table>
-<tr>
-<td valign="middle" width="62%">
-
-<img src="docs/readme/remote-db-en.png" alt="Database panel: browse tables, run SQL, inspect schemas" />
-
-</td>
-<td valign="middle" width="38%">
-
-<sub><samp>02 · SSH & DATABASES</samp></sub>
-
-### Remote feels local
-
-Browse and edit files over SSH with SFTP transfer; query tables, run SQL and inspect schemas in the database panel. Connections are managed in one place — known hosts and credentials stay on your machine.
-
-<code>SSH / SFTP</code> <code>PostgreSQL</code> <code>SQL Server</code> <code>SQLite</code>
-
-</td>
-</tr>
-</table>
-
-<table>
-<tr>
-<td valign="middle" width="38%">
-
-<sub><samp>03 · TERMINAL & GIT</samp></sub>
-
-### Built-in terminal & git tools
-
-HERDR terminal pages provide xterm-powered input, output and split panes; the git panel shows history and diffs, with cherry-pick straight from commit details. Log query and export keep debugging inside the workbench.
-
-<code>xterm + HERDR</code> <code>git log / cherry-pick</code> <code>log query</code>
-
-</td>
-<td valign="middle" width="62%">
-
-<img src="docs/readme/terminal-git-en.png" alt="Yuzora v0.0.9 split Git diff with the commit history and branch graph button" />
-
-</td>
-</tr>
-</table>
-
-<br />
-
-### Companion (Experimental)
-
-Control your HERDR Agents from your phone: check Agent status, browse Spaces, read Git status, history and diffs (read-only), and — after you grant it on the desktop — send input. Companion is **off by default** and must be switched on under Settings → Companion.
-
-- Yuzora runs its own built-in Tailscale node, so the desktop does not need the Tailscale app. Your phone does: it must run the Tailscale app signed in to the same tailnet and open the Companion page over HTTPS.
-- Pair a phone by scanning a QR code, comparing a confirmation code (SAS) on both screens, and registering a passkey. Every connection then needs the passkey.
-
-> **Warning:** enabling Companion is equivalent to granting remote shell access to this computer account. A phone that holds a control grant can drive your AI Agents, and Agents can run commands. Only enable it on a tailnet you trust, for the time you need it.
-
-Setup, access-control (ACL) advice and troubleshooting: [docs/operations.md](docs/operations.md) (Traditional Chinese).
-
-<br />
-
-## Download
-
-Stable releases are built by GitHub Actions and published on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases). Unpublished PR candidates are available only as Actions artifacts.
-
-| Platform | Format | Download |
+| Platform | File | Installs to |
 |:--|:--|:--|
-| **macOS** | `.dmg` — Apple Silicon (M series) only | [Yuzora-macos-aarch64.dmg](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-aarch64.dmg) |
-| **Windows** | `.msi` — x64 | [Yuzora-windows-x64.msi](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64.msi) |
+| **macOS**, Apple Silicon (M series) only | `Yuzora_<version>_aarch64.dmg`: drag Yuzora onto Applications | `/Applications/Yuzora.app`; the app adds `~/.local/bin/yuzora` |
+| **Windows** x64 | `Yuzora_<version>_x64-setup.exe`, no admin rights needed | `%LOCALAPPDATA%\Programs\Yuzora`, with `yuzora` on your PATH |
+| **Linux** x86_64 / aarch64, experimental | `yuzora-<version>-linux-<arch>.tar.gz`, then run `yuzora/install` | `~/.local/share/yuzora` and `~/.local/bin/yuzora` |
 
-Windows ships as an MSI installer only; the NSIS `.exe` installer is discontinued and `Yuzora-windows-x64-setup.exe` is no longer updated (assets of older releases are unchanged). Past versions live on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases). Linux is used as a CI/test host only and is not a supported Yuzora desktop release platform.
+Stable releases also carry fixed names that always point to the newest stable one:
+`releases/latest/download/Yuzora-macos-aarch64.dmg` and `releases/latest/download/Yuzora-windows-x64-setup.exe`.
+v0.0.19, the last stable Tauri release, stays on its own release page.
 
-Starting with v0.0.9, the macOS App requires Apple Silicon. Intel macOS remote Hosts remain supported.
+- **macOS: no Apple Developer ID signature, no notarization** (ad-hoc signature only). Gatekeeper blocks the first
+  open: in System Settings › Privacy & Security, click **Open Anyway**, or run
+  `xattr -dr com.apple.quarantine /Applications/Yuzora.app`. Do this only for a DMG you downloaded from this
+  repository's Releases. After an update, macOS may ask again for microphone, camera or folder access.
+- **Windows: no Authenticode signature.** SmartScreen may warn; choose More info › Run anyway.
+- **Windows and Linux have only passed CI.** Nobody has tried 0.1.0 on a real Windows or Linux machine. Linux is experimental.
+- **herdr-core.** Terminals and agents run in herdr-core (`hc`), version 0.1.11 or newer. If it isn't installed, the
+  first screen offers to install it with herdr-core's own installer.
+- Starting with v0.0.9, the macOS app requires Apple Silicon. Intel Macs remain supported as remote hosts.
 
-macOS downloads are **not Apple Developer ID signed or notarized**. Gatekeeper may warn or block the first launch. Download from the official release above, then use macOS **System Settings → Privacy & Security → Open Anyway** if offered after the first launch attempt. Windows may show SmartScreen because Authenticode signing is not enabled. Stable and supported prerelease updates verify Tauri updater signatures.
+Updates, coming from beta.1 and the `yuzora` command: [L7 · Release and updates](#l7--release-and-updates).
+Release notes: [CHANGELOG.md](CHANGELOG.md).
 
-### Update channels
+## Build from source
 
-In **Settings → About & Updates → Update channel**, choose:
-
-- **Automatic (installed version)**: stable installations check stable releases; prerelease installations check newer preview and stable releases.
-- **Stable**: only stable releases, even when the installed version is a prerelease.
-- **Preview and stable**: the highest newer semantic version with signed updater metadata, including prereleases. Switching channels never downgrades.
-
-Older betas, including **v0.0.9-beta.3**, shipped with automatic updates disabled. Install a newer version supporting update channels manually once; existing published installers are not modified. Preview updates become available as new signed prereleases are published. PR acceptance candidates keep automatic updates disabled.
-
-## Tech stack
-
-| Layer | Tech |
-|:--|:--|
-| Desktop shell | [Tauri 2](https://tauri.app) (Rust) |
-| Frontend | React + TypeScript + Vite |
-| Agent runtime | HERDR public API + official terminal session connector |
-| Terminal | xterm.js + HERDR terminal pages |
-| Toolchain | Bun · Vitest · Cargo |
-
-Yuzora bundles HERDR 0.9.5 and retains compatibility with 0.9.0, 0.9.1 and 0.9.3 through private protocol 22 and schema checks. In Settings → HERDR, each host can use a Yuzora-managed, installed or custom binary with compatibility checks and diagnostics. Windows uses native HERDR by default; WSL is opt-in, and each workspace runs on its selected local, WSL or SSH host. Pure SFTP connections do not require a runtime. Closing Yuzora releases its own helpers and connectors while preserving HERDR servers and agents. Existing host paths are retained on upgrade; update the selected source explicitly in settings.
-
-The Apple Silicon macOS app shares its managed HERDR binary with `Contents/Resources/host/macos-aarch64/herdr`; it does not bundle separate `herdr/macos-*` binaries. All five remote Host payloads remain included, including Intel macOS. Windows keeps its separate native HERDR paths.
-
-The sidebar's **HERDR tools** manage Worktrees, pane moves, Agent start/prompt/wait/rename/keys, Integrations, running and stopped Sessions, and Plugin installation, enablement and removal. Background agents can notify through in-app toasts, system notifications and sound when they finish or need input. System notifications are opt-in and require OS permission.
-
-**Open Herdr Window** embeds the official HERDR interface for history search, keyboard Copy mode, Kitty images and plugin popups. With default bindings, press Ctrl+B then [ to enter Copy mode, / to search, v to select and y to copy. Custom HERDR bindings still apply. Normal pane connectors pause while this view is open and reconnect when it closes; Session processes keep running. Windows x86_64 SSH hosts use their own helper and named pipes while preserving native paths. See [operations](docs/operations.md) for deployment and acceptance requirements.
-
-Agents can also be started manually in HERDR terminals. The old WSL Pi plugin, separate local/SSH shells and LSP settings have been removed. The browser opens websites and services you start in a terminal.
-
-### Interactive web demo
-
-The [website](https://github.yuuzu.net/Yuzora/) includes an [interactive demo](https://github.yuuzu.net/Yuzora/demo/) with sample terminals, files, Git diffs and databases. It uses in-memory data and does not connect to your computer or remote hosts. Build it with `bun run demo:build`; GitHub Actions deploys the website and demo together to Pages.
-
-## Development
+The beta.2 app needs Rust 1.95 or newer, [Zig 0.16.0](https://ziglang.org/download/) (for ghostty) and the ghostty
+submodule:
 
 ```bash
-bun install          # install dependencies
-bun run tauri:dev    # launch the desktop app (dev server :1420)
-bun run site:companions # generate website characters
-bun run demo:build   # prepare Pages artifact for tests
-bun run test         # vitest
-bun run build        # frontend build (incl. typecheck)
-cd src-tauri
-cargo check          # Rust check
+git submodule update --init app/vendor/ghostty
+cd app
+cargo build                    # target/debug/herdr-app
+cargo test --locked            # the app, ghostty-sys and every yuzora-* crate
+scripts/yuzora/check-mods      # herdr-app check on each Yuzora mod
+scripts/yuzora/package         # release build and this platform's installer, into dist/
 ```
 
-Build installers from source:
+- `app/` is its own Cargo workspace with its own `Cargo.lock` and target (`app/target`). The Cargo package and
+  binary keep upstream's name, `herdr-app`; packages call it Yuzora and `yuzora`.
+- A build from source never checks for updates. Only an installed release build does.
+- Don't point a development build at your own data: give it a throwaway home and core session (`YUZORA_APP_HOME`,
+  `HC_SESSION`, see [docs/beta2/lanes.md](docs/beta2/lanes.md)). On macOS, `scripts/yuzora/bundle-macos <dir>` wraps
+  the binary as `Yuzora.app`.
+
+The Tauri app (v0.1.0-beta.1 and older) still builds from the repository root:
 
 ```bash
 bun install
-bun run tauri:build
+bun run tauri:dev    # desktop app (dev server :1420)
+bun run test         # vitest
+bun run build        # typecheck + frontend build
+cargo check --locked --all-targets
 ```
 
-This local build disables updater artifacts and does not require production secrets. Windows
-local builds skip platform signing; macOS keeps the ad-hoc bundle seal while Apple Developer ID
-signing and notarization remain disabled. See [the operations guide](docs/operations.md) for
-release and verification steps.
+Its release steps are in [docs/operations.md](docs/operations.md).
 
-> README and [website](https://github.yuuzu.net/Yuzora/) media are rendered by
-> [Remotion](https://www.remotion.dev) from recordings of the current AppShell demo.
-> The recordings use sample data, not a live host. Sources and repeatable render
-> commands are in [`site-remotion/`](site-remotion/).
+## Repository
+
+| Path | What |
+|:--|:--|
+| [`app/`](app/) | **beta.2 app**: herdr-app brought in with `git subtree`, its own Cargo workspace |
+| `app/src/yuzora/` | Yuzora's one integration point in the app: branding, switches, `yuzora:*` modules, updates |
+| `app/crates/yuzora-*` | Yuzora's native layer: `yuzora-core` and one crate per area (shell, git, db, ssh, files, settings, perf) |
+| `app/defaults/mods/yuzora-*` | Yuzora's mods: the dock's modes, tool panes, mode bar, status bar |
+| `app/defaults/layouts/yuzora.json`, `themes/yuzora-{dark,light}.json`, `yuzora/tokens.json` | Default layout, themes and design tokens |
+| `app/scripts/yuzora/`, `app/distribution/yuzora/` | Packaging, update manifest, upstream sync check |
+| [`docs/beta2/`](docs/beta2/) | Architecture, lanes, the design of each area, evidence screenshots |
+| `src-tauri/`, `src/` | Tauri app (v0.1.0-beta.1 and older), porting source |
+| `site/`, `site-remotion/` | Website (GitHub Pages, deployed from `main`) and its video sources |
+
+## In detail
+
+beta.2 is built in parallel lanes, each owning its own directories and its section below. Scope and rules:
+[docs/beta2/lanes.md](docs/beta2/lanes.md).
+
+<!-- yuzora:lane:L1:start -->
+### L1 · Shell and workspace
+
+The left side is Herdr's own (`workspace-chrome`, `spaces`, `agents`); the right-hand dock holds the Files, Git, Database and SSH modes: a 40px mode bar with each mode's badge beside a panel, or a drawer in a layout without one (Settings > Mods > Layouts turns it Auto, Drawer or Off per layout; `cmd-alt-b` / `ctrl-alt-b` toggles it). Then the tab bar (the new-pane menu, opened with the `yuzora-shell-tabs.new-pane` command, mixes tool panes, terminals and agents into one tab),
+pane headers (amber while an agent needs a reply) and the status bar. A new Space starts by picking its folder; on a
+remote machine you type the path, checked on that machine. `yuzora:shell` (`app/crates/yuzora-shell`) holds the
+workspace model, Space badges and a small Git summary. Details: [docs/beta2/shell.md](docs/beta2/shell.md).
+<!-- yuzora:lane:L1:end -->
+
+<!-- yuzora:lane:L2:start -->
+### L2 · Git
+
+Git modelled on JetBrains IntelliJ IDEA Community, with the staging area:
+the right-hand dock's Git mode (changes, staging, commit, push), a diff pane with
+hunk and line staging, the commit log with its branch graph, the branches
+popup, push dialog, three-way merge, interactive rebase, annotate, and a
+repository pane (stashes, tags, remotes, worktrees, submodules, patches).
+All git work runs in Rust (`app/crates/yuzora-git`, the `yuzora:git`
+module), never on the UI thread. Design and the IntelliJ checklist:
+[docs/beta2/git.md](docs/beta2/git.md).
+<!-- yuzora:lane:L2:end -->
+
+<!-- yuzora:lane:L3:start -->
+### L3 · Databases
+
+PostgreSQL, SQL Server and SQLite in the right-hand dock's Database mode: saved connections (passwords in the system keychain), a database picker and the schema tree; a table pane with Data (virtual grid, sorting, copying, editing cells and writing them back in one transaction), Structure (columns, indexes, foreign keys, DDL) and SQL; and a SQL pane with several result sets, cancel and history. Connections through an SSH tunnel aren't wired up yet. Native layer `app/crates/yuzora-db` (`yuzora:db`); design and limits in [docs/beta2/db.md](docs/beta2/db.md).
+<!-- yuzora:lane:L3:end -->
+
+<!-- yuzora:lane:L4:start -->
+### L4 · SSH / SFTP
+
+The SSH / SFTP mode in the right-hand dock lists hosts from `~/.ssh/config`, Yuzora's own hosts and herdr machines, with connection state and latency. A host's quick actions open SFTP (a side-by-side local ↔ host pane with a transfer queue that resumes and keeps permissions and times), a terminal there, a HERDR session (`hc machine add`) and known hosts. New host keys are confirmed by fingerprint and changed keys are flagged; Yuzora writes host keys to its own file and only reads `~/.ssh`. A remote file can open in a local text editor, and each save uploads it. `yuzora_ssh::tunnel` forwards a local port through a host, for the database mode to use later. Details: [docs/beta2/ssh.md](docs/beta2/ssh.md).
+<!-- yuzora:lane:L4:end -->
+
+<!-- yuzora:lane:L5:start -->
+### L5 · Files and editor
+
+- **Files** mode in the right-hand dock: the focused pane's repo as a tree with git marks (M/A/D/U/?), new file and folder, rename, move to Trash, copy path, reveal in Finder; fuzzy file-name search and content search (ripgrep when installed, a built-in search otherwise).
+- **Editor** pane: tree-sitter highlighting for 14 languages, save with a conflict check (⌘S), find and replace (⌘F / ⌘H). It follows changes made on disk and shows when an agent is editing the same file.
+- **Markdown** pane: a GFM preview that follows the editor as you type, with a source / preview toggle. An image and SVG viewer.
+- Files on another machine (remote spaces) can be browsed since beta.2. Since 0.1.0 they can be edited and saved, and files and folders can be created and renamed there. Saving needs herdr-core 0.1.19 or newer on both machines. Deleting there isn't available yet.
+
+Details: [docs/beta2/files.md](docs/beta2/files.md).
+<!-- yuzora:lane:L5:end -->
+
+<!-- yuzora:lane:L6:start -->
+### L6 · Settings, mods and templates
+
+Settings open on Yuzora's own pages. Herdr's settings frame gets a "Yuzora" group listing every mod that declares `"yuzora": {"settings": …}`, and Privacy and Updates speak for Yuzora (it collects and sends nothing). L6's pages:
+
+- **General** (`yuzora-settings-general`): look (themes, fonts, size, zoom), terminal clipboard writes, and the right-hand dock mode to open at startup (shown once the dock applies it).
+- **Templates** (`yuzora-settings-templates`): herdr-core agent templates on each machine. List them, edit the frontmatter as a form and the body as text (checked before saving), move one to the trash, or start one in a Space and tab (`yuzora-settings-launch`: `hc run` with `herdr.space`/`herdr.tab` labels).
+- **Mods** (`yuzora-settings-mods`): shipped, edited, cloned and personal mods and layouts with their errors. Clone, show in folder, check, switch or reset a layout, or install from a folder after a trust warning. An edited shipped mod is moved aside to `<name>-edited` and the shipped one comes back at the next start.
+
+Native side: `app/crates/yuzora-settings` (`yuzora:settings`). Design and decisions: [docs/beta2/settings.md](docs/beta2/settings.md).
+<!-- yuzora:lane:L6:end -->
+
+<!-- yuzora:lane:L7:start -->
+### L7 · Release and updates
+
+The packages in [Download and install](#download-and-install) are made by `app/scripts/yuzora/package` and checked on all four targets by `.github/workflows/app-package.yml`.
+
+- **Updates.** An installed Yuzora checks this repository's GitHub Releases every hour, downloads a newer version next to itself and switches to it when it restarts. The update manifest must be signed with the release key and every file must match its SHA-256, or nothing is installed. A beta build only updates to a stable release (0.1.0 and later), never to another beta: download betas by hand. A stable build follows stable releases; `"update": {"channel": "beta"}` in `~/.config/yuzora/yuzora/settings.json` makes it take pre-releases too.
+- **Coming from 0.0.x or 0.1.0-beta.1.** Download and install 0.1.0 yourself (see [Download and install](#download-and-install)): the old app's updater doesn't offer it. The old app's data stays where it was. Connections and settings aren't brought over, so set them up again. On Windows, the installer offers to remove the old all-users install.
+- **The command line program is `yuzora`** (the same commands as `herdr-app`: `yuzora status`, `yuzora do …`). Yuzora never puts `herdr-app` on your PATH, so an official Herdr install keeps its own.
+
+Design, keys and the release steps: [docs/beta2/release.md](docs/beta2/release.md).
+<!-- yuzora:lane:L7:end -->
+
+<!-- yuzora:lane:L8:start -->
+### L8 · Resource usage
+
+The chip in the window's bottom-right corner shows what this computer's Yuzora uses (the app, its herdr-core with
+the terminals and agents in it, and the tools the app starts) as `{cpu}% · {memory}MB`, and opens the details above
+it. `yuzora:perf` (`app/crates/yuzora-perf`) samples on a worker thread every 2 s while the window is in front.
+Remote (SSH) Spaces aren't measured. Details: [docs/beta2/perf.md](docs/beta2/perf.md).
+<!-- yuzora:lane:L8:end -->
+
+<!-- yuzora:lane:L9:start -->
+### L9 · Using Yuzora beside Herdr
+
+Yuzora and the official Herdr app can run at the same time on one herdr-core (its default session). Each keeps its
+own Spaces, tabs and layout. The terminals belong to herdr-core, so both apps see them. Keep in mind:
+
+- **Closing a Space, tab or pane ends its terminals, whichever app opened them.** Each app gathers the other's
+  terminals into Spaces of its own. Closing one of those in Yuzora ends the terminal in Herdr too, and the other way
+  round. To close work Herdr opened, close it in Herdr.
+- **herdr-core starts again while either app is open.** After `hc server stop`, the open app starts the core again
+  within about a second, and every program in its terminals ends (kept terminals come back with a fresh shell). To
+  stop the core for good, quit both apps first.
+- **Herdr's settings and mods aren't imported.** To bring a mod over, copy its folder from Herdr's `mods/` into
+  Yuzora's: `~/.config/herdr-app/mods/` and `~/.config/yuzora/mods/` by default, under `XDG_CONFIG_HOME` when that is
+  set, or in the folders `HERDR_APP_HOME` and `YUZORA_APP_HOME` name if you set them. Or pick the mod's folder in
+  Settings › Mods › Install from folder… (which never overwrites a mod you have). `keys.json` and themes can be
+  copied the same way; don't copy `installed.json`. Yuzora's own `yuzora-*` mods don't load in Herdr.
+- **Machines and agent templates are shared.** Both apps use herdr-core's machine list and its templates folder
+  (`~/.config/herdr-core/templates/`; on Windows `%APPDATA%\herdr-core\templates`; `$XDG_CONFIG_HOME/herdr-core/templates/`
+  when that is set). A machine you add, rename or remove, or a template you edit in Yuzora's Settings, changes for
+  Herdr as well.
+- **When the core changes under Yuzora.** If herdr-core restarts as a version Yuzora can't use (for example Herdr
+  moved it to a newer generation), Yuzora doesn't connect to it and keeps the reason on screen; click it to open
+  Settings › Updates. It connects again on its own once the core is fixed.
+
+Details and the decisions behind this: [docs/beta2/herdr-compat.md](docs/beta2/herdr-compat.md).
+<!-- yuzora:lane:L9:end -->
+
+## License
+
+The beta.2 app builds on [herdr-app](https://github.com/herdrdev/herdr-app) (Apache-2.0); its license and
+third-party notices are in [`app/LICENSE`](app/LICENSE) and [`app/THIRD-PARTY-NOTICES`](app/THIRD-PARTY-NOTICES).
 
 <br />
 
@@ -239,7 +265,7 @@ release and verification steps.
 
 <div align="center">
 
-**An ADE fused with the HERDR runtime.**
+**An ADE built on herdr-core.**
 
 <samp>agent development under the evening sky</samp>
 

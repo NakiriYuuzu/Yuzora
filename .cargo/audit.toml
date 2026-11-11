@@ -23,15 +23,7 @@
 # inputs; no secret scalars, signing or ECDH. SigningKey is test-authenticator
 # only. Reassess when webauthn_rp moves to p256 >=0.14 / crypto-bigint >=0.7.6,
 # and immediately if production private-key operations are added.
-#
-# RUSTSEC-2026-0367/-0368/-0369; zip <9, app (Tauri) dependencies first audited
-# when the crates merged into one workspace. Owner: yuuzu (approved 2026-10-30);
-# review-by: 2027-03-31. The app's zip 8.6.0 only writes archives; the updater's
-# zip 4.6.1 extracts signed Windows updates only. Rationale in deny.toml.
 ignore = [
     "RUSTSEC-2023-0071",
     "RUSTSEC-2026-0387",
-    "RUSTSEC-2026-0367",
-    "RUSTSEC-2026-0368",
-    "RUSTSEC-2026-0369",
 ]

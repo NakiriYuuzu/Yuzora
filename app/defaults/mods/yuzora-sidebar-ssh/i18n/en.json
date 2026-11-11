@@ -1,0 +1,25 @@
+{
+  "title": "SSH / SFTP",
+  "description": "Hosts, SFTP and tunnels",
+  "hosts": {
+    "title": "SSH hosts",
+    "add": "Add a host",
+    "empty": "No hosts yet.",
+    "emptyHint": "Hosts come from ~/.ssh/config, herdr machines, and the ones you add with +."
+  },
+  "state": { "connecting": "Connecting…", "error": "Failed" },
+  "latency": "{ms} ms",
+  "quick": {
+    "title": "{host} quick actions",
+    "sftp": "Open SFTP",
+    "terminal": "New terminal",
+    "herdr": "HERDR Session",
+    "known": "Known hosts"
+  },
+  "detail": {
+    "connected": "Connected · {kind} verified · {ms} ms",
+    "idle": "Not connected"
+  },
+  "action": { "connect": "Connect", "disconnect": "Disconnect", "edit": "Edit", "delete": "Delete" },
+  "connect": { "failed": "Couldn't connect to {host}" }
+}

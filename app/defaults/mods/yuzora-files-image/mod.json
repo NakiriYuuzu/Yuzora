@@ -1,0 +1,6 @@
+{
+  "place": "none",
+  "yuzora": {
+    "pane": { "title": "pane.title", "icon": "mods/yuzora-files-image/icon.svg", "order": 52, "header": "own" }
+  }
+}

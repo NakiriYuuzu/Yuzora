@@ -1,218 +1,252 @@
 <div align="center">
 
-<img src="src-tauri/icons/128x128@2x.png" width="112" alt="Yuzora icon" />
+<img src="app/assets/icons/yuzora.png" width="112" alt="Yuzora 圖示" />
 
 # Yuzora
 
-**讓 agent 開發，直接運轉在 HERDR。**
+**讓 agent 開發，直接運轉在 herdr-core。**
 
-<samp>macOS 與 Windows 的 AI 程式開發工作區，以 HERDR 驅動</samp>
+<samp>以 herdr-app 打造、給 CLI coding agents 的原生工作區</samp>
 
 <br />
 
 [![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
-[![Pages](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/deploy-pages.yml?style=flat-square&label=pages&labelColor=1b1a17)](https://github.yuuzu.net/Yuzora/)
+[![App CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/app-ci.yml?branch=beta2/integration&style=flat-square&label=beta.2%20app&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/app-ci.yml)
 ![Version](https://img.shields.io/badge/version-0.1.0--beta.1-86b81f?style=flat-square&labelColor=1b1a17)
-![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows-57534b?style=flat-square&labelColor=1b1a17)
-![Tauri](https://img.shields.io/badge/Tauri-2-24c8db?style=flat-square&logo=tauri&logoColor=white&labelColor=1b1a17)
+![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux%20%28experimental%29-57534b?style=flat-square&labelColor=1b1a17)
 
 <samp><a href="README.md">English</a> · 繁體中文 · <a href="https://github.yuuzu.net/Yuzora/">官方網站</a></samp>
-
-<br />
-<br />
-
-<img src="docs/readme/hero-zh.gif" width="880" alt="Yuzora v0.0.13 Demo 導覽：Spaces、HERDR 終端機、Git 差異、SQL 結果與外觀設定" />
 
 </div>
 
 <br />
 
-> Yuzora 是以 Tauri 打造的 **AI 程式開發工作區，支援 macOS 與 Windows**。
-> 在可持續執行的 HERDR 終端 Session 使用 Claude Code、Codex、Pi 等 CLI coding agents，
-> 並在同一個桌面 App 操作程式編輯器、Git diff、SSH／SFTP、WSL、SQL 資料庫與 HTML 預覽。
-> 預設在地執行；Agent CLI 與使用帳號由使用者自行管理。
+> **v0.1.0 是新 Yuzora 的第一個正式版。** Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)
+> （Rust · GPUI · libghostty · QuickJS mods）為基底，成為原生 App，程式在 [`app/`](app/)。
+> v0.1.0-beta.1 以前的版本是 `src-tauri/` 與 `src/` 的 Tauri App，保留在 repo 裡當移植來源。
+> 架構見 [docs/beta2/architecture.md](docs/beta2/architecture.md)。
 
-<br />
+Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認得的 agent）跑在 herdr-core 的終端機裡，
+關掉視窗也會繼續執行；Git、檔案、資料庫與 SSH／SFTP 就在旁邊，同一個視窗裡。
+
+<p align="center">
+  <img src="docs/readme/workspace-zh.png" width="880" alt="Yuzora beta.2：側欄列出三個 Space 與各自的 agent，同一個 tab 裡分割出 agent 終端機、Git diff 與資料表" />
+</p>
+
+<sub>這張截圖是 beta.2 的，待重拍：beta.4 起左側是 Herdr 原生的 Spaces 與 agents 清單（頂端為「Herdr」），Files、Git、Database、SSH 模式在右側。</sub>
 
 ## 功能
 
-### v0.0.16 更新
+- **Spaces 與 agents。** 一個 Space 是這台電腦上的資料夾，或是經 SSH 連到的 herdr machine 上的資料夾。左側
+  （Herdr 原生的 Spaces 與 agents 清單）依機器分組、把 worktree 排在所屬 repo 下，並顯示每個 agent 的狀態，需要你處理的排在最前面。
+- **混合分割。**新增 pane 選單（指令 `yuzora-shell-tabs.new-pane`）把工具 pane（Git、編輯器、資料庫、SFTP⋯）、終端機或 agent 放在目前 pane 的右側或
+  下方，都在同一個 tab 裡。
+- **Git** 以 IntelliJ IDEA Community 為基準，採 staging area 模式：右側 dock 處理變更與 commit，diff pane 可以逐塊、逐行
+  暫存，另有提交紀錄與分支圖、分支、push、三方合併、互動式 rebase 與 annotate。repo 自己的 Git 設定會執行程式的
+  資料夾，要先信任才會動作。
+- **檔案與編輯器。** 帶 Git 標記的檔案樹、檔名與內容搜尋、tree-sitter 上色的程式碼編輯器、Markdown 預覽，以及圖片
+  與 SVG 檢視（repo 的 SVG 在獨立的行程裡畫，有時間與記憶體上限）。0.1.0 起，遠端機器上的檔案可以編輯並存檔。不提供 language
+  server（LSP）。
+- **資料庫**：PostgreSQL、SQL Server、SQLite。schema 樹、可在單一交易內寫回修改的資料表格、資料表結構與 SQL pane。
+- **SSH／SFTP**：主機來自 `~/.ssh/config`、Yuzora 自建主機與 herdr machines；以指紋確認主機金鑰；SFTP 雙欄傳輸可以
+  續傳。
+- **設定、mods 與模板。** Yuzora 自己的介面就是 herdr mods，可以複製後修改；MOD 頁在顯示信任警告後，也能從資料夾
+  安裝別人的 mod。herdr-core 的 agent 模板可以在設定裡編輯與啟動。
+- 介面只有英文（本 README 與 changelog 另有繁體中文版），深色與淺色主題，預設跟隨系統。
+- **不收集任何資料。** 遙測已關閉，意見回饋改開 GitHub Issue。安裝好的正式版會向本 repo 的 GitHub Releases 檢查
+  Yuzora 更新，並向 `releases.herdr.dev` 檢查 herdr-core 的版本。
 
-- HERDR 工具：Worktrees、pane 搬移、Agents、Integrations、Sessions 與 Plugins，並提供選配的 Agent 通知及「開啟 Herdr 視窗」。
-- 支援 Windows x86_64 SSH 主機：獨立 helper、named pipe 與原生路徑。
-- 重整資料庫工作台，支援連線後選庫、雙擊編輯欄位與右鍵編輯資料表結構。
-- 大型文件背景搜尋、資料列虛擬化、Spaces／Agents 穩定排序與資源釋放。
-- 修正 SSH 密碼驗證與新 repo 取消暫存；改善 Git 分支提示及 Graph 作者／日期顯示。
+<p align="center">
+  <img src="docs/beta2/evidence/l2-diff.png" width="436" alt="Yuzora 的 Git 模式：側欄列出已暫存與未暫存的變更和 commit 區，右側是並排 diff pane，可以暫存或捨棄單一 hunk" />
+  <img src="docs/beta2/evidence/l2-log.png" width="436" alt="Yuzora 的 Git 提交紀錄 pane：依分支、作者、日期、路徑與訊息篩選，commit 旁有分支圖與分支、tag 標籤" />
+</p>
 
-### v0.0.15 更新
+<p align="center">
+  <img src="docs/readme/files-zh.png" width="880" alt="Yuzora 的檔案模式：側欄是帶 Git 標記的 repo 檔案樹，agent 終端機旁分割出程式碼編輯器與 Markdown 預覽" />
+</p>
 
-- 可設定頁籤快捷鍵，包含 Ctrl+Tab 與直接選取第 1～9 個頁籤。
-- 預覽本機、WSL 與 SSH 工作區已儲存的 HTML；在瀏覽器選取元素並複製 AI 修改所需的上下文。
-- 整合 HERDR 0.9.1，修正終端焦點與渲染問題、Git 操作與 WSL 存檔誤報。
+新 App 不包含 Tauri 版的 Browser、Companion 與 AgentZone。
 
-### v0.0.13 更新
+## 下載與安裝
 
-- Stable 與 Preview 更新檢查會依 SemVer 選擇最新簽章版本，並相容尚未提供新原生命令的舊版 Yuzora。
-- WSL 資料夾開啟在 Shell 選取無法將 Explorer 帶到前景時，會 fallback 到 `\\wsl.localhost`／`\\wsl$` 命名空間。
+請從 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) 或官方網站下載 v0.1.0。macOS 與 Linux 上的 beta.2 到 beta.4 會自己更新到它。Windows 上的 beta 無法自己更新：請先完全關閉 Yuzora，再下載安裝程式直接覆蓋安裝，並閱讀[版本紀錄](CHANGELOG.zh-TW.md)裡給 Windows 的說明。
 
-### v0.0.10 更新
-
-- 工作工具整合為「檔案｜GIT」卡片，支援建立檔案／資料夾、複製完整路徑，以及使用 Finder 或 Explorer 開啟。
-- Git Graph 支援依分支數量動態延伸與水平捲動，大型文件連續渲染，HERDR、diff 與 minimap 捲軸可直接操作。
-- 新增快捷鍵設定與 GitHub、Yuzora、One 語法配色主題，補齊常見語言與副檔名映射。
-
-- 加快 Git 狀態、分支與 diff 載入；切換已開啟 HERDR 終端機更流暢，保留輸出與連線。
-- 外觀設定新增可保存的 Bot 動畫開關；低規格裝置預設顯示靜態夥伴，並遵循系統減少動態效果設定。
-- 編輯器／diff 主題捲軸、可調整寬度的資料庫側欄，以及清楚的提交紀錄／分支圖按鈕。
-- 多行整段貼上、可選擇的選取自動複製，以及 Option／Alt+V 將圖片貼到終端機所在主機。
-- Windows 原生 HERDR、可選擇啟用的 WSL，以及本機／SSH 主機間的工作區信任、路徑與重連改善。
-- 更新品牌，加入[網頁互動 Demo](https://github.yuuzu.net/Yuzora/demo/)，與官網一起透過 GitHub Actions Pages 部署。
-
-完整更新與限制見 [Changelog](CHANGELOG.md)。
-
-<table>
-<tr>
-<td valign="middle" width="38%">
-
-<sub><samp>01 · ADE × HERDR</samp></sub>
-
-### 從 Space 到 agent 終端
-
-Space 與 Agent 側欄投影 HERDR Spaces、named Sessions、Attention 與 Agents。選擇 agent 時，Yuzora 會聚焦其 Session 與 Space，再開啟對應的 HERDR terminal page。每個 Yuzora page 對應一個 HERDR tab，並遞迴呈現 BSP panes。所有 mutation 依 capability 開放。
-
-<code>Spaces</code> <code>named Sessions</code> <code>BSP terminal</code>
-
-</td>
-<td valign="middle" width="62%">
-
-<img src="docs/readme/ade-herdr-zh.png" alt="Yuzora v0.0.9 AppShell Demo：Spaces 與 Agents、HERDR 終端機及工作區工具" />
-
-</td>
-</tr>
-</table>
-
-<table>
-<tr>
-<td valign="middle" width="62%">
-
-<img src="docs/readme/remote-db-zh.png" alt="資料庫面板：查表、下 query、看結構" />
-
-</td>
-<td valign="middle" width="38%">
-
-<sub><samp>02 · SSH ＆ 資料庫</samp></sub>
-
-### 遠端即在地
-
-SSH 連上遠端主機瀏覽與編輯檔案、SFTP 傳輸；資料庫面板直接查表、下 query、看結構。連線設定集中管理，known hosts 與憑證都留在本機。
-
-<code>SSH / SFTP</code> <code>PostgreSQL</code> <code>SQL Server</code> <code>SQLite</code>
-
-</td>
-</tr>
-</table>
-
-<table>
-<tr>
-<td valign="middle" width="38%">
-
-<sub><samp>03 · TERMINAL ＆ GIT</samp></sub>
-
-### 內建 terminal 與 git 工具
-
-HERDR terminal pages 提供 xterm 輸入輸出與分割面板；git 面板看歷史、看 diff、從 commit 細節直接 cherry-pick。log 查詢與匯出讓除錯不用離開工作台。
-
-<code>xterm + HERDR</code> <code>git log / cherry-pick</code> <code>log 查詢</code>
-
-</td>
-<td valign="middle" width="62%">
-
-<img src="docs/readme/terminal-git-zh.png" alt="Yuzora v0.0.9 Git 並排差異與提交紀錄／分支圖按鈕" />
-
-</td>
-</tr>
-</table>
-
-<br />
-
-### Companion（實驗性）
-
-用手機控制 HERDR Agent：查看 Agent 狀態、瀏覽 Spaces、唯讀查看 Git 狀態、歷史與 diff；在桌面授權後才能送出輸入。Companion **預設關閉**，需到「設定 → Companion」手動開啟。
-
-- Yuzora 內建自己的 Tailscale 節點，這台電腦不必安裝 Tailscale App；手機則需要安裝 Tailscale 並登入同一個 tailnet，再以 HTTPS 開啟 Companion 頁面。
-- 手機以 QR code 配對：兩邊核對確認碼（SAS）後註冊 passkey，之後每次連線都要通過 passkey。
-
-> **警告：**啟用 Companion 等同授予這台電腦帳號遠端 shell 權限。取得操作授權的手機可以驅動你的 AI Agent，而 Agent 可以執行指令。請只在你信任的 tailnet 上、在需要的期間內啟用。
-
-設定方式、存取控制（ACL）建議與疑難排解見 [docs/operations.md](docs/operations.md)。
-
-<br />
-
-## 下載
-
-正式版由 GitHub Actions 建置並發佈於 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases)。未發布的 PR 候選版只提供 Actions artifacts。
-
-| 平台 | 格式 | 下載 |
+| 平台 | 檔案 | 安裝位置 |
 |:--|:--|:--|
-| **macOS** | `.dmg` — 僅支援 Apple Silicon（M 系列） | [Yuzora-macos-aarch64.dmg](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-aarch64.dmg) |
-| **Windows** | `.msi` — x64 | [Yuzora-windows-x64.msi](https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64.msi) |
+| **macOS**，僅支援 Apple Silicon（M 系列） | `Yuzora_<version>_aarch64.dmg`：把 Yuzora 拖進「應用程式」 | `/Applications/Yuzora.app`；App 會建立 `~/.local/bin/yuzora` |
+| **Windows** x64 | `Yuzora_<version>_x64-setup.exe`，不需要系統管理員權限 | `%LOCALAPPDATA%\Programs\Yuzora`，並把 `yuzora` 加進 PATH |
+| **Linux** x86_64／aarch64，實驗性 | `yuzora-<version>-linux-<arch>.tar.gz`，解開後執行 `yuzora/install` | `~/.local/share/yuzora` 與 `~/.local/bin/yuzora` |
 
-Windows 只發行 MSI 安裝檔；已停止發行 NSIS `.exe`，固定連結 `Yuzora-windows-x64-setup.exe` 不再更新（舊版 release 資產不變）。歷史版本見 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases)。Linux 僅作為 CI／測試 host，不是 Yuzora 支援的桌面發佈平台。
+正式版另外提供固定檔名，永遠指向最新的正式版：`releases/latest/download/Yuzora-macos-aarch64.dmg`
+與 `releases/latest/download/Yuzora-windows-x64-setup.exe`。Tauri 版最後一個正式版 v0.0.19 留在它自己的 release 頁面。
 
-從 v0.0.9 起，macOS App 僅支援 Apple Silicon；Intel macOS 遠端 Host 保留支援。
+- **macOS 沒有 Apple Developer ID 簽章，也沒有公證**（只有 ad-hoc 簽章）。第一次開啟會被 Gatekeeper 擋下：到
+  「系統設定 › 隱私權與安全性」按「強制打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。
+  只對從本 repo Releases 下載的 DMG 這樣做。更新之後，macOS 可能會再詢問一次麥克風、相機或資料夾的存取權限。
+- **Windows 沒有 Authenticode 簽章。** SmartScreen 可能出現警告，請點「其他資訊 › 仍要執行」。
+- **Windows 與 Linux 只通過 CI。** 0.1.0 沒有人在實體的 Windows 或 Linux 機器上試過。Linux 是實驗性的。
+- **herdr-core。** 終端機與 agent 由 herdr-core（`hc`）執行，需要 0.1.11 以上。還沒安裝時，第一次開啟的畫面會提供
+  「幫我安裝」，使用 herdr-core 官方的安裝程式。
+- 從 v0.0.9 起，macOS App 僅支援 Apple Silicon；Intel Mac 仍可當遠端主機。
 
-macOS 安裝檔**未經 Apple Developer ID 簽章或公證**，首次開啟可能被 Gatekeeper 提示或阻擋。請從上述官方 Release 下載，嘗試開啟後，依 macOS「系統設定 → 隱私權與安全性」提供的「仍要打開」流程操作。Windows 尚未啟用 Authenticode，可能出現 SmartScreen 提示。正式版自動更新仍會驗證 Tauri updater 簽章。
+更新、從 beta.1 升級與 `yuzora` 指令：見 [L7 · 發布與更新](#l7--發布與更新)。版本紀錄：[CHANGELOG.zh-TW.md](CHANGELOG.zh-TW.md)。
 
-## 技術架構
+## 從原始碼建置
 
-| 層 | 技術 |
-|:--|:--|
-| 桌面框架 | [Tauri 2](https://tauri.app)（Rust） |
-| 前端 | React + TypeScript + Vite |
-| Agent runtime | HERDR public API ＋官方 terminal session connector |
-| Terminal | xterm.js ＋ HERDR terminal pages |
-| 工具鏈 | Bun · Vitest · Cargo |
-
-Yuzora 隨附 HERDR 0.9.5，透過 private protocol 22 與 schema 檢查保留 0.9.0、0.9.1、0.9.3 相容性。在「設定 → HERDR」可為各主機選用 Yuzora 管理、已安裝或自訂 binary，並檢查相容性與診斷。Windows 預設使用原生 HERDR，WSL 需明確啟用；每個工作區在所選本機、WSL 或 SSH 主機執行，純 SFTP 不需要 runtime。關閉 Yuzora 只釋放自身 helper 與 connector，保留 HERDR server 與 Agent。升級時保留既有主機路徑，請在設定明確更新所選來源。
-
-Apple Silicon macOS App 的受管 HERDR 共用 `Contents/Resources/host/macos-aarch64/herdr`，不再額外隨附 `herdr/macos-*` binary。五平台遠端 Host payload 全數保留，包含 Intel macOS；Windows 維持獨立的原生 HERDR 路徑。
-
-側欄的「HERDR 工具」可管理 Worktrees、搬移 panes、啟動與控制 Agents、安裝／更新 Integrations、管理執行中或已停止的 Sessions，以及安裝、啟停與移除 Plugins。背景 Agent 完成或需要輸入時，可顯示 toast、系統通知與聲音；系統通知需在工具中啟用並取得作業系統權限。
-
-「開啟 Herdr 視窗」內嵌官方 HERDR 介面，提供歷史搜尋、鍵盤 Copy mode、Kitty 圖片與外掛彈窗。預設按 Ctrl+B 後按 [ 進入 Copy mode，再用 / 搜尋、v 選取、y 複製；自訂快捷鍵以 HERDR 設定為準。一般 pane connectors 在 Herdr 視窗開啟期間暫停；關閉畫面後恢復連線，執行中的工作持續保留。Windows x86_64 SSH 主機使用獨立 helper 與 named pipe，可保留原生路徑。部署與驗收限制見 [操作文件](docs/operations.md)。
-
-Agent 也可在 HERDR 終端機手動啟動。舊 WSL Pi Plugin、獨立本機／SSH shell 與 LSP 設定已移除；Browser 可開啟網站及自行在終端機啟動的服務。
-
-### 網頁互動 Demo
-
-[官網](https://github.yuuzu.net/Yuzora/)提供[互動 Demo](https://github.yuuzu.net/Yuzora/demo/)，可操作範例終端機、檔案、Git 差異與資料庫。Demo 使用記憶體中的範例資料，不連接本機或遠端主機。執行 `bun run demo:build` 建置，GitHub Actions 會將官網與 Demo 一同部署至 Pages。
-
-## 開發
+beta.2 App 需要 Rust 1.95 以上、[Zig 0.16.0](https://ziglang.org/download/)（ghostty 用）與 ghostty submodule：
 
 ```bash
-bun install          # 安裝依賴
-bun run tauri:dev    # 啟動桌面 app（dev server :1420）
-bun run site:companions # 產生官網角色
-bun run demo:build   # 準備官網測試所需的 Pages 產物
-bun run test         # vitest
-bun run build        # 前端建置（含 typecheck）
-cd src-tauri
-cargo check          # Rust 檢查
+git submodule update --init app/vendor/ghostty
+cd app
+cargo build                    # target/debug/herdr-app
+cargo test --locked            # App、ghostty-sys 與全部 yuzora-* crate
+scripts/yuzora/check-mods      # 對每個 Yuzora mod 執行 herdr-app check
+scripts/yuzora/package         # release build，並在 dist/ 產生這個平台的安裝檔
 ```
 
-從原始碼建置安裝檔：
+- `app/` 是獨立的 Cargo workspace，有自己的 `Cargo.lock` 與 target（`app/target`）。Cargo package 與執行檔沿用上游的
+  名稱 `herdr-app`，打包後才叫 Yuzora 與 `yuzora`。
+- 從原始碼建置的版本不會檢查更新，只有安裝好的正式 build 會。
+- 不要讓開發中的 build 讀寫你自己的資料：給它暫存的 app home 與 core session（`YUZORA_APP_HOME`、`HC_SESSION`，見
+  [docs/beta2/lanes.md](docs/beta2/lanes.md)）。macOS 上可用 `scripts/yuzora/bundle-macos <dir>` 包成 `Yuzora.app`。
+
+Tauri App（v0.1.0-beta.1 以前）仍可在 repo 根目錄建置：
 
 ```bash
 bun install
-bun run tauri:build
+bun run tauri:dev    # 桌面 App（dev server :1420）
+bun run test         # vitest
+bun run build        # typecheck＋前端建置
+cargo check --locked --all-targets
 ```
 
-本機建置會刻意停用 updater 產物與 release 簽章，因此不需要 production secrets。
-正式版保留 updater 簽章，macOS 不使用 Apple 簽章／公證。各平台建置與驗證步驟見[發布運維手冊](docs/operations.md)。
+它的發布步驟見 [docs/operations.md](docs/operations.md)。
 
-> README 與[官網](https://github.yuuzu.net/Yuzora/)媒體，均由 [Remotion](https://www.remotion.dev)
-> 使用目前 AppShell Demo 的錄製畫面渲染。錄製使用範例資料，不代表真實主機；
-> 原始碼與可重現的產生指令見 [`site-remotion/`](site-remotion/)。
+## Repo 結構
+
+| 路徑 | 內容 |
+|:--|:--|
+| [`app/`](app/) | **beta.2 App**：以 `git subtree` 引入的 herdr-app，獨立的 Cargo workspace |
+| `app/src/yuzora/` | Yuzora 在 App 裡唯一的整合點：品牌、開關、`yuzora:*` 模組、更新 |
+| `app/crates/yuzora-*` | Yuzora 的原生層：`yuzora-core` 與各功能一個 crate（shell、git、db、ssh、files、settings、perf） |
+| `app/defaults/mods/yuzora-*` | Yuzora 的 mods：dock 的模式、工具 pane、模式列、狀態列 |
+| `app/defaults/layouts/yuzora.json`、`themes/yuzora-{dark,light}.json`、`yuzora/tokens.json` | 預設 layout、主題與設計 tokens |
+| `app/scripts/yuzora/`、`app/distribution/yuzora/` | 打包、更新 manifest、上游同步檢查 |
+| [`docs/beta2/`](docs/beta2/) | 架構、lanes、各功能的設計文件與實機截圖 |
+| `src-tauri/`、`src/` | Tauri App（v0.1.0-beta.1 以前），移植來源 |
+| `site/`、`site-remotion/` | 官方網站（GitHub Pages，從 `main` 部署）與影片原始碼 |
+
+## 功能細節
+
+beta.2 分成多條 lane 並行開發，每條 lane 擁有自己的目錄與下面的一節。範圍與規則見
+[docs/beta2/lanes.md](docs/beta2/lanes.md)。
+
+### L1 · 外殼與工作區
+
+左側是 Herdr 原生的（`workspace-chrome`、`spaces`、`agents`）；右側 dock 放 Files、Git、Database、SSH 四個模式：`panel` 旁 40px 的模式列（帶各模式徽章），沒有 panel 的 layout 改用抽屜（設定 › Mods › Layouts 可對每個 layout 選 Auto／Drawer／Off；`cmd-alt-b`／`ctrl-alt-b` 開關）。另有 tab 列、pane 標頭（agent 需要回覆時轉為
+琥珀色）與狀態列；新增 pane 選單（指令 `yuzora-shell-tabs.new-pane`）可把工具 pane、終端機與 agent 混合分割進同一個 tab。新增 Space 時先選資料夾；遠端機器改成輸入路徑，並在那台機器上確認。`yuzora:shell`
+（`app/crates/yuzora-shell`）提供工作區模型、Space 徽章與簡單的 Git 摘要。細節見
+[docs/beta2/shell.md](docs/beta2/shell.md)。
+
+### L2 · Git
+
+以 JetBrains IntelliJ IDEA Community 為基準、採 staging area 模式的 Git：右側 Git 模式（變更、暫存、commit、push）、
+可逐塊與逐行暫存的 diff pane、提交紀錄與分支圖、分支 popup、push 對話框、三方合併、互動式 rebase、annotate，以及
+repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 工作都在 Rust（`app/crates/yuzora-git`，
+`yuzora:git` 模組）執行，不在 UI 執行緒。設計與 IntelliJ 對照清單見 [docs/beta2/git.md](docs/beta2/git.md)。
+
+### L3 · 資料庫
+
+右側「資料庫」模式支援 PostgreSQL、SQL Server、SQLite：儲存的連線（密碼存在系統鑰匙圈）、資料庫切換與 schema
+樹；資料表 pane 有資料（虛擬捲動表格、排序、複製、編輯儲存格並在單一交易內寫回）、結構（欄位、索引、外鍵、DDL）
+與 SQL 分頁；SQL pane 可執行多個結果集、取消與查看歷史紀錄。經 SSH tunnel 連線尚未接上。原生層是
+`app/crates/yuzora-db`（`yuzora:db`），設計與限制見 [docs/beta2/db.md](docs/beta2/db.md)。
+
+### L4 · SSH／SFTP
+
+右側 SSH／SFTP 模式列出 `~/.ssh/config`、Yuzora 自建主機與 herdr machines，並顯示連線狀態與延遲。主機的快速動作：
+開啟 SFTP（本機 ↔ 主機雙欄，傳輸佇列可以續傳，並保留權限與時間）、在那台主機開終端機、HERDR Session
+（`hc machine add`）與已知主機。新的主機金鑰以指紋確認，金鑰變更時會警告；Yuzora 只把主機金鑰寫進自己的檔案，
+`~/.ssh` 只讀不寫。遠端檔案可以用本機的文字編輯器開啟，每次存檔都會自動上傳。`yuzora_ssh::tunnel` 可經由主機轉送
+本機埠，之後給資料庫模式使用。細節見 [docs/beta2/ssh.md](docs/beta2/ssh.md)。
+
+### L5 · 檔案與編輯器
+
+- 右側**檔案**模式：以樹狀顯示目前 pane 所在的 repo，帶 Git 標記（M／A／D／U／?）；新增檔案與資料夾、重新命名、刪除到
+  垃圾桶、複製路徑、在 Finder 中顯示；檔名模糊搜尋與內容搜尋（有安裝 ripgrep 就用它，否則用內建搜尋）。
+- **編輯器** pane：14 種語言的 tree-sitter 上色，存檔時檢查衝突（⌘S），尋找與取代（⌘F／⌘H）。磁碟上的變更會即時跟上，
+  有 agent 在改同一個檔案時會顯示。
+- **Markdown** pane：GFM 預覽，跟著編輯器即時更新，可以切換原始碼與預覽。另有圖片與 SVG 檢視。
+- beta.2 起可以瀏覽其他機器（遠端 Space）上的檔案。0.1.0 起可以編輯並存檔，也可以新增檔案、新增資料夾與重新命名。存檔需要兩邊的 herdr-core 都是 0.1.19 以上。遠端刪除還不能用。
+
+細節見 [docs/beta2/files.md](docs/beta2/files.md)。
+
+### L6 · 設定、mods 與模板
+
+設定改從 Yuzora 自己的頁面開啟。Herdr 的設定畫面多了「Yuzora」分組，列出每個在 `mod.json` 宣告
+`"yuzora": {"settings": …}` 的 mod；隱私與更新頁改為說明 Yuzora 的做法（不收集也不傳送任何資料）。L6 的頁面：
+
+- **一般**（`yuzora-settings-general`）：外觀（主題、字型、字級、縮放）、終端機
+  剪貼簿寫入、啟動時開啟的右側 dock 模式（dock 套用後才會出現）。
+- **模板**（`yuzora-settings-templates`）：各台機器上的 herdr-core agent 模板。可以列出、以表單編輯 frontmatter、以
+  文字編輯 body（存檔前檢查）、移到垃圾桶，或啟動到指定的 Space 與 tab（`yuzora-settings-launch`：帶
+  `herdr.space`／`herdr.tab` label 的 `hc run`）。
+- **MOD**（`yuzora-settings-mods`）：內建、已修改、複製與個人的 mods 與 layouts，以及它們的錯誤。可以複製、在資料夾中
+  顯示、檢查、切換或還原 layout，或在顯示信任警告後從資料夾安裝。改過的內建 mod 會在下次啟動時移到
+  `<名稱>-edited`，並換回內建版本。
+
+原生層是 `app/crates/yuzora-settings`（`yuzora:settings`），設計與決策見 [docs/beta2/settings.md](docs/beta2/settings.md)。
+
+### L7 · 發布與更新
+
+[下載與安裝](#下載與安裝)裡的安裝檔由 `app/scripts/yuzora/package` 產生，`.github/workflows/app-package.yml` 會在
+四個平台上檢查。
+
+- **更新。** 安裝好的 Yuzora 每小時檢查一次本 repo 的 GitHub Releases，把新版下載到自己旁邊，重新啟動時換上。更新
+  清單必須以 release 金鑰簽章，每個檔案也必須符合它的 SHA-256，否則什麼都不會安裝。beta build 只會更新到正式版
+  （0.1.0 以後），不會更新到其他 beta，beta 請手動下載；正式 build 走 stable 通道，要連 Pre-release 一起收，在
+  `~/.config/yuzora/yuzora/settings.json` 寫 `"update": {"channel": "beta"}`。
+- **從 0.0.x 或 0.1.0-beta.1 升級。** 請自行下載安裝 0.1.0（見[下載與安裝](#下載與安裝)）：舊版 App 的更新不會提供它。
+  舊版 App 的資料留在原處；連線與設定不會搬過來，要重新設定。Windows 的安裝程式
+  會詢問是否移除舊的全機安裝。
+- **命令列程式叫 `yuzora`**（指令和 `herdr-app` 相同：`yuzora status`、`yuzora do …`）。Yuzora 不會在 PATH 放
+  `herdr-app`，官方 Herdr 的 CLI 不受影響。
+
+設計、金鑰與發布步驟見 [docs/beta2/release.md](docs/beta2/release.md)。
+
+### L8 · 資源用量
+
+視窗右下角的 chip 以 `{cpu}% · {memory}MB` 顯示這台電腦上 Yuzora 的用量（App 本體、herdr-core 與其中的終端機和
+agents、App 啟動的工具），點擊會往上展開明細。`yuzora:perf`（`app/crates/yuzora-perf`）在視窗位於前景時，於 worker
+執行緒每 2 秒取樣一次。SSH 遠端 Space 不計入。細節見 [docs/beta2/perf.md](docs/beta2/perf.md)。
+
+### L9 · 和 Herdr 一起使用
+
+Yuzora 與官方 Herdr App 可以同時使用同一個 herdr-core（預設 session）。兩邊各自保留自己的 Spaces、tabs 與 layout；
+終端機屬於 herdr-core，兩個 App 都看得到。請注意：
+
+- **關閉 Space、tab 或 pane 會結束其中的終端機，不論是哪個 App 開的。** 兩個 App 都會把對方的終端機收進自己的
+  Space。在 Yuzora 關掉其中一個，Herdr 那邊的終端機也會結束，反過來也一樣。要關掉 Herdr 開的工作，請在 Herdr 關。
+- **只要任一個 App 開著，herdr-core 就會重新啟動。** 執行 `hc server stop` 後，開著的 App 約一秒內就會重新啟動 core，
+  終端機裡的程式全部結束（保留的終端機會換成新的 shell）。要真的停止 core，先關掉兩個 App。
+- **不會匯入 Herdr 的設定與 mods。** 要搬一個 mod，把它的資料夾從 Herdr 的 `mods/` 複製到 Yuzora 的 `mods/`：預設是
+  `~/.config/herdr-app/mods/` 與 `~/.config/yuzora/mods/`，設了 `XDG_CONFIG_HOME` 時在它底下，設了 `HERDR_APP_HOME`、
+  `YUZORA_APP_HOME` 時則在它們指定的資料夾。也可以在「設定 › MOD › 從資料夾安裝…」選那個 mod 的資料夾（不會覆寫已有的
+  mod）。`keys.json` 與 themes 也能這樣複製；不要複製 `installed.json`。Yuzora 自己的 `yuzora-*` mods 在 Herdr 無法
+  載入。
+- **machines 與 agent 模板是共用的。** 兩個 App 用的是 herdr-core 的機器清單與模板資料夾
+  （`~/.config/herdr-core/templates/`；Windows 是 `%APPDATA%\herdr-core\templates`；設了 `XDG_CONFIG_HOME` 時是
+  `$XDG_CONFIG_HOME/herdr-core/templates/`）。在 Yuzora 新增、改名或移除機器，或在設定裡編輯模板，Herdr 那邊也會跟著
+  變。
+- **core 在背後被換掉時。** herdr-core 重新啟動後若變成 Yuzora 不能用的版本（例如 Herdr 把它換成新一代），Yuzora 不會
+  接上，並一直顯示原因；點一下會開啟「設定 › 更新」。core 恢復後會自動重新連線。
+
+細節與背後的決策見 [docs/beta2/herdr-compat.md](docs/beta2/herdr-compat.md)。
+
+## 授權
+
+beta.2 App 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Apache-2.0）為基礎；授權與第三方聲明見
+[`app/LICENSE`](app/LICENSE) 與 [`app/THIRD-PARTY-NOTICES`](app/THIRD-PARTY-NOTICES)。
 
 <br />
 
@@ -220,7 +254,7 @@ bun run tauri:build
 
 <div align="center">
 
-**ADE 與 HERDR，融合成一個工作面。**
+**以 herdr-core 為核心的 ADE。**
 
 <samp>夕空下的 agent development environment</samp>
 

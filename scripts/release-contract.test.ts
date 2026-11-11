@@ -137,6 +137,42 @@ describe("release workflow contracts", () => {
     expect(result.stderr).toContain("must target Apple Silicon only")
   })
 
+  describe("retirement for the herdr-based app", () => {
+    const stepName = "Refuse a Tauri release from a tree that carries app/"
+    const guardStep = () => releaseWorkflow().jobs.guard.steps.find((candidate) => candidate.name === stepName)
+
+    it("stops a Tauri release only when a release would be built, right after the release is resolved", () => {
+      const steps = releaseWorkflow().jobs.guard.steps.map((candidate) => candidate.name)
+      expect(guardStep()?.if).toBe("steps.release.outputs.should_build == 'true'")
+      expect(steps.indexOf(stepName)).toBe(steps.indexOf("Resolve release target") + 1)
+    })
+
+    it.each([
+      ["a tree with only the Tauri app", [], 0],
+      ["a tree that carries app/", ["app/Cargo.toml"], 1],
+    ])("%s", (_name, files, status) => {
+      const dir = mkdtempSync(join(tmpdir(), "release-retired-"))
+      for (const file of files) {
+        mkdirSync(join(dir, file, ".."), { recursive: true })
+        writeFileSync(join(dir, file), "")
+      }
+      const result = spawnSync("bash", ["-c", guardStep()!.run!], { cwd: dir, encoding: "utf8" })
+      expect(result.status).toBe(status)
+      if (status === 1) expect(result.stdout).toContain("app-release.yml")
+    })
+
+    it("is part of the contract: a release.yml without the step no longer verifies", () => {
+      const result = spawnSync("bun", ["-e", `
+        import { parseReleaseWorkflow, verifyStableReleaseContract } from "./scripts/release-contract.ts";
+        const release = parseReleaseWorkflow(await Bun.file(".github/workflows/release.yml").text());
+        release.jobs.guard.steps = release.jobs.guard.steps.filter((step) => step.name !== ${JSON.stringify(stepName)});
+        verifyStableReleaseContract(release);
+      `], { encoding: "utf8" })
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain("must refuse a Tauri release")
+    })
+  })
+
   it("rejects mutable action refs and accepts full commit pins", () => {
     expect(isPinnedReleaseActionRef("actions/checkout@v4")).toBe(false)
     expect(isPinnedReleaseActionRef("dtolnay/rust-toolchain@stable")).toBe(false)

@@ -1,0 +1,209 @@
+{
+  "id": "root",
+  "type": "row",
+  "titlebar": "none",
+  "traffic_lights": [
+    14,
+    13
+  ],
+  "theme": {
+    "light": "yuzora-light",
+    "dark": "yuzora-dark"
+  },
+  "ui_font": ".SystemUIFont",
+  "background": "canvas",
+  "terminal_padding": [
+    12,
+    10
+  ],
+  "divider": {
+    "width": 1,
+    "color": "divider"
+  },
+  "children": [
+    {
+      "id": "sidebar",
+      "type": "column",
+      "size": {
+        "px": 248
+      },
+      "min": 44,
+      "max": 480,
+      "background": "chrome",
+      "resizable": false,
+      "children": [
+        {
+          "id": "brand",
+          "type": "block",
+          "size": {
+            "px": 40
+          },
+          "window_drag": true,
+          "content": {
+            "mod": "workspace-chrome"
+          }
+        },
+        {
+          "id": "sidebar-lists",
+          "type": "column",
+          "children": [
+            {
+              "id": "spaces",
+              "type": "block",
+              "size": {
+                "weight": 1
+              },
+              "min": 90,
+              "content": {
+                "mod": "spaces"
+              }
+            },
+            {
+              "id": "agents",
+              "type": "block",
+              "size": {
+                "weight": 1
+              },
+              "min": 90,
+              "content": {
+                "mod": "agents"
+              }
+            }
+          ]
+        },
+        {
+          "id": "sidebar-footer",
+          "type": "block",
+          "size": {
+            "px": 69
+          },
+          "content": {
+            "mod": "workspace-chrome",
+            "props": {
+              "footer": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "work",
+      "type": "column",
+      "resizable": false,
+      "children": [
+        {
+          "id": "tabs",
+          "type": "block",
+          "size": {
+            "px": 36
+          },
+          "window_drag": true,
+          "content": {
+            "mod": "yuzora-shell-tabs"
+          }
+        },
+        {
+          "id": "work-body",
+          "type": "row",
+          "padding": 6,
+          "gap": 6,
+          "children": [
+            {
+              "id": "main",
+              "type": "block",
+              "content": {
+                "tab": "active",
+                "pane": {
+                  "gap": 6,
+                  "radius": 6,
+                  "background": "background",
+                  "lone": true,
+                  "border": {
+                    "width": 1,
+                    "color": "border"
+                  },
+                  "focus": {
+                    "width": 1,
+                    "color": "ring"
+                  },
+                  "blocked": {
+                    "width": 1,
+                    "color": "#8a6420"
+                  },
+                  "header": {
+                    "content": {
+                      "mod": "yuzora-shell-pane"
+                    },
+                    "height": 28,
+                    "position": "top",
+                    "reveal": "always"
+                  }
+                }
+              }
+            },
+            {
+              "id": "panel",
+              "type": "column",
+              "hidden": true,
+              "size": {
+                "px": 368
+              },
+              "min": 280,
+              "max": 900,
+              "children": [
+                {
+                  "id": "panel-body",
+                  "type": "stack",
+                  "active": "files",
+                  "children": [
+                    {
+                      "id": "files",
+                      "type": "block",
+                      "content": {
+                        "mod": "files"
+                      }
+                    },
+                    {
+                      "id": "changes",
+                      "type": "block",
+                      "content": {
+                        "mod": "changes"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "status",
+          "type": "row",
+          "size": {
+            "px": 26
+          },
+          "resizable": false,
+          "children": [
+            {
+              "id": "yuzora-statusbar",
+              "type": "block",
+              "content": {
+                "mod": "yuzora-statusbar"
+              }
+            },
+            {
+              "id": "yuzora-perf",
+              "type": "block",
+              "size": {
+                "px": 150
+              },
+              "content": {
+                "mod": "yuzora-perf"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,587 @@
+//! ~/.config/herdr-app/keys.json: string or object actions, reloaded live.
+//!
+//! ```json
+//! {
+//!   "global":   { "ctrl-shift-t": "tab.new", "ctrl-1": "tab.select:1" },
+//!   "terminal": { "ctrl-left": "send:\u001bb", "ctrl-shift-t": "terminal" },
+//!   "layout:terminals": { "ctrl-]": "space.next" },
+//!   "mod:editor": { "ctrl-s": "editor.save" }
+//! }
+//! ```
+//!
+//! An action is a command (`pane.split:right`: the value fills its first
+//! argument), an object (`{"command":"layout.resize","args":{"id":"sidebar","px":240}}`),
+//! `send:<text>` (types into the focused terminal),
+//! `<mod>.<command>` (delivered to that mod's `nextCommand()`), or `terminal`
+//! (the program gets the key: the binding is switched off where this section
+//! applies).
+
+use gpui::{App, KeyBinding, KeyBindingContextPredicate, NoAction};
+use std::rc::Rc;
+use gpui_shell::action::ShellAction;
+use std::collections::BTreeMap;
+
+/// yuzora(L1): where the shipped keys used to bind `layout.switch` (next layout).
+#[cfg(target_os = "macos")]
+const OLD_NEXT_LAYOUT_KEY: &str = "cmd-shift-l";
+#[cfg(not(target_os = "macos"))]
+const OLD_NEXT_LAYOUT_KEY: &str = "ctrl-shift-l";
+
+/// yuzora(L1): the binding the shipped keys used to have for next layout, in a keys.json written
+/// before it was removed. `parse` and `listing` both leave it out; a named `layout.switch:<name>`,
+/// another key, or another section stays.
+fn retired_default(section: &str, keys: &str, action: &str) -> bool {
+    section == "global" && action == "layout.switch" && keys == OLD_NEXT_LAYOUT_KEY
+}
+
+/// The reserved shortcut that restores the default layout and keys.
+pub const ESCAPE_HATCH: &str = "ctrl-alt-shift-escape";
+
+/// The shipped keys: prefix-free; plain ctrl+letter always stays with the
+/// program. Herdr uses ctrl+shift (defaults/keys.json), or cmd on macOS
+/// (defaults/keys.macos.json, with Mac terminal editing keys).
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULTS: &str = include_str!("../defaults/keys.json");
+#[cfg(target_os = "macos")]
+pub const DEFAULTS: &str = include_str!("../defaults/keys.macos.json");
+
+// Exact originals from release tags, deduplicated across v0.1.4–v0.1.12.
+// Keep these when defaults change: only untouched shipped files may migrate.
+#[cfg(any(not(target_os = "macos"), test))]
+const SHIPPED_KEYS: &[&str] = &[
+    include_str!("keys/shipped/v0.1.4-keys.json"),
+    include_str!("keys/shipped/v0.1.5-keys.json"),
+    include_str!("keys/shipped/v0.1.12-keys.json"),
+    // yuzora(L1): what Yuzora's own betas wrote (an untouched file is upgraded like Herdr's).
+    include_str!("keys/shipped/v0.1.0-beta.2-keys.json"),
+    include_str!("keys/shipped/v0.1.0-beta.3-keys.json"),
+];
+#[cfg(any(target_os = "macos", test))]
+const SHIPPED_MACOS_KEYS: &[&str] = &[
+    include_str!("keys/shipped/v0.1.4-keys.macos.json"),
+    include_str!("keys/shipped/v0.1.5-keys.macos.json"),
+    // yuzora(L1): what Yuzora's own betas wrote.
+    include_str!("keys/shipped/v0.1.0-beta.2-keys.macos.json"),
+    include_str!("keys/shipped/v0.1.0-beta.3-keys.macos.json"),
+];
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum Binding {
+    String(String),
+    Object(serde_json::Map<String, serde_json::Value>),
+}
+
+type Sections = BTreeMap<String, BTreeMap<String, Binding>>;
+
+/// Kept separate from string actions so colon payloads always stay literal.
+#[derive(Clone, PartialEq, gpui::Action, serde::Deserialize)]
+#[action(no_json)]
+pub struct CommandBinding {
+    pub value: serde_json::Map<String, serde_json::Value>,
+}
+
+impl CommandBinding {
+    pub fn command(&self) -> Result<(String, serde_json::Value), String> {
+        use serde_json::{Value, json};
+        if let Some(key) = self.value.keys().find(|k| !matches!(k.as_str(), "command" | "args")) {
+            return Err(format!("unknown key binding field {key:?}; use command and args"));
+        }
+        let name = self.value.get("command").and_then(Value::as_str)
+            .ok_or("key binding command must be a string")?;
+        let name = current(name);
+        let command = crate::commands::find(&name).ok_or_else(|| format!("unknown key binding command {name:?}"))?;
+        let args = self.value.get("args").cloned().unwrap_or_else(|| json!({}));
+        if !args.is_object() {
+            return Err(format!("{name}: key binding args must be an object"));
+        }
+        crate::commands::validate_args(command, &args)?;
+        Ok((name, args))
+    }
+}
+
+fn defaults() -> Sections {
+    serde_json::from_str(DEFAULTS).expect("defaults/keys.json is valid")
+}
+
+/// Every binding as `(section, keys, action)`, for the keybind help.
+pub fn listing() -> Vec<(String, String, String)> {
+    listing_of(&std::fs::read_to_string(path()).unwrap_or_default())
+}
+
+fn listing_of(text: &str) -> Vec<(String, String, String)> {
+    let sections: Sections = serde_json::from_str(text).unwrap_or_else(|_| defaults());
+    let mut out = Vec::new();
+    for (s, keys) in sections {
+        for (k, a) in keys {
+            match a {
+                Binding::String(a) => {
+                    let a = current(&a);
+                    if !gone_mod(&a) && !retired_default(&s, &k, &a) {
+                        out.push((s.clone(), k, a));
+                    }
+                }
+                Binding::Object(a) => out.push((s.clone(), k, serde_json::Value::Object(a).to_string())),
+            }
+        }
+    }
+    out.push(("global".into(), ESCAPE_HATCH.into(), "app.reset".into()));
+    out
+}
+
+pub fn path() -> std::path::PathBuf {
+    crate::mods::app_dir().join("keys.json")
+}
+
+/// The GPUI key tab a section applies in. `global` is the window itself,
+/// not "no tab": GPUI ranks a binding without one above every other, so
+/// it would beat `layout:` (same depth, added earlier) and only lose to
+/// `terminal` and `mod:` by order.
+fn tab(section: &str) -> Result<String, String> {
+    match section {
+        "global" => Ok("Herdr".into()),
+        "terminal" => Ok("Terminal".into()),
+        s => match (s.strip_prefix("mod:"), s.strip_prefix("layout:")) {
+            (Some(p), _) if !p.is_empty() => Ok(format!("mod == {p}")),
+            // While layouts/<name>.json is shown (the window's tab says which).
+            (_, Some(l)) if !l.is_empty() => Ok(format!("layout == {l}")),
+            _ => Err(format!("unknown section {s:?}: use \"global\", \"terminal\", \"layout:<name>\" or \"mod:<name>\"")),
+        },
+    }
+}
+
+/// 0.1.0's words in a keys.json from then (installed once, so still theirs):
+/// projects became spaces, contexts tabs, the start popup the new tab.
+pub(crate) fn current(action: &str) -> String {
+    if action == "mod.open:start" {
+        return "tab.new".into();
+    }
+    let command = |a: &str| crate::commands::find(a.split_once(':').map_or(a, |(n, _)| n)).is_some();
+    for (old, new) in [("project.", "space."), ("context.", "tab.")] {
+        if let Some(rest) = action.strip_prefix(old) {
+            let renamed = format!("{new}{rest}");
+            // Only a command that was renamed: a mod named `project` keeps its own.
+            if command(&renamed) && !command(action) {
+                return renamed;
+            }
+        }
+    }
+    action.to_owned()
+}
+
+/// A mod's command whose mod is gone (0.1.x's `ribbon.next`): bound to nothing.
+fn gone_mod(action: &str) -> bool {
+    let name = action.split_once(':').map_or(action, |(n, _)| n);
+    crate::commands::find(name).is_none()
+        && name.split_once('.').is_some_and(|(m, _)| !m.starts_with("frame-") && !crate::mods::mods_dir().join(m).is_dir())
+}
+
+fn valid_action(action: &str) -> bool {
+    let name = action.split_once(':').map_or(action, |(n, _)| n);
+    crate::commands::find(name).is_some()
+        || action == "terminal"
+        || action.starts_with("send:")
+        || name.split_once('.').is_some_and(|(m, c)| !m.is_empty() && !c.is_empty())
+}
+
+/// Reads keys.json, installing or updating untouched defaults, or says what's wrong.
+pub fn load() -> Result<Vec<KeyBinding>, String> {
+    #[cfg(not(target_os = "macos"))]
+    let originals = SHIPPED_KEYS;
+    #[cfg(target_os = "macos")]
+    let originals = SHIPPED_MACOS_KEYS;
+    parse(&load_text(&path(), DEFAULTS, originals)?)
+}
+
+fn load_text(path: &std::path::Path, defaults: &str, originals: &[&str]) -> Result<String, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::write(path, defaults).map_err(|e| e.to_string())?;
+            return Ok(defaults.to_owned());
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    if text != defaults && originals.contains(&text.as_str()) {
+        std::fs::write(path, defaults).map_err(|e| e.to_string())?;
+        return Ok(defaults.to_owned());
+    }
+    Ok(text)
+}
+
+pub fn parse(text: &str) -> Result<Vec<KeyBinding>, String> {
+    let sections: Sections = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    let mut problems = Vec::new();
+    for (section, keys) in &sections {
+        let ctx = match tab(section) {
+            Ok(c) => c,
+            Err(e) => {
+                problems.push(e);
+                continue;
+            }
+        };
+        for (keys, action) in keys {
+            let string = match action {
+                Binding::String(action) => Some(current(action)),
+                Binding::Object(_) => None,
+            };
+            if let Some(action) = &string {
+                if gone_mod(action) {
+                    continue;
+                }
+                // yuzora(L1): the old default "next layout" key is dropped from keys.json files written
+                // before it was removed (keys.json is only written once); another key for it stays.
+                if retired_default(section, keys, action) {
+                    continue;
+                }
+                if !valid_action(action) {
+                    problems.push(format!("{section}.{keys}: unknown action {action:?}"));
+                    continue;
+                }
+            }
+            if keys == ESCAPE_HATCH {
+                problems.push(format!("{ESCAPE_HATCH} is reserved for resetting Herdr"));
+                continue;
+            }
+            let predicate = match KeyBindingContextPredicate::parse(&ctx) {
+                Ok(p) => Some(Rc::new(p)),
+                Err(e) => {
+                    problems.push(format!("{section}: {e}"));
+                    continue;
+                }
+            };
+            let action: Box<dyn gpui::Action> = if let Binding::Object(value) = action {
+                Box::new(CommandBinding { value: value.clone() })
+            } else if string.as_deref() == Some("terminal") {
+                // Off where this section applies; globally, simply not bound.
+                if section == "global" {
+                    continue;
+                }
+                Box::new(NoAction)
+            } else {
+                let action = string.as_ref().expect("string binding");
+                #[cfg(target_os = "macos")]
+                let native = crate::macos::action(action);
+                #[cfg(not(target_os = "macos"))]
+                let native: Option<Box<dyn gpui::Action>> = None;
+                native.unwrap_or_else(|| Box::new(ShellAction::new(action.clone())))
+            };
+            let binding = KeyBinding::load(keys, action, predicate, false, None, &gpui::DummyKeyboardMapper);
+            match binding {
+                Ok(b) => out.push(b),
+                Err(e) => problems.push(format!("{section}.{keys}: {e}")),
+            }
+        }
+    }
+    if problems.is_empty() { Ok(out) } else { Err(problems.join("; ")) }
+}
+
+/// The UI kit's own keys (text editing in inputs, lists): bound at its init,
+/// kept across every reload of keys.json.
+struct KitKeys(Vec<KeyBinding>);
+impl gpui::Global for KitKeys {}
+
+/// Restores kit bindings, installs user bindings, then adds reserved bindings.
+pub fn install(bindings: Vec<KeyBinding>, cx: &mut App) {
+    if !cx.has_global::<KitKeys>() {
+        let kit = cx.key_bindings().borrow().bindings().cloned().collect();
+        cx.set_global(KitKeys(kit));
+    }
+    let kit = cx.global::<KitKeys>().0.clone();
+    cx.clear_key_bindings();
+    cx.bind_keys(kit);
+    cx.bind_keys(bindings);
+    cx.bind_keys([
+        KeyBinding::new(ESCAPE_HATCH, ShellAction::new("app.reset"), None),
+        KeyBinding::new("escape", ShellAction::new("overlay.close"), Some("Overlay")),
+    ]);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_byte_identical_shipped_keys_are_upgraded() {
+        let dir = std::env::temp_dir().join(format!("herdr-keys-migration-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys.json");
+        for (defaults, originals) in [
+            (include_str!("../defaults/keys.json"), super::SHIPPED_KEYS),
+            (include_str!("../defaults/keys.macos.json"), super::SHIPPED_MACOS_KEYS),
+        ] {
+            for original in originals {
+                std::fs::write(&path, original).unwrap();
+                assert_eq!(super::load_text(&path, defaults, originals).unwrap(), defaults);
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), defaults);
+
+                // Even a whitespace-only edit is personal, not an untouched original.
+                for edited in [format!("{original}\n"), original.replace("tab.new", "pane.zoom")] {
+                    std::fs::write(&path, &edited).unwrap();
+                    assert_eq!(super::load_text(&path, defaults, originals).unwrap(), edited);
+                    assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+                }
+            }
+            std::fs::write(&path, defaults).unwrap();
+            assert_eq!(super::load_text(&path, defaults, originals).unwrap(), defaults);
+            std::fs::remove_file(&path).unwrap();
+            assert_eq!(super::load_text(&path, defaults, originals).unwrap(), defaults);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), defaults);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // yuzora(L1): an untouched keys.json from Yuzora beta.2 or beta.3 is upgraded to the current
+    // defaults (terminal.search and the dock toggle in, no layout.switch key); one edited by a character is left alone.
+    #[test]
+    fn untouched_yuzora_beta_keys_are_upgraded_and_edited_ones_are_not() {
+        let dir = std::env::temp_dir().join(format!("yuzora-keys-beta-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keys.json");
+        let betas = [
+            ("beta.2", include_str!("keys/shipped/v0.1.0-beta.2-keys.json"), include_str!("keys/shipped/v0.1.0-beta.2-keys.macos.json")),
+            ("beta.3", include_str!("keys/shipped/v0.1.0-beta.3-keys.json"), include_str!("keys/shipped/v0.1.0-beta.3-keys.macos.json")),
+        ];
+        for (defaults, originals, pick) in [
+            (include_str!("../defaults/keys.json"), super::SHIPPED_KEYS, 0),
+            (include_str!("../defaults/keys.macos.json"), super::SHIPPED_MACOS_KEYS, 1),
+        ] {
+            for (name, plain, mac) in betas {
+                let original = if pick == 0 { plain } else { mac };
+                std::fs::write(&path, original).unwrap();
+                assert_eq!(super::load_text(&path, defaults, originals).unwrap(), defaults, "{name} upgraded");
+                assert!(defaults.contains("terminal.search") && !defaults.contains("layout.switch"));
+                // The dock's toggle key (cmd-alt-b, ctrl-alt-b) comes with the upgrade: the betas didn't have it.
+                assert!(defaults.contains("\"yuzora-modebar.toggle\"") && !original.contains("yuzora-modebar"), "{name}");
+                let edited = original.replacen("tab.new", "pane.zoom", 1);
+                assert_ne!(edited, original);
+                std::fs::write(&path, &edited).unwrap();
+                assert_eq!(super::load_text(&path, defaults, originals).unwrap(), edited, "{name} edited stays");
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn keys_from_0_1_0_mean_the_same_now() {
+        assert_eq!(super::current("project.select:2"), "space.select:2");
+        assert_eq!(super::current("context.new"), "tab.new");
+        assert_eq!(super::current("mod.open:start"), "tab.new");
+        assert_eq!(super::current("pane.zoom"), "pane.zoom");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_shifted_punctuation_matches_existing_keys_files() {
+        use gpui::{KeybindingKeystroke, Keystroke};
+        let bindings = super::parse(include_str!("../defaults/keys.macos.json")).unwrap();
+        for (base, shifted) in [("]", "}"), ("[", "{")] {
+            let event = Keystroke {
+                unshifted_key: Some(base.into()),
+                ..Keystroke::parse(&format!("cmd-{shifted}")).unwrap()
+            };
+            assert!(bindings.iter().any(|binding| binding.match_keystrokes(&[event.clone()]) == Some(false)));
+        }
+        // Layout-derived aliases, not a US punctuation lookup table.
+        for (base, shifted) in [("=", "+"), ("-", "_"), ("ö", "Ö"), ("č", "Č"), ("7", "/")] {
+            let event = Keystroke {
+                unshifted_key: Some(base.into()),
+                ..Keystroke::parse(&format!("cmd-{shifted}")).unwrap()
+            };
+            for keys in [format!("cmd-shift-{base}"), format!("cmd-{shifted}")] {
+                let target = KeybindingKeystroke::from_keystroke(Keystroke::parse(&keys).unwrap());
+                assert!(event.should_match(&target), "{keys}");
+            }
+        }
+        assert!(Keystroke::parse("cmd-shift-]").unwrap().unshifted_key.is_none());
+        assert!(Keystroke::default().unshifted_key.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_help_binding_matches_shifted_slash() {
+        // Linux reports Ctrl+Shift+/ as Ctrl+? without the Shift modifier.
+        let event = gpui::Keystroke::parse("ctrl-?").unwrap();
+        let defaults: serde_json::Value = serde_json::from_str(super::DEFAULTS).unwrap();
+        let help = defaults["global"].as_object().unwrap().iter()
+            .filter(|(_, action)| action.as_str() == Some("app.help"))
+            .map(|(keys, action)| (keys.clone(), action.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        let bindings = super::parse(&serde_json::json!({ "global": help }).to_string()).unwrap();
+        assert!(bindings.iter().any(|binding| binding.match_keystrokes(&[event.clone()]) == Some(false)));
+    }
+
+    // yuzora(L1): no default key switches layout (from the yuzora layout it lands in Herdr's own),
+    // and a keys.json written earlier loses that one default binding but keeps any other.
+    #[test]
+    fn next_layout_has_no_default_key_and_the_old_one_is_dropped() {
+        for keys in [include_str!("../defaults/keys.json"), include_str!("../defaults/keys.macos.json")] {
+            let value: serde_json::Value = serde_json::from_str(keys).unwrap();
+            for (section, bound) in value.as_object().unwrap() {
+                for (key, action) in bound.as_object().unwrap() {
+                    assert_ne!(action.as_str().unwrap().split(':').next(), Some("layout.switch"), "{section}.{key}");
+                }
+            }
+        }
+        let old = super::OLD_NEXT_LAYOUT_KEY;
+        let count = |text: String| super::parse(&text).unwrap().len();
+        let with = |bound: serde_json::Value| serde_json::json!({ "global": bound }).to_string();
+        assert_eq!(count(with(serde_json::json!({ old: "layout.switch" }))), 0, "the old default is dropped");
+        assert_eq!(count(with(serde_json::json!({ "ctrl-alt-l": "layout.switch" }))), 1, "another key stays");
+        assert_eq!(count(with(serde_json::json!({ old: "layout.switch:main" }))), 1, "a named layout stays");
+        let in_layout = serde_json::json!({ "layout:x": { old: "layout.switch" } }).to_string();
+        assert_eq!(count(in_layout.clone()), 1, "only the global section is dropped");
+        // The help page, the palette's key hints and the welcome list the same bindings.
+        let listed = |text: &str| super::listing_of(text).into_iter().filter(|(_, _, a)| a == "layout.switch").count();
+        assert_eq!(listed(&with(serde_json::json!({ old: "layout.switch" }))), 0, "not listed either");
+        assert_eq!(listed(&in_layout), 1);
+    }
+
+    // yuzora(L1): the keys.json examples in the docs and in the guide users' agents read must load:
+    // one wrong action (a `:` where the mod's command has a `.`) makes the whole file fail.
+    // Every `"<modifier>-…": "<action>"` is matched on its own, so a stray quote or a missing
+    // space elsewhere in the file can't hide one.
+    //
+    // Which files are checked isn't a list in this test: it walks every *.md and *.d.ts under
+    // app/defaults and docs/ plus the root and app docs below, so a new document is covered
+    // without anyone remembering to add it, and deleting a line here can't drop a file. The
+    // examples that must be found are a separate table, and every file on it must have been
+    // walked. The files are read when the test runs (not include_str!), so cargo does not rebuild
+    // the tests when a document changes: `cargo test` still runs this one every time, but it reads
+    // whatever is on disk then.
+    #[test]
+    fn keys_examples_in_the_docs_load() {
+        use std::path::{Path, PathBuf};
+        // Not documents of ours: dependencies, build output, screenshots, git.
+        const SKIP_DIRS: &[&str] = &["node_modules", "target", "vendor", "evidence", ".git"];
+        const ROOT_DOCS: &[&str] = &[
+            "README.md", "README.zh-TW.md", "AGENTS.md", "CLAUDE.md", "CHANGELOG.md", "CHANGELOG.zh-TW.md",
+            "app/CHANGELOG.md", "app/CHANGELOG.zh-TW.md", "app/AGENTS.md", "app/README.md",
+        ];
+        // (file from the repo root, key, action) that must be found: each is a document users or
+        // their agents read.
+        const MUST_FIND: &[(&str, &str, &str)] = &[
+            ("app/defaults/AGENTS.md", "ctrl-shift-t", "tab.new"),
+            ("app/defaults/AGENTS.md", "alt-n", "yuzora-shell-tabs.new-pane"),
+            ("docs/beta2/shell.md", "alt-n", "yuzora-shell-tabs.new-pane"),
+            ("app/defaults/herdr.d.ts", "alt-s", "<mod>.<command>"),
+        ];
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    if !SKIP_DIRS.contains(&name.as_str()) {
+                        walk(&path, out);
+                    }
+                } else if name.ends_with(".md") || name.ends_with(".d.ts") {
+                    out.push(path);
+                }
+            }
+        }
+        let app = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = app.parent().unwrap();
+        let mut files = Vec::new();
+        walk(&app.join("defaults"), &mut files);
+        walk(&root.join("docs"), &mut files);
+        files.extend(ROOT_DOCS.iter().map(|f| root.join(f)).filter(|p| p.is_file()));
+        let rel = |p: &Path| p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+
+        let pair = fancy_regex::Regex::new(r#""((?:ctrl|alt|cmd|shift)-[^"\n]*)"\s*:\s*"([^"\n]*)""#).unwrap();
+        let mut found = Vec::new(); // (file, key, action)
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            for caps in pair.captures_iter(text.as_str()) {
+                let caps = caps.unwrap();
+                let (key, action) = (caps[1].to_owned(), caps[2].replace("\\u001b", "\u{1b}"));
+                let one = serde_json::json!({ "global": { key.clone(): action.clone() } });
+                assert_eq!(super::parse(&one.to_string()).err(), None, "{}: {key} -> {action}", rel(file));
+                found.push((rel(file), key, action));
+            }
+        }
+        for (file, key, action) in MUST_FIND {
+            assert!(files.iter().any(|f| rel(f) == *file), "{file} was not walked ({} files)", files.len());
+            assert!(found.iter().any(|(f, k, a)| f == file && k == key && a == action), "{file}: example {key} -> {action} not found");
+        }
+    }
+
+    #[test]
+    fn object_bindings_pass_named_typed_arguments() {
+        use serde_json::json;
+        for (name, args) in [
+            ("layout.resize", json!({"id":"sidebar", "px":240})),
+            ("tab.new", json!({"mod":"editor", "props":{"enabled":true, "items":[1,null,"a:b"]}})),
+            ("app.help", json!({})),
+        ] {
+            let bindings = super::parse(&json!({"global":{"f6":{"command":name,"args":args}}}).to_string()).unwrap();
+            assert_eq!(bindings.len(), 1);
+            let action = bindings[0].action().as_any().downcast_ref::<super::CommandBinding>().unwrap();
+            assert_eq!(action.command().unwrap(), (name.into(), args));
+        }
+        let bindings = super::parse(r#"{"global":{"f6":{"command":"app.help"}}}"#).unwrap();
+        let action = bindings[0].action().as_any().downcast_ref::<super::CommandBinding>().unwrap();
+        assert_eq!(action.command().unwrap(), ("app.help".into(), json!({})));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn object_bindings_resolve_native_app_actions_after_validation() {
+        use serde_json::json;
+        for name in ["app.quit", "app.hide", "app.hide_others", "app.show_all", "app.settings"] {
+            let bindings = super::parse(&json!({"global":{"f6":{"command":name}}}).to_string()).unwrap();
+            let action = bindings[0].action().as_any().downcast_ref::<super::CommandBinding>().unwrap();
+            let (command, args) = action.command().unwrap();
+            assert_eq!(args, json!({}));
+            let native = crate::macos::action(&command).unwrap();
+            let expected = crate::macos::action(name).unwrap();
+            assert!(native.partial_eq(expected.as_ref()));
+            let bad = super::CommandBinding { value: json!({"command":name,"args":{"typo":true}}).as_object().unwrap().clone() };
+            assert!(bad.command().is_err());
+        }
+    }
+
+    #[test]
+    fn bad_object_bindings_stay_bound_for_error_toasts() {
+        use serde_json::json;
+        for value in [
+            json!({}), json!({"command":3}), json!({"command":"unknown"}),
+            json!({"command":"space.new:{work}"}),
+            json!({"command":"app.help","extra":true}),
+            json!({"command":"app.help","args":null}),
+            json!({"command":"app.help","args":[]}),
+            json!({"command":"app.help","args":"{}"}),
+            json!({"command":"layout.resize","args":{"typo":240}}),
+            json!({"command":"layout.resize","args":{"id":123,"px":240}}),
+        ] {
+            let bindings = super::parse(&json!({"terminal":{"f6":value}}).to_string()).unwrap();
+            assert_eq!(bindings.len(), 1, "{value}");
+            assert_eq!(bindings[0].match_keystrokes(&[gpui::Keystroke::parse("f6").unwrap()]), Some(false));
+            let action = bindings[0].action().as_any().downcast_ref::<super::CommandBinding>().unwrap();
+            assert!(action.command().is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn colon_payloads_stay_literal_including_valid_and_invalid_json() {
+        use serde_json::json;
+        for value in ["{work}", "{}", "{", "  {bad}", r#"{"name":"work"}"#,
+            r#"{"name":"work",}"#, r#"{"name":"work"} trailing"#,
+            "hello:world", "", "3", "-1", "true", "null", "[]", "[broken", r#""name""#] {
+            let action = format!("space.new:{value}");
+            let bindings = super::parse(&json!({"global":{"f6":action}}).to_string()).unwrap();
+            let bound = bindings[0].action().as_any().downcast_ref::<gpui_shell::action::ShellAction>().unwrap();
+            assert_eq!(bound.id(), action);
+            let (name, payload) = bound.id().split_once(':').unwrap();
+            assert_eq!(crate::commands::shorthand(crate::commands::find(name).unwrap(), payload), json!({"name":value}));
+        }
+        assert_eq!(crate::commands::shorthand(crate::commands::find("tab.select").unwrap(), "3"), json!({"index":3}));
+    }
+
+    #[test]
+    fn shipped_keys_load() {
+        for keys in [include_str!("../defaults/keys.json"), include_str!("../defaults/keys.macos.json")] {
+            assert_eq!(super::parse(keys).err(), None);
+        }
+    }
+}

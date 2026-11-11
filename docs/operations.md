@@ -10,6 +10,13 @@
 
 > 平台政策（v0.0.9 起）：macOS App 僅支援 Apple Silicon（M 系列），候選與正式安裝包皆使用 `aarch64-apple-darwin`。不再產出 Intel／universal App 或 `darwin-x86_64` updater entry；舊版已發布的 Intel／universal artifacts 不變。遠端 Host 仍保留 `macos-x86_64`，此政策不移除既有 Intel macOS 遠端工作區。
 
+> **beta.2（`app/`，herdr-app 基底）**：打包、更新 manifest、金鑰用途、beta.1 升級與建議的發布步驟見 [`docs/beta2/release.md`](beta2/release.md)。herdr-app 的發布由 `.github/workflows/app-release.yml` 分階段執行（release.md §6；beta.2 至 beta.4 是手動上傳的未簽章 Pre-release）。本手冊 §4–§10 描述的是 v0.1.0-beta.1 以前的 Tauri App 發布；`release.yml` 遇到帶有 `app/` 的樹會在 guard 失敗退出，不再建置或發布。與 Tauri 版的差異：
+>
+> - Windows 改用 per-user NSIS 安裝程式，固定檔名 `Yuzora-windows-x64-setup.exe`，不再出 MSI，MSI `ProductVersion` 編碼也不適用；Linux 另有 x86_64／aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`。macOS 仍只有 Apple Silicon（`Yuzora-macos-aarch64.dmg`）。
+> - App 自己的更新改讀 `yuzora-update.json`，以 Tauri updater 同一把 minisign 金鑰簽章（`.sig`），App 驗不過就不更新。beta.2 至 beta.4 與 0.1.0 Stable 都**不附** Tauri 格式的 `latest.json`（安裝方式不同，不替 0.0.x 與 beta.1 的使用者自動換產品），所以 0.0.x 與 beta.1 的更新通道都看不到它們，使用者要手動下載安裝，release notes 與 README 都寫明這點（`docs/beta2/release.md` §5「不可行時的退路」）。0.1.0 的 `yuzora-update.json` 先不列 `windows-x86_64`（release.md §6.1），beta.2 至 beta.4 的使用者由它更新。
+> - 固定下載別名仍只上傳到 Stable；Beta 只有版本化檔名。
+> - `.github/workflows/app-package.yml` 只產出四平台 artifacts 與未簽章的 manifest，不建 tag、不發布、不讀 secret。`app-release.yml`（手動 dispatch）以通過的 app-package run 為唯一來源、不重建；只有 `sign` job 讀 secrets。
+
 本文件不得保存 production private key、production password、token、憑證內容或離線備份位置。Repository 內已提交的測試 fixture credential 只有在明確標示為非 production 時才能引用；其他敏感資料只存放於核准的 secret store。
 
 ## 1. Source of truth
@@ -69,12 +76,15 @@ Required CI checks：
 | Workflow | 檔案                                 | 觸發                                    | 職責                                                                                                                                                                    |
 | -------- | ------------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | CI       | `.github/workflows/ci.yml`           | push 至 `main`；pull request            | Frontend checks 與 3 個 test shards 平行、固定名稱 aggregator 守門；三平台 Rust compile；macOS fmt、exact clippy baseline、Rust tests；Linux 真實資料庫 integration；`release/*` PR macOS／Windows 候選安裝檔；Windows 原生與五平台 host（四 Unix＋Windows x86_64）installer payload gate |
-| Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、macOS 無 Apple 簽章／公證建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish |
+| Release  | `.github/workflows/release.yml`      | `CI` workflow 完成                      | 只接受成功的 `main` push CI；新 Beta build 先比對 accepted candidate tree／evidence pointer；再自動建立 tag、macOS 無 Apple 簽章／公證建置、Windows 建置、updater artifact signing、暫態 draft、固定檔名別名、`latest.json` finalization 與自動 Publish。對帶有 `app/Cargo.toml` 的樹，guard 會失敗退出（herdr-app 由 `app-release.yml` 發布） |
+| App CI   | `.github/workflows/app-ci.yml`       | `app/**` 相關的 push 至 `main`／`beta2/integration`；pull request | herdr-app 的 `cargo test`（多平台）、Windows console 與真實資料庫 job；Linux 另跑發布打包的 Python 測試、`verify-manifest` 的 `cargo test`、文件檢查與 `bun test scripts`；只有 push 到 `main`／`beta2/integration` 才寫入快取（沒有 fmt、clippy 步驟） |
+| App package | `.github/workflows/app-package.yml` | `app/**` 相關的 push 至 `main`／`beta2/integration`；pull request；手動 dispatch | 四平台安裝包與未簽章 manifest 的 artifacts（保留 7 天）；不建 tag、不發布、不讀 secret |
+| App release | `.github/workflows/app-release.yml` | 手動 dispatch | 以已接受的 app-package run 分階段發布：draft、publish、簽章並上傳 manifest、latest；`dry-run` 只簽本機用的 manifest 並留成 artifact。步驟與驗證見 [`docs/beta2/release.md`](beta2/release.md) §6 |
 | Host helper artifacts | `.github/workflows/host.yml` | helper 相關 PR（`release/*` PR 只由 CI 呼叫，不重複觸發）、手動 dispatch、CI／Release reusable call | 五平台 helper fmt、clippy、tests、官方 HERDR payload 與雜湊 manifest、隔離 runtime E2E；產出 `host-<target>` artifacts |
 | Companion gateway | `.github/workflows/companion.yml` | 手動 dispatch；`src-tauri/companion/**`、`src-tauri/companion-net/**`、`src-tauri/host/**`、tiberius vendor 或自身變更的 pull request（無 push 觸發，也不是 required check） | Gateway 三平台 fmt、clippy `-D warnings`、tests 與原生 TLS 依賴拒絕檢查；cargo-deny／cargo-audit；Companion 網路 sidecar 三平台 `gofmt -l`（須無輸出）、`go vet`、`go test`、固定版本的 `govulncheck`（fail-closed） |
 | Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生官網角色與中英文 SEO 頁面、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
 
-Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。
+Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。0.1.0 的 Windows 連結要改成固定指向 `releases/download/v0.1.0/Yuzora-windows-x64-setup.exe`（0.1.0 沒有 MSI；0.1.0 成為 Latest 之前，Latest 是只有 MSI 的 v0.0.19）。這個變更在另一個 PR，進 main 的時機是 `publish` 之後、`latest` 之前，見 `docs/beta2/release.md` §6.3 第 7 步。
 
 Pages 由成功的 `main` push `CI` workflow 觸發，部署 job 會以 `workflow_run.head_sha` checkout，並透過 Actions API 再驗證同一 SHA 的成功 CI；手動 dispatch 也必須通過相同 exact-SHA 查證。不得把其他 SHA 的 CI 綠燈視為部署來源已驗證。
 
@@ -107,7 +117,7 @@ v0.0.9 發布政策依使用者明確授權：macOS App 僅 Apple Silicon，不�
 
 Stable 與新發布的 Beta 都使用一般 `bun tauri build --ci`，保留 Tauri updater signing secrets 與 updater artifacts；macOS 使用 ad-hoc `signingIdentity: "-"`，不使用 Apple Developer identity。**發布 build 不可使用 `--no-sign`**：它會一併略過 updater signatures，導致 metadata／publish gate 失敗。PR 候選版停用 updater artifacts／endpoints；Windows 候選仍使用 `--no-sign`，macOS 候選保留 ad-hoc bundle signing 以便驗收安裝。
 
-README 與當版 release notes 必須說明 macOS 未經 Apple Developer ID 簽章／公證，Gatekeeper 仍可能警告或阻擋首次開啟；使用者從官方 Release 下載、確認來源後，依 macOS「隱私權與安全性」提供的「仍要打開」流程操作。若出現「App 已損毀」訊息，先確認使用的是含完整 bundle seal 的最新版本；Release gate 應先以 `codesign --verify --deep --strict` 擋下這類 artifact。不得宣稱已取得 Apple 信任。正式發布仍須通過 ARM 架構、runtime payload、完整 artifacts、updater signatures 與 metadata gates。
+README 與當版 release notes 必須說明 macOS 未經 Apple Developer ID 簽章／公證，Gatekeeper 仍可能警告或阻擋首次開啟；使用者從官方 Release 下載、確認來源後，依 macOS「隱私權與安全性」提供的「強制打開」流程操作。若出現「App 已損毀」訊息，先確認使用的是含完整 bundle seal 的最新版本；Release gate 應先以 `codesign --verify --deep --strict` 擋下這類 artifact。不得宣稱已取得 Apple 信任。正式發布仍須通過 ARM 架構、runtime payload、完整 artifacts、updater signatures 與 metadata gates。
 
 ### 已啟用：Tauri updater artifact signing
 
@@ -126,7 +136,16 @@ Public key 內嵌於 `src-tauri/tauri.conf.json`。Private key 與密碼由 GitH
 - `scripts/prepare-updater-metadata.ts`
 - `src-tauri/tauri.conf.json` 的 updater public key／endpoint
 
-這些變更應由指定 maintainer review。建議後續將 signing secrets 放入具 required reviewer 的 protected GitHub Environment；在完成前不得宣稱此 gate 已啟用。
+beta.2 起同一把金鑰也簽 `yuzora-update.json`，下列檔案同屬供應鏈安全敏感變更（`docs/beta2/release.md` §4）：
+
+- `app/src/yuzora/release/manifest.rs` 的 `TRUSTED_KEYS` 與驗證規則
+- `app/scripts/yuzora/manifest.ts`
+- `.github/workflows/app-package.yml`
+- `.github/workflows/app-release.yml`
+- `app/scripts/yuzora/release.ts`
+- `app/scripts/yuzora/verify-manifest/`（簽章前後驗證 manifest 的獨立 crate）
+
+這些變更應由指定 maintainer review。`app-release.yml` 的 `sign` 與四個寫入 job 都引用 Environment `yuzora-release`，但 required reviewers 必須由使用者在 repository 設定；設定完成前不得宣稱此 gate 已啟用。簽章金鑰是 repository 層級的 secret，不在這個 Environment 裡：reviewers 只擋 `app-release.yml` 自己的 job，不擋其他 workflow 讀取 secret（`docs/beta2/release.md` §6.3 第 0 步）。
 
 ### 尚未啟用：Windows 作業系統平台簽章
 
@@ -138,7 +157,7 @@ Public key 內嵌於 `src-tauri/tauri.conf.json`。Private key 與密碼由 GitH
 - 新 Beta build 會在建立 tag 前要求 repository variables `YUZORA_BETA_ACCEPTED_TREE_SHA` 與 `YUZORA_BETA_ACCEPTANCE_URL`。Guard 會把前者與 exact successful-main tree 比對，並要求後者指向本 repository 的 PR／Issue evidence；未設定、格式錯誤或 tree 不一致都 fail closed。這是 blocking human attestation，但 workflow 不會自行理解 comment 內容或逐項重跑 candidate acceptance。
 - Stable 尚未使用同一 tree-attestation variables；仍依 release PR、candidate evidence 與明確 merge 核准流程人工把關。
 - 既有同版本 draft 的 tag SHA 已強制必須等於本次 `workflow_run.head_sha`，不一致時會 fail closed。
-- Release actions 已固定到經審查的完整 commit SHA，checkout 一律停用 persisted credentials；仍應定期審查並更新 pin，並將 signing secrets 移入具 required reviewer 的 protected Environment。
+- Release actions 已固定到經審查的完整 commit SHA，checkout 一律停用 persisted credentials；仍應定期審查並更新 pin。Signing secrets 目前是 repository 層級，沒有放進 Environment：`release.yml` 的 guard job 沒有 environment、直接讀取它們，移進 Environment 會讓 `Release` 在每次 main 的 CI 成功後驗證失敗，要移的話先改 `release.yml`。
 - Metadata generator／finalizer 會強制 URL 屬於目前 repository/tag，並在產生 metadata 時比對公開 signature 與對應 `.sig` 內容；仍不得把 artifact 存在視為應用程式平台簽章已啟用。
 
 ---
@@ -175,10 +194,10 @@ Yuzora 只使用 GitHub **Pre-release** 表示 Beta，不建立額外的 Beta ch
 - 更新後的根目錄 `Cargo.lock`（workspace 唯一的 lockfile，含 `yuzora`、`yuzora-host`、`yuzora-companion` 的 entry）。
 - `src-tauri/host/Cargo.toml` helper version 與桌面一致，並更新根 `Cargo.lock` 的 `yuzora-host` entry；五平台 payload 建置會拒絕 helper／desktop 版本不一致。
 - `src-tauri/companion/Cargo.toml` 版本與桌面一致，並更新根 `Cargo.lock` 的 `yuzora-companion` entry；`verify-version-consistency.ts` 會拒絕不一致。
-- `CHANGELOG.md` 中對應完整 version 的使用者可讀章節，例如 `## [X.Y.Z]` 或 `## [X.Y.Z-beta.N]`。若檔案頂端有 `## [Unreleased]` 章節，release PR 必須把它改名為該版本標題；release notes 與 App 內的更新說明只認完整版本標題，不會讀取 `[Unreleased]`。
+- `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁體中文）中對應完整 version 的使用者可讀章節，兩份的版本、段落與項目一一對應（`scripts/release-notes.test.ts` 會比對），例如 `## [X.Y.Z]` 或 `## [X.Y.Z-beta.N]`。若檔案頂端有 `## [Unreleased]` 章節，release PR 必須把它改名為該版本標題；release notes 與 App 內的更新說明只認完整版本標題，不會讀取 `[Unreleased]`。
 - 必要的 release／updater contract 修改與測試。
 
-`CHANGELOG.md` 只記錄使用者能感受到的新增、改善、修正與已知限制，不放 commit、內部檔名或純實作細節。GitHub Release body 與 `latest.json.notes` 會由該版本章節自動產生，因此 release notes 必須在 tag 前完成，不能等到 Publish 時才補。
+兩份 CHANGELOG 只記錄使用者能感受到的新增、改善、修正與已知限制，不放 commit、內部檔名或純實作細節。GitHub Release body 與 `latest.json.notes` 會由兩份的該版本章節自動產生（英文在前，各自放在 `### English`、`### 繁體中文` 標題下；已安裝的 App 更新說明只把 `###` 畫成標題），因此 release notes 必須在 tag 前完成，不能等到 Publish 時才補。
 
 修改上述 `Cargo.toml` version 後，先讓 Cargo 更新根 `Cargo.lock` 中這些 workspace member 的 entry（在 workspace 內執行任一 cargo 指令都會更新整份 lock），再確認根 `Cargo.lock` 沒有意外的 dependency 變動：
 
@@ -227,7 +246,7 @@ Remove-Item Env:GITHUB_REF_NAME
 三項都必須成功：
 
 - 三份 product version 與 tag contract 一致。
-- `CHANGELOG.md` 存在對應版本且內容非空。
+- `CHANGELOG.md` 與 `CHANGELOG.zh-TW.md` 都存在對應版本且內容非空。
 - Stable：Updater signing、macOS 無 Apple 簽章／公證、stable endpoint、PR merge 後自動 tag／Publish、暫態 draft、MSI-only Windows OTA 與 metadata finalizer contract 完整。
 - Beta：`prerelease=true`，有 Tauri updater 簽章與每版 `latest.json`、沒有 Apple signing secrets／Stable aliases，release notes 揭露 Gatekeeper 風險，且 publish command 不含 `--latest`。
 
@@ -393,7 +412,7 @@ Issue ──Closes──> Release PR ──candidate artifacts──> user valid
 2. Checkout SHA 與成功 CI 的 `workflow_run.head_sha` 完全一致。
 3. Stable 才驗證 `TAURI_SIGNING_PRIVATE_KEY` 與 password secret；Beta build step 不接收這些 secrets。
 4. 解析出的 tag、`package.json`、`tauri.conf.json`、`Cargo.toml` version 一致，且版本只可為 Stable 或 `-beta.N`。
-5. `CHANGELOG.md` 有該版本 release notes。
+5. `CHANGELOG.md` 與 `CHANGELOG.zh-TW.md` 都有該版本 release notes。
 6. Stable 驗證 updater release contract；Beta 驗證 prerelease isolation contract。新 Beta build 另要求 `YUZORA_BETA_ACCEPTED_TREE_SHA` 精確等於 successful-main tree，且 `YUZORA_BETA_ACCEPTANCE_URL` 指向本 repository 的 PR／Issue evidence。
 7. 新版本由獨立、無 checkout 的 `create-tag` write job 建立 annotated tag；既有 draft 的 tag SHA 必須與 CI SHA 一致並觸發雙平台重建；已發布版本安全略過。
 8. Release state 的 `shouldBuild` 與 `shouldPublishExisting` 先驗證為 boolean 再交給 shell；`false` 是合法決策值，不得被 `jq` truthiness 誤判為 guard failure。
@@ -428,7 +447,9 @@ Windows 只發行 MSI；`Yuzora-windows-x64-setup.exe` 固定連結已停止更�
 - 產品頁直接使用的 macOS DMG 與 Windows MSI，還要同步 `site/index.html`、`site/downloads.js` 與 `tests/site-downloads.test.js`。
 - MSI alias 若新增其他頁面或 script consumer，也要一併更新並補測試。
 
-固定別名只屬 Stable 手動下載入口；Beta 不會上傳、覆寫或驗證它們。Stable 與 Beta updater 都使用具版本號且帶 `.sig` 的 updater artifacts，並由各自 release 的 metadata 綁定。
+固定別名只屬 Stable 手動下載入口；Beta 不會上傳、覆寫或驗證它們。
+
+beta.2 的 Windows 固定檔名改為 `Yuzora-windows-x64-setup.exe`（per-user NSIS），macOS 不變；beta.2 的發布 workflow 必須在 Stable release 上傳這兩個別名。2026-11-03 使用者決定：beta.2 的安裝方式不同，新版本等 0.1.0 Stable 才提供更新。因此 beta.2 不附 `latest.json`，0.0.x 與 beta.1 的 App 內更新不會看到它，使用者要手動下載安裝；產品頁在 0.1.0 Stable 之前也維持 Tauri 版與 v0.0.19 的下載（`.msi`），換成 beta.2 檔名的產品頁在 [#209](https://github.com/NakiriYuuzu/Yuzora/pull/209)，0.1.0 Stable 才合併（見 §11）。Stable 與 Beta updater 都使用具版本號且帶 `.sig` 的 updater artifacts，並由各自 release 的 metadata 綁定。
 
 ### 7.4 Finalize updater metadata
 
@@ -621,6 +642,7 @@ gh workflow run recover-stable-release.yml --ref main -f "source_run_id=$SOURCE_
 - Hero、三段 feature media、ADE/HERDR boundary、bento 功能矩陣與 download section 是現行資訊架構；已移除的 Exploded View、Agent Inspector still 與 model showcase 不得重新被 Pages 引用。
 - `#primary-download`、`#download-device-note`、platform rows 與 recommended badges 是 `downloads.js` 的穩定 contract。
 - 現行無 GSAP 或其他 Pages runtime dependency；不要以 smooth-scroll library 取代 native scrolling。
+- beta.2 期間產品頁維持 Tauri 版（下載仍是 v0.0.19），0.1.0 Stable 才換成介紹 beta.2 的產品頁（2026-11-03 使用者決定：安裝方式不同，新版本等 Stable 再提供；beta.2 也不附 `latest.json`，舊版 App 內更新不會提供 beta.2，見 §7.3）。新產品頁在 draft PR [#209](https://github.com/NakiriYuuzu/Yuzora/pull/209)：影片與 poster 改成靜態截圖、移除互動 Demo、不列 Linux。
 
 ### 產品頁 smoke test
 

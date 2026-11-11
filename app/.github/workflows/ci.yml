@@ -1,0 +1,144 @@
+# Build and test every supported platform; release.yml handles packaging.
+#
+# Rust caches use one pinned toolchain and only master pushes save, so PR
+# caches can't evict the ones everybody restores. setup-zig caches separately.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  # No paths-ignore here: CI is required to merge, so every PR needs it.
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push cancels older runs, on a PR and on master: PRs were tested
+# before merging, so only master's newest commit needs a run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+  # In the cache key: ghostty-sys can't tell when Zig changes.
+  ZIG_VERSION: 0.16.0
+  # File/line backtraces without full debug info: smaller target, faster cache.
+  CARGO_PROFILE_DEV_DEBUG: "1"
+  CARGO_PROFILE_TEST_DEBUG: "1"
+  # Incremental state only bloats a cache: CI builds each commit once.
+  CARGO_INCREMENTAL: "0"
+  SAVE_CACHES: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+
+jobs:
+  platform-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Match release's glibc floor and native platform runners.
+          - { platform: linux-x86_64, runner: ubuntu-22.04 }
+          - { platform: macos-aarch64, runner: macos-15 }
+          - { platform: windows-x86_64, runner: windows-2022 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      # The whole target/, like release.yml: rust-cache drops the vendored crates.
+      # Keyed by what the dependencies build from, so a source-only push
+      # restores an exact hit and saves nothing (no cache per commit).
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: &cache-paths |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ci-v2-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'vendor/**', 'crates/**', '.github/workflows/ci.yml') }}
+          restore-keys: ci-v2-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        # A stuck package mirror fails here in minutes, not at the job's limit.
+        timeout-minutes: 10
+        run: |
+          apt="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $apt update
+          sudo apt-get $apt install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev mesa-vulkan-drivers libfontconfig-dev libfreetype-dev
+      - name: Windows build dependencies
+        if: runner.os == 'Windows'
+        run: echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+      - name: Keep unchanged sources fresh
+        run: scripts/ci-sources restore
+      # Compile the screenshot harness everywhere, even without a desktop.
+      # Disable optimized dev dependencies in CI to reduce test compile time.
+      - name: Build tests
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --no-run
+      - name: Note the sources the cache was built from
+        if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: scripts/ci-sources record
+      - name: Save build cache
+        if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: *cache-paths
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Tests
+        run: |
+          only=()
+          if [ "$RUNNER_OS" != Linux ]; then
+            for t in tests/*.rs; do
+              name=$(basename "$t" .rs)
+              [ "$name" = shot_pixels ] || only+=(--test "$name")
+            done
+            only+=(--bins)
+          fi
+          threads=()
+          if [ "$RUNNER_OS" = Linux ]; then
+            threads=(-- --test-threads 4)
+          fi
+          cargo test --locked --config 'profile.dev.package."*".opt-level=0' "${only[@]}" "${threads[@]}"
+      # Windows runners lack an interactive desktop. Linux uses headless Vulkan
+      # in the suite above; macOS exercises the native window renderer here.
+      - name: Screenshot pixels
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        env:
+          HERDR_SHOT_NATIVE_TEST: "1"
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --test shot_pixels
+      - name: Check release packaging
+        if: matrix.platform == 'linux-x86_64'
+        run: python3 -m unittest discover -s scripts -p test_distribution.py
+      - name: Install Bun
+        if: matrix.platform == 'linux-x86_64'
+        run: curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.4"
+      - name: Check documentation
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          ~/.bun/bin/bun test scripts/docs.test.ts
+          ~/.bun/bin/bun scripts/docs.ts check
+
+  # Keep the required check name stable while requiring every platform.
+  test:
+    needs: platform-tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: '[ "${{ needs.platform-tests.result }}" = success ]'

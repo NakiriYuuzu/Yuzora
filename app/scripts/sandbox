@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# A throwaway Herdr app on its own core, home and display, so changes get tried
+# without touching the real one. The display is a headless Weston with
+# Xwayland: nothing shows on the desktop, frames never stall, and screenshots
+# and fake mouse input stay inside it (no portal prompt, the real pointer
+# never moves).
+#
+#   scripts/sandbox up            build, start the display, the core and the window
+#   scripts/sandbox restart       rebuild and restart the window (terminals live on)
+#   scripts/sandbox do <action> [json]   / status   drive it (herdr-app do / status)
+#   scripts/sandbox shot [file]   screenshot of the window
+#   scripts/sandbox move|click|drag|type|key|hold|release ...   fake input (window px, see sandbox-input.py)
+#   scripts/sandbox log           the window's log
+#   scripts/sandbox opened        links the window asked to open (logged, never opened)
+#   scripts/sandbox hc <args>     hc against the sandbox core
+#   scripts/sandbox down          stop everything and delete it
+#
+# HERDR_APP_SANDBOX=<name> runs a second one side by side. HERDR_APP_BIN runs
+# another herdr-app (an installed copy, to try updates) instead of this build.
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+name=${HERDR_APP_SANDBOX:-sandbox}
+root=/var/tmp/herdr-app-$name
+bin=${HERDR_APP_BIN:-$here/../target/debug/herdr-app}
+# yuzora: Yuzora reads only YUZORA_APP_HOME (also below).
+export HC_SESSION=herdr-app-$name YUZORA_APP_HOME=$root/home
+# The core's state (machines, terminals) lives and dies with the sandbox:
+# a machine added in one run must not follow the next one there.
+export XDG_STATE_HOME=$root/state
+# Sounds would play on the real speakers.
+export HERDR_APP_NO_SOUND=1
+
+# The private X display, once started (Weston picks the number).
+if [[ -f $root/display ]]; then export DISPLAY=$(cat "$root/display"); fi
+
+ours() { { tr '\0' '\n' <"/proc/$1/environ"; } 2>/dev/null | grep -qx "YUZORA_APP_HOME=$YUZORA_APP_HOME"; }
+
+start_display() {
+  mkdir -p "$root"
+  if [[ -f $root/xpid ]] && kill -0 "$(cat "$root/xpid")" 2>/dev/null; then return 0; fi
+  rm -f "$root/weston.log" "$root/display"
+  weston --backend=headless --xwayland --socket="herdr-app-$name" --width=1400 --height=900 \
+    --log="$root/weston.log" >/dev/null 2>&1 &
+  echo $! >"$root/xpid"
+  for _ in $(seq 50); do
+    local d
+    d=$(grep -o 'xserver listening on display :[0-9]*' "$root/weston.log" 2>/dev/null | grep -o ':[0-9]*$' || true)
+    if [[ -n $d ]]; then
+      echo "$d" >"$root/display"
+      export DISPLAY=$d
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "the sandbox display did not start; see $root/weston.log" >&2
+  return 1
+}
+
+stop_window() {
+  [[ -f $root/pid ]] || return 0
+  local pid
+  pid=$(cat "$root/pid")
+  if ours "$pid"; then
+    kill "$pid"
+    for _ in $(seq 50); do ours "$pid" || break; sleep 0.1; done
+  fi
+  rm -f "$root/pid"
+}
+
+start_window() {
+  (cd "$here/.." && cargo build)
+  start_display
+  mkdir -p "$YUZORA_APP_HOME" "$root/bin"
+  # Opening a link would reach the real browser: log it instead (`scripts/sandbox opened`).
+  for opener in xdg-open open; do
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>%q\n' "$root/opened" >"$root/bin/$opener"
+    chmod +x "$root/bin/$opener"
+  done
+  PATH=$root/bin:$PATH WAYLAND_DISPLAY= setsid "$bin" >"$root/app.log" 2>&1 </dev/null &
+  echo $! >"$root/pid"
+  for _ in $(seq 100); do
+    "$bin" status >/dev/null 2>&1 && { echo "sandbox $name is up on $DISPLAY (log: $root/app.log)"; return 0; }
+    ours "$(cat "$root/pid")" || { cat "$root/app.log"; echo "sandbox $name died" >&2; return 1; }
+    sleep 0.2
+  done
+  echo "sandbox $name did not answer; see $root/app.log" >&2
+  return 1
+}
+
+input() { uv run -q --with python-xlib python "$here/sandbox-input.py" "$@"; }
+
+case ${1:-} in
+  up | restart) stop_window; start_window ;;
+  down)
+    stop_window
+    hc server stop >/dev/null 2>&1 || true
+    if [[ -f $root/xpid ]]; then kill "$(cat "$root/xpid")" 2>/dev/null || true; fi
+    rm -rf "$root"
+    echo "sandbox $name is gone"
+    ;;
+  do | status) exec "$bin" "$@" ;;
+  shot)
+    out=${2:-$root/shot.png}
+    import -display "$DISPLAY" -window Herdr "$root/full.png"
+    magick "$root/full.png" -resize '1100x>' "$out"
+    echo "$out"
+    ;;
+  move | click | drag | type | key | hold | release | sequence) input "$@" ;;
+  log) cat "$root/app.log" ;;
+  opened) cat "$root/opened" 2>/dev/null || true ;;
+  hc) shift; exec hc "$@" ;;
+  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

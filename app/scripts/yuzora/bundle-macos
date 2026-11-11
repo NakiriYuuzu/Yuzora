@@ -1,0 +1,26 @@
+#!/bin/bash
+# yuzora: wraps a built herdr-app binary as Yuzora.app (bundle id
+# dev.yuuzu.yuzora, Yuzora's icon) for local runs and checks. Not a release
+# package: scripts/yuzora/package makes those (docs/beta2/release.md).
+#
+#   scripts/yuzora/bundle-macos <out-dir> [path/to/herdr-app]
+#
+# The binary defaults to $CARGO_TARGET_DIR (or target)/debug/herdr-app.
+set -euo pipefail
+
+[[ $(uname -s) == Darwin ]] || { echo 'bundle-macos needs macOS.' >&2; exit 1; }
+here=$(cd "$(dirname "$0")/../.." && pwd)
+out=${1:?usage: bundle-macos <out-dir> [binary]}
+bin=${2:-${CARGO_TARGET_DIR:-$here/target}/debug/herdr-app}
+[[ -x $bin ]] || { echo "no binary at $bin (cargo build first)" >&2; exit 1; }
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/Cargo.toml" | head -1)
+
+app="$out/Yuzora.app"
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp "$bin" "$app/Contents/MacOS/Yuzora"
+cp "$here/assets/icons/Yuzora.icns" "$app/Contents/Resources/Yuzora.icns"
+# yuzora(L7): the same Info.plist as the release package.
+sed "s/@VERSION@/$version/g" "$here/distribution/yuzora/macos/Info.plist" > "$app/Contents/Info.plist"
+codesign --force --sign - "$app" >/dev/null 2>&1 || true
+echo "$app"

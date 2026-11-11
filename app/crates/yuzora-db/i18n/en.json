@@ -1,0 +1,68 @@
+{
+  "error": {
+    "cancelled": "Cancelled",
+    "missing": "Missing {field}",
+    "no_connection": "No connection {id}",
+    "no_job": "That query is gone",
+    "info_stopped": "stopped before it was read",
+    "job_panicked": "The database driver failed unexpectedly while running this; the connection will be opened again",
+    "ssh_pending": "Connecting through the SSH host {host} comes with the SSH lane; clear the tunnel to connect directly"
+  },
+  "edit": {
+    "no_key": "Read-only: the table has no primary key",
+    "query": "Read-only: only a table's rows can be edited, not a query's result",
+    "read_failed": "Read-only: the rows did not all arrive",
+    "table_changed": "Read-only: the table changed while it was being opened; refresh the table to edit it again",
+    "loading": "The rows are still loading",
+    "reading_key": "Reading the table's key…",
+    "read_only": "Read-only: the connection is set to read-only",
+    "writing": "A write-back is already running",
+    "result_gone": "This result was replaced by a newer read: refresh the table to edit it again",
+    "stopped": "Write-back stopped; nothing was written",
+    "stopped_maybe": "Write-back stopped; the database may already have saved the changes: refresh the table to check",
+    "failed": "The write-back failed",
+    "connection_changed": "The connection's settings changed after this table was read: refresh the table, then edit again",
+    "open_transaction": "A transaction is still open on the connection this table is saved on, so nothing was written. This app did not start it (a trigger, or the server's own settings, did). Close this table and open it again: that ends the connection, the server rolls the transaction back, and then you can write back",
+    "open_implicit_transaction": "A transaction is still open on the connection this table is saved on, so nothing was written. The connection opens transactions by itself (IMPLICIT_TRANSACTIONS is on), and the open one may hold changes that nobody committed. Close this table and open it again: that ends the connection, the server rolls the open transaction back with whatever it holds, and then you can write back",
+    "not_committed": "SQL Server did not commit the write-back (a transaction is still open on the connection); nothing was written",
+    "bad_date": "{column}: \"{text}\" can't be saved as a date and time. Write it as 2024-01-31 14:30:00 (the seconds are optional), or with AM or PM after the time",
+    "no_info": "Read-only: could not read the table's key ({error})",
+    "null_key": "A row's primary key is NULL; it can't be found to update"
+  },
+  "grid": {
+    "modified": "{count} cells modified",
+    "rows": "{count} rows",
+    "rows_loading": "{count} rows…",
+    "rows_capped": "first {count} rows",
+    "showing": "showing {first}–{last}",
+    "loaded": "{count} loaded",
+    "writing": "Writing…",
+    "stop": "Stop",
+    "discard": "Discard",
+    "write": "Write back",
+    "not_inline": "Line breaks and binary values can't be edited in the grid; use an UPDATE in the SQL tab",
+    "generated": "The database computes this column (generated, computed or identity); it can't be edited"
+  },
+  "field": {
+    "name": "name",
+    "path": "SQLite file",
+    "host": "host",
+    "user": "user"
+  },
+  "engine": {
+    "timeout": "Timed out after {s}s connecting to {target}",
+    "tls_failed": "TLS ({mode}) with {target} failed: {error}",
+    "ca_as_server": "The server's certificate is marked as a CA, which rustls does not accept as a server certificate. Give the server a certificate that is not a CA (signed by your CA), or use the require mode.",
+    "lost": "The connection to the server was lost: {error}",
+    "sqlite_missing": "The SQLite file {path} does not exist",
+    "worker_stopped": "The SQLite worker stopped: {error}",
+    "no_object": "There is no table or view named {name}",
+    "ca_unreadable": "Can't read the CA file {path}: {error}",
+    "ca_not_pem": "{path} is not a PEM certificate file: {error}",
+    "ca_unusable": "{path} holds an unusable certificate: {error}",
+    "ca_empty": "{path} holds no PEM certificate",
+    "key_mismatch": "The row with {key} matched {count} rows instead of exactly one; nothing was written",
+    "instance_port": "The instance {instance} needs its port: looking it up through SQL Browser isn't supported. Enter the instance's TCP port.",
+    "ca_required": "verify-ca checks the certificate against your CA only: choose its CA file, or use verify-full"
+  }
+}

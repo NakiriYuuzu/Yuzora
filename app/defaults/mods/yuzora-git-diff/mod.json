@@ -1,0 +1,6 @@
+{
+  "place": "none",
+  "yuzora": {
+    "pane": { "title": "pane.title", "icon": "mods/yuzora-git-diff/icon.svg", "order": 21, "props": {} }
+  }
+}

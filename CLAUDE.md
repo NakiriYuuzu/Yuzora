@@ -2,84 +2,147 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Yuzora：Tauri 2 + React 19 的 Agent Development Environment（ADE），融合 HERDR execution／terminal runtime；Spaces、named Sessions、Attention、Agents、編輯器、SSH/SFTP、資料庫、終端機與 git 共用同一個桌面工作面。GitHub：`NakiriYuuzu/Yuzora`。
+Yuzora：給 CLI coding agents 的原生工作區（ADE）。**v0.1.0-beta.2 開發中**：以 herdr-app（Rust＋GPUI＋libghostty＋QuickJS mods）為基底，放在 `app/`，把 Git、資料庫、SSH／SFTP、Files 與編輯器、設定、mods／templates 內建進去。`src-tauri/`＋`src/`（Tauri 2＋React 19）是 v0.1.0-beta.1 以前的版本，保留為移植來源直到 beta.2 發布。GitHub：`NakiriYuuzu/Yuzora`。
 
-各 agent 共用的規則（Release 平台支援、shadcn first、Rust 建置目錄重用、Agent skills）只寫在 AGENTS.md，這裡直接匯入；本檔只放 Claude 補充內容。
+各 agent 共用的規則（beta.2 架構與目錄地圖、Release 平台支援、shadcn first、Rust 建置目錄重用、Agent skills）只寫在 AGENTS.md，這裡直接匯入；本檔只放 Claude 補充內容。
 
 @AGENTS.md
 
 ## 指令
 
-以下 shell snippets 使用 Bash／Git Bash／WSL 語法。Windows PowerShell 請拆成多行，並用 `$env:NAME = ...` 設定環境變數。
+以下 shell snippets 使用 Bash／Git Bash／WSL 語法。Windows PowerShell 請拆成多行，並用 `$env:NAME = ...` 設定環境變數。在 worktree／lane 執行 cargo 前，先依 AGENTS.md「Rust 建置目錄重用」設定 `CARGO_TARGET_DIR`。
 
-前端（bun）：
+beta.2 app（於 `app/`，需 Zig 0.16.0 與 ghostty submodule）：
+
+```bash
+export PATH="$HOME/.local/zig-0.16.0:$PATH"
+git submodule update --init app/vendor/ghostty
+cd app
+cargo build                          # target/debug/herdr-app（package／binary 暫用上游名稱）
+cargo test --locked                  # 全 workspace；單一 crate：cargo test --locked -p yuzora-core
+scripts/yuzora/check-mods            # 在複本上對每個 yuzora-* mod 跑 herdr-app check
+scripts/yuzora/bundle-macos /tmp/yz  # 包成 /tmp/yz/Yuzora.app（本機用，非正式打包）
+scripts/yuzora/package               # 發布用安裝檔到 dist/（細節見 L7 補充）
+scripts/yuzora/sync-check            # subtree pull 之後的上游同步檢查（--quick 不跑 cargo test）
+```
+
+上游 herdr-app 的其他工具（`scripts/sandbox`、`bun scripts/docs.ts check`、`justfile`）見 `app/AGENTS.md`。
+
+Tauri app（根目錄，bun；beta.1 以前的版本，也負責官網 `site/` 的測試與 Pages 建置）：
 
 ```bash
 bun run tauri:dev        # 桌面 app（Vite dev server 固定 port 1420）
 bun run test             # vitest 全跑；單檔：bun run test src/lib/paths.test.ts
-bun run test:watch
 bun run lint             # eslint
 bun run typecheck        # @typescript/native（TS7 tsgo）跑兩份 tsconfig，非一般 tsc
 bun run build            # typecheck + vite build
 ```
 
-Rust（於 `src-tauri/`）：
+Tauri Rust（於 `src-tauri/`；根 workspace 不含 `app/`）：
 
 ```bash
 cargo check --locked --all-targets
-cargo test --locked                          # 單元測試；DB integration 另計（見下）
+cargo test --locked
 cargo fmt --package yuzora -- --check
 ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json
 ```
 
-在 worktree／lane 或 `output/` 快照裡執行 cargo 前，先依 AGENTS.md「Rust 建置目錄重用」設定 `CARGO_TARGET_DIR`。
+根目錄的 eslint、vitest、vite 都排除 `app/`；`app/scripts/*.test.ts` 是 bun test，由 app 自己跑。
 
-資料庫 integration 測試（需 Docker；密碼為 fixture 專用，非機密）：
+## beta.2 架構
 
-```bash
-docker compose -f tests/database/docker-compose.yml --profile mssql up -d --wait
-cd src-tauri && YUZORA_P8_DATABASE_PASSWORD='Yuzora-P8-Only-2026!' \
-  YUZORA_DATABASE_TEST_ENGINES=sqlite,postgres,mssql \
-  cargo test --locked --test database_integration -- --ignored
-```
+先讀 `docs/beta2/architecture.md`（ADR）與 `docs/beta2/lanes.md`。重點：
 
-Release：使用者驗收候選並授權後合併 release PR；`main` 的 exact push CI 成功才由 `release.yml` 自動建立 tag、建置及發布。平台與簽章規則見 AGENTS.md「Release platform support」。完整流程見 `docs/operations.md`，不手動推 release tag。
+- **三層**：herdr 殼（上游 `app/src`、上游 mods）→ Yuzora Rust 原生層（`app/crates/yuzora-*`，各提供 gpui-shell `HostModule`：async 函式與原生元件）→ Yuzora JS mods（`app/defaults/mods/yuzora-*`，組合側欄模式與 tool pane）。
+- **整合點**：`app/src/yuzora/mod.rs` 掛上 `yuzora:core` 與 7 個 lane 模組（shell、git、db、ssh、files、settings、perf）；`app/Cargo.toml` 已依賴全部 crate。lane 只在自己 crate 的 `host_module()` 加函式，`DECLARATIONS` 要同步加 `export function …`（不一致會在 `validate` 失敗）。
+- **herdr 模型**：herdr-core（`hc`）執行終端機與 machines，app 只畫畫面；space 屬於一台機器，tab 屬於一個 space，pane 可以是終端機或 mod pane（`pane.split {mod, props}`）。layout 節點 `row`／`column`／`stack`／`block`，`layout.select {stack, child}` 切換。mod API 在 `app/defaults/herdr.d.ts`，Yuzora 的在 app home 的 `yuzora.d.ts`。
+- **外連**：遙測、feedback 送 herdr.dev、update notes 媒體都關閉（`app/src/yuzora/mod.rs` 的常數與 `nothing_goes_to_herdr_dev` 測試）；app 自我更新改走本 repo 的 GitHub Releases（`app/src/yuzora/release/`，manifest 必須以 release 金鑰簽章，只有安裝好的 release build 會檢查）；herdr-core 的安裝與更新保留上游官方通道。app home `~/.config/yuzora`（`YUZORA_APP_HOME`；不讀 `HERDR_APP_HOME`），core layout 文件名 `yuzora`。
+- **探索**：mod 在 `mod.json` 宣告 `"yuzora": {"pane": …}`／`{"settings": …}`，由 `yuzora:core` 的 `panes()`／`settingsPages()` 列出。
+- **i18n**：介面只有英文（beta.3 起）。`app/defaults/mods/<mod>/i18n/en.json`，JS `t(key, vars)`，Rust `yuzora_core::i18n`；沒有語言設定，不要新增 `zh-TW.json`（`app/scripts/yuzora-i18n.test.ts` 會擋）。
+- **與官方 Herdr 共用 core**：終端機、machines、templates 共用；收養來的終端機在任一邊關閉都會在 core 結束。細節與已決定的取捨見 `docs/beta2/herdr-compat.md`。
+- **mod 限制**：mod 的 `exec` 上限 30 秒／8 MiB、`readTextFile` 1 MiB、`writeTextFile` 只能寫 app home。DB 連線、SSH session、大量資料都要在 Rust 層做；遠端用 `yuzora_core::remote`（`hc exec --on`，可自訂 timeout）。
 
-## 架構
+## Tauri app 架構（beta.1 以前，移植來源）
 
-**IPC 邊界**（理解全 app 的關鍵）：React 前端 ←→ `src/lib/ipc.ts`／`src/lib/herdrIpc.ts`（typed invoke wrappers）←→ `src-tauri/src/lib.rs` 統一註冊的 `#[tauri::command]`；Rust 側一個 service 一個 module（`herdr_service`、`git_*`、`db_*`、`ssh_service`⋯）。HERDR snapshot、capabilities、layout 與 terminal connector 必須經現有 typed boundary，不直接繞過 service。
-
-**前端分層**：
-
-- `src/app/`＝外殼 chrome：`AppShell.tsx`（版面根）＋`workbench/`（SpaceAgentSidebar、SettingsDialog、CommandPalette、StatusBar）＋`panels/`（HerdrTerminal／Editor／Git／Database／Ssh／Browser）。
-- `src/workbench/`＝功能表面與 glue：EditorArea、TabBar、各 SplitView，以及 **Bridge 模式**——`HerdrBridge` 與其他 `*Bridge`／`*Host` 在 `src/App.tsx` 以扁平兄弟節點掛載，把 Tauri/runtime 事件接進 stores；`AppShell` 保持純版面，跨 store 協調寫在 Bridge。
-- `src/state/`＝zustand stores；HERDR runtime 狀態集中於獨立 typed `herdrStore`，並按 named Session 隔離 snapshot、capabilities 與連線狀態。
-- 子系統：`src-tauri/src/herdr_service.rs`＋`src/lib/herdrIpc.ts`／`herdrTypes.ts`（HERDR public API、capability/schema gating 與官方 terminal connector）、`src/editor/`（CodeMirror 6 語法編輯）、`src/terminal/`（xterm 與 HERDR terminal transport）、`src/preview/`（Browser：原生子 webview 與遠端 loopback forwarding；程式內保留 preview 命名）。
-- 產品範圍：terminal 統一由 HERDR 提供；編輯器不含 LSP；Browser 開啟網站、已執行的服務及工作區 HTML（受限自訂資源協定），支援選取元素複製 AI 上下文；不提供專案 Dev Server 管理。Markdown／SVG／圖片檢視仍屬編輯器功能。見 `.yuuzu/adr/0004-herdr-terminals-browser-only.html`。
-- HERDR 主機路由：Windows 使用原生 named pipe，WSL 預設關閉並由設定啟用；macOS／Linux 原生及 SSH runtime 保留。來源切換先驗證 client／各 Session，相容性 gate 不放寬，不自動停止 server；原生來源保存後重啟 Yuzora 生效。見 `.yuuzu/adr/0005-native-windows-opt-in-wsl.html`。
-- HERDR 工具：`herdrFeatures.ts`／shared `herdr_features.rs` 提供封閉 typed 操作；主機與 named Session 必須明確選取。完整 Session 畫面透過 PTY 啟動官方 `herdr … client`，提供搜尋、Copy mode、Kitty 圖形與原生 popup；此 PTY 僅承載官方 client，不新增獨立 shell。關閉僅釋放 client，同 Session 的一般 pane connectors 隨之恢復。Windows x86_64 SSH 使用 helper stdio 與 named pipe，不走 Unix direct-streamlocal。
-- HERDR machines：遠端 HERDR Session 採官方 saved machines（`herdr machine …`／`--machine`，需 0.9.2+），host `herdr_machines.rs` 以 argv 包裝 CLI；前端 `machinesIpc.ts`／`machinesStore`／`MachinesBridge`。遠端即時畫面只在官方 client；`machine add`／`reconnect` 以白名單走同一個官方 client PTY。不讀寫官方 catalog 檔。見 `.yuuzu/adr/0007-herdr-saved-machines-remote-sessions.html`。
-- 路徑 alias：`@/` → `src/`。
-
-**i18n**：`src/lib/i18n/locales/{en,zh-TW}/<ns>.json`，`import.meta.glob` 自動註冊——新增 namespace 只要在兩個語系各放一個 JSON；UI 文字兩語系都要填。
+- IPC：React ←→ `src/lib/ipc.ts`／`herdrIpc.ts` ←→ `src-tauri/src/lib.rs` 註冊的 `#[tauri::command]`；Rust 側一個 service 一個 module（`db_*`、`ssh_service`、`sftp_*`、`git_*`、`fs_service`⋯），是 beta.2 L2–L5 的移植來源。
+- vendored patches：`src-tauri/vendor/{russh,russh-sftp,tiberius}-*-yuzora`（beta.2 已複製到 `app/vendor/`）。
+- React UI 不可重用，beta.2 全部用 GPUI＋mods 重寫。不參考既往 GRILL-ME tickets。
 
 ## 測試慣例
 
-- Vitest 分為 node／jsdom projects（globals on）：`src/test/nodeTests.json` 精確 allowlist 使用 node，其餘與新增測試預設 jsdom（`src/test/setup.ts`）；新增 DOM 依賴時移除對應 allowlist 路徑。測試通常同目錄、`.test.ts(x)` 後綴；Node-dependent config 測試放 repo root，避免污染 browser types。
-- root `tests/`＝DB docker-compose 與 integration fixtures；root `fixtures/`＝非單元測試所需的可執行／資料 fixtures。
-- jsdom 測不到的（watcher、tab 拖曳、dialog、HERDR terminal 視覺）→ 用 `gui-acceptance` 或已授權的 computer-use 實機驗收。
-- Rust 單元測試採 inline 或 `<module>/tests.rs`；`lib.rs` 的 `command_inventory_tests` 會解析自身原始碼守護 shutdown 順序——改 `run()` 結構前先看它。
+- app：Rust 測試 inline 或 `<module>/tests.rs`、整合測試 `app/tests/*.rs`；每個 `yuzora-*` crate 自帶單元測試。`tests/notices.rs` 守 `THIRD-PARTY-NOTICES` 與 `Cargo.lock` 一致；`update_notes` 測試要求 `app/CHANGELOG.md` 第一筆版本等於 `0.1.0-beta.2`。
+- `mods::lifecycle_tests::close_starts_native_work_before_releasing_the_copy` 在平行執行時偶爾失敗（上游既有），單獨重跑可過。
+- 本機 `scripts/test_distribution.py` 若裝有 `/Applications/Herdr.app`，installer 測試會判成 reinstall 而失敗；CI 不受影響。
+- Tauri app：Vitest node／jsdom projects，`src/test/nodeTests.json` allowlist；Rust `lib.rs` 的 `command_inventory_tests` 守護 shutdown 順序。
 
-## CI 守門（`ci.yml`）
+## CI 守門
 
-frontend checks（lint→typecheck→build）與 3 個 test shards 平行；固定名稱 `Frontend (lint · typecheck · test · build)` aggregator 要求全部成功。checks／各 shard 先建立 Pages/demo fixtures。另有三平台 `cargo check --locked --all-targets`＋macOS 上 fmt／clippy／`cargo test`＋Linux 真實資料庫 integration。
-
-**Clippy 是 exact baseline**（`.github/clippy-baseline.json`，fingerprint＝code/file/line/message/count）：任何 warning 的新增、消失、搬移都會 fail。修掉或新增 warning 後要同步更新該 JSON（腳本只驗證、不重產）。
+- `app-package.yml`：改到打包相關路徑的 PR／push 與手動觸發；macOS、Windows、Linux x64／arm64 四平台打包並以使用者的方式安裝檢查，固定狀態名稱 `App (package)`。不建 tag、不發布、不讀 secret。
+- `app-ci.yml`：base 為 `beta2/integration`、改到 `app/**` 的 PR；ubuntu-22.04＋macos-15 建置與 `cargo test --locked`；macOS 另跑 yuzora crates、`check-mods`（check 需要視窗伺服器）與 shot_pixels，Linux 另跑 packaging 與文件檢查；另有一個 windows-2022 job 只跑 `cfg(windows)` 的 console 視窗測試（`yuzora-core spawn::`、`yuzora-git exec::`、`yuzora-files fsops::tests::run_starts`；整個 workspace 的測試在 Windows 上有既有的失敗，不跑），也納入 aggregator。固定狀態名稱 `App (build · test)`。只有 push 到 `beta2/integration` 會存 cache。
+- `ci.yml`（Tauri）：只改 `app/**`、`docs/beta2/**` 的 PR 不觸發；改到 `site/`、`tests/site-*.js`、README 等的 PR 會跑（官網測試在 vitest 裡）。frontend checks 與 test shards 平行，`Frontend (lint · typecheck · test · build)` aggregator；三平台 `cargo check`＋macOS fmt／clippy／`cargo test`＋Linux 資料庫 integration。**Clippy 是 exact baseline**（`.github/clippy-baseline.json`），warning 新增、消失、搬移都會 fail。
 
 ## 慣例與路徑
 
-- 語言：回覆繁體中文；技術詞英文、UI 文字中文。
-- Git 寫入（add／commit／push 等）僅在使用者明確下令時執行。
-- 規劃／執行制度：`.yuuzu/`——`specs/`（計畫）、`adr/`（架構決策）、`eval/`（驗收）、`memory/lessons.html`（教訓），配合 yuuzu-plan／yuuzu-dev skills。
+- 語言：回覆繁體中文；技術詞英文、UI 文字只有英文。
+- Git 寫入（add／commit／push 等）僅在使用者明確下令時執行。beta.2 lane 的授權與 PR 流程見 `docs/beta2/lanes.md`；任何 session 都不碰 `main`、tag、release。
+- commit trailer：`Co-Authored-By: Claude Opus 5.5 <yuuzu@yuuzu.net>`。
+- 規劃／執行制度：`.yuuzu/`——`specs/`、`adr/`、`eval/`、`memory/lessons.html`。beta.2 決策以 `docs/beta2/` 為準。
 - 結案報告：`docs/html/<題目>-<YYYY-MM-DD>.html`。
-- MSSQL driver 是 vendored patch：`src-tauri/vendor/tiberius-0.12.3-yuzora`（根 `Cargo.toml` 的 `[patch.crates-io]`）。
+
+## Lane 補充
+
+<!-- yuzora:lane:L1:start -->
+### L1 實機驗證
+
+- `shot` 只拍最後畫出的畫面；視窗被遮住時是舊畫面。用同一組隔離環境變數再執行一次 app 執行檔，會把既有視窗帶到前面（`raise`），再 `shot`。
+- 隔離 home 第一次啟動會開 welcome；先在 `<home>/shared.json` 寫入 `"frame.welcomed": "skipped"` 可略過。
+- 熱載入只在檔案內容改變時觸發；只改 `i18n/*.json` 不會重讀字串，要連同 `main.js` 一起改或重啟。
+<!-- yuzora:lane:L1:end -->
+
+<!-- yuzora:lane:L2:start -->
+- L2 Git：pane 之間用 shared key（`yuzora.git.diff`／`merge`／`rebase`）交棒、`changed(repo, since)` 即時更新、`yuzora.badge.git`／`yuzora.status.git` 給 L1，細節在 `docs/beta2/git.md`〈pane 之間的約定〉。
+<!-- yuzora:lane:L2:end -->
+
+<!-- yuzora:lane:L3:start -->
+- L3（資料庫）：已存的密碼只送給存它時的伺服器（`ConnectionConfig::password_may_follow`：engine、host、port、user、instance、tunnel 相同，TLS 不變弱、verify 模式不換 CA）。改連線相關程式時不要放寬這條規則。
+- 原生元件在 JS 用 `DataGrid.new(id, props)`、`SqlEditor.new(id, props)`，不是 `new X(...)`（`herdr-app check` 會報 not a constructor）。
+<!-- yuzora:lane:L3:end -->
+
+<!-- yuzora:lane:L4:start -->
+- L4 SSH 的 russh 走 crate 自己的 tokio runtime（`yuzora_ssh::runtime`）；HostModule 的 async 函式用 `runtime::bridge` 交回 GPUI executor，不要在 mod 的 host 函式裡直接 `tokio::spawn`。
+- 改 `yuzora:ssh` 函式時同步改 `js.rs` 的 `DECLARATIONS`；錯誤以 `"[code] message"` 拋給 JS。
+<!-- yuzora:lane:L4:end -->
+
+<!-- yuzora:lane:L5:start -->
+### L5 檔案與編輯器
+
+- 一個檔案只有一個 `DocView`，同一時間只有一個 pane 畫它的編輯器（owner）；不要讓同一個 `EditorState` entity 在同一個 frame 被畫兩次。
+- mod pane 不知道自己的 pane id：編輯器取得焦點時用 `focused().pane` 記到文件（`notePane`），開檔時靠它 `pane.focus` 回去。
+<!-- yuzora:lane:L5:end -->
+
+<!-- yuzora:lane:L6:start -->
+- L6 實機看設定頁：`<app> do app.settings '{"section":"templates"}'`（section 可以是 Yuzora 頁的 mod 名或 section key）；直接開模板表單：`<app> do tab.new '{"mod":"yuzora-settings-templates","props":{"edit":"<name>"}}'`；再 `shot` 留證。
+- 隔離 home 第一次啟動會跳 Herdr 的 welcome 視窗擋住 shot：app 停止時在隔離 home 的 `shared.json` 寫入 `"frame.welcomed": "skipped"`。
+<!-- yuzora:lane:L6:end -->
+
+<!-- yuzora:lane:L7:start -->
+L7（發布與更新，`docs/beta2/release.md`）：
+
+```bash
+cd app
+YUZORA_PACKAGE_BIN=$CARGO_TARGET_DIR/debug/herdr-app scripts/yuzora/package   # 只檢查打包，不做 release build
+scripts/yuzora/package                                                       # release build 並打包到 dist/
+bun test scripts/yuzora/ && bun scripts/yuzora/manifest.ts yuzora dist
+cargo test --locked -p herdr-app yuzora::release
+cargo test --locked -p yuzora-core migrate
+```
+
+本機的 `makensis`（`brew install makensis`）沒設 `LC_ALL=en_US.UTF-8` 會以 `std::bad_alloc` 結束。
+<!-- yuzora:lane:L7:end -->
+
+<!-- yuzora:lane:L8:start -->
+### L8 實機驗證
+
+- popover 截圖：用同一組隔離環境變數執行 `herdr-app do yuzora-perf.toggle` 打開（再執行一次關閉），等下一次重畫後 `shot`。
+- 取樣只在視窗位於前景時進行；`shot` 前先把視窗帶到前面（再執行一次 app），否則 chip 會停在上一個樣本，並記為 `skipped_no_focus`。
+<!-- yuzora:lane:L8:end -->

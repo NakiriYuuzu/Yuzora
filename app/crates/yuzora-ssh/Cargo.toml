@@ -1,0 +1,24 @@
+[package]
+name = "yuzora-ssh"
+description = "Yuzora L4: SSH hosts, SFTP transfers and tunnels (other lanes reach remote databases through its tunnels)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yuzora-core = { path = "../yuzora-core" }
+# The vendored copy (app/vendor/russh-0.62.7-yuzora) is patched in by app/Cargo.toml.
+# ring rather than the default aws-lc-rs: ring is already in the app's lock and
+# needs no cmake. rsa: RSA user keys and RSA-only hosts.
+russh = { version = "=0.62.7", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-sftp = "=3.0.0"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "time", "sync", "net", "process", "io-util", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+hmac = "0.13"
+sha1 = "0.11"
+zeroize = "1"
+
+[dev-dependencies]

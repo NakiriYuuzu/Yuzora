@@ -1,0 +1,15 @@
+{
+  "title": "Known hosts",
+  "body": "Yuzora checks host keys against its own list and against ~/.ssh's (read only). Remove an entry to be asked about that host's key again.",
+  "filter": "Filter by host or fingerprint",
+  "own": "Yuzora · {path}",
+  "system": "Read only · {path}",
+  "hashed": "(hashed name)",
+  "revoked": "revoked",
+  "ca": "CA",
+  "remove": "Remove",
+  "confirm": "Remove?",
+  "none": "No entries.",
+  "readonly": "To remove one of these, run ssh-keygen -R <host>.",
+  "close": "Close"
+}

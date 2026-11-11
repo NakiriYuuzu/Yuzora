@@ -1,0 +1,38 @@
+{
+  "title": "Table",
+  "pick": "Pick a table or view in the Database sidebar.",
+  "loading": "Loading…",
+  "tab": {
+    "data": "Data",
+    "structure": "Structure",
+    "sql": "SQL"
+  },
+  "run": "Run ⌘↵",
+  "stop": "Stop",
+  "run_sql_tip": "Run the SQL (the selection when there is one)",
+  "refresh_tip": "Read the rows again",
+  "run_sql_over_read_tip": "Stop reading the table and run the SQL (the selection when there is one)",
+  "sql_hint": "⌘↵ / Ctrl+Enter runs this SQL (the selection when there is one); the rows show under Data.",
+  "sql_over_read": "The table is still being read. Run stops that read, then runs this SQL.",
+  "sql_busy": "A statement is still running. Stop it first, then run again.",
+  "done": "Done",
+  "affected": "{count} rows affected",
+  "result_rows": "Result {n} · {count} rows",
+  "result_affected": "Result {n} · {count} affected",
+  "structure": {
+    "columns": "Columns · {count}",
+    "indexes": "Indexes · {count}",
+    "foreign_keys": "Foreign keys · {count}",
+    "name": "Name",
+    "type": "Type",
+    "nullable": "Null",
+    "default": "Default",
+    "key": "Key"
+  },
+  "unsaved": "{count} edited cells aren't written back yet",
+  "unsaved_drop": "Discard and go on",
+  "unsaved_keep": "Keep editing",
+  "unsaved_writing": "{count} edited cells are being written right now",
+  "unsaved_wait": "Keep waiting",
+  "unsaved_stop": "Stop saving"
+}

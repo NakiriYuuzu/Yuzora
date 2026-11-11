@@ -1,0 +1,54 @@
+{
+  "pane": {
+    "title": "Markdown preview",
+    "markdown": "Markdown preview"
+  },
+  "header": {
+    "unsaved": "Unsaved changes",
+    "preview": "Preview",
+    "source": "Source",
+    "readonly": "Read-only",
+    "agent": "{agent} is editing too"
+  },
+  "banner": {
+    "conflict": "This file changed on disk while you had unsaved changes.",
+    "reload": "Reload (discard mine)",
+    "keep": "Keep mine",
+    "overwrite": "Overwrite",
+    "deleted": "This file was deleted or moved on disk.",
+    "restore": "Save it again",
+    "not_utf8": "Not UTF-8 text: opened read-only.",
+    "large": "Large file: syntax highlighting and folding are off."
+  },
+  "find": {
+    "open": "Find (⌘F)",
+    "placeholder": "Find",
+    "replace_placeholder": "Replace",
+    "count": "{current} of {total}",
+    "none": "No results",
+    "case": "Match case",
+    "prev": "Previous match (Shift+Enter)",
+    "next": "Next match (Enter)",
+    "close": "Close (Esc)",
+    "toggle_replace": "Replace",
+    "replace": "Replace",
+    "replace_all": "All"
+  },
+  "message": {
+    "no_file": "No file here. Open one from the Files sidebar.",
+    "loading": "Opening…",
+    "failed": "Can't open this file. {error}",
+    "binary": "This is a binary file and can't be shown as text.",
+    "too_large": "This file is too large to open here (over 16 MB)."
+  },
+  "status": {
+    "unsaved": "{count} unsaved"
+  },
+  "toast": {
+    "kept": "{name} has unsaved changes",
+    "kept_body": "They stay in memory until Yuzora quits: open the file again to get them back."
+  },
+  "error": {
+    "save": "Can't save {name}"
+  }
+}

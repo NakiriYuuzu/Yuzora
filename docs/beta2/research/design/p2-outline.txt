@@ -1,0 +1,171 @@
+<div> width:1440px height:900px background:#131417 color:#e4e4e7 font-size:12.5px
+  <div> width:248px
+    <dc-import> 
+  <div> flex:1
+    <header> height:36px gap:6px padding:0 6px
+      <div> gap:4px
+        <button> height:26px gap:6px padding:0 8px border-radius:6px color:#a1a1aa
+          <span> width:14px height:14px border-radius:3px background:#4f6bed color:#fff font-size:9px font-weight:700
+            "Y"
+          "主工作"
+          <span> width:6px height:6px border-radius:50% background:#f5b453
+        <button> height:26px gap:6px padding:0 8px border-radius:6px background:#232428 border:1px solid #34353a
+          <span> width:14px height:14px border-radius:3px background:#4f6bed color:#fff font-size:9px font-weight:700
+            "Y"
+          "編輯"
+          <span> color:#8b8b94
+            "×"
+        <button> width:26px height:26px color:#a1a1aa font-size:15px
+          "+"
+      <div> flex:1
+      <button> height:26px gap:6px padding:0 8px border-radius:6px border:1px solid #2c2d32 color:#d4d4d8
+        "＋ 新增 pane"
+        <span> color:#8b8b94
+          "▾"
+      <button> width:28px height:26px color:#a1a1aa
+        <svg>
+      <button> width:28px height:26px color:#a1a1aa
+        <svg>
+      <span> width:1px height:16px background:#2a2b30
+      <button> width:30px height:26px color:#8b8b94
+        "—"
+      <button> width:30px height:26px color:#8b8b94
+        <svg>
+      <button> width:30px height:26px color:#8b8b94
+        "✕"
+    <div> flex:1 grid-template-columns:1.25fr 1fr gap:6px padding:0 6px 6px
+      <section> border:1px solid #55565c border-radius:6px background:#17181b
+        <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+          <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+            "Y"
+          <span> font-size:10px font-weight:700 color:#60a5fa
+            "TS"
+          <span> font-weight:600
+            "DockLayout.tsx"
+          <span> width:6px height:6px border-radius:50% background:#e4e4e7
+          <span> color:#8b8b94
+            "src/app/workbench"
+          <div> flex:1
+          <span> font-size:11px padding:1px 6px border-radius:8px background:#2a201c color:#e8a27f
+            "Claude Code 也在改"
+          <button> width:20px height:20px color:#8b8b94
+            "×"
+        <div> flex:1 font-size:12.5px
+          <div> width:50px
+            <sc-for> 
+              <div> 
+                "{{c.n}}"
+          <div> flex:1
+            <sc-for> 
+              <div> 
+                <span> color:{{c.c1}}
+                  "{{c.a}}"
+                <span> color:{{c.c2}}
+                  "{{c.b}}"
+                <span> color:{{c.c3}}
+                  "{{c.d}}"
+        <div> height:24px gap:12px padding:0 10px font-size:11px color:#a1a1aa
+          <span> 
+            "Ln 44, Col 12"
+          <span> 
+            "TypeScript JSX"
+          <span> 
+            "UTF-8 · LF"
+          <div> flex:1
+          <span> 
+            "One Dark"
+      <div> gap:6px
+        <section> border:1px solid #2c2d32 border-radius:6px background:#17181b
+          <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+            <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+              "Y"
+            <span> font-size:10px font-weight:700 color:#93c5fd
+              "M↓"
+            <span> font-weight:600
+              "CLAUDE.md"
+            <span> color:#8b8b94
+              "預覽"
+            <div> flex:1
+            <div> padding:2px border-radius:5px background:#222327
+              <button> height:18px padding:0 6px border-radius:3px font-size:11px color:#a1a1aa
+                "原始碼"
+              <button> height:18px padding:0 6px border-radius:3px background:#34353a font-size:11px
+                "預覽"
+            <button> width:20px height:20px color:#8b8b94
+              "×"
+          <div> flex:1 padding:14px 18px gap:8px
+            <h2> font-size:17px font-weight:700
+              "架構"
+            <p> color:#c9c9cf
+              <b> color:#f4f4f5
+                "IPC 邊界"
+              "：React 前端 ←→"
+              <code> font-size:12px padding:1px 5px border-radius:4px background:#222327
+                "src/lib/ipc.ts"
+              "←→"
+              <code> font-size:12px padding:1px 5px border-radius:4px background:#222327
+                "src-tauri/src/lib.rs"
+              "統一註冊的 command。"
+            <h3> font-size:14px font-weight:600
+              "前端分層"
+            <ul> color:#c9c9cf gap:4px
+              <li> 
+                <code> font-size:12px
+                  "src/app/"
+                "＝外殼 chrome：AppShell 與 workbench"
+              <li> 
+                <code> font-size:12px
+                  "src/workbench/"
+                "＝功能表面與 Bridge"
+              <li> 
+                <code> font-size:12px
+                  "src/state/"
+                "＝zustand stores，herdrStore 依 Session 隔離"
+        <section> border:1px solid #2c2d32 border-radius:6px background:#17181b
+          <div> height:28px gap:7px padding:0 6px 0 8px font-size:12px
+            <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:9.5px font-weight:700
+              "Y"
+            <svg>
+            <span> font-weight:600
+              "zsh"
+            <span> color:#8b8b94
+              "yuzora · feat/gpui-dock"
+            <div> flex:1
+            <button> width:20px height:20px color:#8b8b94
+              "×"
+          <div> flex:1 padding:10px 12px font-size:12px color:#a1a1aa
+            <div> 
+              <span> color:#86d17a
+                "➜"
+              <span> color:#93c5fd
+                "yuzora"
+              "git:("
+              <span> color:#f08a8a
+                "feat/gpui-dock"
+              ") bun run typecheck"
+            <div> 
+              "tsgo -p tsconfig.app.json"
+            <div> 
+              "tsgo -p tsconfig.node.json"
+            <div> color:#86d17a
+              "✓ 0 errors"
+            <div> 
+              <span> color:#86d17a
+                "➜"
+              <span> color:#93c5fd
+                "yuzora"
+              <span> width:7px height:14px background:#e4e4e7
+    <footer> height:26px gap:14px padding:0 10px font-size:11.5px color:#a1a1aa
+      <span> 
+        "3 panes · yuzora"
+      <span> 
+        "● 5 agents"
+      <span> color:#f5b453
+        "▲ 2 需要回覆"
+      <span> 
+        "⎇ feat/gpui-dock ↑2"
+      <div> flex:1
+      <span> 
+        "HERDR 0.9.5"
+      <span> color:#8b8b94
+        "Ctrl+Shift+P 指令"

@@ -1,0 +1,306 @@
+# Yuzora v0.1.0-beta.2: build and test the herdr-based app in app/ (its own
+# Cargo workspace, lock and target). Steps follow upstream's
+# app/.github/workflows/ci.yml on the two platforms beta.2 starts with; the
+# Tauri app keeps ci.yml. See docs/beta2/architecture.md.
+#
+# Caches: only pushes to main or beta2/integration save them, so PR caches
+# can't evict the ones every PR restores. GitHub lets a run restore the caches
+# of its own branch and of the default branch (and a PR's base branch), so a
+# push to main needs main's own: integration's are no use there. The first
+# main push builds cold and saves; after that main and the PRs aimed at it
+# hit. Both branches save only while both are in use, and only on an exact-key
+# miss (the key is the dependencies, not the sources). setup-zig caches
+# separately.
+name: App CI
+
+on:
+  push:
+    branches: [main, beta2/integration]
+    paths: &app-paths
+      - 'app/**'
+      - '.gitmodules'
+      - 'tests/database/**'
+      - '.github/workflows/app-ci.yml'
+      # Its contract test (app/scripts/yuzora/app-release.test.ts) runs below.
+      - '.github/workflows/app-release.yml'
+  pull_request:
+    branches: [main, beta2/integration]
+    paths: *app-paths
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+  # In the cache key: ghostty-sys can't tell when Zig changes.
+  ZIG_VERSION: 0.16.0
+  CARGO_PROFILE_DEV_DEBUG: "1"
+  CARGO_PROFILE_TEST_DEBUG: "1"
+  CARGO_INCREMENTAL: "0"
+  SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta2/integration') }}
+
+jobs:
+  platform-tests:
+    name: App ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x86_64, runner: ubuntu-22.04 }
+          - { platform: macos-aarch64, runner: macos-15 }
+    runs-on: ${{ matrix.runner }}
+    # Upstream allows 45; a cold cache here also builds ghostty and gpui.
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The root .gitmodules: app/vendor/ghostty.
+          submodules: true
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      # Keyed by what the dependencies build from (yuzora-* crates are sources,
+      # not dependencies), so a source-only push restores an exact hit.
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: &cache-paths |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            app/target
+          key: app-ci-v1-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', 'app/crates/ghostty-sys/**', '.github/workflows/app-ci.yml') }}
+          restore-keys: app-ci-v1-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          apt="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $apt update
+          sudo apt-get $apt install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev mesa-vulkan-drivers libfontconfig-dev libfreetype-dev
+      - name: Keep unchanged sources fresh
+        run: scripts/ci-sources restore
+      - name: Build tests
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --no-run
+      - name: Note the sources the cache was built from
+        if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: scripts/ci-sources record
+      - name: Save build cache
+        if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: *cache-paths
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Tests
+        run: |
+          only=()
+          if [ "$RUNNER_OS" != Linux ]; then
+            for t in tests/*.rs; do
+              name=$(basename "$t" .rs)
+              [ "$name" = shot_pixels ] || only+=(--test "$name")
+            done
+            only+=(--bins)
+          fi
+          threads=()
+          if [ "$RUNNER_OS" = Linux ]; then
+            threads=(-- --test-threads 4)
+          fi
+          cargo test --locked --config 'profile.dev.package."*".opt-level=0' "${only[@]}" "${threads[@]}"
+      # The run above narrows to the app's own targets off Linux.
+      - name: Yuzora crates
+        if: runner.os != 'Linux'
+        run: |
+          pkgs=()
+          for c in crates/yuzora-*; do pkgs+=(-p "$(basename "$c")"); done
+          cargo test --locked --config 'profile.dev.package."*".opt-level=0' "${pkgs[@]}"
+      - name: Screenshot pixels
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        env:
+          HERDR_SHOT_NATIVE_TEST: "1"
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --test shot_pixels
+      # check opens a hidden window, which needs a window server. On Linux the
+      # tests above render every shipped mod headless (shipped_initial_descriptions).
+      - name: Yuzora mods
+        if: runner.os == 'macOS'
+        run: scripts/yuzora/check-mods
+      - name: Check release packaging
+        if: matrix.platform == 'linux-x86_64'
+        run: python3 -m unittest discover -s scripts -p test_distribution.py
+      # src/yuzora/release/manifest.rs compiled alone: what app-release.yml checks
+      # a signed manifest with. Its own lock and target, outside the workspace.
+      - name: Check the manifest checker
+        if: matrix.platform == 'linux-x86_64'
+        run: cargo test --locked --manifest-path scripts/yuzora/verify-manifest/Cargo.toml --target-dir "$RUNNER_TEMP/verify-manifest"
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.platform == 'linux-x86_64'
+        with:
+          bun-version: 1.4.2
+      - name: Check documentation
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          bun test scripts/docs.test.ts
+          bun scripts/docs.ts check
+      # Includes yuzora-trust-mods.test.ts, the guard of the L2c trust gate in the
+      # upstream git mods (an auto-merged upstream edit can break it silently).
+      - name: Yuzora script tests
+        if: matrix.platform == 'linux-x86_64'
+        run: bun test scripts
+
+  # Not the workspace's tests (some fail on Windows today): only the ones that
+  # start programs and look at the console they get, which no other job can see.
+  # They are the `cfg(windows)` tests of the spawn guard (yuzora-core/src/spawn.rs).
+  windows-console:
+    name: App windows-x86_64 (console windows)
+    runs-on: windows-2022
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: &win-cache-paths |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            app/target
+          key: app-ci-v1-windows-console-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', '.github/workflows/app-ci.yml') }}
+          restore-keys: app-ci-v1-windows-console-${{ env.RUST_TOOLCHAIN }}-
+      # Like platform-tests: one build for every step (the same packages, so the
+      # vendored crates are built once), dependencies at opt-level 0, and
+      # sources whose content is unchanged kept fresh for Cargo.
+      - name: Keep unchanged sources fresh
+        run: scripts/ci-sources restore
+      - name: Build tests
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' -p yuzora-core -p yuzora-git -p yuzora-files --no-run
+      - name: Note the sources the cache was built from
+        if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: scripts/ci-sources record
+      - name: Save build cache
+        if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: *win-cache-paths
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      # One thread: each test makes the test binary hold a console of its own.
+      # A filter that matches nothing passes: spawn:: names the tests of
+      # yuzora-core, remote:: those of its remote.rs (including the Windows ones), exec::
+      # those of yuzora-git, run_starts the one of yuzora-files.
+      - name: yuzora-core (spawn)
+        run: 'cargo test --locked --config ''profile.dev.package."*".opt-level=0'' -p yuzora-core -p yuzora-git -p yuzora-files spawn:: -- --test-threads=1'
+      - name: yuzora-core (remote)
+        if: ${{ !cancelled() }}
+        run: 'cargo test --locked --config ''profile.dev.package."*".opt-level=0'' -p yuzora-core -p yuzora-git -p yuzora-files remote:: -- --test-threads=1'
+      - name: yuzora-git (exec)
+        if: ${{ !cancelled() }}
+        run: 'cargo test --locked --config ''profile.dev.package."*".opt-level=0'' -p yuzora-core -p yuzora-git -p yuzora-files exec:: -- --test-threads=1'
+      - name: yuzora-files (fsops run)
+        if: ${{ !cancelled() }}
+        run: 'cargo test --locked --config ''profile.dev.package."*".opt-level=0'' -p yuzora-core -p yuzora-git -p yuzora-files fsops::tests::run_starts -- --test-threads=1'
+
+  # The PostgreSQL and SQL Server tests of yuzora-db skip without a fixture, which
+  # the jobs above don't have. This one starts the fixtures ci.yml's database job
+  # uses (tests/database/docker-compose.yml) and requires both engines: a test
+  # whose engine isn't selected fails instead of skipping (tests/common). The
+  # #[ignore]d performance runs stay out.
+  database-integration:
+    name: App database (Linux x86-64, PostgreSQL and SQL Server)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    # On the job, not on the test step: a step split off it keeps both, so
+    # the engines cannot go unselected and unrequired together.
+    env:
+      YUZORA_DATABASE_TEST_ENGINES: sqlite,postgres,mssql
+      YUZORA_DATABASE_REQUIRE_ENGINES: postgres,mssql
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: Verify x86-64 runner
+        run: test "$(uname -m)" = "x86_64"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      # The linux-x86_64 cache platform-tests saves, restored and never saved
+      # from here: this job builds one crate of it.
+      - name: Restore build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            app/target
+          key: app-ci-v1-linux-x86_64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', 'app/crates/ghostty-sys/**', '.github/workflows/app-ci.yml') }}
+          restore-keys: app-ci-v1-linux-x86_64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-
+      - name: Linux build dependencies
+        timeout-minutes: 10
+        run: |
+          apt="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $apt update
+          sudo apt-get $apt install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev mesa-vulkan-drivers libfontconfig-dev libfreetype-dev
+      - name: Keep unchanged sources fresh
+        run: scripts/ci-sources restore
+      - name: Build tests
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' -p yuzora-db --no-run
+      - name: Start PostgreSQL and MSSQL fixtures
+        working-directory: .
+        run: docker compose -f tests/database/docker-compose.yml --profile mssql up -d --wait
+      - name: Test yuzora-db against the real engines
+        env:
+          # Fixture-only credential shared with tests/database/docker-compose.yml.
+          # It is not a production secret.
+          YUZORA_P8_DATABASE_PASSWORD: "Yuzora-P8-Only-2026!"
+        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' -p yuzora-db --no-fail-fast
+      - name: Dump database fixture logs on failure
+        if: failure()
+        working-directory: .
+        run: docker compose -f tests/database/docker-compose.yml --profile mssql logs --no-color
+      - name: Stop database fixtures and remove volumes
+        if: always()
+        working-directory: .
+        run: docker compose -f tests/database/docker-compose.yml --profile mssql down -v
+
+  # One stable name for every platform.
+  app:
+    name: App (build · test)
+    needs: [platform-tests, windows-console, database-integration]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: '[ "${{ needs.platform-tests.result }}" = success ] && [ "${{ needs.windows-console.result }}" = success ] && [ "${{ needs.database-integration.result }}" = success ]'

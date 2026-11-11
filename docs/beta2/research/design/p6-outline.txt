@@ -1,0 +1,227 @@
+<aside> width:248px height:900px background:#151619 color:#e4e4e7 font-size:12.5px
+  <div> height:40px gap:8px padding:0 8px 0 12px
+    <span> width:18px height:18px border-radius:5px background:#e4e4e7 color:#151619 font-weight:800 font-size:11px
+      "Y"
+    <span> font-weight:700 font-size:13.5px flex:1
+      "Yuzora"
+    <button> width:26px height:26px border:0 background:none color:#a1a1aa border-radius:6px title=搜尋 ⌘K
+      <svg>
+    <button> width:26px height:26px border:0 background:none color:#a1a1aa border-radius:6px
+      <svg>
+  <sc-if> 
+    <div> height:32px gap:2px padding:0 6px 0 8px
+      <div> gap:12px flex:1
+        <button> gap:6px border:0 background:none color:#f4f4f5 font-size:12.5px font-weight:600
+          "Spaces"
+          <span> font-size:11px font-weight:500 color:#8b8b94
+            "4"
+        <button> gap:6px border:0 background:none color:#a1a1aa font-size:12.5px
+          "Agents"
+          <span> font-size:11px color:#8b8b94
+            "6"
+      <button> width:26px height:26px border:0 background:none color:#a1a1aa border-radius:5px title=HERDR 工具
+        <svg>
+      <button> width:26px height:26px border:0 background:none color:#a1a1aa border-radius:5px title=新增 Space 或 Session
+        <svg>
+    <div> height:1px background:#24252a
+    <div> gap:4px padding:8px 8px 2px
+      <sc-for> 
+        <button> 
+          <span> 
+          "{{s.label}}"
+    <div> padding:8px border-radius:8px background:#241d12 border:1px solid #3d3017 gap:2px
+      <span> font-size:11.5px font-weight:600 color:#f5b453 padding:0 2px 4px
+        "需要注意 · 2"
+      <button> gap:8px height:26px padding:0 4px border:0 border-radius:5px background:none color:#f4f4f5 font-size:12px
+        <span> width:0 height:0
+        <span> flex:1
+          "Codex · 需要回覆"
+        <span> color:#a1a1aa font-size:11px
+          "yuzora"
+      <button> gap:8px height:26px padding:0 4px border:0 border-radius:5px background:none color:#f4f4f5 font-size:12px
+        <span> width:0 height:0
+        <span> flex:1
+          "Claude Code · 需要回覆"
+        <span> color:#a1a1aa font-size:11px
+          "herdr-bridge"
+    <div> flex:1 padding:4px 6px
+      <sc-for> 
+        <sc-if> 
+          <div> gap:6px height:28px padding:6px 6px 0 color:#8b8b94 font-size:11.5px font-weight:600
+            <span> 
+            <span> flex:1
+              "{{n.label}}"
+            <button> width:20px height:20px border:0 background:none color:#8b8b94 font-size:11px
+              "⇕"
+        <sc-if> 
+          <button> 
+            <span> 
+              "{{n.initial}}"
+            <span> flex:1
+              <span> font-weight:600
+                "{{n.label}}"
+              <span> font-size:11px color:#8b8b94
+                "{{n.summary}}"
+            <span> font-size:11px color:{{n.pendingColor}}
+              "{{n.pending}}"
+            <span> color:#8b8b94 font-size:11px
+              "{{n.chev}}"
+        <sc-if> 
+          <button> 
+            <svg>
+            <span> flex:1 font-size:11.5px color:#c9c9cf
+              "{{n.label}}"
+            <span> font-size:11px color:{{n.countColor}}
+              "{{n.count}}"
+            <span> color:#8b8b94 font-size:13px
+              "+"
+        <sc-if> 
+          <button> 
+            <span> 
+              "{{n.initial}}"
+            <span> flex:1
+              "{{n.label}}"
+            <span> 
+            <span> font-size:11px color:{{n.stateColor}}
+              "{{n.state}}"
+  <sc-if> 
+    <div> padding:2px 12px 6px gap:6px
+      <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:10px font-weight:700
+        "Y"
+      <span> font-weight:600 flex:1
+        "檔案"
+      <span> font-size:11px padding:1px 6px border-radius:4px background:#222327 color:#a1a1aa
+        "本機"
+    <div> padding:0 12px 6px font-size:11.5px color:#a1a1aa
+      "~/yuzora · feat/gpui-dock"
+    <div> gap:2px padding:0 8px 6px
+      <sc-for> 
+        <button> width:30px height:26px border:0 border-radius:5px background:#1b1c20 color:#a1a1aa font-size:13px title={{a.label}}
+          "{{a.g}}"
+    <div> flex:1 padding:2px 6px
+      <sc-for> 
+        <div> 
+          <span> width:10px color:#8b8b94 font-size:10px
+            "{{f.chev}}"
+          <span> 
+          <span> flex:1
+            "{{f.name}}"
+          <span> font-size:11px font-weight:600 color:{{f.bc}}
+            "{{f.badge}}"
+  <sc-if> 
+    <div> padding:2px 12px 6px gap:6px
+      <span> width:16px height:16px border-radius:4px background:#4f6bed color:#fff font-size:10px font-weight:700
+        "Y"
+      <span> font-weight:600 flex:1
+        "Git"
+      <button> height:22px padding:0 6px border:0 border-radius:4px background:#222327 color:#a1a1aa font-size:11px
+        "分支圖"
+    <div> padding:0 8px 6px
+      <button> width:100% height:28px gap:6px padding:0 8px border-radius:6px border:1px solid #2a2b30 background:#1b1c20 color:#e4e4e7 font-size:11.5px
+        "⎇ feat/gpui-dock"
+        <span> color:#86d17a
+          "↑2 ↓0"
+    <div> flex:1 padding:0 6px
+      <sc-for> 
+        <div> height:26px padding:0 6px color:#8b8b94 font-size:11.5px
+          <span> flex:1
+            "{{s.title}} · {{s.count}}"
+          <span> font-size:11px
+            "{{s.action}}"
+        <sc-for> 
+          <div> 
+            <span> width:12px font-size:11px font-weight:600 color:{{f.kc}}
+              "{{f.k}}"
+            <span> flex:1
+              "{{f.name}}"
+            <span> font-size:10.5px color:#86d17a
+              "{{f.add}}"
+            <span> font-size:10.5px color:#f08a8a
+              "{{f.del}}"
+    <div> padding:8px gap:6px
+      <textarea> padding:6px 8px border-radius:6px border:1px solid #2a2b30 background:#131417 color:#e4e4e7 font-size:12px placeholder=Commit 訊息
+      <div> gap:6px
+        <button> flex:1 height:28px border:0 border-radius:6px background:#e4e4e7 color:#131417 font-weight:600
+          "Commit"
+        <button> height:28px padding:0 10px border-radius:6px border:1px solid #34353a background:none color:#e4e4e7
+          "Push ↑2"
+  <sc-if> 
+    <div> padding:2px 12px 8px
+      <span> font-weight:600 flex:1
+        "資料庫連線"
+      <button> width:22px height:22px border:0 background:none color:#a1a1aa font-size:15px
+        "+"
+    <div> gap:2px padding:0 6px 8px
+      <sc-for> 
+        <button> 
+          <span> 
+          <span> flex:1
+            <span> font-weight:500
+              "{{c.name}}"
+            <span> font-size:11px color:#8b8b94
+              "{{c.engine}}"
+    <div> height:1px background:#24252a
+    <div> padding:8px 8px 4px
+      <button> width:100% height:28px padding:0 8px border-radius:6px border:1px solid #2a2b30 background:#1b1c20 color:#e4e4e7 font-size:11.5px
+        "yuzora_dev"
+        <span> color:#8b8b94
+          "▾"
+    <div> flex:1 padding:2px 6px
+      <sc-for> 
+        <div> 
+          <span> width:10px color:#8b8b94 font-size:10px
+            "{{t.chev}}"
+          <span> 
+          <span> flex:1 font-size:11.5px
+            "{{t.name}}"
+          <span> font-size:11px color:#8b8b94
+            "{{t.meta}}"
+  <sc-if> 
+    <div> padding:2px 12px 8px
+      <span> font-weight:600 flex:1
+        "SSH 遠端主機"
+      <button> width:22px height:22px border:0 background:none color:#a1a1aa font-size:15px
+        "+"
+    <div> gap:2px padding:0 6px
+      <sc-for> 
+        <button> 
+          <span> 
+          <span> flex:1
+            <span> font-weight:500
+              "{{h.name}}"
+            <span> font-size:11px color:#8b8b94
+              "{{h.target}}"
+          <span> font-size:11px color:#a1a1aa
+            "{{h.meta}}"
+    <div> padding:10px 8px 4px gap:6px
+      <span> font-size:11.5px color:#8b8b94 padding:0 4px
+        "lab-01 快速動作"
+      <div> grid-template-columns:repeat(2, minmax(0, 1fr)) gap:6px
+        <button> height:30px border-radius:6px border:1px solid #2a2b30 background:#1b1c20 color:#e4e4e7 font-size:12px
+          "開啟 SFTP"
+        <button> height:30px border-radius:6px border:1px solid #2a2b30 background:#1b1c20 color:#e4e4e7 font-size:12px
+          "新終端機"
+        <button> height:30px border-radius:6px border:1px solid #2a2b30 background:#1b1c20 color:#e4e4e7 font-size:12px
+          "HERDR Session"
+        <button> height:30px border-radius:6px border:1px solid #2a2b30 background:#1b1c20 color:#e4e4e7 font-size:12px
+          "已知主機"
+    <div> flex:1
+  <div> padding:6px 6px gap:2px
+    <nav> gap:2px flex:1
+      <sc-for> 
+        <button>  title={{m.label}}
+          <sc-if> 
+            <svg>
+          <sc-if> 
+            <svg>
+          <sc-if> 
+            <svg>
+          <sc-if> 
+            <svg>
+          <sc-if> 
+            <svg>
+          <span> 
+            "{{m.badge}}"
+    <span> width:1px height:18px background:#2a2b30
+    <button> width:32px height:32px border:0 border-radius:6px background:none color:#a1a1aa title=設定
+      <svg>

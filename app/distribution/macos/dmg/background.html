@@ -1,0 +1,80 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: JBM; src: url(jbm.woff2); }
+  html, body { margin: 0; width: 660px; height: 400px; overflow: hidden; background: #0e0f11; }
+  .stage { position: relative; width: 660px; height: 400px; overflow: hidden; }
+  .glow { position: absolute; inset: 0; background:
+    radial-gradient(46% 58% at 50% 46%, rgba(120,140,190,.13), transparent 72%); }
+  .ram { position: absolute; right: -36px; bottom: -58px; width: 250px; height: 250px;
+    background: rgba(255,255,255,.035);
+    -webkit-mask: url(ram.svg) center / contain no-repeat; mask: url(ram.svg) center / contain no-repeat; }
+  .label { position: absolute; left: 0; right: 0; top: 318px; text-align: center;
+    font: 12px JBM, monospace; letter-spacing: .02em; color: #5d6168; }
+  .label b { color: #8a8e96; font-weight: 400; }
+  svg.path { position: absolute; left: 0; top: 0; }
+  /* preview only: where Finder will draw the two icons */
+  .icon { position: absolute; width: 128px; height: 128px; top: 126px; display: none; }
+  .icon.app { left: 101px; } .icon.apps { left: 431px; }
+  .name { position: absolute; top: 262px; width: 200px; text-align: center; color: #eee;
+    font: 13px -apple-system, "Geist", system-ui, sans-serif; display: none; }
+  .name.app { left: 65px; } .name.apps { left: 395px; }
+  body.preview .icon, body.preview .name { display: block; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="glow"></div>
+  <div class="ram"></div>
+  <svg class="path" width="660" height="400" viewBox="0 0 660 400" id="art"></svg>
+  <div class="label" id="label"></div>
+  <img class="icon app" src="herdr-icon.png"><img class="icon apps" src="appsfolder.png">
+  <div class="name app">Herdr</div><div class="name apps">Applications</div>
+</div>
+<script>
+const q = new URLSearchParams(location.search);
+if (q.get('preview')) document.body.classList.add('preview');
+const svg = document.getElementById('art');
+const ns = 'http://www.w3.org/2000/svg';
+// A gentle arc between the two icons (centers at x=165 and x=495, y=190).
+const P = t => ({ x: 248 + 164 * t, y: 186 - 46 * Math.sin(Math.PI * t) });
+const angle = t => { const a = P(t), b = P(t + .01); return Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI; };
+if (q.get('style') === 'arrow') {
+  const p = document.createElementNS(ns, 'path');
+  let d = ''; for (let i = 0; i <= 40; i++) { const { x, y } = P(i / 40); d += (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1); }
+  p.setAttribute('d', d); p.setAttribute('fill', 'none'); p.setAttribute('stroke', '#8a8e96');
+  p.setAttribute('stroke-width', '1.5'); p.setAttribute('stroke-linecap', 'round');
+  svg.appendChild(p);
+  const end = P(1), a = angle(.99);
+  const h = document.createElementNS(ns, 'path');
+  h.setAttribute('d', 'M -9 -5.5 L 0 0 L -9 5.5'); h.setAttribute('fill', 'none'); h.setAttribute('stroke', '#8a8e96');
+  h.setAttribute('stroke-width', '1.5'); h.setAttribute('stroke-linecap', 'round'); h.setAttribute('stroke-linejoin', 'round');
+  h.setAttribute('transform', `translate(${end.x} ${end.y}) rotate(${a})`);
+  svg.appendChild(h);
+  document.getElementById('label').innerHTML = '<b>drag</b> Herdr to Applications';
+} else {
+  // Cloven hoof prints: two halves, alternating left and right of the path, walking right.
+  const steps = 6;
+  for (let i = 0; i < steps; i++) {
+    const t = (i + .5) / steps, { x, y } = P(t), a = angle(t);
+    const side = i % 2 ? 1 : -1;
+    const g = document.createElementNS(ns, 'g');
+    g.setAttribute('transform', `translate(${x} ${y}) rotate(${a + 90}) translate(${side * 7} 0)`);
+    g.setAttribute('fill', '#c9ccd2');
+    g.setAttribute('opacity', (.22 + .6 * (i / (steps - 1))).toFixed(2));
+    for (const s of [-1, 1]) {
+      // One half of a cloven hoof: an oval, toes leaning in toward the other half.
+      const half = document.createElementNS(ns, 'ellipse');
+      half.setAttribute('rx', '2.6'); half.setAttribute('ry', '6');
+      half.setAttribute('transform', `translate(${s * 3.2} 0) rotate(${-s * 9})`);
+      g.appendChild(half);
+    }
+    svg.appendChild(g);
+  }
+  document.getElementById('label').innerHTML = '<b>drag</b> Herdr to Applications';
+}
+</script>
+</body>
+</html>

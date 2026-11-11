@@ -1,0 +1,42 @@
+{
+  "setup": {
+    "shared": "Updating restarts herdr-core for every app that uses it, such as Herdr; their terminals keep running.",
+    "update": "Or update it yourself: hc update",
+    "install": {
+      "title": "Yuzora needs herdr-core",
+      "body": "herdr-core runs your terminals and agents, and keeps them alive when this window closes. Yuzora couldn't find it on this computer.",
+      "foot": "Install it for me puts it in {place} (with hc), like its own installer: {install}"
+    },
+    "connect": {
+      "title": "Yuzora can't connect to herdr-core",
+      "foot": "Once you've resolved this, try again."
+    },
+    "old": {
+      "title": "Yuzora needs a newer herdr-core",
+      "body": "Yours is {have}; Yuzora needs {need} or newer. {shared}"
+    },
+    "missing": {
+      "title": "Yuzora needs a newer herdr-core",
+      "body": "Your herdr-core can't do everything Yuzora needs ({methods}). {shared}"
+    },
+    "newer": {
+      "title": "This Yuzora is older than your herdr-core",
+      "body": "Your herdr-core speaks a newer protocol (generation {generation}) than this Yuzora understands (generation {ours}). Another app that shares it, such as Herdr, may have updated it. Update Yuzora; your terminals keep running.",
+      "foot": "Update Yuzora: {app}"
+    }
+  },
+  "refused": {
+    "old": {
+      "title": "Update herdr-core to use Yuzora",
+      "body": "It's {have}; Yuzora needs {need} or newer"
+    },
+    "missing": {
+      "title": "Update herdr-core to use Yuzora",
+      "body": "It lacks {methods}"
+    },
+    "newer": {
+      "title": "Update Yuzora to use this herdr-core",
+      "body": "Herdr may have moved it to generation {generation}"
+    }
+  }
+}

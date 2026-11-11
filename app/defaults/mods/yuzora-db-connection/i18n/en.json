@@ -1,0 +1,56 @@
+{
+  "title": {
+    "add": "Add connection",
+    "edit": "Edit connection"
+  },
+  "field": {
+    "name": "Name",
+    "engine": "Engine",
+    "host": "Host",
+    "port": "Port",
+    "instance": "Instance (needs a port: SQL Browser isn't used)",
+    "user": "User",
+    "password": "Password",
+    "password_keep": "Leave empty to keep the saved password",
+    "password_retype": "The server, login or TLS changed, so the saved password won't be sent. Type it again.",
+    "save_password": "Save the password in the system keychain",
+    "database": "Database (empty: the server's default)",
+    "ssl": "TLS",
+    "ca_file": "CA certificate (PEM file)",
+    "ssh": "SSH tunnel",
+    "path": "SQLite file",
+    "read_only": "Open read-only"
+  },
+  "ssl": {
+    "disable": "Off",
+    "prefer": "Prefer",
+    "require": "Require",
+    "verify-ca": "Verify CA",
+    "verify-full": "Verify all"
+  },
+  "ssl_hint": {
+    "disable": "Unencrypted. Only on a network you trust.",
+    "prefer": "Encrypted when the server offers it; the certificate isn't checked.",
+    "require": "Always encrypted; the certificate isn't checked.",
+    "verify-ca": "Encrypted, and the certificate must chain to the CA file below; the host name isn't checked (SQL Server checks it anyway).",
+    "verify-full": "Encrypted; the certificate must chain to a trusted CA and name this host."
+  },
+  "ssh": {
+    "pending": "Connecting through a saved SSH host arrives with the SSH lane."
+  },
+  "test": {
+    "ok": "✓ {version} · {ms} ms"
+  },
+  "button": {
+    "test": "Test",
+    "testing": "Testing…",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving…",
+    "delete": "Delete",
+    "confirm_delete": "Delete for good?"
+  },
+  "error": {
+    "port": "The port is a whole number from 1 to 65535"
+  }
+}
