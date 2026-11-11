@@ -147,7 +147,8 @@ fn write_profiles(ctx: &Context, list: &[Profile]) -> Result<()> {
     yuzora_core::settings::set_section_at(&ctx.settings, SECTION, section).map_err(SshError::io)
 }
 
-/// Adds or replaces a profile (by id; a new one gets an id). Returns its id.
+/// Adds or replaces a profile (by id; a new one gets an id). Returns its id, which is a new one
+/// when the profile was edited to reach another host, port or user.
 pub fn save_profile(ctx: &Context, mut p: Profile) -> Result<String> {
     p.host = p.host.trim().to_owned();
     p.name = p.name.trim().to_owned();
@@ -172,15 +173,26 @@ pub fn save_profile(ctx: &Context, mut p: Profile) -> Result<String> {
         return Err(SshError::text(ErrorKind::Invalid, "unsafe-name", &[("name", user.to_owned())]));
     }
     let mut list = profiles(ctx);
-    if p.id.is_empty() {
+    let at = list.iter().position(|q| q.id == p.id);
+    // A profile that now names another server or account is another host, and gets another id.
+    // What knows the old id (an SFTP pane and its listing, a transfer and its `.part`, a file
+    // opened for editing) was made on the first server: under the same id it would go on
+    // working on the second. Under a new one it finds no host. An id no profile has is not
+    // taken as given either: it may be one a profile had before.
+    if at.is_none_or(|i| elsewhere(&list[i], &p)) {
         p.id = new_id(&list);
     }
-    match list.iter_mut().find(|q| q.id == p.id) {
-        Some(q) => *q = p.clone(),
+    match at {
+        Some(i) => list[i] = p.clone(),
         None => list.push(p.clone()),
     }
     write_profiles(ctx, &list)?;
     Ok(p.id)
+}
+
+/// Whether two profiles reach different servers or accounts.
+fn elsewhere(a: &Profile, b: &Profile) -> bool {
+    a.host != b.host || a.port.unwrap_or(22) != b.port.unwrap_or(22) || a.user != b.user
 }
 
 pub fn remove_profile(ctx: &Context, id: &str) -> Result<bool> {
@@ -194,13 +206,12 @@ pub fn remove_profile(ctx: &Context, id: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// The time in milliseconds, in hex, and past every id in `list`: a profile saved twice in a
+/// millisecond must not get back the id it had the first time (see [`save_profile`]).
 fn new_id(list: &[Profile]) -> String {
-    let base = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let mut n = base;
-    while list.iter().any(|p| p.id == format!("{n:x}")) {
-        n += 1;
-    }
-    format!("{n:x}")
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let last = list.iter().filter_map(|p| u128::from_str_radix(&p.id, 16).ok()).max();
+    format!("{:x}", last.map_or(now, |n| now.max(n.saturating_add(1))))
 }
 
 fn expand_tilde(ctx: &Context, s: &str) -> PathBuf {
@@ -358,5 +369,40 @@ mod tests {
         assert!(remove_profile(&ctx, &id).unwrap());
         assert!(!remove_profile(&ctx, &id).unwrap());
         assert_eq!(yuzora_core::settings::section_from(&ctx.settings, SECTION)["preserve"], false);
+    }
+
+    #[test]
+    fn a_profile_keeps_its_id_until_it_reaches_another_host_port_or_user() {
+        let w = TestWorld::new("hosts-profile-id");
+        let ctx = w.context();
+        let other = save_profile(&ctx, Profile { host: "other.example".into(), ..Default::default() }).unwrap();
+        let first = Profile { name: "box".into(), host: "h.example".into(), user: Some("me".into()), ..Default::default() };
+        let id = save_profile(&ctx, first).unwrap();
+        let edit = |id: &str, f: &dyn Fn(&mut Profile)| {
+            let mut p = profiles(&ctx).into_iter().find(|p| p.id == id).unwrap();
+            f(&mut p);
+            save_profile(&ctx, p).unwrap()
+        };
+        // The same server and account, reached or named another way.
+        assert_eq!(edit(&id, &|p| p.name = "renamed".into()), id);
+        assert_eq!(edit(&id, &|p| p.identity_file = Some("~/.ssh/other".into())), id);
+        assert_eq!(edit(&id, &|p| p.proxy_jump = Some("bastion".into())), id);
+        assert_eq!(edit(&id, &|p| p.port = Some(22)), id, "no port is port 22");
+        // Another one: each is a new id, in the profile's place.
+        let mut ids = vec![other.clone(), id.clone()];
+        let mut id = id;
+        for (what, f) in [("host", (&|p: &mut Profile| p.host = "h2.example".into()) as &dyn Fn(&mut Profile)), ("port", &|p| p.port = Some(2222)), ("user", &|p| p.user = Some("root".into()))] {
+            let moved = edit(&id, f);
+            assert_ne!(moved, id, "{what}");
+            assert_eq!(profiles(&ctx).iter().map(|p| p.id.clone()).collect::<Vec<_>>(), [other.clone(), moved.clone()], "{what}");
+            assert_eq!(lookup(&ctx, &[], &format!("profile:{id}")).unwrap_err().kind, ErrorKind::UnknownHost, "{what}");
+            ids.push(moved.clone());
+            id = moved;
+        }
+        // No id comes back, for a new profile or for one saved under an id it had before.
+        let stale = Profile { id: ids[1].clone(), host: "h.example".into(), ..Default::default() };
+        ids.extend([save_profile(&ctx, Profile { host: "new.example".into(), ..Default::default() }).unwrap(), save_profile(&ctx, stale).unwrap()]);
+        let distinct: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(distinct.len(), ids.len(), "{ids:?}");
     }
 }

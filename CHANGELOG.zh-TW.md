@@ -43,7 +43,7 @@
 - Database：已經開著資料表時，在側欄再點另一張表，不再出現「This view could not be re-rendered」，也不會停在「Loading…」。pane 會換成點到的表，有未儲存的編輯時會先詢問。
 - Database：資料表 pane 的 SQL 分頁裡，資料表還在讀取時（例如在等 SQL 分頁留下沒提交的交易），按 Run 或 Cmd+Enter 不再毫無反應。Run 會先停掉那個讀取再執行 SQL，所以 COMMIT 只要按一次。自己執行中的語句不會被停掉，SQL 分頁會寫明要先按 Stop。有未存的編輯（包括存檔途中）時會先詢問。
 - Database：資料表存檔時，在 Yuzora 送出 COMMIT 之前按 Stop，一定不會存入，即使 app 忙到沒能及時注意到這次 Stop 也一樣。以前會存進去，然後說資料庫可能已經存了。SQL Server 上，另一個連線同時在建立或刪除資料表時，瀏覽資料庫物件或開表不會再因為「deadlocked … Rerun the transaction」（Msg 1205）而失敗，Yuzora 會再讀一次。
-- SSH：修改已儲存主機的位址、port 或使用者之後，Yuzora 會結束到舊位址的連線與它的 tunnel。以前 SFTP 會繼續在舊的伺服器上操作，清單卻顯示新的位址。
+- SSH：修改 Yuzora 自建主機的位址、port 或使用者之後，它會成為一台新的主機，Yuzora 會結束到舊位址的連線與它的 tunnel。屬於舊位址的 SFTP pane、傳輸與開啟編輯的檔案會回報沒有這台主機，請從新的主機重新開啟。以前 SFTP 會繼續在舊的伺服器上操作，清單卻顯示新的位址。
 - Windows：從開始功能表捷徑啟動的 Yuzora 可以自己更新。以前用這種方式啟動時，更新一定失敗。更新裝不上時，Settings › Updates 會說明原因與該怎麼做，按 Restart 會出現一則通知，點下去就開那一頁。Windows 上還在用 beta 的人，請先看下方〈安裝說明〉。
 - 更新：更新提示改寫 `Yuzora <version> is ready`，不再是 `Herdr <version> is ready`。從 beta 更新到 0.1.0 時看到的仍是舊字樣。
 
@@ -54,7 +54,7 @@
 - Git diff：Copy as patch 一律把檔案模式寫成 100644，所以新增的可執行檔或符號連結，套用後會變成一般檔案。含非 UTF-8 位元組的檔案，patch 可能套不上，通知卻顯示已複製。`diff.renames=copies` 時，來源檔也被修改的 copy 會寫成 rename。在最後一行沒有換行的 CRLF 檔案加行時，補上的行尾是 LF。
 - Settings 對話框、歡迎畫面、What's new 與 dock 的抽屜視窗出現時不會淡入，關閉任何東西也沒有動畫。
 - Git：merge pane 的 Edit 會把區塊裡的 tab 顯示成四個空白，按 Use 也會照這樣寫入。需要保留 tab 的檔案（例如 Makefile），請改選其中一側，或用編輯器修改檔案。
-- SFTP：重試的傳輸會從 `.part` 檔的大小接續，不比對內容，和 OpenSSH 的 `reget`、`reput` 相同。來源在傳輸中斷後改過的話，請先刪掉 `.part` 檔。
+- SFTP：重試的傳輸，或是再傳一次到同一個目的地，會從 `.part` 檔的大小接續，不比對內容，和 OpenSSH 的 `reget`、`reput` 相同。來源在傳輸中斷後改過的話，請先刪掉 `.part` 檔。
 - Database：同一個 pane 的 SQL 分頁有沒結束的交易時，可能擋住這個 pane 的資料表。SQL Server 上，資料表會一直等到你按 Stop。SQLite 上，約 5 秒後存檔失敗。請先按 Stop，再到 SQL 分頁執行 COMMIT 或 ROLLBACK。
 - Database：一個 pane 現在最多用三條連線：SQL 分頁、資料表，以及計算總列數時的那一條。連線數上限很緊的登入上，SQL 分頁或資料表可能失敗並顯示「too many connections」。
 - Database：伺服器在存檔時改過的值（四捨五入或定序轉換），表格裡仍顯示你輸入的樣子。
