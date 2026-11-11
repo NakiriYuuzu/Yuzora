@@ -22,13 +22,15 @@
 //! limit, no loss and no jitter. A zero delay still passes through the relay
 //! (two thread hops per direction); the calibration test measures that.
 
+mod common;
+
 use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::mpsc;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use common::{ConnStat, DelayLine, ms};
 use serde_json::json;
 use yuzora_db::config::{self, ConnectionConfig};
 use yuzora_db::model::ObjectRef;
@@ -77,150 +79,6 @@ fn enabled(engine: &str) -> bool {
 
 fn password() -> String {
     std::env::var("YUZORA_P8_DATABASE_PASSWORD").unwrap_or_else(|_| "Yuzora-P8-Only-2026!".to_owned())
-}
-
-fn ms(d: Duration) -> f64 {
-    d.as_secs_f64() * 1000.0
-}
-
-// ---------------------------------------------------------------- the delay line
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Dir {
-    Up,
-    Down,
-}
-
-#[derive(Default)]
-struct ConnLog {
-    accepted: Option<Instant>,
-    events: Vec<(Instant, Dir, usize)>,
-}
-
-/// What one connection through the line did during a sample.
-#[derive(Debug, Clone)]
-struct ConnStat {
-    /// The connection was already open when the sample began.
-    pooled: bool,
-    /// When its first chunk went by in the sample, from the start of the sample.
-    first_ms: f64,
-    /// When its last chunk went by, from the start of the sample.
-    last_ms: f64,
-    /// Flights of server data that follow a flight of client data: round trips.
-    exchanges: usize,
-    up: usize,
-    down: usize,
-}
-
-struct DelayLine {
-    addr: SocketAddr,
-    log: Arc<Mutex<Vec<ConnLog>>>,
-}
-
-impl DelayLine {
-    /// Passes `listener`'s connections to `target`, every chunk held for `one_way` each way.
-    fn start(target: SocketAddr, one_way: Duration) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let log: Arc<Mutex<Vec<ConnLog>>> = Arc::default();
-        let shared = log.clone();
-        std::thread::spawn(move || {
-            for client in listener.incoming().flatten() {
-                let Ok(server) = TcpStream::connect(target) else { continue };
-                let _ = client.set_nodelay(true);
-                let _ = server.set_nodelay(true);
-                let index = {
-                    let mut all = shared.lock().unwrap();
-                    all.push(ConnLog { accepted: Some(Instant::now()), events: Vec::new() });
-                    all.len() - 1
-                };
-                let (c2, s2) = (client.try_clone().unwrap(), server.try_clone().unwrap());
-                let (up_log, down_log) = (shared.clone(), shared.clone());
-                std::thread::spawn(move || pump(client, s2, Dir::Up, one_way, up_log, index));
-                std::thread::spawn(move || pump(server, c2, Dir::Down, one_way, down_log, index));
-            }
-        });
-        DelayLine { addr, log }
-    }
-
-    /// The connections that carried anything since `since`, in the order they first did.
-    fn window(&self, since: Instant) -> Vec<ConnStat> {
-        let all = self.log.lock().unwrap();
-        let mut stats: Vec<ConnStat> = all
-            .iter()
-            .filter_map(|c| {
-                let events: Vec<_> = c.events.iter().filter(|e| e.0 >= since).collect();
-                let (first, last) = (events.first()?, events.last()?);
-                let (mut exchanges, mut previous, mut up, mut down) = (0, None, 0, 0);
-                for (_, dir, n) in &events {
-                    if *dir == Dir::Down && previous == Some(Dir::Up) {
-                        exchanges += 1;
-                    }
-                    previous = Some(*dir);
-                    match dir {
-                        Dir::Up => up += n,
-                        Dir::Down => down += n,
-                    }
-                }
-                Some(ConnStat {
-                    pooled: c.accepted.is_some_and(|a| a < since),
-                    first_ms: ms(first.0 - since),
-                    last_ms: ms(last.0 - since),
-                    exchanges,
-                    up,
-                    down,
-                })
-            })
-            .collect();
-        stats.sort_by(|a, b| a.first_ms.partial_cmp(&b.first_ms).unwrap());
-        stats
-    }
-}
-
-fn pump(mut from: TcpStream, to: TcpStream, dir: Dir, delay: Duration, log: Arc<Mutex<Vec<ConnLog>>>, index: usize) {
-    let (tx, rx) = mpsc::channel::<(Instant, Option<Vec<u8>>)>();
-    let writer = std::thread::spawn(move || {
-        let mut to = to;
-        while let Ok((due, data)) = rx.recv() {
-            // The OS timer overshoots by milliseconds: sleep most of it, spin the rest.
-            if let Some(wait) = due.checked_duration_since(Instant::now()) {
-                if wait > Duration::from_millis(3) {
-                    std::thread::sleep(wait - Duration::from_millis(3));
-                }
-                while Instant::now() < due {
-                    std::hint::spin_loop();
-                }
-            }
-            match data {
-                Some(data) => {
-                    if to.write_all(&data).is_err() {
-                        break;
-                    }
-                }
-                None => {
-                    let _ = to.shutdown(Shutdown::Write);
-                    break;
-                }
-            }
-        }
-    });
-    let mut buf = vec![0u8; 256 * 1024];
-    loop {
-        match from.read(&mut buf) {
-            Ok(0) | Err(_) => {
-                let _ = tx.send((Instant::now() + delay, None));
-                break;
-            }
-            Ok(n) => {
-                let now = Instant::now();
-                log.lock().unwrap()[index].events.push((now, dir, n));
-                if tx.send((now + delay, Some(buf[..n].to_vec()))).is_err() {
-                    break;
-                }
-            }
-        }
-    }
-    let _ = writer.join();
 }
 
 // ---------------------------------------------------------------- statistics
@@ -582,14 +440,14 @@ fn poll_until_done(job: JobId, started: Instant) -> Sample {
     }
 }
 
-/// What the table pane does on opening: the table, and (from its own script) a `describe` beside it.
+/// What the table pane does on opening: the table, and (from its own script) a request for its description
+/// beside it: the job's own (`tableInfo`), which sends nothing of its own.
 fn open_table(line: &DelayLine, connection: &str, owner: &str, table: &ObjectRef, with_pane_describe: bool) -> Sample {
     let started = Instant::now();
     let job = session::open_table(connection, None, owner, table, None);
     if with_pane_describe {
-        let (connection, table) = (connection.to_owned(), table.clone());
         runtime::spawn(async move {
-            let _ = session::describe(&connection, None, &table).await;
+            let _ = session::table_info(job).await;
         });
     }
     let mut s = poll_until_done(job, started);
@@ -877,7 +735,8 @@ fn perf_open_table() {
     let tables = env_list("YUZORA_PERF_TABLES", "small,100k,1m,widecols,widetext");
     let (cold_n, warm_n) = (env_n("YUZORA_PERF_COLD", 5), env_n("YUZORA_PERF_WARM", 7));
     let delays = delays();
-    // `*-alone`: without the `describe` the pane's own script asks for beside the table.
+    // `*-alone`: without the pane's own request for the description beside the table (since the job carries the
+    // description it makes no difference to the traffic; before that, the pane sent a second `describe`).
     let modes = env_list("YUZORA_PERF_MODES", "cold,warm");
     for kind in kinds() {
         fixture(kind);

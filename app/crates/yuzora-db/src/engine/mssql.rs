@@ -151,6 +151,10 @@ impl MsConn {
         let id: i32 = found.try_get::<i32, _>(0).map_err(query_error)?.unwrap_or_default();
         let kind = text(found, 1)?;
 
+        // What a login may not see is left out of the catalog views for it, not refused: a user-defined type
+        // is not in `sys.types`, so the column is described by the system type under it, and the expression of a
+        // computed column is NULL, so `is_computed` says it is one. A column must not go missing here, or the
+        // rows no longer match their description and the table cannot be edited.
         let rows = self
             .rows(
                 "SELECT c.name, \
@@ -163,9 +167,10 @@ impl MsConn {
                              WHEN t.name IN ('datetime2', 'datetimeoffset', 'time') THEN t.name + '(' + CAST(c.scale AS varchar(10)) + ')' \
                              ELSE t.name END, \
                         c.is_nullable, dc.definition, cc.definition, \
-                        CAST(ic.seed_value AS varchar(40)), CAST(ic.increment_value AS varchar(40)), pkc.key_ordinal \
+                        CAST(ic.seed_value AS varchar(40)), CAST(ic.increment_value AS varchar(40)), pkc.key_ordinal, c.is_computed \
                  FROM sys.columns c \
-                 JOIN sys.types t ON t.user_type_id = c.user_type_id \
+                 LEFT JOIN sys.types ut ON ut.user_type_id = c.user_type_id \
+                 CROSS APPLY (SELECT COALESCE(ut.name, TYPE_NAME(c.system_type_id)) AS name) t \
                  LEFT JOIN sys.default_constraints dc ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id \
                  LEFT JOIN sys.computed_columns cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id \
                  LEFT JOIN sys.identity_columns ic ON ic.object_id = c.object_id AND ic.column_id = c.column_id \
@@ -185,6 +190,7 @@ impl MsConn {
                 nullable: r.try_get::<bool, _>(2).map_err(query_error)?.unwrap_or(true),
                 default,
                 computed,
+                is_computed: r.try_get::<bool, _>(8).map_err(query_error)?.unwrap_or(false),
                 identity: opt_text(r, 5)?.zip(opt_text(r, 6)?),
                 key: r.try_get::<u8, _>(7).map_err(query_error)?.filter(|k| *k > 0).map(u32::from),
             });
@@ -270,7 +276,7 @@ impl MsConn {
                     nullable: c.nullable,
                     default: c.default.clone(),
                     primary_key: c.key,
-                    generated: c.computed.is_some() || c.identity.is_some(),
+                    generated: c.is_computed || c.identity.is_some(),
                 })
                 .collect(),
             indexes: indexes
@@ -958,8 +964,9 @@ struct MsColumn {
     type_name: String,
     nullable: bool,
     default: Option<String>,
-    /// The expression of a computed column.
+    /// The expression of a computed column, when the login may see it.
     computed: Option<String>,
+    is_computed: bool,
     /// Seed and increment of an identity column.
     identity: Option<(String, String)>,
     key: Option<u32>,
@@ -1165,6 +1172,7 @@ mod tests {
             nullable,
             default: default.map(str::to_owned),
             computed: computed.map(str::to_owned),
+            is_computed: computed.is_some(),
             identity: identity.map(|(a, b)| (a.to_owned(), b.to_owned())),
             key: None,
         };
