@@ -201,7 +201,10 @@ pub(crate) use save_gate;
 /// made in it, so nobody but its owner can walk into it, whatever ACL the folder it is in hands
 /// down (a folder with a default ACL ignores the umask, and `mkdir -m` is not the same on every
 /// system, so `chmod` it is).
-/// The script goes into the folder right after making it and names it `.` from then on: someone
+/// The script goes into the folder right after making it (`cd -P`: the path may have a `..`
+/// after a link to a folder, which only the real path gets right; the `chmod` by name before it
+/// is for a folder whose default ACL leaves its owner unable to enter) and names it `.` from
+/// then on: someone
 /// who may write the folder the file is in can rename the scratch folder and put a link to a
 /// folder of theirs under its name, with a FIFO where the scratch file would be made (`set -C`
 /// does not refuse a FIFO), and would be sent the bytes of the save. `chmod 700 .` fails on a
@@ -281,7 +284,8 @@ sn=.yuzora-save-$id
 case $d in /) made=/$sn ;; *) made=$d/$sn ;; esac
 mkdir -- "$made" || exit 1
 sd=$made
-cd -- "$sd" || exit 1
+chmod 700 "$sd" || exit 1
+cd -P -- "$sd" || exit 1
 bare || { echo "saving failed: $sd is not the folder just made" >&2; exit 1; }
 chmod 700 . || exit 1
 strip .
@@ -1507,6 +1511,31 @@ mod tests {
     }
 
     #[test]
+    fn a_link_that_climbs_out_of_a_linked_folder_is_written_through() {
+        // A deploy tree: `current` links to `releases/5`, and `.env` in it links to
+        // `../../shared/.env`. The folder the save works in is then named with a `..` after a
+        // link, which a path taken at its word (`cd` without `-P`) does not find.
+        for on in WHERE {
+            let dir = tempfile::tempdir().unwrap();
+            let app = dir.path().join("app");
+            fs::create_dir_all(app.join("releases/5")).unwrap();
+            fs::create_dir_all(app.join("shared")).unwrap();
+            let real = put(&app.join("shared"), ".env", b"OLD\n");
+            std::os::unix::fs::symlink("releases/5", app.join("current")).unwrap();
+            std::os::unix::fs::symlink("../../shared/.env", app.join("releases/5/.env")).unwrap();
+            let through = app.join("current/.env").to_string_lossy().into_owned();
+            let got = write_sh(&through, b"NEW\n", Some(&seen(&through)), on);
+            assert!(got.is_ok(), "{on:?}: {got:?}");
+            assert_eq!(fs::read(&real).unwrap(), b"NEW\n", "{on:?}");
+            assert!(
+                fs::symlink_metadata(app.join("releases/5/.env")).unwrap().file_type().is_symlink(),
+                "{on:?}: the link stays a link"
+            );
+            assert_eq!(names(&app.join("shared")), [".env"], "{on:?}");
+        }
+    }
+
+    #[test]
     fn a_scratch_folder_swapped_for_a_link_to_someone_elses_never_sends_them_the_bytes() {
         // Someone who may write the folder the file is in renames the scratch folder as soon as
         // it is there and puts a link under its name, to a folder of theirs with a FIFO where the
@@ -1514,6 +1543,8 @@ mod tests {
         // the script runs on the scratch folder before it writes.
         let swap = r#"swap() {
   [ ! -e "$YZ_ELSEWHERE/taken" ] || return 0
+  echo x >> "$YZ_ELSEWHERE/calls"
+  [ "$(wc -l < "$YZ_ELSEWHERE/calls")" -ge "$YZ_AT" ] || return 0
   for s in "$YZ_DIR"/.yuzora-save-*; do
     [ -d "$s" ] && [ ! -L "$s" ] || continue
     n=${s##*/}
@@ -1526,7 +1557,8 @@ mod tests {
 "#;
         let bytes = b"the bytes of the save";
         for on in WHERE {
-            for command in ["mkdir", "chmod"] {
+            // After mkdir, after the chmod by name, and after `chmod 700 .` inside the folder.
+            for (command, at) in [("mkdir", "1"), ("chmod", "1"), ("chmod", "2")] {
                 let body = format!("{swap}{command} \"$@\"\ndone=$?\nswap\nexit $done");
                 let (_shims, path_env) = shimmed(&[(command, &body)]);
                 let dir = tempfile::tempdir().unwrap();
@@ -1537,13 +1569,14 @@ mod tests {
                         ("PATH", &path_env),
                         ("YZ_DIR", &dir.path().to_string_lossy()),
                         ("YZ_ELSEWHERE", &elsewhere.path().to_string_lossy()),
+                        ("YZ_AT", at),
                     ],
                     &path,
                     bytes,
                     None,
                     on,
                 );
-                let why = format!("{on:?} swapped after {command}: {got:?}");
+                let why = format!("{on:?} swapped after {command} #{at}: {got:?}");
                 assert!(elsewhere.path().join("taken").exists(), "the swap ran: {why}");
                 let heard = fs::read(elsewhere.path().join("heard")).unwrap_or_default();
                 assert_eq!(String::from_utf8_lossy(&heard), "", "{why}");
