@@ -33,6 +33,9 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
     return tell(making || /does not exist on/.test(text) ? "no_folder" : "gone");
   }
   if (/another file system/.test(text)) return tell("other_disk");
+  // The system would not rename it where it is (a folder out of an image layer, a bind mount): mv's or perl's own words.
+  if (/cross-device link/i.test(text)) return tell("no_rename");
+  if (/copied instead of renamed/.test(text)) return tell("copied");
   const tool = text.match(/has no (\S+?), which this needs/)?.[1];
   if (tool) return tell("no_tool", { machine: there, tool });
   if (/this needs sh on/.test(text)) return tell("no_shell");
@@ -42,6 +45,7 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   if (/No space left|not enough space/i.test(text)) return tell("full");
   if (/name too long/i.test(text)) return tell("too_long");
   if (/Not a directory/.test(text)) return tell("not_dir");
+  if (/is left in place/.test(text)) return tell("left");
   const cause = text.replace(PATH, "$1").replace(/\s*\(os error \d+\)\.?$/, "").replace(/^cannot [^:]+: /, "");
   return cause ? cut(cause, LIMIT) : tell("unknown");
 }
