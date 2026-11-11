@@ -158,7 +158,7 @@ impl Act<'_> {
                 format!("cannot {verb} {subject}: {machine} has no {tool}, which this needs")
             }
             Problem::NoSafeRename => format!(
-                "cannot {verb} {subject}: {machine} has no GNU mv, no mv with -T and no perl, one of which this needs so that nobody who can write the folder can make the rename land in another folder"
+                "cannot {verb} {subject}: {machine} has no perl, which this needs (or GNU mv, or an mv with -T): a plain mv could follow a link into another folder"
             ),
             Problem::NoShell => format!(
                 "cannot {verb} {subject}: this needs sh on {machine}, and it has none (Windows machines cannot be changed from here)"
