@@ -27,11 +27,11 @@ describe("GitHub Pages platform download selection", () => {
     })
   })
 
-  it("selects the x64 installer for Windows", () => {
+  it("selects the x64 installer for Windows, from the release that has one", () => {
     expect(resolveDownloadTarget({ userAgentData: { platform: "Windows" } })).toMatchObject({
       status: "supported",
       platform: "windows",
-      url: "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64.msi",
+      url: "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0/Yuzora-windows-x64-setup.exe",
     })
   })
 
@@ -116,7 +116,7 @@ describe("GitHub Pages platform download selection", () => {
     expect(target).toMatchObject({
       status: "supported",
       platform: "windows",
-      url: "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64.msi",
+      url: "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0/Yuzora-windows-x64-setup.exe",
     })
   })
 
@@ -163,7 +163,7 @@ describe("GitHub Pages platform download selection", () => {
     await initDownloadExperience({ userAgentData: { platform: "Windows" } }, document)
 
     expect(document.querySelector("#primary-download")?.getAttribute("href")).toBe(
-      "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64.msi",
+      "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0/Yuzora-windows-x64-setup.exe",
     )
     expect(document.querySelector("[data-device-message='windows']")).not.toHaveAttribute("hidden")
   })
@@ -175,16 +175,16 @@ describe("GitHub Pages platform download selection", () => {
     await initDownloadExperience({ userAgentData: { platform: "Windows" } }, page)
 
     expect(page.querySelector("#primary-download")?.getAttribute("href")).toBe(
-      "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64.msi",
+      "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0/Yuzora-windows-x64-setup.exe",
     )
     expect(
       page.querySelector("[data-platform-download='windows']")?.classList.contains("is-recommended"),
     ).toBe(true)
     expect(page.querySelector("[data-device-message='windows']")?.hasAttribute("hidden")).toBe(false)
     expect(page.querySelector("[data-platform-download='linux']")).toBeNull()
-    expect(page.querySelector('script[type="module"][src="./app.js"]')).not.toBeNull()
+    expect(page.querySelector('script[type="module"][src="./app.js?v=0.1.0"]')).not.toBeNull()
     expect(readFileSync(resolve(process.cwd(), "site/app.js"), "utf8")).toContain(
-      'from "./downloads.js"',
+      'from "./downloads.js?v=0.1.0"',
     )
   })
 
