@@ -201,6 +201,16 @@ pub(crate) use save_gate;
 /// made in it, so nobody but its owner can walk into it, whatever ACL the folder it is in hands
 /// down (a folder with a default ACL ignores the umask, and `mkdir -m` is not the same on every
 /// system, so `chmod` it is).
+/// The script goes into the folder right after making it (`cd -P`: the path may have a `..`
+/// after a link to a folder, which only the real path gets right; the `chmod` by name before it
+/// is for a folder whose default ACL leaves its owner unable to enter) and names it `.` from
+/// then on: someone
+/// who may write the folder the file is in can rename the scratch folder and put a link to a
+/// folder of theirs under its name, with a FIFO where the scratch file would be made (`set -C`
+/// does not refuse a FIFO), and would be sent the bytes of the save. `chmod 700 .` fails on a
+/// folder that is someone else's (for root, who may chmod anything, the owner is looked at), and
+/// a folder that is the user's own but not the one just made is told by having something in it:
+/// after the `chmod` nobody else can put anything there.
 /// Then the folder's own ACL is removed (with `setfacl -b`, on a Mac with `chmod -N`) so that the
 /// file made inside gets none. Whether it did is checked: a file made under `umask 077` has mode
 /// 600 unless a default ACL took over (the kernel then ignores the umask), and where a tool can
@@ -215,8 +225,8 @@ const WRITE_SCRIPT: &str = concat!(
 om=$(umask)
 umask 077
 set -C
-sd=
-trap '[ -z "$sd" ] || { rm -f -- "$sd/$sn"; rmdir -- "$sd" 2>/dev/null; }' EXIT
+sd= tmp=
+trap '[ -z "$sd" ] || { [ -z "$tmp" ] || rm -f -- "$tmp"; cd / 2>/dev/null; rmdir -- "$sd" 2>/dev/null; }' EXIT
 trap 'exit 1' HUP INT TERM
 "#,
     resolve_links!(),
@@ -228,6 +238,13 @@ clean() {
   set -- $cstat
   case $3 in 600|0600) return 0 ;; esac
   return 1
+}
+bare() { left=$(ls -A . 2>/dev/null) && [ -z "$left" ]; }
+mine() {
+  [ "$(id -u)" = 0 ] || return 0
+  own=$(st .) || return 1
+  set -- $own
+  [ "$4" = 0 ]
 }
 gone() {
   p=$t
@@ -268,8 +285,12 @@ case $d in /) made=/$sn ;; *) made=$d/$sn ;; esac
 mkdir -- "$made" || exit 1
 sd=$made
 chmod 700 "$sd" || exit 1
-strip "$sd"
-tmp=$sd/$sn
+cd -P -- "$sd" || exit 1
+bare || { echo "saving failed: $sd is not the folder just made" >&2; exit 1; }
+chmod 700 . || exit 1
+strip .
+bare && mine || { echo "saving failed: $sd is not the folder just made" >&2; exit 1; }
+tmp=./$sn
 cat > "$tmp" || exit 1
 got=$(wc -c < "$tmp") || exit 1
 got=$((got))
@@ -960,7 +981,9 @@ mod tests {
 
     #[test]
     fn the_scratch_file_is_private_until_it_is_swapped_in_and_is_named_as_the_listing_expects() {
-        let record = "ls -laR \"$(dirname \"$3\")\" > \"$YZ_LOG\"; ls -ld \"$(dirname \"$3\")\" >> \"$YZ_LOG\"; mv \"$@\"";
+        // The scratch file is named from inside its folder (`./NAME`), so the folder is asked
+        // for its own path.
+        let record = "ls -laR \"$(dirname \"$3\")\" > \"$YZ_LOG\"; ls -ld \"$(cd \"$(dirname \"$3\")\" && pwd -P)\" >> \"$YZ_LOG\"; mv \"$@\"";
         let (_shims, path_env) = shimmed(&[("mv", record)]);
         for on in WHERE {
             let dir = tempfile::tempdir().unwrap();
@@ -1482,6 +1505,94 @@ mod tests {
                         "{on:?} held={held} {what}"
                     );
                     assert_eq!(names(dir.path()), ["f"], "{on:?} held={held} {what}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_link_that_climbs_out_of_a_linked_folder_is_written_through() {
+        // A deploy tree: `current` links to `releases/5`, and `.env` in it links to
+        // `../../shared/.env`. The folder the save works in is then named with a `..` after a
+        // link, which a path taken at its word (`cd` without `-P`) does not find.
+        for on in WHERE {
+            let dir = tempfile::tempdir().unwrap();
+            let app = dir.path().join("app");
+            fs::create_dir_all(app.join("releases/5")).unwrap();
+            fs::create_dir_all(app.join("shared")).unwrap();
+            let real = put(&app.join("shared"), ".env", b"OLD\n");
+            std::os::unix::fs::symlink("releases/5", app.join("current")).unwrap();
+            std::os::unix::fs::symlink("../../shared/.env", app.join("releases/5/.env")).unwrap();
+            let through = app.join("current/.env").to_string_lossy().into_owned();
+            let got = write_sh(&through, b"NEW\n", Some(&seen(&through)), on);
+            assert!(got.is_ok(), "{on:?}: {got:?}");
+            assert_eq!(fs::read(&real).unwrap(), b"NEW\n", "{on:?}");
+            assert!(
+                fs::symlink_metadata(app.join("releases/5/.env")).unwrap().file_type().is_symlink(),
+                "{on:?}: the link stays a link"
+            );
+            assert_eq!(names(&app.join("shared")), [".env"], "{on:?}");
+        }
+    }
+
+    #[test]
+    fn a_scratch_folder_swapped_for_a_link_to_someone_elses_never_sends_them_the_bytes() {
+        // Someone who may write the folder the file is in renames the scratch folder as soon as
+        // it is there and puts a link under its name, to a folder of theirs with a FIFO where the
+        // scratch file is made, and reads the FIFO. The moment is the worst one for each command
+        // the script runs on the scratch folder before it writes.
+        let swap = r#"swap() {
+  [ ! -e "$YZ_ELSEWHERE/taken" ] || return 0
+  echo x >> "$YZ_ELSEWHERE/calls"
+  [ "$(wc -l < "$YZ_ELSEWHERE/calls")" -ge "$YZ_AT" ] || return 0
+  for s in "$YZ_DIR"/.yuzora-save-*; do
+    [ -d "$s" ] && [ ! -L "$s" ] || continue
+    n=${s##*/}
+    mkdir -p -- "$YZ_ELSEWHERE/theirs" && : > "$YZ_ELSEWHERE/taken"
+    mkfifo "$YZ_ELSEWHERE/theirs/$n" || return 0
+    ( cat "$YZ_ELSEWHERE/theirs/$n" > "$YZ_ELSEWHERE/heard" & r=$!; sleep 3; kill "$r" 2>/dev/null ) >/dev/null 2>&1 </dev/null &
+    mv -- "$s" "$s.away" && ln -s "$YZ_ELSEWHERE/theirs" "$s"
+  done
+}
+"#;
+        let bytes = b"the bytes of the save";
+        for on in WHERE {
+            // After mkdir, after the chmod by name, and after `chmod 700 .` inside the folder.
+            for (command, at) in [("mkdir", "1"), ("chmod", "1"), ("chmod", "2")] {
+                let body = format!("{swap}{command} \"$@\"\ndone=$?\nswap\nexit $done");
+                let (_shims, path_env) = shimmed(&[(command, &body)]);
+                let dir = tempfile::tempdir().unwrap();
+                let elsewhere = tempfile::tempdir().unwrap();
+                let path = put(dir.path(), "f", b"old");
+                let got = save_with(
+                    &[
+                        ("PATH", &path_env),
+                        ("YZ_DIR", &dir.path().to_string_lossy()),
+                        ("YZ_ELSEWHERE", &elsewhere.path().to_string_lossy()),
+                        ("YZ_AT", at),
+                    ],
+                    &path,
+                    bytes,
+                    None,
+                    on,
+                );
+                let why = format!("{on:?} swapped after {command} #{at}: {got:?}");
+                assert!(elsewhere.path().join("taken").exists(), "the swap ran: {why}");
+                let heard = fs::read(elsewhere.path().join("heard")).unwrap_or_default();
+                assert_eq!(String::from_utf8_lossy(&heard), "", "{why}");
+                let theirs = elsewhere.path().join("theirs");
+                for entry in fs::read_dir(&theirs).unwrap() {
+                    let entry = entry.unwrap();
+                    let kind = entry.file_type().unwrap();
+                    assert!(!kind.is_file(), "{:?} was made in their folder: {why}", entry.path());
+                }
+                match &got {
+                    Ok(_) => assert_eq!(fs::read(&path).unwrap(), bytes, "{why}"),
+                    Err(WriteError::Io(e)) => {
+                        assert!(e.contains("is not the folder just made"), "{why}");
+                        assert_eq!(fs::read(&path).unwrap(), b"old", "{why}");
+                    }
+                    other => panic!("{other:?}: {why}"),
                 }
             }
         }
