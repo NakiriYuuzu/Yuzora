@@ -1303,10 +1303,13 @@ with these differences.
   is settled when the table's key has been read, which starts with the rows
   (on the sidebar's connection) and takes as long as it takes, so a table is
   editable at the later of the two; until then, trying to edit a cell on screen
-  says "Reading the table's key…". A table that another connection changed
-  while it was being opened (a column renamed, dropped or added) is read-only,
-  with the reason "the table changed while it was being opened": refresh the
-  table to edit it. Stop pressed before the key is back ends
+  says "The rows are still loading" while rows come in and "Reading the
+  table's key…" once they are all in. A table that another connection changed
+  while it was being opened, so that the rows' columns are no longer the
+  described ones in their order (a column renamed, or one the rows have and
+  the description does not), is read-only, with the reason "the table changed
+  while it was being opened": refresh the table to edit it. A column only the
+  description has leaves the table editable. Stop pressed before the key is back ends
   the load at once and leaves the rows on screen read-only, with the reason
   "could not read the table's key (stopped before it was read)": run the table
   again to edit it. Nothing about a table is kept from one run to the next, so
