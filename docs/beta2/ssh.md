@@ -11,7 +11,7 @@ beta.2 的 SSH 主機、SFTP 雙欄傳輸、tunnel 與已知主機。Rust 原生
 | `app/crates/yuzora-ssh/src/config.rs` | `~/.ssh/config` 解析：Include（相對、`~`、glob、條件式引入、16 層上限）、Host 萬用字元與否定、Match（`all`／`host`／`originalhost`／`user`／`localuser`）、第一個值生效、token 展開、ProxyJump／ProxyCommand 等常用選項。唯讀 |
 | `hosts.rs` | 三個主機來源合併：ssh config 的具名 Host、Yuzora profiles（settings `ssh.profiles`）、herdr machines（`hc machine ls`，由 mod 傳入）。id 為 `ssh:<alias>`、`profile:<id>`、`machine:<name>` |
 | `known_hosts.rs` | OpenSSH known_hosts：明文／hashed（`|1|`）、`[host]:port`、萬用字元、否定、`@revoked`；`@cert-authority` 忽略。只寫 Yuzora 自己的檔 |
-| `session.rs` | 每台主機一個共用 SSH session（`Manager::session`）、host key 檢查、ProxyJump（多段）、ProxyCommand、keepalive、延遲量測 |
+| `session.rs` | 每台主機一個共用 SSH session（`Manager::session`；session 記著連線當時的 `user@host:port`，主機的定義改指到別處時，同一個 id 底下的舊 session 會連同 tunnel 一起結束，不再被當成這台主機的連線，`retire_stale`）、host key 檢查、ProxyJump（多段）、ProxyCommand、keepalive、延遲量測 |
 | `auth.rs` | 登入：ssh-agent → 私鑰檔（加密時問密語）→ keyboard-interactive → 密碼；遵守 PreferredAuthentications、IdentitiesOnly、IdentityAgent、各 `*Authentication` 開關，支援 partial success（多因子） |
 | `prompt.rs` | 連線途中要問使用者的問題佇列（新金鑰、金鑰變更、密碼、密語、keyboard-interactive），任何 mod 都能 claim 並回答 |
 | `sftp.rs` | 雙欄瀏覽：本機與遠端同一種 entry 形狀；新增資料夾、重新命名、刪除（資料夾遞迴）；拒絕 `/`、`~` 等根目錄與不合法名稱 |

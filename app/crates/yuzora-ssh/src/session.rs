@@ -303,9 +303,36 @@ impl Manager {
 
     /// An open session for `key`, if there is one.
     pub fn open_session(&self, key: &str) -> Option<Arc<HostSession>> {
-        let id = self.lookup(key).ok()?.id;
-        let s = lock(&self.sessions).get(&id).cloned()?;
-        (!s.is_closed()).then_some(s)
+        let def = self.lookup(key).ok()?;
+        let s = lock(&self.sessions).get(&def.id).cloned()?;
+        (!s.is_closed() && s.target == def.target()).then_some(s)
+    }
+
+    /// Takes away the session held under `def`'s id when it was opened to another address
+    /// (user, host or port) than `def` names now, with its tunnels and prompts. A profile
+    /// keeps its id when it is edited to point elsewhere, and so does a config alias: the
+    /// connection to where it pointed before is not a connection to it, and an SFTP save or
+    /// delete sent down it would land on the other server. The caller closes what it gets.
+    fn retire_stale(&self, def: &HostDef) -> Option<Arc<HostSession>> {
+        let mut sessions = lock(&self.sessions);
+        if sessions.get(&def.id).is_none_or(|s| s.target == def.target()) {
+            return None;
+        }
+        let stale = sessions.remove(&def.id);
+        drop(sessions);
+        self.prompts.cancel_host(&def.id);
+        self.tunnels.close_host(&def.id);
+        lock(&self.states).remove(&def.id);
+        stale
+    }
+
+    /// After a host's definition was saved: ends its session now if that points elsewhere,
+    /// so the list stops saying "connected" before anything asks for the session again.
+    pub fn definition_changed(&self, key: &str) {
+        let Ok(def) = self.lookup(key) else { return };
+        if let Some(stale) = self.retire_stale(&def) {
+            crate::runtime::handle().spawn(async move { stale.close().await });
+        }
     }
 
     /// The session for a host (id, alias, machine or destination): the open one, or a new connection.
@@ -313,6 +340,9 @@ impl Manager {
         let def = self.lookup(key)?;
         let gate = lock(&self.locks).entry(def.id.clone()).or_default().clone();
         let _one_at_a_time = gate.lock().await;
+        if let Some(stale) = self.retire_stale(&def) {
+            stale.close().await;
+        }
         if let Some(s) = lock(&self.sessions).get(&def.id).cloned() {
             if !s.is_closed() {
                 return Ok(s);
@@ -356,7 +386,7 @@ impl Manager {
             list.iter()
                 .map(|h| {
                     let mut v = h.to_json();
-                    let session = sessions.get(&h.id).filter(|s| !s.is_closed());
+                    let session = sessions.get(&h.id).filter(|s| !s.is_closed() && s.target == h.target());
                     let st = states.get(&h.id).cloned().unwrap_or_default();
                     v["state"] = serde_json::json!(if session.is_some() {
                         "connected"

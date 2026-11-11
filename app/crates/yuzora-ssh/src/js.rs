@@ -235,6 +235,7 @@ pub fn host_module() -> HostModule {
             if let Some(pw) = a.get(1).and_then(HostValue::as_str).filter(|s| !s.is_empty()) {
                 m.ctx.secrets.set(&crate::auth::password_key(&format!("profile:{id}")), pw).map_err(|e| HostError::new(e.to_string()))?;
             }
+            m.definition_changed(&format!("profile:{id}"));
             Ok(HostValue::Str(id))
         })
         .function("removeProfile", |a| {

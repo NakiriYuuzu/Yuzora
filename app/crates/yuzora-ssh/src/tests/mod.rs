@@ -298,6 +298,52 @@ async fn proxy_jump_reaches_a_host_through_another() {
     assert!(s.ping().await.is_ok());
 }
 
+/// A profile edited to point at another server keeps its id. The session opened to where it
+/// pointed before is not handed out for it again: an SFTP save or delete would go to the
+/// first server while the list names the second.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_that_now_points_elsewhere_does_not_reuse_its_old_session() {
+    let w = TestWorld::new("it-repoint");
+    let (first, second) = (w.root.join("first"), w.root.join("second"));
+    let a = Fixture::start(&first, &first.join("srv"), Options::default()).await;
+    let b = Fixture::start(&second, &second.join("srv"), Options::default()).await;
+    let ctx = w.context();
+    for fx in [&a, &b] {
+        fx.trust_in(&ctx.known_hosts);
+    }
+    let profile = |id: &str, port: u16| crate::hosts::Profile { id: id.into(), name: "box".into(), host: "127.0.0.1".into(), port: Some(port), user: Some(fixture::USER.into()), ..Default::default() };
+    let id = crate::hosts::save_profile(&ctx, profile("", a.port)).unwrap();
+    let key = format!("profile:{id}");
+    w.secrets.set(&SecretKey::new("ssh", format!("password:{key}")), PASSWORD).unwrap();
+    let m = Manager::new(ctx.clone());
+    let state = |m: &Manager| m.hosts_json().as_array().unwrap().iter().find(|h| h["id"] == key.as_str()).map(|h| h["state"].clone());
+
+    let to_a = m.session(&key, Interaction::Never).await.unwrap();
+    assert!(to_a.target.ends_with(&format!(":{}", a.port)), "{}", to_a.target);
+    assert_eq!(state(&m), Some("connected".into()));
+
+    // A rename is the same server: the session stays.
+    crate::hosts::save_profile(&ctx, crate::hosts::Profile { name: "renamed".into(), ..profile(&id, a.port) }).unwrap();
+    m.definition_changed(&key);
+    assert!(Arc::ptr_eq(&m.session(&key, Interaction::Never).await.unwrap(), &to_a));
+
+    // The port now names the second server.
+    crate::hosts::save_profile(&ctx, profile(&id, b.port)).unwrap();
+    assert!(m.open_session(&key).is_none(), "the session to the first server was offered as the host's");
+    assert_ne!(state(&m), Some("connected".into()), "the list says connected to a server nothing is connected to");
+    let to_b = m.session(&key, Interaction::Never).await.unwrap();
+    assert!(to_b.target.ends_with(&format!(":{}", b.port)), "{}", to_b.target);
+    assert!(!Arc::ptr_eq(&to_a, &to_b));
+    for _ in 0..100 {
+        if to_a.is_closed() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(to_a.is_closed(), "the connection to the first server was left open");
+    assert!(to_b.ping().await.is_ok());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sftp_browses_and_changes_both_sides() {
     let w = TestWorld::new("it-sftp-browse");

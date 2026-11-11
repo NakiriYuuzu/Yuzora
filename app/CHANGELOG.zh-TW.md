@@ -20,6 +20,7 @@
 - Git：開著多個專案時，Graph 以及 diff、merge、rebase pane 會留在目前的 Space，不再跳回最先開過它們的那個專案。每個 Space 各有自己的一份。更新之後，beta.4 留下的 diff 請求不會再顯示另一個專案的檔案。
 - Git：並排 diff 左右各佔一半寬度。拖曳中間的分隔線可以在 15% 到 85% 之間調整，雙擊回到一半。所有 diff 共用這個比例，重新啟動後也保留。長行留在自己那一側，兩側一起橫向捲動，行太寬時底部會出現捲軸。
 - Git：並排 diff 在重新讀取後（存檔、stage、commit、fetch 之後）會保留橫向捲動位置。Yuzora 曾經忙到量不完某一長行時，橫向捲動範圍不會再一直過寬。
+- Git：已追蹤的檔案在 index 裡的內容讀不出來時（例如必要的 filter 執行失敗，像是沒有安裝 git-lfs），不再被當成新檔案開啟，diff pane 會顯示錯誤。以前對這種檔案按 Discard 全部，會把檔案刪掉。
 - Database：資料表的編輯可以存檔了。列讀完就能編輯，不必等總列數，存檔也不再排在總列數後面。Cmd+S（Windows 與 Linux 是 Ctrl+S）可以存檔，儲存格編輯框開著時也可以。存檔卡在連線或別處持有的列鎖時，可以按 Stop 停止，訊息會說明是否可能已經存入。工具列的 Stop 只停自己的語句，不會停掉進行中的存檔。表格會說明為什麼不能編輯，存檔失敗時可以展開看伺服器的完整訊息，窄的 pane 裡 Discard 與 Write back 也不會被切掉。
 - Database：SQL Server 上，trigger 回傳列不再讓存檔回滾；伺服器關掉閒置連線後的第一次存檔，會重新連線並完成。含 `geography`、`geometry` 或 `hierarchyid` 欄位的表會顯示錯誤，不再一直載入。PostgreSQL 上，Stop 會送到這條連線所在的伺服器，不再送到按下當時主機名稱指向的位址。輸入法還在組字的文字，在按 Write back 或離開儲存格時不會被存進去。
 - Database：SQL Server 的 `datetime`、`smalldatetime` 儲存格，年份在前的日期（例如 `2024-01-06 10:00`、`20240106`）不論登入語言，都照輸入的樣子存入。Yuzora 無法確定怎麼讀的日期，會在送出前拒絕。PostgreSQL 的資料表以 `datestyle = ISO` 與 `extra_float_digits = 3` 讀寫，所以用時區縮寫（例如 `CST`）讀出的 `timestamptz` 寫回時不會再差好幾個小時，以浮點數為主鍵的列也找得到。SQL 分頁維持伺服器自己的設定，和 `psql` 一致。
@@ -29,6 +30,7 @@
 - Database：資料表 pane 的 SQL 分頁裡，資料表還在讀取時（例如在等 SQL 分頁留下沒提交的交易），按 Run 或 Cmd+Enter 不再毫無反應。Run 會先停掉那個讀取再執行 SQL，所以 COMMIT 只要按一次。自己執行中的語句不會被停掉，SQL 分頁會寫明要先按 Stop。有未存的編輯（包括存檔途中）時會先詢問。
 - Database：資料表存檔時，在 Yuzora 送出 COMMIT 之前按 Stop，一定不會存入，即使 app 忙到沒能及時注意到這次 Stop 也一樣。以前會存進去，然後說資料庫可能已經存了。SQL Server 上，另一個連線同時在建立或刪除資料表時，瀏覽資料庫物件或開表不會再因為「deadlocked … Rerun the transaction」（Msg 1205）而失敗，Yuzora 會再讀一次。
 - Database：開表時，列不再等表的結構資訊才出現，結構資訊每次開表也只讀一次（以前讀兩次）。在來回 50 ms、連線已經開著的情況下，500 列的表第一批列在 PostgreSQL 是 116 ms、SQL Server 是 67 ms，以前是 341 ms 與 354 ms（debug build，中位數）。沒有延遲的資料庫上感覺不出差別。在主鍵讀回來之前按 Stop，會立刻結束載入，已讀的列保留為唯讀。開表途中欄位被改過的資料表也會以唯讀開啟。
+- SSH：修改已儲存主機的位址、port 或使用者之後，Yuzora 會結束到舊位址的連線與它的 tunnel。以前 SFTP 會繼續在舊的伺服器上操作，清單卻顯示新的位址。
 - Windows：從開始功能表捷徑啟動的 Yuzora 可以自己更新。以前用這種方式啟動時，更新一定失敗。更新裝不上時，Settings › Updates 會說明原因與該怎麼做，按 Restart 會出現一則通知，點下去就開那一頁。如果你是把 0.1.0 覆蓋安裝在 beta 上，請重新開機一次。beta 啟動的 herdr-core 還握著 Yuzora 的安裝資料夾，會讓第一次自動更新失敗，直到它結束為止。重新開機會結束它，裡面的終端機也會一起結束。不想重新開機的話，可以在 Yuzora 以外的終端機執行 `hc server stop`。它會結束所有終端機與裡面執行的 agent，和重新開機的損失一樣。
 - 更新：更新提示改寫 `Yuzora <version> is ready`，不再是 `Herdr <version> is ready`。從 beta 更新到 0.1.0 時看到的仍是舊字樣。
 
