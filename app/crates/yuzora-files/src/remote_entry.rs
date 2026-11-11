@@ -1489,6 +1489,68 @@ case $here in "$YZ_OTHERFS"|"$YZ_OTHERFS"/*) echo 2 ;; *) echo 1 ;; esac"#,
     }
 
     #[test]
+    fn a_move_told_to_stop_where_stat_has_no_identity_to_give_leaves_the_name_it_took_and_says_so()
+    {
+        let shims = rename_shims("touch \"$YZ_STARTED\"; sleep 1; exit 1");
+        let (shim_dir, path) = shimmed(&[
+            (shims[0].0, &shims[0].1),
+            (shims[1].0, &shims[1].1),
+            ("stat", NO_IDENTITY),
+        ]);
+        for (looks, takes_first) in ways() {
+            if !takes_first {
+                continue;
+            }
+            for shell in shells() {
+                let d = tempfile::tempdir().unwrap();
+                let from = put(d.path(), "from.txt", b"mine");
+                let to = at(d.path(), "to.txt");
+                let started = at(shim_dir.path(), "started");
+                let _ = fs::remove_file(&started);
+                let req = request(&Act::Move(&from, &to), None).unwrap();
+                let mut cmd = Command::new(shell[0]);
+                cmd.args(&shell[1..])
+                    .args(&req.args)
+                    .env("PATH", &path)
+                    .env("YZ_STARTED", &started)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                if let Some(looks) = looks {
+                    cmd.env("YZ_MVLOOKS", looks);
+                }
+                let child = cmd.spawn().unwrap();
+                let waited = std::time::Instant::now();
+                while !Path::new(&started).exists() && waited.elapsed() < Duration::from_secs(5) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                let label = format!("{shell:?} {looks:?}");
+                assert!(
+                    Path::new(&started).exists(),
+                    "{label}: the move did not start"
+                );
+                // SAFETY: a signal to the child this test started.
+                unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+                let out = child.wait_with_output().unwrap();
+                let said = String::from_utf8_lossy(&out.stderr).into_owned();
+                assert_eq!(out.status.code(), Some(1), "{label}");
+                assert!(
+                    said.contains("may or may not")
+                        && said.contains("left in place")
+                        && said.contains(&to),
+                    "{label}: {said}"
+                );
+                assert_eq!(
+                    fs::read_to_string(&to).unwrap(),
+                    "",
+                    "{label}: the name it took"
+                );
+                assert_eq!(fs::read_to_string(&from).unwrap(), "mine", "{label}");
+            }
+        }
+    }
+
+    #[test]
     fn a_stat_with_no_identity_to_give_does_not_hide_a_source_that_is_gone_behind_a_name_it_left() {
         let shims = rename_shims("mv -- \"$from\" \"$YZ_ELSEWHERE\"");
         let (_dir, path) = shimmed(&[
