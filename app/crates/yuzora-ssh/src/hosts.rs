@@ -196,13 +196,14 @@ pub fn save_profile(ctx: &Context, mut p: Profile) -> Result<String> {
 }
 
 /// Whether two profiles reach different servers or accounts, or the same address through other
-/// jump hosts (an address behind one bastion is another machine behind the next). As connecting
-/// resolves them: what a profile leaves out, `~/.ssh/config` or the defaults fill in.
+/// jump hosts or another proxy command (an address behind one bastion is another machine behind
+/// the next). As connecting resolves them: what a profile leaves out, `~/.ssh/config` or the
+/// defaults fill in.
 fn elsewhere(ctx: &Context, a: &Profile, b: &Profile) -> bool {
     let cfg = SshConfig::load(&ctx.ssh_config, &ctx.config);
     let reach = |p: &Profile| {
         let r = from_profile(ctx, &cfg, p);
-        (r.user, r.hostname, r.port, r.proxy_jump)
+        (r.user, r.hostname, r.port, r.proxy_jump, r.proxy_command)
     };
     reach(a) != reach(b)
 }
@@ -386,7 +387,7 @@ mod tests {
     #[test]
     fn a_profile_keeps_its_id_until_it_reaches_another_server_or_account() {
         let w = TestWorld::new("hosts-profile-id");
-        w.write_ssh_config("Host nas\n  HostName nas.local\n  Port 2222\n  User admin\n");
+        w.write_ssh_config("Host nas\n  HostName nas.local\n  Port 2222\n  User admin\nHost work\n  HostName 10.0.0.5\n  ProxyCommand nc -X connect -x gw.corp:3128 %h %p\n");
         let ctx = w.context();
         let ids = || profiles(&ctx).into_iter().map(|p| p.id).collect::<Vec<_>>();
         let other = save_profile(&ctx, Profile { host: "other.example".into(), ..Default::default() }).unwrap();
@@ -398,7 +399,7 @@ mod tests {
             save_profile(&ctx, p).unwrap()
         };
         type Edit<'a> = (&'a str, bool, &'a dyn Fn(&mut Profile));
-        let edits: [Edit; 15] = [
+        let edits: [Edit; 18] = [
             // The same server and account, named or signed in to another way.
             ("name", false, &|p| p.name = "renamed".into()),
             ("key", false, &|p| p.identity_file = Some("~/.ssh/other".into())),
@@ -417,6 +418,10 @@ mod tests {
             ("port 22 for the config's", true, &|p| p.port = Some(22)),
             ("the config's port for 22", true, &|p| p.port = None),
             ("the name the config gives", true, &|p| p.host = "nas.local".into()),
+            // The same address is another machine when the config reaches it through a proxy.
+            ("a host behind a proxy command", true, &|p| p.host = "work".into()),
+            ("its address, without the proxy", true, &|p| p.host = "10.0.0.5".into()),
+            ("the same address again", false, &|p| p.port = Some(22)),
         ];
         for (what, moves, f) in edits {
             let next = edit(&id, f);

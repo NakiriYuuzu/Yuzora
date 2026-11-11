@@ -3,7 +3,7 @@
 // edit, { id, remove: true } to delete. Owned by lane L4.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { theme, props, closeOverlay, shared, setShared } from "herdr";
+import { theme, props, closeOverlay, setShared } from "herdr";
 import { t } from "yuzora:core";
 import { hosts, saveProfile, removeProfile } from "yuzora:ssh";
 
@@ -51,10 +51,9 @@ export default class SshHost extends View {
         { id: this.profile?.id ?? "", name: v("name"), host: v("host"), port: Number.isInteger(port) && port > 0 ? port : null, user: v("user") || null, identityFile: v("identityFile") || null, proxyJump: v("proxyJump") || null },
         this.inputs.password.value() || null,
       );
-      // A host that now reaches another server comes back under a new id: the sidebar's
-      // selection (its key in shared) follows it there.
-      const was = this.profile ? `profile:${this.profile.id}` : null;
-      if (was && was !== `profile:${id}` && (shared(SELECTED) ?? was) === was) setShared(SELECTED, `profile:${id}`);
+      // A host that now reaches another server comes back under a new id. The sidebar edits
+      // the host it shows, so its selection (this key in shared) goes to the new id.
+      if (this.profile && this.profile.id !== id) setShared(SELECTED, `profile:${id}`);
       this.dismiss();
     } catch (e) {
       this.error = t("failed", { why: message(e) });
