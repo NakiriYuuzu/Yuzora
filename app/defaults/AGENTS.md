@@ -1299,6 +1299,21 @@ with these differences.
   what the pane showed of the table, as it always did. A pane that uses both
   holds one connection more than a pane that only opens a table (closing the
   pane closes all of them).
+- A table's rows show as soon as they are read. Whether they can be edited
+  is settled when the table's key has been read, which starts with the rows
+  (on the sidebar's connection) and takes as long as it takes, so a table is
+  editable at the later of the two; until then, trying to edit a cell on screen
+  says "The rows are still loading" while rows come in and "Reading the
+  table's key…" once they are all in. A table that another connection changed
+  while it was being opened, so that the rows' columns are no longer the
+  described ones in their order (a column renamed, or one the rows have and
+  the description does not), is read-only, with the reason "the table changed
+  while it was being opened": refresh the table to edit it. A column only the
+  description has leaves the table editable. Stop pressed before the key is back ends
+  the load at once and leaves the rows on screen read-only, with the reason
+  "could not read the table's key (stopped before it was read)": run the table
+  again to edit it. Nothing about a table is kept from one run to the next, so
+  running it again reads the key it has now.
 - A transaction left open in the SQL tab (`BEGIN` without `COMMIT` or
   `ROLLBACK`) is the one thing that reaches across the two connections, and
   only as a lock: while it holds locks the table needs, the table's read or

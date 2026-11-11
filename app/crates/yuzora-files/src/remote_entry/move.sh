@@ -8,25 +8,47 @@ for tool in mv stat rm; do
 done
 idof() { stat -c '%d:%i' -- "$1" 2>/dev/null || stat -f '%d:%i' -- "$1" 2>/dev/null; }
 dev() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null; }
-held= heldid=
+held= heldid= heldkind= how= gnu= nocopy= left=
 giveback() {
   if [ -n "$held" ]; then
-    if [ -n "$heldid" ]; then
-      [ "$(idof "$held")" = "$heldid" ] && rm -f -- "$held"
+    if [ -z "$heldid" ]; then
+      left="$held is left in place: it was made empty to hold the new name, and stat gives no identity here to tell it from an empty entry that someone else put there (delete it if it is empty and not yours)"
+    elif [ "$(idof "$held")" != "$heldid" ]; then
+      :
+    elif [ "$heldkind" = dir ]; then
+      rmdir -- "$held" 2>/dev/null
     elif [ -f "$held" ] && [ ! -L "$held" ] && [ ! -s "$held" ]; then
       rm -f -- "$held"
     fi
   fi
   held=
 }
-trap giveback EXIT
+leave() { [ -n "$held" ] || return 0; giveback; [ -z "$left" ] || printf '%s\n' "$left" >&2; }
+trap leave EXIT
 trap 'echo "stopped before it was done: it may or may not have been" >&2; exit 1' HUP INT TERM
+pick() {
+  [ -z "$how" ] || return 0
+  if command -v perl >/dev/null 2>&1; then
+    how=perl
+  else
+    case $(mv --help 2>&1) in *-T*) how=mv ;; esac
+  fi
+  [ -n "$how" ] || { echo 'refused rename'; exit 0; }
+}
+rn() {
+  if [ "$how" = perl ]; then
+    perl -e 'rename($ARGV[0], $ARGV[1]) or do { print STDERR "$ARGV[0]: $!\n"; exit 1 }' "$1" "$2"
+  else
+    mv -fT -- "$1" "$2"
+  fi
+}
 there "$from" || { echo gone; exit 0; }
 if there "$to"; then
   if [ "$fold" = 1 ]; then
     a=$(idof "$from") b=$(idof "$to")
     if [ -n "$a" ] && [ "$a" = "$b" ]; then
-      if msg=$(mv -- "$from" "$to" 2>&1); then echo done; exit 0; fi
+      pick
+      if msg=$(rn "$from" "$to" 2>&1); then echo done; exit 0; fi
       fail "$msg"
     fi
   fi
@@ -35,22 +57,48 @@ if there "$to"; then
 fi
 blame "$to"
 { [ -w "$fd" ] && [ -x "$fd" ]; } || { echo 'refused folder'; exit 0; }
-a=$(dev "$from") b=$(dev "$d")
+# stat looks at a link itself, and a rename goes through it: "/." leads to the folder that a link to one is
+a=$(dev "$from") b=$(dev "$d/.")
 if [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ]; then echo 'refused device'; exit 0; fi
 before=$(idof "$from")
-if [ -d "$from" ] && [ ! -L "$from" ]; then
-  if mv --version >/dev/null 2>&1; then flag=-nT; else flag=-n; fi
-  msg=$(mv $flag -- "$from" "$to" 2>&1)
+case $(mv --version 2>&1) in *'GNU coreutils'*) gnu=1 ;; esac
+# Where the system cannot rename (EXDEV: a folder out of an image layer of an overlay file system, a bind mount)
+# GNU mv copies. --no-copy (9.4) makes it fail instead; without it a folder is renamed by rename(2) alone.
+if [ -n "$gnu" ]; then
+  case $(mv --help 2>&1) in
+    *--no-copy*) nocopy=--no-copy ;;
+    *) if [ -d "$from" ] && [ ! -L "$from" ] && command -v perl >/dev/null 2>&1; then gnu=; fi ;;
+  esac
+fi
+if [ -n "$gnu" ]; then
+  msg=$(mv $nocopy -nT -- "$from" "$to" 2>&1)
+  rc=$?
 else
-  if msg=$( (set -C; : > "$to") 2>&1 ); then held=$to; else blame "$to"; fail "$msg"; fi
+  pick
+  if [ -d "$from" ] && [ ! -L "$from" ]; then
+    for tool in mkdir rmdir; do
+      command -v "$tool" >/dev/null 2>&1 || { echo "refused tool $tool"; exit 0; }
+    done
+    if msg=$(mkdir -- "$to" 2>&1); then held=$to heldkind=dir; else blame "$to"; fail "$msg"; fi
+  else
+    if msg=$( (set -C; : > "$to") 2>&1 ); then held=$to; else blame "$to"; fail "$msg"; fi
+  fi
   heldid=$(idof "$to")
-  msg=$(mv -f -- "$from" "$to" 2>&1)
+  msg=$(rn "$from" "$to" 2>&1)
+  rc=$?
 fi
 if there "$from"; then
   giveback
+  [ -z "$left" ] || fail "${msg:-it failed without saying why}: $left"
   blame "$to"
   fail "$msg"
 fi
+if [ "$rc" -ne 0 ]; then
+  giveback
+  [ -z "$left" ] || fail "$from is gone, and $left"
+  echo gone
+  exit 0
+fi
 held=
 if [ -z "$before" ] || [ "$(idof "$to")" = "$before" ]; then echo done; exit 0; fi
-fail "$from was moved into $to, a folder that took its name meanwhile"
+fail "$from is gone and $to is there, but what is at $to is not the entry that was at $from: either it was copied instead of renamed (mv does that where the system cannot rename), or one of the two was replaced meanwhile"

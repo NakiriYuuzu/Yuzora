@@ -379,6 +379,11 @@ struct Job {
     /// Stops what the job is running (see [`serving`]); `None` while the job
     /// waits or does something else.
     serving: Option<Stop>,
+    /// Called when the job is stopped, whatever it is doing: what only waits
+    /// (for a table's description) ends on it.
+    halt: StandDown,
+    /// The description of the table the job opens (see [`open_table`]).
+    info: Option<InfoRx>,
     version: u64,
     watchers: Vec<async_channel::Sender<()>>,
 }
@@ -406,6 +411,8 @@ fn new_job(owner: &str) -> JobId {
             elapsed_ms: 0,
             results: Vec::new(),
             serving: None,
+            halt: StandDown::new(),
+            info: None,
             version: 1,
             watchers: Vec::new(),
         },
@@ -536,6 +543,7 @@ pub fn cancel(id: JobId) {
             return;
         }
         job.cancelled = true;
+        job.halt.call();
         if let Some(stop) = job.serving.clone() {
             stop.press(&all);
         }
@@ -573,6 +581,8 @@ struct JobSink {
     current: Option<Arc<Mutex<ResultSet>>>,
     /// The newest result this sink made, finished or not.
     last: Option<Arc<Mutex<ResultSet>>>,
+    /// When the statement whose result comes next began, if its engine said so (`RowSink::started`).
+    began: Option<Instant>,
 }
 
 impl JobSink {
@@ -585,6 +595,7 @@ impl JobSink {
             table: false,
             current: None,
             last: None,
+            began: None,
         }
     }
 
@@ -594,6 +605,9 @@ impl JobSink {
 
     fn start(&mut self) -> Arc<Mutex<ResultSet>> {
         let set = results::create(&self.owner, &self.statement);
+        if let Some(at) = self.began.take() {
+            results::lock(&set).started = at;
+        }
         if self.table {
             results::lock(&set).editing = Editing::Loading;
         }
@@ -627,6 +641,10 @@ impl JobSink {
 }
 
 impl RowSink for JobSink {
+    fn started(&mut self, at: Instant) {
+        self.began = Some(at);
+    }
+
     fn columns(&mut self, columns: Vec<Column>) {
         self.finish(None);
         let set = self.start();
@@ -725,8 +743,20 @@ pub fn start_query(connection: &str, database: Option<&str>, owner: &str, sql: &
     id
 }
 
+/// What a table's description came to (its key, columns, DDL), or why it
+/// could not be had; one per open, shared by whoever waits for it.
+type Info = Arc<DbResult<TableInfo>>;
+type InfoRx = tokio::sync::watch::Receiver<Option<Info>>;
+
 /// Starts reading a table's rows for `owner`: `SELECT *` (capped, optionally
 /// ordered), its `count(*)`, and its key so the result can be edited.
+///
+/// The table's description is asked for at the same moment, on the sidebar's
+/// connection, and the rows do not wait for it: they are read on the table's
+/// own connection ([`table_owner`]), and what they are (editable or not) is
+/// settled when it is in. It is read afresh for every open, never kept: a
+/// refresh sees the key the table has now. The pane's Structure tab takes it
+/// from the job ([`table_info`]) instead of asking for it again.
 pub fn open_table(
     connection: &str,
     database: Option<&str>,
@@ -735,19 +765,38 @@ pub fn open_table(
     order: Option<(String, bool)>,
 ) -> JobId {
     let id = new_job(owner);
+    let (info_tx, mut info_rx) = tokio::sync::watch::channel(None);
+    let (held_tx, held_rx) = tokio::sync::oneshot::channel::<()>();
+    let halt = jobs().1.get_mut(&id).map(|job| {
+        job.info = Some(info_rx.clone());
+        job.halt.clone()
+    });
+    let halt = halt.unwrap_or_else(StandDown::new);
     let (connection, database, owner, table) =
         (connection.to_owned(), database.map(str::to_owned), owner.to_owned(), table.clone());
     spawn_job(id, async move {
         let opened_with = match config::get(&connection) {
             Ok(c) => c,
             Err(e) => {
+                let _ = info_tx.send(Some(Arc::new(Err(e.clone()))));
                 let mut sink = JobSink::new(id, &owner, "");
                 finish_job(id, Err(e), &mut sink);
                 return;
             }
         };
         let (engine, read_only) = (opened_with.engine, opened_with.read_only);
-        let info = describe(&connection, database.as_deref(), &table).await;
+        {
+            let (connection, database, table) = (connection.clone(), database.clone(), table.clone());
+            runtime::spawn(async move {
+                let leased = lease(&connection, database.as_deref(), META).await;
+                let _ = held_tx.send(());
+                let described = match leased {
+                    Ok(mut l) => l.conn().describe(&table).await,
+                    Err(e) => Err(e),
+                };
+                let _ = info_tx.send(Some(Arc::new(described)));
+            });
+        }
         let mut l = match lease(&connection, database.as_deref(), &table_owner(&owner)).await {
             Ok(l) => l,
             Err(e) => return finish_job(id, Err(e), &mut JobSink::new(id, &owner, "")),
@@ -765,63 +814,136 @@ pub fn open_table(
         drop(reading);
         drop(l);
         // The rows are in, whether or not the engine said so (a read that hit
-        // the cap ends mid-stream): the result is complete, and it is now
-        // known what it is. The key as column positions; no key (or a key
-        // column not in the result) means read-only, with the reason shown.
+        // the cap ends mid-stream): the result is complete. What it is comes
+        // with the description, and the count with its own connection: neither
+        // waits for the other.
         let read_failed = match &outcome {
             Ok(()) | Err(DbError::Cancelled) => None,
             Err(e) => Some(e.to_string()),
         };
         sink.finish(read_failed.clone());
-        if let Some(set) = sink.last.clone() {
-            let mut r = results::lock(&set);
-            let names: Vec<String> = info.as_ref().map(TableInfo::key_columns).unwrap_or_default();
-            let positions: Option<Vec<usize>> =
-                names.iter().map(|n| r.columns.iter().position(|c| &c.name == n)).collect();
-            r.editing = match (info.as_ref(), positions) {
-                _ if read_failed.is_some() => Editing::ReadOnly(ReadOnly::ReadFailed),
-                _ if read_only => Editing::ReadOnly(ReadOnly::Connection),
-                (Err(e), _) => Editing::ReadOnly(ReadOnly::NoInfo(e.to_string())),
-                (Ok(_), Some(key)) if !key.is_empty() => Editing::Editable(Box::new(EditTarget {
-                    connection: connection.clone(),
-                    config: opened_with.clone(),
-                    database: database.clone(),
-                    owner: table_owner(&owner),
-                    table: table.clone(),
-                    key,
-                    read_only: info
-                        .iter()
-                        .flat_map(|i| &i.columns)
-                        .filter(|c| c.generated)
-                        .filter_map(|c| r.columns.iter().position(|rc| rc.name == c.name))
-                        .collect(),
-                })),
-                _ => Editing::ReadOnly(ReadOnly::NoKey),
+        let set = sink.last.clone();
+        let settle = async {
+            let Some(set) = set.clone() else { return };
+            let known = if read_failed.is_some() {
+                Some(Editing::ReadOnly(ReadOnly::ReadFailed))
+            } else if read_only {
+                Some(Editing::ReadOnly(ReadOnly::Connection))
+            } else {
+                None
             };
-            r.version += 1;
-            let result = r.id;
-            drop(r);
+            let editing = match known {
+                Some(editing) => editing,
+                None => match described(&mut info_rx, &halt).await {
+                    None => Editing::ReadOnly(ReadOnly::NoInfo(crate::i18n::t("error.info_stopped", &[]))),
+                    Some(info) => {
+                        // The key as column positions; no key (or a key column
+                        // not in the result) means read-only, with the reason shown.
+                        let r = results::lock(&set);
+                        let names: Vec<String> = info.as_ref().as_ref().map(TableInfo::key_columns).unwrap_or_default();
+                        let positions: Option<Vec<usize>> =
+                            names.iter().map(|n| r.columns.iter().position(|c| &c.name == n)).collect();
+                        match (info.as_ref(), positions) {
+                            (Err(e), _) => Editing::ReadOnly(ReadOnly::NoInfo(e.to_string())),
+                            // A write-back finds its row by the names of the key's columns and the values
+                            // the rows hold: where the description's names are not the rows', that is
+                            // another row, or another column.
+                            (Ok(described), _) if !described.describes(&r.columns) => {
+                                Editing::ReadOnly(ReadOnly::Changed)
+                            }
+                            (Ok(_), Some(key)) if !key.is_empty() => Editing::Editable(Box::new(EditTarget {
+                                connection: connection.clone(),
+                                config: opened_with.clone(),
+                                database: database.clone(),
+                                owner: table_owner(&owner),
+                                table: table.clone(),
+                                key,
+                                read_only: info
+                                    .as_ref()
+                                    .iter()
+                                    .flat_map(|i| &i.columns)
+                                    .filter(|c| c.generated)
+                                    .filter_map(|c| r.columns.iter().position(|rc| rc.name == c.name))
+                                    .collect(),
+                            })),
+                            _ => Editing::ReadOnly(ReadOnly::NoKey),
+                        }
+                    }
+                },
+            };
+            let result = {
+                let mut r = results::lock(&set);
+                r.editing = editing;
+                r.version += 1;
+                r.id
+            };
             results::changed(result);
             update_job(id, |_| {});
-        }
+        };
         // The row count, after the rows and while the job still runs, so Stop
         // reaches it too. It has a connection of its own: a slow `count(*)`
         // on a big table neither holds back editing nor queues a write-back.
-        if outcome.is_ok() && !job_cancelled(id) {
-            let total = count_rows(&connection, database.as_deref(), &owner, engine, &table, id).await;
-            if let (Some(total), Some(set)) = (total, sink.last.clone()) {
-                let result = {
-                    let mut r = results::lock(&set);
-                    r.total = Some(total);
-                    r.version += 1;
-                    r.id
-                };
-                results::changed(result);
+        let count = async {
+            if outcome.is_ok() && !job_cancelled(id) {
+                // The sidebar's connection is claimed before the count's, as it was when the description
+                // came first: on a login limited to two connections the count's place is the one the
+                // description needs, and the count (which can borrow the table's) is the one to go without.
+                let _ = select(Box::pin(held_rx), Box::pin(halt.called())).await;
+                if job_cancelled(id) {
+                    return;
+                }
+                let total = count_rows(&connection, database.as_deref(), &owner, engine, &table, id).await;
+                if let (Some(total), Some(set)) = (total, set.clone()) {
+                    let result = {
+                        let mut r = results::lock(&set);
+                        r.total = Some(total);
+                        r.version += 1;
+                        r.id
+                    };
+                    results::changed(result);
+                }
             }
-        }
+        };
+        futures_util::future::join(settle, count).await;
         finish_job(id, outcome, &mut sink);
     });
     id
+}
+
+/// The description of a table once it is in: what the job has by then,
+/// `None` if the job is stopped first (the sidebar's connection it waits on is
+/// not the job's to cancel, so it stops waiting instead).
+async fn described(info: &mut InfoRx, halt: &StandDown) -> Option<Info> {
+    if let Some(ready) = info.borrow().clone() {
+        return Some(ready);
+    }
+    let arrived = Box::pin(async {
+        match info.wait_for(Option::is_some).await {
+            Ok(ready) => ready.clone(),
+            // The task that was to read it is gone.
+            Err(_) => Some(Arc::new(Err(DbError::Io(crate::i18n::t("error.job_panicked", &[]))))),
+        }
+    });
+    match select(arrived, Box::pin(halt.called())).await {
+        Either::Left((info, _)) => info,
+        Either::Right(_) => None,
+    }
+}
+
+/// The description of the table `job` is opening, once it is in: the same one
+/// the job decides editing by, so a pane does not ask for it a second time on
+/// the same connection. A job the core no longer has is an error.
+pub async fn table_info(job: JobId) -> DbResult<TableInfo> {
+    let gone = || DbError::NotFound(crate::i18n::t("error.no_job", &[]));
+    let mut info = jobs().1.get(&job).and_then(|j| j.info.clone()).ok_or_else(gone)?;
+    let ready = match info.wait_for(Option::is_some).await {
+        Ok(ready) => ready.clone(),
+        Err(_) => return Err(DbError::Io(crate::i18n::t("error.job_panicked", &[]))),
+    };
+    match ready {
+        Some(described) => described.as_ref().clone(),
+        None => Err(gone()),
+    }
 }
 
 /// `count(*)` of `table`. It has a connection of its own (leased under
@@ -958,10 +1080,9 @@ impl RowSink for FirstCell {
 
 /// The row edits of a result, keyed by its primary key.
 pub fn row_edits(set: &ResultSet) -> DbResult<(EditTarget, Vec<RowEdit>)> {
-    let target = set
-        .target()
-        .cloned()
-        .ok_or_else(|| DbError::NotEditable(set.editing.blocked().unwrap_or_else(|| crate::i18n::t("edit.no_key", &[]))))?;
+    let target = set.target().cloned().ok_or_else(|| {
+        DbError::NotEditable(set.editing.blocked(set.complete).unwrap_or_else(|| crate::i18n::t("edit.no_key", &[])))
+    })?;
     let mut by_row: std::collections::BTreeMap<u32, Vec<(String, Cell)>> = Default::default();
     for ((row, column), value) in &set.edits {
         let name = set.columns.get(*column as usize).map(|c| c.name.clone()).unwrap_or_default();
@@ -1133,6 +1254,21 @@ mod tests {
         supersede("sink-test");
     }
 
+    /// A result's time is the statement's, from when it began: an engine that only knows the columns
+    /// once the statement has produced a row says when it began (`RowSink::started`) before that.
+    #[test]
+    fn a_result_counts_its_time_from_when_its_statement_began() {
+        let id = new_job("began-test");
+        let mut sink = JobSink::new(id, "began-test", "select 1");
+        let began = Instant::now().checked_sub(Duration::from_secs(1)).expect("the machine has been up for a second");
+        sink.started(began);
+        sink.columns(vec![Column::new("x", "int4")]);
+        sink.finish(None);
+        let elapsed = results::lock(sink.last.as_ref().unwrap()).elapsed_ms;
+        supersede("began-test");
+        assert!(elapsed >= 1000, "the result took {elapsed} ms of a statement that began a second before its columns");
+    }
+
     /// The stop is counted on its way under the lock `Serving` lets go of its
     /// stop under, which the job does before it lets go of the connection. The
     /// race this closes (the connection handed to the next work between the
@@ -1172,6 +1308,45 @@ mod tests {
         assert!(counting.stepped_aside());
         drop((tab_work, table_work, counting));
         pool().retain(|(connection, _, _), _| connection != "stand-down-test");
+    }
+
+    /// What a job waits for before it settles editing: the description once it is in (even if a
+    /// Stop came after), nothing once a Stop comes first, and the words for a reader that is gone.
+    #[test]
+    fn the_wait_for_a_description_ends_with_the_description_a_stop_or_the_reader_gone() {
+        let boom = || Arc::new(Err(DbError::NotFound("boom".into())));
+        runtime::block_on(async {
+            let patience = Duration::from_secs(5);
+
+            let (tx, mut rx) = tokio::sync::watch::channel::<Option<Info>>(None);
+            let halt = StandDown::new();
+            tx.send(Some(boom())).unwrap();
+            halt.call();
+            let got =
+                tokio::time::timeout(patience, described(&mut rx, &halt)).await.expect("a description that is in");
+            assert_eq!(got.as_deref(), Some(&Err(DbError::NotFound("boom".into()))), "what is in comes before a stop");
+
+            let (_held, mut rx) = tokio::sync::watch::channel::<Option<Info>>(None);
+            let halt = StandDown::new();
+            let (got, _) =
+                futures_util::future::join(tokio::time::timeout(patience, described(&mut rx, &halt)), async {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    halt.call();
+                })
+                .await;
+            assert_eq!(got.expect("a stop ends the wait"), None);
+
+            let (tx, mut rx) = tokio::sync::watch::channel::<Option<Info>>(None);
+            drop(tx);
+            let got = tokio::time::timeout(patience, described(&mut rx, &StandDown::new()))
+                .await
+                .expect("a reader that is gone");
+            assert_eq!(
+                got.as_deref(),
+                Some(&Err(DbError::Io(crate::i18n::t("error.job_panicked", &[])))),
+                "the task that was to read it is gone"
+            );
+        });
     }
 
     #[test]

@@ -108,6 +108,9 @@ export function databases(id: string): Promise<string[]>;
 export function objects(id: string, database: string | null): Promise<DbObject[]>;
 /** Columns, indexes, foreign keys and DDL of one object. */
 export function describe(id: string, database: string | null, object: ObjectRef): Promise<TableInfo>;
+/** The description of the table that job `job` (from `openTable`) is opening. It is read once, beside the rows,
+ * for that open and no other: ask for it with the job instead of with `describe`. Rejects when the job is gone. */
+export function tableInfo(job: number): Promise<TableInfo>;
 /** Starts `sql` (one statement or a script) on `owner`'s connection; returns the job id. */
 export function query(id: string, database: string | null, owner: string, sql: string): number;
 /** Starts reading a table's rows (editable when it has a primary key); returns the job id. */
@@ -258,6 +261,10 @@ pub fn host_module() -> HostModule {
             let database = opt_string(a, 1);
             let object = object_ref(a, 2)?;
             Ok(spawn(async move { session::describe(&id, database.as_deref(), &object).await }))
+        })
+        .async_function("tableInfo", |a| {
+            let job = a.integer(0)? as u64;
+            Ok(spawn(async move { session::table_info(job).await }))
         })
         .function("query", |a| {
             let job = session::start_query(a.string(0)?, opt_string(a, 1).as_deref(), a.string(2)?, a.string(3)?);

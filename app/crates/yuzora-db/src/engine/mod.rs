@@ -14,7 +14,7 @@ mod tls;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::{ConnectionConfig, Engine};
 use crate::error::DbResult;
@@ -70,6 +70,9 @@ impl ConnectSpec {
 
 /// Receives what one `execute` produces, statement by statement.
 pub trait RowSink: Send {
+    /// A statement that returns rows began at `at`, before the engine knows what it returns. The
+    /// result its `columns` start counts its time from `at`.
+    fn started(&mut self, _at: Instant) {}
     /// A statement that returns rows starts; `columns` describe them.
     fn columns(&mut self, columns: Vec<Column>);
     /// More rows of that statement. `false` asks the engine to stop reading

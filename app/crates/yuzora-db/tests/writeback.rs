@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use yuzora_db::config::{self, ConnectionConfig};
 use yuzora_db::error::DbError;
-use yuzora_db::model::{Cell, ObjectRef};
+use yuzora_db::model::{Cell, ObjectRef, TableInfo};
 use yuzora_db::session::{self, JobId, JobState};
 use yuzora_db::{results, runtime};
 
@@ -565,44 +565,26 @@ fn every_result_that_cannot_be_edited_says_why() {
 
 // ---------------------------------------------------------------- editing before the count
 
-/// When a table's rows were all in (the cap was hit), when it became
-/// editable, and when its `count(*)` came in.
-struct Timeline {
-    editable: Option<Duration>,
-    total: Option<Duration>,
-    rows: usize,
-    truncated: bool,
-}
-
-fn observe(job: JobId) -> Timeline {
-    let started = Instant::now();
-    let mut line = Timeline { editable: None, total: None, rows: 0, truncated: false };
-    loop {
-        std::thread::sleep(Duration::from_millis(1));
-        let at = started.elapsed();
-        let state = session::job_state(job).expect("job");
-        if let Some(first) = state.results.first() {
-            let summary = results::lock(&results::get(first.id).expect("result")).summary();
-            (line.rows, line.truncated) = (summary.rows, summary.truncated);
-            if summary.editable && line.editable.is_none() {
-                line.editable = Some(at);
-            }
-            if summary.total.is_some() && line.total.is_none() {
-                line.total = Some(at);
-            }
-        }
-        if !state.running {
-            return line;
-        }
-        assert!(at < Duration::from_secs(120), "table still loading after 120 s");
-    }
-}
-
+/// The count has its connection held by hand, so it cannot have started: what
+/// the rows are does not wait for it, however long it takes. (Which comes
+/// first when nothing holds the count back depends on whether the count or
+/// the table's description is quicker.)
 fn editable_before_the_count(connection: &str, t: ObjectRef) {
-    let line = observe(session::open_table(connection, None, &owner(connection, "big-pane"), &t, None));
-    assert_eq!((line.rows, line.truncated), (CAP, true), "the table is bigger than the cap");
-    let (editable, total) = (line.editable.expect("editable at the end"), line.total.expect("a count"));
-    assert!(editable < total, "editable only at {editable:?}, when the count was already in at {total:?}");
+    let pane_owner = owner(connection, "big-pane");
+    let held = runtime::block_on(session::lease(connection, None, &session::count_owner(&pane_owner))).unwrap();
+    let job = session::open_table(connection, None, &pane_owner, &t, None);
+    let set = editable_result(job);
+    let (rows, truncated, total) = {
+        let r = results::lock(&set);
+        (r.rows.len(), r.truncated, r.total)
+    };
+    assert_eq!((rows, truncated), (CAP, true), "the table is bigger than the cap");
+    assert_eq!(total, None, "the count is still out");
+    assert!(session::job_state(job).unwrap().running, "the job is still counting");
+    drop(held);
+    let state = within(Duration::from_secs(120), "the count after it was let go", move || wait(job));
+    assert_eq!(state.error, None);
+    assert!(results::lock(&set).total.is_some_and(|n| n > CAP as u64), "the count came");
 }
 
 #[test]
@@ -694,6 +676,808 @@ fn sqlite_a_count_that_was_stopped_never_runs() {
     let state = wait(job);
     assert!(state.cancelled, "{state:?}");
     assert_eq!(results::lock(&results::get(found.unwrap()).unwrap()).total, None, "a stopped job does not count");
+}
+
+// ---------------------------------------------------------------- the rows do not wait for the table's description
+
+/// What the table's description (its key, in particular) is waiting for: the
+/// sidebar's connection, held here by hand. The rows are read on the pane's
+/// own connection and show at once; what they are, editable or not, is
+/// settled when the description is in.
+#[test]
+fn sqlite_the_rows_show_while_the_tables_description_is_still_out_and_are_editable_once_it_is_in() {
+    let (id, _) = sqlite_connection("wb-info-late");
+    run(
+        &id,
+        "setup",
+        "create table people(id integer primary key, name text); insert into people values (1, 'a'), (2, 'b');",
+    );
+    let held = runtime::block_on(session::lease(&id, None, session::META)).unwrap();
+
+    let job = session::open_table(&id, None, &owner(&id, "info-late-pane"), &table("", "people"), None);
+    let mut found = None;
+    until("the rows never showed while the description was out", || {
+        found =
+            session::job_state(job).and_then(|s| s.results.first().filter(|r| r.rows == 2 && r.complete).map(|r| r.id));
+        found.is_some()
+    });
+    let set = results::get(found.unwrap()).unwrap();
+    assert_eq!(results::lock(&set).editing, results::Editing::Loading, "what the rows are is not known yet");
+    assert!(session::job_state(job).unwrap().running, "the job is not over before the description is in");
+
+    drop(held);
+    let state = wait(job);
+    assert_eq!(state.error, None);
+    assert!(results::lock(&set).editable(), "{:?}", results::lock(&set).editing);
+    assert_eq!(results::lock(&set).total, Some(2));
+}
+
+/// A Stop pressed while the description is out ends the job at once: the
+/// sidebar's connection is not the pane's to cancel, so the rows stay, read-only,
+/// and the reason says why.
+#[test]
+fn sqlite_a_stop_while_the_tables_description_is_out_ends_the_job_without_waiting_for_it() {
+    let (id, _) = sqlite_connection("wb-info-stop");
+    run(&id, "setup", "create table people(id integer primary key, name text); insert into people values (1, 'a');");
+    let held = runtime::block_on(session::lease(&id, None, session::META)).unwrap();
+
+    let job = session::open_table(&id, None, &owner(&id, "info-stop-pane"), &table("", "people"), None);
+    let mut found = None;
+    until("the rows never showed while the description was out", || {
+        found =
+            session::job_state(job).and_then(|s| s.results.first().filter(|r| r.rows == 1 && r.complete).map(|r| r.id));
+        found.is_some()
+    });
+    session::cancel(job);
+    let state = within(Duration::from_secs(5), "the Stop ending the job", move || wait(job));
+    assert!(state.cancelled && state.error.is_none(), "{state:?}");
+    let set = results::get(found.unwrap()).unwrap();
+    let reason = results::lock(&set).read_only_reason().expect("read-only, with a reason");
+    assert!(reason.contains("stopped"), "{reason}");
+    drop(held);
+}
+
+/// The pane's Structure tab asks the job that reads the rows, not the sidebar's
+/// connection a second time.
+#[test]
+fn sqlite_the_description_is_the_one_the_job_that_reads_the_rows_got() {
+    let (id, _) = sqlite_connection("wb-info-api");
+    run(
+        &id,
+        "setup",
+        "create table people(id integer primary key, name text not null); insert into people values (1, 'a');",
+    );
+    let pane_owner = owner(&id, "info-api-pane");
+    let job = session::open_table(&id, None, &pane_owner, &table("", "people"), None);
+    let info = runtime::block_on(session::table_info(job)).unwrap();
+    assert_eq!(info.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "name"]);
+    assert_eq!(info.key_columns(), ["id"]);
+    assert!(info.ddl.contains("people"), "{}", info.ddl);
+    wait(job);
+    assert_eq!(runtime::block_on(session::table_info(job)).unwrap(), info, "asked again once the job is over");
+
+    let missing = session::open_table(&id, None, &pane_owner, &table("", "nobody"), None);
+    match runtime::block_on(session::table_info(missing)) {
+        Err(DbError::NotFound(why)) => assert!(why.contains("nobody"), "the engine's own reason: {why}"),
+        other => panic!("a table that is not there has no description, and says why: {other:?}"),
+    }
+    wait(missing);
+
+    session::open_table(&id, None, &pane_owner, &table("", "people"), None);
+    assert!(
+        matches!(runtime::block_on(session::table_info(missing)), Err(DbError::NotFound(_))),
+        "a job the pane moved on from is gone"
+    );
+    assert!(matches!(runtime::block_on(session::table_info(u64::MAX)), Err(DbError::NotFound(_))));
+}
+
+/// The rows of a table the engine reads but cannot describe (SQLite's own catalog has no row for
+/// itself) show, read-only, and the reason is the engine's own: the one the Structure tab is given.
+#[test]
+fn sqlite_a_table_that_cannot_be_described_shows_its_rows_read_only_and_says_why_in_both_places() {
+    let (id, _) = sqlite_connection("wb-info-failed");
+    run(&id, "setup", "create table people(id integer primary key); insert into people values (1);");
+    let job = session::open_table(&id, None, &owner(&id, "info-failed-pane"), &table("", "sqlite_master"), None);
+    let asked = runtime::block_on(session::table_info(job));
+    let state = wait(job);
+    assert_eq!(state.error, None);
+    let summary = &state.results[0];
+    assert!(summary.rows > 0 && summary.complete, "the rows of a table that cannot be described show: {summary:?}");
+    assert!(!summary.editable);
+    let why = match asked {
+        Err(DbError::NotFound(why)) if why.contains("sqlite_master") => why,
+        other => panic!("the Structure tab was not told why: {other:?}"),
+    };
+    let reason = results::lock(&results::get(summary.id).unwrap()).read_only_reason().expect("a reason");
+    assert!(reason.contains("could not read the table's key") && reason.contains(&why), "{reason}");
+}
+
+/// A job whose connection is gone never gets as far as a description: the Structure tab is told what
+/// the job ends with, not that a driver failed.
+#[test]
+fn a_table_of_a_connection_that_is_gone_ends_with_the_reason_and_tells_the_structure_tab_the_same() {
+    LazyLock::force(&HOME);
+    let job =
+        session::open_table("wb-no-such-connection", None, "gone-pane@wb-no-such-connection", &table("", "t"), None);
+    let asked = runtime::block_on(session::table_info(job));
+    let ended = wait(job).error.expect("the job says why it could not start");
+    assert!(ended.contains("wb-no-such-connection"), "{ended}");
+    assert_eq!(asked.map(|_| ()).unwrap_err().to_string(), ended);
+}
+
+// ---------------------------------------------------------------- a refresh reads the key the table has now
+
+/// Nothing about a table is kept from one open to the next: a refresh asks
+/// again, so edits are matched by the key the table has now, not the one it had.
+#[test]
+fn sqlite_a_refresh_after_the_primary_key_moved_writes_by_the_new_key_and_by_none_once_it_is_gone() {
+    let (id, _) = sqlite_connection("wb-key-moved");
+    run(
+        &id,
+        "setup",
+        "create table t(id integer primary key, code text, v text); insert into t values (1, 'x', 'a'), (2, 'x', 'b');",
+    );
+    let key_of = |pane: &Opened| -> Vec<String> {
+        let r = results::lock(&pane.set);
+        r.target().map(|t| t.key.iter().map(|k| r.columns[*k].name.clone()).collect()).unwrap_or_default()
+    };
+
+    let pane = open(&id, "key-moved-pane", &table("", "t"));
+    assert_eq!(key_of(&pane), ["id"]);
+
+    run(
+        &id,
+        "ddl",
+        "drop table t; create table t(id integer, code text, v text primary key); insert into t values (1, 'x', 'a'), (2, 'x', 'b');",
+    );
+    let pane = open(&id, "key-moved-pane", &table("", "t"));
+    assert_eq!(key_of(&pane), ["v"], "the refresh read the key the table has now");
+    pane.edit(pane.row_where("v", "b"), "code", Some("changed"));
+    assert_eq!(runtime::block_on(session::write_back_set(&pane.set)), Ok(1));
+    assert_eq!(rows(&id, "select id, code, v from t order by id"), [["1", "x", "a"], ["2", "changed", "b"]]);
+
+    run(&id, "ddl", "drop table t; create table t(id integer, code text, v text); insert into t values (1, 'x', 'a');");
+    let pane = open(&id, "key-moved-pane", &table("", "t"));
+    assert!(!pane.summary().editable, "a table without a key is not editable");
+    assert!(results::lock(&pane.set).read_only_reason().is_some_and(|r| r.contains("no primary key")));
+}
+
+// ---------------------------------------------------------------- the rows and the description are of one table
+
+/// The rows of `table`, as text, in a fixed order, whatever its columns are called by now.
+fn stored(connection: &str, table: &str) -> Vec<Vec<String>> {
+    let mut all = rows(connection, &format!("select * from {table}"));
+    all.sort();
+    all
+}
+
+/// `t` opened with its description out (the sidebar's connection is held here by hand): once its
+/// `rows` rows are read, `ddl` runs, and then the description is let in and the job ends. The rows
+/// are older than the description by a change of the table.
+fn rows_older_than_their_description(
+    connection: &str,
+    pane: &str,
+    t: &ObjectRef,
+    rows: usize,
+    ddl: &str,
+) -> std::sync::Arc<std::sync::Mutex<results::ResultSet>> {
+    let held = runtime::block_on(session::lease(connection, None, session::META)).unwrap();
+    let job = session::open_table(connection, None, &owner(connection, pane), t, None);
+    let mut found = None;
+    until("the rows never showed while the description was out", || {
+        found = session::job_state(job)
+            .and_then(|s| s.results.first().filter(|r| r.rows == rows && r.complete).map(|r| r.id));
+        found.is_some()
+    });
+    run(connection, "ddl", ddl);
+    drop(held);
+    assert_eq!(wait(job).error, None);
+    results::get(found.unwrap()).unwrap()
+}
+
+/// The rows of `t` (id, code, v: `1, 2, x` and `2, 1, y`) are older than its description by a rename
+/// of columns: they carry the names they were read under and the description the names the table has
+/// now, and a write-back that goes by both finds another row than the one the person edited. It has
+/// to write nothing, and the result has to say why.
+fn rows_older_than_the_names_in_their_description(connection: &str, pane: &str, t: &ObjectRef, ddl: &str) {
+    let name = qualified(t, connection);
+    let before = stored(connection, &name);
+    assert_eq!(before, [["1", "2", "x"], ["2", "1", "y"]]);
+
+    let set = rows_older_than_their_description(connection, pane, t, 2, ddl);
+    let (row, column) = {
+        let r = results::lock(&set);
+        let v = r.columns.iter().position(|c| c.name == "v").expect("the rows were read under the name v");
+        (r.rows.iter().position(|row| row[v].display() == "x").unwrap(), v)
+    };
+    results::lock(&set).set_edit(row, column, Cell::text("CHANGED"));
+    let written = runtime::block_on(session::write_back_set(&set));
+    assert_eq!(stored(connection, &name), before, "the write-back changed what the person did not edit ({written:?})");
+    assert!(matches!(written, Err(DbError::NotEditable(_))), "{written:?}");
+    let r = results::lock(&set);
+    assert!(!r.editable(), "{:?}", r.editing);
+    let why = r.read_only_reason().expect("read-only, with a reason");
+    assert!(why.contains("changed"), "{why}");
+}
+
+/// `ALTER TABLE … RENAME COLUMN` for each of `renames`, in order, in the words of `engine`.
+fn rename_columns(engine: &str, t: &str, renames: &[(&str, &str)]) -> String {
+    renames
+        .iter()
+        .map(|(from, to)| match engine {
+            "mssql" => format!("EXEC sp_rename N'{t}.{from}', N'{to}', N'COLUMN';"),
+            _ => format!("ALTER TABLE {t} RENAME COLUMN {from} TO {to};"),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `id` and `code` exchange their names.
+const EXCHANGED: &[(&str, &str)] = &[("id", "tmp"), ("code", "id"), ("tmp", "code")];
+/// `id` is called `code` from now on, and `code` is called `k`.
+const MOVED: &[(&str, &str)] = &[("code", "k"), ("id", "code")];
+
+fn sqlite_rows_older_than_their_names(name: &str, renames: &[(&str, &str)]) {
+    let (id, _) = sqlite_connection(name);
+    run(
+        &id,
+        "setup",
+        "create table t(id integer primary key, code text, v text); insert into t values (1, '2', 'x'), (2, '1', 'y');",
+    );
+    rows_older_than_the_names_in_their_description(
+        &id,
+        "renamed-pane",
+        &table("", "t"),
+        &rename_columns("sqlite", "t", renames),
+    );
+}
+
+fn postgres_rows_older_than_their_names(name: &str, renames: &[(&str, &str)]) {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new(&format!("yz_wb_{name}_o2"));
+    let id = scratch.connection();
+    run(
+        &id,
+        "setup",
+        "CREATE TABLE public.t(id int PRIMARY KEY, code text, v text); INSERT INTO public.t VALUES (1, '2', 'x'), (2, '1', 'y');",
+    );
+    rows_older_than_the_names_in_their_description(
+        &id,
+        "renamed-pane",
+        &table("public", "t"),
+        &rename_columns("postgres", "public.t", renames),
+    );
+}
+
+fn mssql_rows_older_than_their_names(name: &str, renames: &[(&str, &str)]) {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new(&format!("yz_wb_{name}_o2"));
+    let id = scratch.connection();
+    run(
+        &id,
+        "setup",
+        "CREATE TABLE dbo.t(id int PRIMARY KEY, code nvarchar(10), v nvarchar(10)); INSERT INTO dbo.t VALUES (1, N'2', N'x'), (2, N'1', N'y');",
+    );
+    rows_older_than_the_names_in_their_description(
+        &id,
+        "renamed-pane",
+        &table("dbo", "t"),
+        &rename_columns("mssql", "dbo.t", renames),
+    );
+}
+
+#[test]
+fn sqlite_rows_read_before_two_columns_exchanged_names_are_not_written_back() {
+    sqlite_rows_older_than_their_names("wb-exchanged", EXCHANGED);
+}
+
+#[test]
+fn sqlite_rows_read_before_the_key_column_took_another_name_are_not_written_back() {
+    sqlite_rows_older_than_their_names("wb-moved", MOVED);
+}
+
+#[test]
+fn postgres_rows_read_before_two_columns_exchanged_names_are_not_written_back() {
+    postgres_rows_older_than_their_names("exchanged", EXCHANGED);
+}
+
+#[test]
+fn postgres_rows_read_before_the_key_column_took_another_name_are_not_written_back() {
+    postgres_rows_older_than_their_names("moved", MOVED);
+}
+
+#[test]
+fn mssql_rows_read_before_two_columns_exchanged_names_are_not_written_back() {
+    mssql_rows_older_than_their_names("exchanged", EXCHANGED);
+}
+
+#[test]
+fn mssql_rows_read_before_the_key_column_took_another_name_are_not_written_back() {
+    mssql_rows_older_than_their_names("moved", MOVED);
+}
+
+/// Rows that name a column the table no longer has are not the table's: whatever else they agree on,
+/// nothing can be said about which row or column an edit of them means, so they are read-only.
+#[test]
+fn sqlite_rows_read_before_a_column_was_dropped_are_read_only() {
+    let (id, _) = sqlite_connection("wb-dropped-under");
+    run(
+        &id,
+        "setup",
+        "create table t(id integer primary key, x text, y text, z text); insert into t values (1, 'x1', 'y1', 'z1');",
+    );
+    let set =
+        rows_older_than_their_description(&id, "dropped-under-pane", &table("", "t"), 1, "alter table t drop column x");
+    let r = results::lock(&set);
+    assert_eq!(
+        r.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["id", "x", "y", "z"],
+        "the rows are the old ones"
+    );
+    assert!(!r.editable(), "{:?}", r.editing);
+    let why = r.read_only_reason().expect("read-only, with a reason");
+    assert!(why.contains("changed"), "{why}");
+}
+
+/// Tables a person edits every day whose `SELECT *` and description do not list the same columns in
+/// the same way (a dropped column, a generated one, a hidden one, one folded into a column set, names
+/// with spaces and capitals). The rows are of the table they were read from: the check that the
+/// rows and the description are of one table must not take any of them for another.
+/// Each is (table, a text column to edit).
+fn tables_with_columns_of_their_own_stay_editable(connection: &str, schema: &str, tables: &[(&str, &str)]) {
+    let mut failed = Vec::new();
+    for (n, (name, column)) in tables.iter().enumerate() {
+        let pane_owner = owner(connection, &format!("ordinary-pane-{n}"));
+        let state = wait(session::open_table(connection, None, &pane_owner, &table(schema, name), None));
+        if let Some(error) = state.error {
+            failed.push(format!("{name}: did not open ({error})"));
+            continue;
+        }
+        let summary = &state.results[0];
+        if !summary.editable {
+            failed.push(format!("{name}: not editable ({:?})", summary.not_editable));
+            continue;
+        }
+        let pane = Opened { owner: pane_owner, id: summary.id, set: results::get(summary.id).expect("result") };
+        let value = format!("changed {n}");
+        pane.edit(0, column, Some(&value));
+        match runtime::block_on(session::write_back_set(&pane.set)) {
+            Ok(1) => {}
+            other => failed.push(format!("{name}: the write-back came to {other:?}")),
+        }
+        let again = open(connection, &format!("ordinary-pane-{n}"), &table(schema, name));
+        let at = again.column(column);
+        let shown = results::lock(&again.set).rows[0][at].display().into_owned();
+        if shown != value {
+            failed.push(format!("{name}: {column} reads {shown:?} after the write-back"));
+        }
+        session::release_owner(&pane.owner);
+    }
+    assert!(failed.is_empty(), "{} of {} tables:\n{}", failed.len(), tables.len(), failed.join("\n"));
+}
+
+/// A view has no primary key; that is what it says, not that the table changed.
+fn views_say_they_have_no_key(connection: &str, schema: &str, views: &[&str]) {
+    for (n, name) in views.iter().enumerate() {
+        let state = wait(session::open_table(
+            connection,
+            None,
+            &owner(connection, &format!("view-pane-{n}")),
+            &table(schema, name),
+            None,
+        ));
+        assert_eq!(state.error, None, "{name}");
+        let summary = &state.results[0];
+        assert!(!summary.editable, "{name}");
+        let why = summary.not_editable.clone().unwrap_or_default();
+        assert!(why.contains("no primary key"), "{name}: {why}");
+    }
+}
+
+#[test]
+fn sqlite_tables_with_columns_of_their_own_stay_editable() {
+    let (id, _) = sqlite_connection("wb-own-columns");
+    run(
+        &id,
+        "setup",
+        "create table dropped(id integer primary key, gone text, v text); insert into dropped values (1, 'g', 'a');
+         alter table dropped drop column gone;
+         create table gen(id integer primary key, a int, b int generated always as (a * 2) stored, c int as (a + 1), v text);
+         insert into gen (id, a, v) values (1, 2, 'a');
+         create table \"Mixed Case\"(\"Id\" integer primary key, \"Some Col\" text, \"ünï\" text);
+         insert into \"Mixed Case\" values (1, 'a', 'b');
+         create table plain(a int, v text, b int, primary key (b, a)) without rowid; insert into plain values (1, 'a', 2);
+         create view seen as select id, v || '!' as w, id from dropped;",
+    );
+    tables_with_columns_of_their_own_stay_editable(
+        &id,
+        "",
+        &[("dropped", "v"), ("gen", "v"), ("Mixed Case", "Some Col"), ("Mixed Case", "ünï"), ("plain", "v")],
+    );
+    views_say_they_have_no_key(&id, "", &["seen"]);
+}
+
+#[test]
+fn postgres_tables_with_columns_of_their_own_stay_editable() {
+    only_with!("postgres");
+    let scratch = PgScratchDatabase::new("yz_wb_own_o2");
+    let id = scratch.connection();
+    run(
+        &id,
+        "setup",
+        "CREATE TABLE dropped(id int PRIMARY KEY, gone text, v text); INSERT INTO dropped VALUES (1, 'g', 'a');
+         ALTER TABLE dropped DROP COLUMN gone;
+         CREATE TABLE gen(id int PRIMARY KEY, a int, b int GENERATED ALWAYS AS (a * 2) STORED, v text);
+         INSERT INTO gen (id, a, v) VALUES (1, 2, 'a');
+         CREATE TABLE ident(id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, v text); INSERT INTO ident (v) VALUES ('a');
+         CREATE TABLE \"Mixed Case\"(\"Id\" int PRIMARY KEY, \"Some Col\" text, \"ünï\" text); INSERT INTO \"Mixed Case\" VALUES (1, 'a', 'b');
+         CREATE TABLE plain(a int, v text, b int, PRIMARY KEY (b, a)); INSERT INTO plain VALUES (1, 'a', 2);
+         CREATE VIEW seen AS SELECT id, v || '!' AS w FROM dropped;
+         CREATE TABLE part(id int, v text, PRIMARY KEY (id)) PARTITION BY RANGE (id);
+         CREATE TABLE part_1 PARTITION OF part FOR VALUES FROM (0) TO (100); INSERT INTO part VALUES (1, 'a');
+         CREATE TABLE base(id int PRIMARY KEY, v text); CREATE TABLE kid(extra int) INHERITS (base);
+         INSERT INTO base VALUES (1, 'a'); INSERT INTO kid VALUES (2, 'b', 3);
+         CREATE MATERIALIZED VIEW mat AS SELECT id, v FROM base;",
+    );
+    tables_with_columns_of_their_own_stay_editable(
+        &id,
+        "public",
+        &[
+            ("dropped", "v"),
+            ("gen", "v"),
+            ("ident", "v"),
+            ("Mixed Case", "Some Col"),
+            ("Mixed Case", "ünï"),
+            ("plain", "v"),
+            ("part", "v"),
+            ("part_1", "v"),
+            ("base", "v"),
+        ],
+    );
+    views_say_they_have_no_key(&id, "public", &["seen", "mat"]);
+}
+
+#[test]
+fn mssql_tables_with_columns_of_their_own_stay_editable() {
+    only_with!("mssql");
+    let scratch = ScratchDatabase::new("yz_wb_own_o2");
+    let id = scratch.connection();
+    run(
+        &id,
+        "setup",
+        "CREATE TABLE dbo.computed(id int PRIMARY KEY, a int, b AS (a * 2) PERSISTED, v nvarchar(10)); INSERT INTO dbo.computed (id, a, v) VALUES (1, 2, N'a');
+         CREATE TABLE dbo.ident(id int IDENTITY PRIMARY KEY, v nvarchar(10)); INSERT INTO dbo.ident (v) VALUES (N'a');
+         CREATE TABLE dbo.[Mixed Case]([Id] int PRIMARY KEY, [Some Col] nvarchar(10), [ünï] nvarchar(10)); INSERT INTO dbo.[Mixed Case] VALUES (1, N'a', N'b');
+         CREATE TABLE dbo.plain(a int, v nvarchar(10), b int, PRIMARY KEY (b, a)); INSERT INTO dbo.plain VALUES (1, N'a', 2);
+         CREATE TABLE dbo.temporal(id int NOT NULL PRIMARY KEY CLUSTERED, v nvarchar(10),
+             ValidFrom datetime2 GENERATED ALWAYS AS ROW START HIDDEN NOT NULL, ValidTo datetime2 GENERATED ALWAYS AS ROW END HIDDEN NOT NULL,
+             PERIOD FOR SYSTEM_TIME (ValidFrom, ValidTo)) WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = dbo.temporal_history));
+         INSERT INTO dbo.temporal (id, v) VALUES (1, N'a');
+         CREATE TABLE dbo.sparse(id int PRIMARY KEY, s1 int SPARSE NULL, s2 nvarchar(10) SPARSE NULL, cs xml COLUMN_SET FOR ALL_SPARSE_COLUMNS, v nvarchar(10));
+         INSERT INTO dbo.sparse (id, v) VALUES (1, N'a');
+         CREATE TABLE dbo.ledger(id int NOT NULL PRIMARY KEY CLUSTERED, v nvarchar(10)) WITH (SYSTEM_VERSIONING = ON, LEDGER = ON);
+         INSERT INTO dbo.ledger VALUES (1, N'a');
+         CREATE TABLE dbo.versioned(id int PRIMARY KEY, v nvarchar(10), rv rowversion); INSERT INTO dbo.versioned (id, v) VALUES (1, N'a');\nGO\n\
+         CREATE VIEW dbo.seen AS SELECT id, v + N'!' AS w FROM dbo.ident",
+    );
+    tables_with_columns_of_their_own_stay_editable(
+        &id,
+        "dbo",
+        &[
+            ("computed", "v"),
+            ("ident", "v"),
+            ("Mixed Case", "Some Col"),
+            ("Mixed Case", "ünï"),
+            ("plain", "v"),
+            ("temporal", "v"),
+            ("sparse", "v"),
+            ("ledger", "v"),
+            ("versioned", "v"),
+        ],
+    );
+    views_say_they_have_no_key(&id, "dbo", &["seen"]);
+}
+
+// ---------------------------------------------------------------- a login that may only read and write the table
+
+/// A SQL Server login that reads and writes the tables of a database of its own and has no other
+/// permission: it cannot see the types its columns are made of, nor how a column is computed.
+/// The database goes first, then the login.
+struct ReaderWriterLogin {
+    scratch: ScratchDatabase,
+    login: String,
+}
+
+impl ReaderWriterLogin {
+    fn new(database: &str) -> Self {
+        let scratch = ScratchDatabase::new(database);
+        let login = ReaderWriterLogin { login: format!("{database}_login"), scratch };
+        login.drop_login();
+        let name = &login.login;
+        run(
+            &login.scratch.master,
+            "login",
+            &format!("CREATE LOGIN {name} WITH PASSWORD = N'{LOGIN_PASSWORD}', CHECK_POLICY = OFF"),
+        );
+        run(
+            &login.scratch.connection(),
+            "login",
+            &format!(
+                "CREATE USER {name} FOR LOGIN {name}; ALTER ROLE db_datareader ADD MEMBER {name}; ALTER ROLE db_datawriter ADD MEMBER {name}"
+            ),
+        );
+        login
+    }
+
+    fn connection(&self) -> String {
+        save(
+            json!({"name": format!("ms-login-{}", self.login), "engine": "mssql", "host": "127.0.0.1", "port": 51433,
+                   "user": self.login, "database": self.scratch.name, "ssl": "prefer"}),
+            Some(LOGIN_PASSWORD),
+        )
+    }
+
+    fn drop_login(&self) {
+        let name = &self.login;
+        quietly(
+            &self.scratch.master,
+            &format!(
+                "DECLARE @k nvarchar(max) = N''; \
+                 SELECT @k += N'KILL ' + CAST(session_id AS nvarchar(10)) + N'; ' FROM sys.dm_exec_sessions WHERE login_name = N'{name}'; \
+                 EXEC (@k); \
+                 IF SUSER_ID(N'{name}') IS NOT NULL DROP LOGIN {name}"
+            ),
+        );
+    }
+}
+
+impl Drop for ReaderWriterLogin {
+    fn drop(&mut self) {
+        self.scratch.drop_it();
+        self.drop_login();
+    }
+}
+
+fn described(connection: &str, t: &ObjectRef) -> TableInfo {
+    runtime::block_on(session::describe(connection, None, t)).expect("the description")
+}
+
+/// What a column is called in the description, in order.
+fn column_names(info: &TableInfo) -> Vec<&str> {
+    info.columns.iter().map(|c| c.name.as_str()).collect()
+}
+
+/// A column of a type the login may not see is a column of the table all the same: the
+/// description lists it, the rows are of that table, and the table is editable and saves.
+#[test]
+fn mssql_a_login_that_cannot_see_the_type_of_a_column_still_edits_and_saves_the_table() {
+    only_with!("mssql");
+    let login = ReaderWriterLogin::new("yz_wb_alias_o3");
+    let full = login.scratch.connection();
+    run(
+        &full,
+        "setup",
+        "CREATE TYPE dbo.Code FROM nvarchar(10) NOT NULL;\nGO\nCREATE TYPE dbo.Amount FROM decimal(9, 2) NULL;\nGO\n\
+         CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, code dbo.Code, amt dbo.Amount, v nvarchar(10) NOT NULL DEFAULT N'x',
+             CONSTRAINT ck_amt CHECK (amt > 0));
+         INSERT INTO dbo.t (id, code, amt, v) VALUES (1, N'c1', 1.5, N'a'), (2, N'c2', 2.5, N'b');\nGO\n\
+         CREATE VIEW dbo.vw AS SELECT id, v FROM dbo.t",
+    );
+    let limited = login.connection();
+    let t = table("dbo", "t");
+
+    let pane = open(&limited, "alias-pane", &t);
+    let summary = pane.summary();
+    assert!(summary.editable, "not editable: {:?}", summary.not_editable);
+    let row = pane.row_where("id", "1");
+    pane.edit(row, "code", Some("c1-new"));
+    pane.edit(row, "v", Some("v-new"));
+    assert_eq!(runtime::block_on(session::write_back_set(&pane.set)), Ok(1));
+    assert_eq!(rows(&full, "SELECT code, v FROM dbo.t ORDER BY id"), [["c1-new", "v-new"], ["c2", "b"]]);
+
+    let (seen, whole) = (described(&limited, &t), described(&full, &t));
+    assert_eq!(column_names(&seen), ["id", "code", "amt", "v"]);
+    assert_eq!(column_names(&whole), column_names(&seen));
+    for (a, b) in seen.columns.iter().zip(&whole.columns) {
+        assert_eq!((a.nullable, a.primary_key, a.generated), (b.nullable, b.primary_key, b.generated), "{}", a.name);
+    }
+    let types: Vec<_> = seen.columns.iter().map(|c| c.type_name.as_str()).collect();
+    assert_eq!(types, ["int", "nvarchar(10)", "decimal(9,2)", "nvarchar(10)"]);
+    assert_eq!(seen.key_columns(), ["id"]);
+    assert!(seen.ddl.contains("[code] nvarchar(10) NOT NULL"), "{}", seen.ddl);
+    assert!(seen.ddl.contains("[amt] decimal(9,2) NULL"), "{}", seen.ddl);
+
+    // What the login may not see (the CHECK's text, the view's body) is empty in its Structure tab, not an error.
+    assert!(seen.ddl.contains("CONSTRAINT [ck_amt] CHECK"), "{}", seen.ddl);
+    let view = described(&limited, &table("dbo", "vw"));
+    assert_eq!((column_names(&view), view.ddl.as_str()), (vec!["id", "v"], ""));
+}
+
+/// How a column is computed is not something the login may see, that it is computed is: the
+/// grid does not offer the column for editing, as it does not for a login that sees the expression.
+#[test]
+fn mssql_a_login_that_cannot_see_how_a_column_is_computed_still_cannot_edit_it() {
+    only_with!("mssql");
+    let login = ReaderWriterLogin::new("yz_wb_computed_o3");
+    let full = login.scratch.connection();
+    run(
+        &full,
+        "setup",
+        "CREATE TABLE dbo.t(id int NOT NULL PRIMARY KEY, a int NOT NULL, b AS (a * 2) PERSISTED, v nvarchar(10) NOT NULL);
+         INSERT INTO dbo.t (id, a, v) VALUES (1, 2, N'a');",
+    );
+    let limited = login.connection();
+    let t = table("dbo", "t");
+
+    let pane = open(&limited, "computed-pane", &t);
+    assert!(pane.summary().editable, "not editable: {:?}", pane.summary().not_editable);
+    let (a, b, v) = (pane.column("a"), pane.column("b"), pane.column("v"));
+    {
+        let r = results::lock(&pane.set);
+        assert!(!r.column_editable(b), "the computed column is offered for editing");
+        assert!(r.column_editable(a) && r.column_editable(v));
+    }
+    pane.edit(0, "v", Some("v-new"));
+    assert_eq!(runtime::block_on(session::write_back_set(&pane.set)), Ok(1));
+    assert_eq!(rows(&full, "SELECT a, b, v FROM dbo.t"), [["2", "4", "v-new"]]);
+    for (seen, whole) in described(&limited, &t).columns.iter().zip(&described(&full, &t).columns) {
+        assert_eq!(seen.generated, whole.generated, "{}", seen.name);
+    }
+}
+
+/// A role dropped when the test ends, whatever happened: it goes after the database it was
+/// granted on, which is why it is the second field.
+struct PgRoleOnDatabase {
+    database: PgScratchDatabase,
+    _role: PgRole,
+}
+
+fn plain_role_on(database: &str, role: &'static str) -> PgRoleOnDatabase {
+    let database = PgScratchDatabase::new(database);
+    let maintenance = postgres_in(&format!("pg-maintenance-{role}"), "postgres");
+    run(&maintenance, "role", &format!("DROP ROLE IF EXISTS {role}"));
+    run(&maintenance, "role", &format!("CREATE ROLE {role} LOGIN PASSWORD '{role}-pw'"));
+    PgRoleOnDatabase { database, _role: PgRole { maintenance, name: role } }
+}
+
+/// A role that may only read and update the table sees what its owner sees, whatever the columns
+/// are made of: a domain and an enum the role may not use, a schema it may not look into, an
+/// extension's type.
+#[test]
+fn postgres_a_role_that_can_only_read_and_update_a_table_opens_it_editable_whatever_its_columns_are_made_of() {
+    only_with!("postgres");
+    let guard = plain_role_on("yz_wb_role_o3", "yz_wb_role_o3");
+    let full = guard.database.connection();
+    run(
+        &full,
+        "setup",
+        "CREATE SCHEMA private_types;
+         CREATE TYPE private_types.mood AS ENUM ('sad', 'ok', 'happy');
+         CREATE DOMAIN public.code AS text CHECK (VALUE <> '');
+         REVOKE USAGE ON DOMAIN public.code FROM PUBLIC;
+         CREATE EXTENSION citext;
+         CREATE TABLE public.t(id int PRIMARY KEY, code public.code, mood private_types.mood, moods private_types.mood[], ci citext, v text);
+         INSERT INTO public.t VALUES (1, 'c1', 'ok', '{sad,happy}', 'Ab', 'a'), (2, 'c2', 'sad', '{}', 'Cd', 'b');
+         GRANT SELECT, UPDATE ON public.t TO yz_wb_role_o3;",
+    );
+    let limited = save(
+        json!({"name": "pg-role-o3", "engine": "postgres", "host": "127.0.0.1", "port": 55432,
+               "user": "yz_wb_role_o3", "database": "yz_wb_role_o3", "ssl": "prefer"}),
+        Some("yz_wb_role_o3-pw"),
+    );
+    let t = table("public", "t");
+
+    let pane = open(&limited, "role-pane", &t);
+    let summary = pane.summary();
+    assert!(summary.editable, "not editable: {:?}", summary.not_editable);
+    let row = pane.row_where("id", "1");
+    pane.edit(row, "code", Some("c1-new"));
+    pane.edit(row, "v", Some("v-new"));
+    assert_eq!(runtime::block_on(session::write_back_set(&pane.set)), Ok(1));
+    assert_eq!(rows(&full, "SELECT code, v FROM public.t ORDER BY id"), [["c1-new", "v-new"], ["c2", "b"]]);
+
+    let seen = described(&limited, &t);
+    assert_eq!(column_names(&seen), ["id", "code", "mood", "moods", "ci", "v"]);
+    assert_eq!(seen, described(&full, &t));
+}
+
+// ---------------------------------------------------------------- a SQLite statement names the columns it returns
+
+/// SQLite compiles a statement against the schema this connection last read; another connection that
+/// changed the table is noticed when the statement first runs, and the statement is compiled again
+/// there. The names of the columns have to be those of the statement that ran, or the values of one
+/// table sit under the headings of another.
+fn a_table_another_connection_dropped_a_column_of(file_name: &str, pane: &str) -> (String, Opened) {
+    let (id, _) = sqlite_connection(file_name);
+    run(
+        &id,
+        "setup",
+        "create table t(id integer primary key, x text, y text, z text); insert into t values (1, 'x1', 'y1', 'z1');",
+    );
+    let first = open(&id, pane, &table("", "t"));
+    assert_eq!(
+        results::lock(&first.set).columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["id", "x", "y", "z"]
+    );
+    run(&id, "ddl", "alter table t drop column x");
+    let refreshed = open(&id, pane, &table("", "t"));
+    (id, refreshed)
+}
+
+#[test]
+fn sqlite_a_refresh_after_another_connection_dropped_a_column_shows_the_columns_the_table_has_now() {
+    let (_, pane) = a_table_another_connection_dropped_a_column_of("wb-dropped-names", "dropped-names-pane");
+    let r = results::lock(&pane.set);
+    assert_eq!(r.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "y", "z"]);
+    let shown: Vec<_> = r.rows[0].iter().map(|c| c.display().into_owned()).collect();
+    assert_eq!(shown, ["1", "y1", "z1"]);
+}
+
+/// Whichever way a table the columns of which changed under the pane ends up, editable or not, an edit
+/// is saved into the column it was made in, or not at all.
+#[test]
+fn sqlite_a_refresh_after_another_connection_dropped_a_column_never_writes_into_a_column_it_did_not_show() {
+    let (id, pane) = a_table_another_connection_dropped_a_column_of("wb-dropped-writes", "dropped-writes-pane");
+    let shown = {
+        let r = results::lock(&pane.set);
+        let y = r.columns.iter().position(|c| c.name == "y").expect("a column y");
+        r.rows[0][y].display().into_owned()
+    };
+    pane.edit(0, "y", Some("CHANGED"));
+    let written = runtime::block_on(session::write_back_set(&pane.set));
+    let stored = first_row(&id, "select y, z from t");
+    match written {
+        Ok(_) => {
+            assert_eq!(shown, "y1", "the cell that was edited showed what another column holds");
+            assert_eq!(stored, ["CHANGED", "z1"]);
+        }
+        Err(_) => assert_eq!(stored, ["y1", "z1"], "refused, so nothing was written"),
+    }
+}
+
+#[test]
+fn sqlite_a_query_after_another_connection_dropped_a_column_names_the_columns_it_returns() {
+    let (id, _) = sqlite_connection("wb-dropped-query");
+    run(
+        &id,
+        "setup",
+        "create table t(id integer primary key, x text, y text, z text); insert into t values (1, 'x1', 'y1', 'z1');",
+    );
+    let pane = owner(&id, "dropped-query-pane");
+    let names = |state: &JobState| {
+        let set = results::get(state.results.last().expect("a result").id).expect("result");
+        let r = results::lock(&set);
+        (
+            r.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+            r.rows[0].iter().map(|c| c.display().into_owned()).collect::<Vec<_>>(),
+        )
+    };
+    let first = wait(session::start_query(&id, None, &pane, "select * from t"));
+    assert_eq!(names(&first).0, ["id", "x", "y", "z"]);
+    run(&id, "ddl", "alter table t drop column x");
+    let again = wait(session::start_query(&id, None, &pane, "select * from t"));
+    assert_eq!(again.error, None);
+    assert_eq!(
+        names(&again),
+        (vec!["id".to_owned(), "y".into(), "z".into()], vec!["1".to_owned(), "y1".into(), "z1".into()])
+    );
+}
+
+/// The names of the columns are known when the statement has run, which for a statement that returns
+/// no row is its end: they are there, and the table is as editable as one with rows.
+#[test]
+fn sqlite_a_statement_that_returns_no_rows_still_names_its_columns() {
+    let (id, _) = sqlite_connection("wb-no-rows");
+    run(&id, "setup", "create table t(id integer primary key, v text);");
+    let state = run(&id, "no-rows", "select * from t where id < 0");
+    let summary = state.results.last().expect("a result");
+    assert!(summary.complete && summary.rows == 0, "{summary:?}");
+    let set = results::get(summary.id).expect("result");
+    assert_eq!(results::lock(&set).columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "v"]);
+
+    let pane = open(&id, "no-rows-pane", &table("", "t"));
+    assert_eq!(results::lock(&pane.set).columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "v"]);
+    assert!(pane.summary().editable && pane.summary().rows == 0, "{:?}", pane.summary());
 }
 
 // ---------------------------------------------------------------- what the server returns around the UPDATE
@@ -1223,6 +2007,59 @@ fn postgres_a_sql_tab_beside_a_table_with_no_connection_to_spare_says_why_and_le
     assert_eq!(first_row(&setup, "SELECT name FROM t WHERE id = 1"), ["mine"]);
     session::release_owner(&pane_owner);
     session::disconnect(&limited);
+}
+
+/// A login that may have two connections, the table's still in the pool and the sidebar's gone (the
+/// server dropped it, or the sidebar moved to another database): the description's connection and
+/// the count's both want the one place left, and the description's has to be the one that gets it,
+/// as it was when the description came first. Whether it is depends on which gets there first, so
+/// this repeats (60 opens); without the count waiting for the description's connection, one open
+/// in ten to twenty-five ended read-only with `too many connections`.
+#[test]
+fn postgres_a_login_limited_to_two_connections_keeps_the_table_editable_when_the_sidebars_connection_is_gone() {
+    only_with!("postgres");
+    let _role = limited_role("yz_wb_order");
+    let scratch = PgScratchDatabase::new("yz_wb_order");
+    let setup = scratch.connection();
+    run(
+        &setup,
+        "setup",
+        "CREATE TABLE t(id int PRIMARY KEY, name text); INSERT INTO t SELECT g, 'a' FROM generate_series(1, 50) g; GRANT SELECT, UPDATE ON t TO yz_wb_order;",
+    );
+    let limited = save(
+        json!({"name": "pg-order", "engine": "postgres", "host": "127.0.0.1", "port": 55432,
+               "user": "yz_wb_order", "database": "yz_wb_order", "ssl": "prefer"}),
+        Some("yz_wb_order-pw"),
+    );
+    let pane = owner(&limited, "order-pane");
+    let opened = wait(session::open_table(&limited, None, &pane, &table("public", "t"), None));
+    assert!(opened.results[0].editable, "{:?}", opened.results[0]);
+
+    let mut refused = Vec::new();
+    for round in 0..60 {
+        // The count borrowed the table's connection, so its last statement is the count's: the other
+        // backend of this login is the sidebar's.
+        let killed = rows(
+            &setup,
+            "SELECT pid::text, pg_terminate_backend(pid)::text FROM pg_stat_activity WHERE usename = 'yz_wb_order' AND query NOT ILIKE '%count(%'",
+        );
+        // The server is done with them when they are gone from its list; an open that reached the
+        // client before it saw the connection closed would be the drop itself (a dead connection handed
+        // out), not the order of the connections.
+        let pids: Vec<_> = killed.iter().map(|row| row[0].as_str()).collect();
+        if !pids.is_empty() {
+            let count_left = format!("SELECT count(*)::text FROM pg_stat_activity WHERE pid IN ({})", pids.join(", "));
+            until("the server still lists the backends it was told to end", || first_row(&setup, &count_left) == ["0"]);
+        }
+        let state = wait(session::open_table(&limited, None, &pane, &table("public", "t"), None));
+        let summary = &state.results[0];
+        if !summary.editable || state.error.is_some() {
+            refused.push((round, summary.not_editable.clone(), state.error.clone()));
+        }
+    }
+    session::release_owner(&pane);
+    session::disconnect(&limited);
+    assert!(refused.is_empty(), "opens that did not end editable: {refused:?}");
 }
 
 /// A login dropped when the test ends, whatever happened (declared before the
@@ -2999,4 +3836,3 @@ fn postgres_what_the_sql_tab_sets_does_not_change_what_the_table_reads_and_saves
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
-

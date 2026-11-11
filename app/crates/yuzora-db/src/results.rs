@@ -48,6 +48,9 @@ pub enum ReadOnly {
     NoInfo(String),
     /// The rows did not all arrive (the error is on the result).
     ReadFailed,
+    /// The rows and the table's description are of two states of the table (columns were renamed,
+    /// dropped or added in between): which row or column an edit means can't be told.
+    Changed,
 }
 
 impl ReadOnly {
@@ -59,6 +62,7 @@ impl ReadOnly {
             ReadOnly::NoKey => crate::i18n::t("edit.no_key", &[]),
             ReadOnly::NoInfo(error) => crate::i18n::t("edit.no_info", &[("error", error.clone())]),
             ReadOnly::ReadFailed => crate::i18n::t("edit.read_failed", &[]),
+            ReadOnly::Changed => crate::i18n::t("edit.table_changed", &[]),
         }
     }
 }
@@ -66,16 +70,19 @@ impl ReadOnly {
 /// Whether the cells of a result may be edited.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Editing {
-    /// A table's rows are still being read; what they are is not settled.
+    /// A table's rows are still being read, or are in and wait for its description (its key);
+    /// what they are is not settled.
     Loading,
     Editable(Box<EditTarget>),
     ReadOnly(ReadOnly),
 }
 
 impl Editing {
-    /// Why an edit can't start now (`None`: it can).
-    pub fn blocked(&self) -> Option<String> {
+    /// Why an edit can't start now (`None`: it can). `rows_complete`: the rows are all in, so what is
+    /// awaited is the key, not the rows.
+    pub fn blocked(&self, rows_complete: bool) -> Option<String> {
         match self {
+            Editing::Loading if rows_complete => Some(crate::i18n::t("edit.reading_key", &[])),
             Editing::Loading => Some(crate::i18n::t("edit.loading", &[])),
             Editing::Editable(_) => None,
             Editing::ReadOnly(why) => Some(why.reason()),
