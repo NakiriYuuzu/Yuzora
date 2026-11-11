@@ -35,7 +35,8 @@ export const TARGETS = ["macos-aarch64", "windows-x86_64", "linux-x86_64", "linu
 /// Targets a version's manifest does not offer, by exact version (a version with no row offers every target). The
 /// archive still ships with the release. 0.1.0 leaves Windows out: an installed beta.2 to beta.4 cannot swap itself
 /// to it (#261), so the update prompt would never finish; 0.1.1 has no row. The workflow reads this table twice, to
-/// write the manifest and to check the signed one; nothing typed at a dispatch can change it.
+/// write the manifest and to check the signed one; nothing typed at a dispatch can change it. Decide the row for
+/// every release: once a version lists Windows, a beta on Windows that was never updated by hand shows that prompt.
 export const UNLISTED_TARGETS: Record<string, string[]> = {
   "0.1.0": ["windows-x86_64"],
 };

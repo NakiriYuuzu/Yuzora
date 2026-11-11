@@ -3,7 +3,7 @@ Herdr third-party notices
 Regenerate with just notices. See licenses/README.md.
 
 Input-SHA256: b785101d09cebb93f69a8d7a62e5078df598e3c1eda3fed7d7a2b821ae6992a0 Cargo.lock
-Input-SHA256: 3b9071de6ce2005ee4a45f855184d46817648a0ec009f8b71d743e567d11acdb Cargo.toml
+Input-SHA256: 4cf0c9aa5864fc34c25e9583c909ae9ba5b7a775cd2f08c7d8014f88cf13cf3b Cargo.toml
 Input-SHA256: c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 LICENSE
 Input-SHA256: e58cb0de2dde300bcda769ca993fde2737f42c0274082f038621ab22975a49e2 about.toml
 Input-SHA256: 84a7a98c82140fb12c37fe42b93805baa16024cb3e5acc599b7ffe612c55d847 assets/fonts/LICENSE-SymbolsNerdFont.txt
@@ -702,7 +702,7 @@ Apache License 2.0 (Apache-2.0)
 
 ----------------------------------------------------------------------
 Apache License 2.0 (Apache-2.0)
-  herdr-app 0.1.0-beta.4
+  herdr-app 0.1.0
   russh 0.62.7 — https://github.com/warp-tech/russh
   as-raw-xcb-connection 1.0.1 — https://github.com/psychon/as-raw-xcb-connection
   clang-sys 1.9.1 — https://github.com/KyleMayes/clang-sys
@@ -2756,7 +2756,7 @@ Apache License 2.0 (Apache-2.0)
 
 ----------------------------------------------------------------------
 Apache License 2.0 (Apache-2.0)
-  herdr-app 0.1.0-beta.4
+  herdr-app 0.1.0
 
                                  Apache License
                            Version 2.0, January 2004
@@ -2962,8 +2962,8 @@ Apache License 2.0 (Apache-2.0)
 
 ----------------------------------------------------------------------
 Apache License 2.0 (Apache-2.0)
-  herdr-app 0.1.0-beta.4
-  herdr-app 0.1.0-beta.4
+  herdr-app 0.1.0
+  herdr-app 0.1.0
   russh-sftp 3.0.0 — https://github.com/AspectUnk/russh-sftp
   codespan-reporting 0.13.1 — https://github.com/brendanzab/codespan
   crypto-primes 0.7.2 — https://github.com/entropyxyz/crypto-primes
@@ -6316,7 +6316,7 @@ limitations under the License.
 
 ----------------------------------------------------------------------
 Apache License 2.0 (Apache-2.0)
-  herdr-app 0.1.0-beta.4
+  herdr-app 0.1.0
   tiberius 0.12.3 — https://github.com/prisma/tiberius
 
                               Apache License
@@ -12875,14 +12875,14 @@ Apache License 2.0 (Apache-2.0)
   llrt_utils 0.9.0-beta — https://github.com/awslabs/llrt
   llrt_zlib 0.9.0-beta — https://github.com/awslabs/llrt
   ghostty-sys 0.0.0
-  yuzora-core 0.1.0-beta.4
-  yuzora-db 0.1.0-beta.4
-  yuzora-files 0.1.0-beta.4
-  yuzora-git 0.1.0-beta.4
-  yuzora-perf 0.1.0-beta.4
-  yuzora-settings 0.1.0-beta.4
-  yuzora-shell 0.1.0-beta.4
-  yuzora-ssh 0.1.0-beta.4
+  yuzora-core 0.1.0
+  yuzora-db 0.1.0
+  yuzora-files 0.1.0
+  yuzora-git 0.1.0
+  yuzora-perf 0.1.0
+  yuzora-settings 0.1.0
+  yuzora-shell 0.1.0
+  yuzora-ssh 0.1.0
   gpui-fps 0.7.1 — https://github.com/longbridge/gpui-kit/tree/main/crates/fps
   gpui-shell 0.7.1 — https://github.com/longbridge/gpui-kit
   accesskit 0.24.1 — https://github.com/AccessKit/accesskit
@@ -13113,12 +13113,12 @@ limitations under the License.
 
 ----------------------------------------------------------------------
 Apache License 2.0 (Apache-2.0)
-  herdr-app 0.1.0-beta.4
-  herdr-app 0.1.0-beta.4
-  herdr-app 0.1.0-beta.4
-  herdr-app 0.1.0-beta.4
-  herdr-app 0.1.0-beta.4
-  herdr-app 0.1.0-beta.4
+  herdr-app 0.1.0
+  herdr-app 0.1.0
+  herdr-app 0.1.0
+  herdr-app 0.1.0
+  herdr-app 0.1.0
+  herdr-app 0.1.0
   gpui-pre 0.3.8 — https://github.com/zed-industries/zed
   gpui-pre-apple 0.3.8 — https://github.com/zed-industries/zed
   gpui-pre-linux 0.3.8 — https://github.com/zed-industries/zed
@@ -13368,8 +13368,8 @@ Apache License
 
 ----------------------------------------------------------------------
 Apache License 2.0 (Apache-2.0)
-  herdr-app 0.1.0-beta.4
-  herdr-app 0.1.0-beta.4
+  herdr-app 0.1.0
+  herdr-app 0.1.0
   gpui-base 0.7.1 — https://github.com/longbridge/gpui-kit
 
 Copyright 2024 - 2026 Longbridge <https://longbridge.com>

@@ -44,7 +44,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 - 不要直接對 `app/defaults/mods/` 執行 `herdr-app check`：它會寫入 `gpui-kit.d.ts`、`jsconfig.json`，`build.rs` 會把它們打包進 app。
 - `app/Cargo.lock` 有變動就要重產 `app/THIRD-PARTY-NOTICES`（cargo-about 0.9.3，`bun scripts/notices.ts`），否則 `tests/notices.rs` 失敗。
 - `app/CHANGELOG.md` 第一筆必須是目前版本（`update_notes` 測試），App 會把它當成這一版的「新功能」說明。
-- 根目錄的 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁體中文）一起改：版本標題、段落與項目要一一對應，未發布的版本英文寫 `Unreleased`、中文寫 `未發布`（`scripts/release-notes.test.ts` 會比對）。GitHub Release 內文由兩份的同版本段落組成，英文在前。
+- 根目錄的 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁體中文）一起改：版本標題、段落與項目要一一對應，未發布的版本英文寫 `Unreleased`、中文寫 `未發布`（`scripts/release-notes.test.ts` 會比對）。GitHub Release 內文由兩份的同版本段落組成，繁體中文在前。
 - 實機執行一律用暫存 `YUZORA_APP_HOME` 與隔離的 `HC_SESSION`／`XDG_STATE_HOME`，並先清掉所有 `HERDR_*`、`HC_*` 環境變數，不得碰使用者真實的 Herdr、herdr-core 或 Yuzora 資料。Yuzora 不讀 `HERDR_APP_HOME`。完整指令見 `docs/beta2/lanes.md`。
 - 要用 computer-use 或瀏覽器自動化做 GUI 驗收前，先取得使用者明確同意；優先用 `herdr-app status`／`shot`／`check` 留證。
 

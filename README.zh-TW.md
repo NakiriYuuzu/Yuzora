@@ -21,7 +21,7 @@
 
 <br />
 
-> **v0.1.0-beta.4 是預覽版。** Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)
+> **v0.1.0 是新 Yuzora 的第一個正式版。** Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)
 > （Rust · GPUI · libghostty · QuickJS mods）為基底，成為原生 App，程式在 [`app/`](app/)。
 > v0.1.0-beta.1 以前的版本是 `src-tauri/` 與 `src/` 的 Tauri App，保留在 repo 裡當移植來源。
 > 架構見 [docs/beta2/architecture.md](docs/beta2/architecture.md)。
@@ -45,7 +45,7 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
   暫存，另有提交紀錄與分支圖、分支、push、三方合併、互動式 rebase 與 annotate。repo 自己的 Git 設定會執行程式的
   資料夾，要先信任才會動作。
 - **檔案與編輯器。** 帶 Git 標記的檔案樹、檔名與內容搜尋、tree-sitter 上色的程式碼編輯器、Markdown 預覽，以及圖片
-  與 SVG 檢視（repo 的 SVG 在獨立的行程裡畫，有時間與記憶體上限）。beta.2 起，遠端機器上的檔案以唯讀開啟。不提供 language
+  與 SVG 檢視（repo 的 SVG 在獨立的行程裡畫，有時間與記憶體上限）。0.1.0 起，遠端機器上的檔案可以編輯並存檔。不提供 language
   server（LSP）。
 - **資料庫**：PostgreSQL、SQL Server、SQLite。schema 樹、可在單一交易內寫回修改的資料表格、資料表結構與 SQL pane。
 - **SSH／SFTP**：主機來自 `~/.ssh/config`、Yuzora 自建主機與 herdr machines；以指紋確認主機金鑰；SFTP 雙欄傳輸可以
@@ -65,12 +65,11 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
   <img src="docs/readme/files-zh.png" width="880" alt="Yuzora 的檔案模式：側欄是帶 Git 標記的 repo 檔案樹，agent 終端機旁分割出程式碼編輯器與 Markdown 預覽" />
 </p>
 
-beta.2 到 beta.4 不包含：Browser、Companion 與 AgentZone。
+新 App 不包含 Tauri 版的 Browser、Companion 與 AgentZone。
 
 ## 下載與安裝
 
-beta.4 是 Pre-release（beta.3 與更早的 beta 不會自動更新到它，請自行下載後直接覆蓋安裝），目前請從 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) 上該版本的頁面下載。
-官方網站在 0.1.0 正式版發布前，仍提供 Tauri 版最後一個正式版 v0.0.19。
+請從 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) 或官方網站下載 v0.1.0。macOS 與 Linux 上的 beta.2 到 beta.4 會自己更新到它。Windows 上的 beta 無法自己更新：請先完全關閉 Yuzora，再下載安裝程式直接覆蓋安裝，並閱讀[版本紀錄](CHANGELOG.zh-TW.md)裡給 Windows 的說明。
 
 | 平台 | 檔案 | 安裝位置 |
 |:--|:--|:--|
@@ -78,16 +77,14 @@ beta.4 是 Pre-release（beta.3 與更早的 beta 不會自動更新到它，請
 | **Windows** x64 | `Yuzora_<version>_x64-setup.exe`，不需要系統管理員權限 | `%LOCALAPPDATA%\Programs\Yuzora`，並把 `yuzora` 加進 PATH |
 | **Linux** x86_64／aarch64，實驗性 | `yuzora-<version>-linux-<arch>.tar.gz`，解開後執行 `yuzora/install` | `~/.local/share/yuzora` 與 `~/.local/bin/yuzora` |
 
-從 0.1.0 正式版起，正式版另外提供固定檔名，永遠指向最新的正式版：`releases/latest/download/Yuzora-macos-aarch64.dmg`
-與 `releases/latest/download/Yuzora-windows-x64-setup.exe`。在那之前 `releases/latest` 仍是 Tauri 版最後一個正式版
-v0.0.19：DMG 是 Tauri 版，Windows 的連結會 404（v0.0.19 的檔名是 `Yuzora-windows-x64.msi`）。beta.4 請從它的
-pre-release 頁面下載。
+正式版另外提供固定檔名，永遠指向最新的正式版：`releases/latest/download/Yuzora-macos-aarch64.dmg`
+與 `releases/latest/download/Yuzora-windows-x64-setup.exe`。Tauri 版最後一個正式版 v0.0.19 留在它自己的 release 頁面。
 
 - **macOS 沒有 Apple Developer ID 簽章，也沒有公證**（只有 ad-hoc 簽章）。第一次開啟會被 Gatekeeper 擋下：到
   「系統設定 › 隱私權與安全性」按「強制打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。
   只對從本 repo Releases 下載的 DMG 這樣做。更新之後，macOS 可能會再詢問一次麥克風、相機或資料夾的存取權限。
 - **Windows 沒有 Authenticode 簽章。** SmartScreen 可能出現警告，請點「其他資訊 › 仍要執行」。
-- **Linux 是實驗性的。** tar.gz 與 `install` 目前只通過 CI，尚未在實機上驗證。
+- **Windows 與 Linux 只通過 CI。** 0.1.0 沒有人在實體的 Windows 或 Linux 機器上試過。Linux 是實驗性的。
 - **herdr-core。** 終端機與 agent 由 herdr-core（`hc`）執行，需要 0.1.11 以上。還沒安裝時，第一次開啟的畫面會提供
   「幫我安裝」，使用 herdr-core 官方的安裝程式。
 - 從 v0.0.9 起，macOS App 僅支援 Apple Silicon；Intel Mac 仍可當遠端主機。
@@ -180,7 +177,7 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
 - **編輯器** pane：14 種語言的 tree-sitter 上色，存檔時檢查衝突（⌘S），尋找與取代（⌘F／⌘H）。磁碟上的變更會即時跟上，
   有 agent 在改同一個檔案時會顯示。
 - **Markdown** pane：GFM 預覽，跟著編輯器即時更新，可以切換原始碼與預覽。另有圖片與 SVG 檢視。
-- beta.2 起可以瀏覽並以唯讀開啟其他機器（遠端 Space）上的檔案。
+- beta.2 起可以瀏覽其他機器（遠端 Space）上的檔案。0.1.0 起可以編輯並存檔，也可以新增檔案、新增資料夾與重新命名。存檔需要兩邊的 herdr-core 都是 0.1.19 以上。遠端刪除還不能用。
 
 細節見 [docs/beta2/files.md](docs/beta2/files.md)。
 
@@ -209,8 +206,8 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
   清單必須以 release 金鑰簽章，每個檔案也必須符合它的 SHA-256，否則什麼都不會安裝。beta build 只會更新到正式版
   （0.1.0 以後），不會更新到其他 beta，beta 請手動下載；正式 build 走 stable 通道，要連 Pre-release 一起收，在
   `~/.config/yuzora/yuzora/settings.json` 寫 `"update": {"channel": "beta"}`。
-- **從 0.0.x 或 0.1.0-beta.1 升級。** 請自行下載安裝 beta.4（見[下載與安裝](#下載與安裝)）：舊版 App 的更新不會提供
-  beta.4，要等 0.1.0 Stable 才能在舊版 App 裡更新到新版。beta.1 的資料留在原處；連線與設定的搬移還沒接上，目前要重新設定。Windows 的安裝程式
+- **從 0.0.x 或 0.1.0-beta.1 升級。** 請自行下載安裝 0.1.0（見[下載與安裝](#下載與安裝)）：舊版 App 的更新不會提供它。
+  舊版 App 的資料留在原處；連線與設定不會搬過來，要重新設定。Windows 的安裝程式
   會詢問是否移除舊的全機安裝。
 - **命令列程式叫 `yuzora`**（指令和 `herdr-app` 相同：`yuzora status`、`yuzora do …`）。Yuzora 不會在 PATH 放
   `herdr-app`，官方 Herdr 的 CLI 不受影響。
