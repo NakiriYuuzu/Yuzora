@@ -21,7 +21,7 @@
 
 <br />
 
-> **v0.1.0-beta.4 is a preview.** Yuzora is now a native app built on
+> **v0.1.0 is the first stable release of the new Yuzora.** Yuzora is now a native app built on
 > [herdr-app](https://github.com/herdrdev/herdr-app) (Rust · GPUI · libghostty · QuickJS mods), in [`app/`](app/).
 > v0.1.0-beta.1 and older are the Tauri app in `src-tauri/` and `src/`, kept in the repository as a porting
 > source. Architecture: [docs/beta2/architecture.md](docs/beta2/architecture.md).
@@ -67,12 +67,11 @@ the same window.
   <img src="docs/readme/files-en.png" width="880" alt="Yuzora's Files mode: the repo's tree with Git marks in the sidebar, and the agent's terminal split with the code editor and a Markdown preview" />
 </p>
 
-Not in beta.2 to beta.4: the Browser, Companion and AgentZone.
+Not in the new app: the Browser, Companion and AgentZone of the Tauri app.
 
 ## Download and install
 
-beta.4 is a pre-release (beta.3 and older betas do not update themselves to it; install it over the old one by hand): download it from its page on [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases).
-The website keeps offering v0.0.19, the last stable Tauri release, until 0.1.0 is stable.
+Download v0.1.0 from [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) or from the website. On macOS and Linux, beta.2 to beta.4 update themselves to it. On Windows, a beta can't update itself: download the installer, run it over your install, and read the Windows note in the [release notes](CHANGELOG.md).
 
 | Platform | File | Installs to |
 |:--|:--|:--|
@@ -80,17 +79,16 @@ The website keeps offering v0.0.19, the last stable Tauri release, until 0.1.0 i
 | **Windows** x64 | `Yuzora_<version>_x64-setup.exe`, no admin rights needed | `%LOCALAPPDATA%\Programs\Yuzora`, with `yuzora` on your PATH |
 | **Linux** x86_64 / aarch64, experimental | `yuzora-<version>-linux-<arch>.tar.gz`, then run `yuzora/install` | `~/.local/share/yuzora` and `~/.local/bin/yuzora` |
 
-Starting with 0.1.0 Stable, stable releases also carry fixed names that always point to the newest stable one:
+Stable releases also carry fixed names that always point to the newest stable one:
 `releases/latest/download/Yuzora-macos-aarch64.dmg` and `releases/latest/download/Yuzora-windows-x64-setup.exe`.
-Until then `releases/latest` is v0.0.19, the last stable Tauri release: its DMG is the Tauri app and the Windows link
-is a 404 (v0.0.19 ships `Yuzora-windows-x64.msi`). For beta.4, download from its pre-release page.
+v0.0.19, the last stable Tauri release, stays on its own release page.
 
 - **macOS: no Apple Developer ID signature, no notarization** (ad-hoc signature only). Gatekeeper blocks the first
   open: in System Settings › Privacy & Security, click **Open Anyway**, or run
   `xattr -dr com.apple.quarantine /Applications/Yuzora.app`. Do this only for a DMG you downloaded from this
   repository's Releases. After an update, macOS may ask again for microphone, camera or folder access.
 - **Windows: no Authenticode signature.** SmartScreen may warn; choose More info › Run anyway.
-- **Linux is experimental.** The tar.gz and `install` have only passed CI; they haven't been tried on a real machine.
+- **Windows and Linux have only passed CI.** Nobody has tried 0.1.0 on a real Windows or Linux machine. Linux is experimental.
 - **herdr-core.** Terminals and agents run in herdr-core (`hc`), version 0.1.11 or newer. If it isn't installed, the
   first screen offers to install it with herdr-core's own installer.
 - Starting with v0.0.9, the macOS app requires Apple Silicon. Intel Macs remain supported as remote hosts.
@@ -213,7 +211,7 @@ Native side: `app/crates/yuzora-settings` (`yuzora:settings`). Design and decisi
 The packages in [Download and install](#download-and-install) are made by `app/scripts/yuzora/package` and checked on all four targets by `.github/workflows/app-package.yml`.
 
 - **Updates.** An installed Yuzora checks this repository's GitHub Releases every hour, downloads a newer version next to itself and switches to it when it restarts. The update manifest must be signed with the release key and every file must match its SHA-256, or nothing is installed. A beta build only updates to a stable release (0.1.0 and later), never to another beta: download betas by hand. A stable build follows stable releases; `"update": {"channel": "beta"}` in `~/.config/yuzora/yuzora/settings.json` makes it take pre-releases too.
-- **Coming from 0.0.x or 0.1.0-beta.1.** Download and install beta.4 yourself (see [Download and install](#download-and-install)): the old app's updater doesn't offer beta.4, and updating to the new app from inside the old one comes with 0.1.0 Stable. beta.1's data stays where it was. Bringing connections and settings over isn't wired up yet, so set them up again for now. On Windows, the installer offers to remove the old all-users install.
+- **Coming from 0.0.x or 0.1.0-beta.1.** Download and install 0.1.0 yourself (see [Download and install](#download-and-install)): the old app's updater doesn't offer it. The old app's data stays where it was. Connections and settings aren't brought over, so set them up again. On Windows, the installer offers to remove the old all-users install.
 - **The command line program is `yuzora`** (the same commands as `herdr-app`: `yuzora status`, `yuzora do …`). Yuzora never puts `herdr-app` on your PATH, so an official Herdr install keeps its own.
 
 Design, keys and the release steps: [docs/beta2/release.md](docs/beta2/release.md).
