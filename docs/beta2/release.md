@@ -388,6 +388,7 @@ env -i HOME=$T/home USER=$USER TMPDIR=$T/tmp TERM=xterm-256color LANG=en_US.UTF-
 
 - 做之前：run 的 `headSha` 就是 release-prep commit，且已在 main（上一步的合併保證）；tag `v0.1.0` 還不存在。
 - 做完驗證：job summary 的 sha256 表與驗收紀錄一致；`gh release view v0.1.0 --json isDraft,assets` 是 draft、10 個檔案（4 個 `yuzora-0.1.0-<target>.tar.gz`、`Yuzora_0.1.0_aarch64.dmg`、`Yuzora-macos-aarch64.dmg`、`Yuzora_0.1.0_x64-setup.exe`、`Yuzora-windows-x64-setup.exe`、`changelog.md`、`changelog.zh-TW.md`）；`git ls-remote origin refs/tags/v0.1.0^{}` 是被驗收的 commit。
+- draft 的 `tag_name` 只在 API 裡看得到（網頁網址一律是 `untagged-…`）。手動改 draft（補說明文字之類）時，PATCH 一定要帶 `tag_name`，否則 GitHub 會把它改掉，之後的階段找不到這個 release。
 - 單向？tag 是。回復：draft 可以整個刪（`gh release delete v0.1.0 --yes`，不要加 `--cleanup-tag`），tag 留著，重跑 `draft` 會沿用同一個 tag。只有一個檔案內容不對：`gh release delete-asset v0.1.0 <名稱> --yes` 後重跑。tag 指錯 commit：不要動 tag，改發 0.1.1。
 - 如果 `draft` 在建 tag 時被 GitHub 拒絕（403／404）：`GITHUB_TOKEN` 不能對「與預設分支的 `.github/workflows/` 不同」的 commit 建 release（REST 文件只對 create release 這樣寫；`plan` 會先給警告）。補救是讓 main 的 workflow 檔與該 commit 一致，或由使用者自己建 tag。
 
@@ -437,6 +438,7 @@ env -i HOME=$T/home USER=$USER TMPDIR=$T/tmp TERM=xterm-256color LANG=en_US.UTF-
 | `plan` 紅：`is not on main` | `draft` 時該 commit 不在 main | 先合併 |
 | `plan` 紅：`… is not the release this workflow runs from` | dispatch 的 ref 的 `app/Cargo.toml` 不是這個版本（例如從 main 對舊版 dispatch） | 對正確的版本、用該版本所在的 ref（`--ref main`，或 `--ref v<版本>`）；這是刻意的，不改舊 release |
 | `plan` 紅：`gh api …` 開頭的錯誤 | GitHub 的 API 沒回答，或回應太大／`gh` 跑不起來（訊息會寫原因） | 過一會再重跑；沒有任何東西被改動 |
+| `draft`／`publish`／`latest` 紅：`is under the tag untagged-… after the change` | GitHub 把 release 改到別的 tag 名稱底下。對 draft 做不帶 `tag_name` 的 PATCH 會這樣（2026-11-12 在 v0.1.0 的 draft 上實測：只帶 `body` 的 PATCH 之後 `tag_name` 變成 `untagged-<hash>`）；workflow 的每個 PATCH 都經過 `patch_release`，一律帶 `tag_name` 並讀回 | 還是 draft：`gh api -X PATCH repos/NakiriYuuzu/Yuzora/releases/<id> -f tag_name=v<版本>` 設回去，用 id 讀回確認後重新 dispatch。已經公開：不要再跑任何階段，先看 `git ls-remote origin 'refs/tags/untagged-*'` 與 release 頁面，再決定收回還是改發下一版 |
 | `plan` 紅：`points at … not at the accepted commit` | 這個版本的 tag 已存在但指向別的 commit | 不動 tag；改發新版本 |
 | `draft` 紅：`the run's artifacts are not the files 0.1.0 ships` | artifacts 過期（保留 7 天）或缺平台 | 在 7 天內做完 `draft`；缺平台就查那個 run |
 | 任何階段紅：`… is already on v0.1.0 with other content` | 重跑時檔案內容不同 | 查為什麼不同；draft 才能刪單一檔案後重跑，公開後不改，改發新版本 |
