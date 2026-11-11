@@ -28,7 +28,7 @@ webpki-roots = "1"
 # SQL Server through Yuzora's patched tiberius (app/vendor/tiberius-0.12.3-yuzora).
 tiberius = { version = "=0.12.3", default-features = false, features = ["tds73", "rustls", "chrono"] }
 tokio-util = { version = "0.7.18", features = ["compat"] }
-rusqlite = { version = "0.40.1", features = ["bundled", "column_decltype"] }
+rusqlite = { version = "0.41", features = ["bundled", "column_decltype"] }
 chrono = "0.4"
 uuid = { version = "1", default-features = false }
 

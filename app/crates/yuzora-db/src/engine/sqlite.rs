@@ -313,7 +313,7 @@ fn run(
 }
 
 fn columns_of(stmt: &rusqlite::Statement<'_>) -> Vec<Column> {
-    stmt.columns().iter().map(|c| Column::new(c.name(), c.decl_type().unwrap_or(""))).collect()
+    stmt.columns().map(|c| Column::new(c.name(), c.decl_type().unwrap_or(""))).collect()
 }
 
 fn cell(value: ValueRef<'_>) -> Cell {
