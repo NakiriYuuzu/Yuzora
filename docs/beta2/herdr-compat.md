@@ -80,12 +80,12 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
   - 這些都和 Herdr.app 的行為相同。core 由 Homebrew、Nix、mise 管理時都不會更新（`installed_by`）。
   - 例外（beta.4 起）：上游 0.1.14 在 macOS 的 `update_to` 之後多了 `core_bin::ensure_core_bundle`：core 是 home 底下、Apple 簽章的單獨執行檔時，下載 `releases.herdr.dev/core/install.sh` 並直接 pipe 給 `sh`（只檢查內容含 `HC_BUNDLE_ONLY`），把舊 updater 留下的單一執行檔補成完整 bundle。Yuzora 以 `yuzora::CORE_BUNDLE_SCRIPT_OFF` 關掉這一步（`core_bin.rs` 開頭 `yuzora(L7)` 註記）：不在背景自行執行下載來的腳本；`hc update` 照常執行，core 維持 0.1.14 之前的樣子。想要完整 bundle 的人可自行執行官方安裝指令。
 - 兩個 app 要求的 core 版本不同時：
-  - 同一代：較新的 core 只會增加功能。哪一邊把 core 升上去，另一邊都能用。Herdr.app 的下限是 0.1.11（上游到 v0.1.15 都是）；Yuzora 從 v0.1.0 起是 0.1.19（見下）。Yuzora 把 core 升上去之後 Herdr.app 照常能用。
+  - 同一代：較新的 core 只會增加功能。哪一邊把 core 升上去，另一邊都能用。現在兩邊的下限都是 0.1.11。
   - 不同代：沒有辦法同時滿足兩邊，只能讓落後的 app 跟上。
 
 ### A3. 版本與 protocol gating
 
-- Yuzora 支援的 core：**generation 1、0.1.19 以上（v0.1.0 起；beta.2–4 是 0.1.11），並且提供 `USES` 列的 9 個方法**（`app/src/hc.rs:177`、`:179`；`app/distribution/core-version`）。沒有上限：同一代較新的 core 都可以。本機以 0.1.13 實測。Herdr.app 0.1.12 的條件完全相同（上游 v0.1.8～v0.1.12 的 `core-version` 都是 0.1.11）。
+- Yuzora 支援的 core：**generation 1、0.1.11 以上，並且提供 `USES` 列的 9 個方法**（`app/src/hc.rs:177`、`:179`；`app/distribution/core-version`）。沒有上限：同一代較新的 core 都可以。本機以 0.1.13 實測。Herdr.app 0.1.12 的條件完全相同（上游 v0.1.8～v0.1.12 的 `core-version` 都是 0.1.11）。
 - 判斷方式：`hc connect` 後送 `hello`，core 回傳 `generation`、`version`、`methods`。`hc::check`（`hc.rs:222`）分三種情況：
   - `Newer`：core 的 generation 比 app 新，要更新 app。
   - `TooOld`：generation 較舊，或版本低於 `core-version`，要更新 core。
@@ -142,7 +142,7 @@ core 的資料都放在 `$XDG_STATE_HOME/herdr-core/<session>/`：`docs.json`、
   - 不接上這個 core，丟掉這條連線。
   - 顯示錯誤 toast（固定 id `yuzora-core-refused`）：
     - 標題寫要更新哪一個，例如「請更新 herdr-core 才能使用 Yuzora」「請更新 Yuzora 才能使用這個 herdr-core」。
-    - 內文用一行寫原因，例如「目前是 0.1.18，Yuzora 需要 0.1.19 以上」「可能是 Herdr 把它換成第 2 代」。
+    - 內文用一行寫原因，例如「目前是 0.1.10，Yuzora 需要 0.1.11 以上」「可能是 Herdr 把它換成第 2 代」。
     - toast mod 的標題和內文都只顯示一行，放不下的字會被截掉，所以測試會檢查兩者的寬度。
   - 點 toast 會開啟設定的 Updates 頁（`app.settings {section: "updates"}`），在那裡可以更新 herdr-core，也可以檢查 Yuzora 的更新。
   - toast 會留 24 小時，直到 core 恢復或使用者點掉。一般 error toast 8 秒就消失，但這段時間 Yuzora 一直處於斷線狀態，pane 只顯示「reconnecting to core…」，所以原因要一直看得到。
@@ -195,12 +195,12 @@ L9 另開同步 PR（`beta2/l9-upstream-sync`，**必須 merge commit 合併**�
 - **為什麼不是停在 tag**：v0.1.15 的 `81389547` 把 spaces 側欄的 git 檢查改成所有 Space 同時跑；tag 之後的 `947ff0dc` 才加上「一次最多 6 個 Space」、`a547b16c` 讓一個 Space 的兩個讀取都結束才換下一個。幾百個 Space 會用光 app 的開檔數（macOS 從 Dock 啟動是 256）或一台機器的 16 個 exec。釘的是 SHA，不是會動的 `master`。
 - **8 個衝突**：`CHANGELOG.md`（Yuzora 的在最上面，上游 0.1.15 接在 beta.2 之後）、`Cargo.toml`（版本維持 `version.workspace = true`）、`Cargo.lock`（上游只拿掉 `as-raw-xcb-connection` 一行；v0.1.0 手動升的四筆還在）、`THIRD-PARTY-NOTICES`（重產）、`src/main.rs`、`defaults/mods/spaces/main.js`、`src/window.rs`（兩邊各在測試模組結尾加東西，都留）、`vendor/gpui-pre/src/assets.rs`（Yuzora 的 `with_scale_factor` 與上游的動畫方法都留）。
 - **離開安裝資料夾有兩份**：上游 0.1.15 的 `update::leave_install_folder()`（`331d6e31`）與 Yuzora v0.1.0 的 `yuzora::release::cwd::leave_install_dir()` 做同一件事。`main.rs` 兩個都呼叫，Yuzora 的在前（有 Windows runner 的探針與守衛測試），上游的在它之後找不到要離開的資料夾，是 no-op。上游的函式與檔案不動。
-- **spaces 側欄的 git 讀取**：上游改成 4 個 ref-only 的 plain `git`（兩個 `rev-parse`、`symbolic-ref`、`rev-list`）。Yuzora 的分支與 ahead／behind 仍來自 `yuzora:shell` 的 `gitStatus`（走信任閘門，promisor remote 用 `--no-lazy-fetch`），只採用上游那兩個指出 repo 的 `rev-parse`（並行）與它的失敗判斷（git 自己說不是 repo 才記成不是，其他的之後再問）。上游的 `rev-list HEAD...@{upstream}` 沒有採用：它在 partial clone 可能觸發 lazy fetch。
+- **spaces 側欄的 git 讀取**：上游改成 4 個 ref-only 的 plain `git`（兩個 `rev-parse`、`symbolic-ref`、`rev-list`）。Yuzora 的分支與 ahead／behind 仍來自 `yuzora:shell` 的 `gitStatus`（走信任閘門，promisor remote 用 `--no-lazy-fetch`），只採用上游那兩個指出 repo 的 `rev-parse`（並行）與它的失敗判斷（git 自己說不是 repo 才記成不是，其他的之後再問）。這個判斷只管那兩個 `rev-parse`：`gitStatus` 自己答不出來時（`symbolic-ref` 的結束碼不是 0 也不是 1，例如 dubious ownership）回的是 null，spaces 直接記成不是 repo、不會再問，這一點和同步前一樣，和上游（每 60 秒再問）不同。上游的 `rev-list HEAD...@{upstream}` 沒有採用：它在 partial clone 可能觸發 lazy fetch。
 - **上游新測試要改的三處**（都有 `yuzora` 標記）：`scripts/spaces.test.ts` 的 harness 補一個照 `yuzora-shell` 的 `git.rs` 回答的 `gitStatus`（沒有它 `check()` 會丟例外，每個 Space 都被當成不是 repo）、detached 的 `branch` 是 `null` 不是 `"(detached)"`、暫存資料夾取 `realpathSync`（macOS 的是連結）；`window::tests::layout_terminal_stream_loss` 把存下來的版面照載入時的樣子讀（補上 dock）再和畫面上的樹比。
 - **上游的 `ScrollHandle`（`9ec9cfbd`）不能取代 Yuzora 在 git diff 用的 `offset()` 與 `dragging`**：它是一般捲動區的 `scroll_to_item`，沒有讀位移，也沒有滑鼠按鍵狀態。三處 `yuzora(git-copy)` 補丁保留。
 - **沒有新的對外端點**：`sync-check` 的 URL 掃描只多出測試用的 `http://images.test/`。`macos_check.rs` 的 launchd job 是既有機制，這次是修它的啟動方式。
 - **本機沒跑的一個上游測試**：`macos_check::tests::checker_job_waits_for_demand_and_runs_once` 會在目前使用者的 GUI launchd domain 註冊一個暫時的 job（`/usr/bin/true`）再移除。本機用 `--skip` 略過，由 CI 的 macOS runner 跑。
-- **core 下限由 0.1.11 提高到 0.1.19**（`app/distribution/core-version`；上游沒動這個檔，這是 Yuzora 的改動，檔案只能放版本所以沒有標記）。原因：v0.1.0 的遠端存檔、新增、改名用 `hc exec --stdin`，0.1.19 才有（[files.md](files.md)）。Yuzora 自我更新後第一次啟動會把 core 升到同代最新，但手動覆蓋安裝、或和 Herdr.app 共用一個舊 core 的情況不會；低於下限時走既有的 `TooOld` 提示（C3）。core 0.1.20 是 core 自己的修正，不必改 app。
+- **core 下限維持 0.1.11**（`app/distribution/core-version`，和上游一樣）。v0.1.0 的遠端存檔用 `hc exec --stdin`，0.1.19 才有（[files.md](files.md)），但只有這一個功能需要它，而且已經會說清楚：這台或那台機器的 core 太舊時，存檔被拒絕並顯示「saving needs a newer herdr-core: update it here and on that machine (hc update, hc machine update)」（`Refusal::CoreTooOld`，有測試）。遠端的新增與改名不用 `--stdin`。曾經把下限提高到 0.1.19（`63538bc3`），審查指出代價：`hc::check` 在 `after_update` 之前跑（`app/src/main.rs:142-158`），core 低於下限時自我更新後的第一次啟動不會自動升級 core，而是停在「Update herdr-core」畫面；離線、或 core 由 Homebrew、Nix、mise 管理的人按了也過不去，整個 app 不能用。維持 0.1.11 的話，這些人照常開啟，`after_update` 會把 core 升到同代最新（能升的時候），所以改回來了。core 0.1.20 是 core 自己的修正，不必改 app。
 
 ### C2. 同步流程與 `app/scripts/yuzora/sync-check`
 
