@@ -49,7 +49,6 @@ jobs:
         run: bun run typecheck
       - name: Build localized Pages and demo
         run: |
-          bun run site:companions
           bun run site:seo
           bun run demo:build
       - name: Build
@@ -79,7 +78,6 @@ jobs:
       # Site artifact tests need these outputs even on a tests-only runner.
       - name: Build localized Pages and demo
         run: |
-          bun run site:companions
           bun run site:seo
           bun run demo:build
       - name: Test shard

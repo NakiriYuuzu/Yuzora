@@ -14,7 +14,7 @@ const escapeHtml = (value) => value.replaceAll("&", "&amp;").replaceAll('"', "&q
 function seoHead(lang) {
   const dict = I18N[lang];
   const canonical = locales[lang];
-  const image = `${siteUrl}assets/ade-herdr-runtime-${lang === "en" ? "en" : "zh"}.png`;
+  const image = `${siteUrl}assets/yuzora-workspace-${lang === "en" ? "en" : "zh"}.png`;
   const schema = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
@@ -46,8 +46,8 @@ ${Object.entries(locales).map(([locale, href]) => `<link rel="alternate" hreflan
 <meta property="og:title" content="${escapeHtml(dict["meta.title"])}">
 <meta property="og:description" content="${escapeHtml(dict["meta.ogDescription"])}">
 <meta property="og:image" content="${image}">
-<meta property="og:image:width" content="1440">
-<meta property="og:image:height" content="960">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="1025">
 <meta property="og:image:alt" content="${escapeHtml(dict["hero.alt"])}">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="${escapeHtml(dict["meta.title"])}">
@@ -86,21 +86,14 @@ for (const [attribute, target] of Object.entries({
 for (const image of document.querySelectorAll("img[data-imgstem]")) {
   image.setAttribute("src", `assets/${image.dataset.imgstem}-en.png`);
 }
-for (const video of document.querySelectorAll("video[data-vstem]")) {
-  video.setAttribute("poster", `assets/${video.dataset.posterStem}-en.png`);
-  video.querySelector("source").setAttribute("src", `assets/${video.dataset.vstem}-en.mp4`);
-}
 // No <base>: fragment navigation and inline SVG references must stay on /en/.
-for (const element of document.querySelectorAll("[href], [src], [poster]")) {
-  for (const attribute of ["href", "src", "poster"]) {
+for (const element of document.querySelectorAll("[href], [src]")) {
+  for (const attribute of ["href", "src"]) {
     const value = element.getAttribute(attribute);
     if (value && !/^(?:[a-z][a-z\d+.-]*:|\/|#)/i.test(value)) {
       element.setAttribute(attribute, `../${value.replace(/^\.\//, "")}`);
     }
   }
-}
-for (const link of document.querySelectorAll("[data-demo-link]")) {
-  link.setAttribute("href", "../demo/?lang=en");
 }
 const languageLink = document.getElementById("lang-toggle");
 languageLink.setAttribute("href", "../");
@@ -119,5 +112,5 @@ writeFileSync(new URL("sitemap.xml", siteDirectory), `<?xml version="1.0" encodi
 ${Object.values(locales).map((url) => `  <url>\n    <loc>${url}</loc>\n${alternates}\n  </url>`).join("\n")}
 </urlset>
 `);
-// The English page and sitemap are deployment artifacts, like site/demo/.
+// The English page and sitemap are deployment artifacts.
 process.stdout.write(`Generated localized Pages and sitemap in ${fileURLToPath(siteDirectory)}\n`);
