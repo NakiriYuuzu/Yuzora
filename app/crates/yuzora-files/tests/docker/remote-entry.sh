@@ -361,4 +361,70 @@ if have_perl; then
   variant_end
 fi
 
+inode() { ls -di -- "$1" | cut -d' ' -f1; }
+
+echo "-- 16. a folder that is a link: the change is in the folder it points to, on whatever file system that is"
+if [ -d /mnt/a ] && [ "$(stat -c %d /mnt/a)" != "$(stat -c %d /tmp)" ]; then
+  chown bob:bob /mnt/a
+  reset /tmp/u16
+  as bob 'mkdir /mnt/a/proj; echo mine > /mnt/a/proj/file; mkdir /tmp/u16/real2; echo two > /tmp/u16/real2/file; ln -s /mnt/a/proj /tmp/u16/proj; ln -s real2 /tmp/u16/proj2; echo out > /tmp/u16/outside; mkdir /tmp/u16/outdir; echo x > /tmp/u16/outdir/x'
+  expect "16 a rename inside a link to a folder on another file system" "done" "$(verdict move bob /tmp/u16/proj/file /tmp/u16/proj/file2 0)"
+  expect "16 it is renamed there" "mine" "$(cat /mnt/a/proj/file2)"
+  expect "16 a file is made there" "done" "$(verdict make bob 022 /tmp/u16/proj/new file)"
+  expect "16 a folder is made there" "done" "$(verdict make bob 022 /tmp/u16/proj/newdir folder)"
+  expect "16 a rename inside a link to a folder on the same file system" "done" "$(verdict move bob /tmp/u16/proj2/file /tmp/u16/proj2/file2 0)"
+  expect "16 it is renamed there" "two" "$(cat /tmp/u16/real2/file2)"
+  i=$(inode /tmp/u16/outside)
+  expect "16 a file from outside into the folder on another file system is refused" "refused device" "$(verdict move bob /tmp/u16/outside /tmp/u16/proj/in 0)"
+  expect "16 it is where it was, and it is the same file" "$i" "$(inode /tmp/u16/outside)"
+  i=$(inode /tmp/u16/outdir)
+  expect "16 a folder from outside into the folder on another file system is refused" "refused device" "$(verdict move bob /tmp/u16/outdir /tmp/u16/proj/indir 0)"
+  expect "16 it is where it was, and it is the same folder" "$i" "$(inode /tmp/u16/outdir)"
+  expect "16 nothing arrived there" "file2 new newdir" "$(ls /mnt/a/proj | tr '\n' ' ' | sed 's/ $//')"
+  expect "16 out of the folder on another file system is refused" "refused device" "$(verdict move bob /tmp/u16/proj/file2 /tmp/u16/out2 0)"
+  expect "16 it is where it was" "mine" "$(cat /mnt/a/proj/file2)"
+  expect "16 the link itself is renamed where it is" "done" "$(verdict move bob /tmp/u16/proj /tmp/u16/proj-renamed 0)"
+  expect "16 it still points where it did" "/mnt/a/proj" "$(readlink /tmp/u16/proj-renamed)"
+else
+  echo "note 16: the container has no tmpfs at /mnt/a"
+fi
+
+echo "-- 17. a folder out of an image layer of an overlay file system is not copied: it stays, and nothing is at the new name"
+root_fs=$(awk '$2 == "/" { t = $3 } END { print t }' /proc/mounts 2>/dev/null)
+if [ "$root_fs" = overlay ] && [ -d /usr/local/share ] && [ -d /usr/local/lib ] && [ -d /usr/local/bin ]; then
+  chown bob:bob /usr/local
+  # Whether this overlay lets a folder out of an image layer be renamed at all (redirect_dir): perl's rename(2) says.
+  exdev=unknown
+  if have_perl; then
+    if perl -e 'rename($ARGV[0], $ARGV[1]) or exit($!{EXDEV} ? 18 : 1)' /usr/local/bin /usr/local/bin.probe; then
+      exdev=no; mv /usr/local/bin.probe /usr/local/bin
+    else
+      [ $? -eq 18 ] && exdev=yes
+    fi
+  fi
+  echo "note 17: renaming a folder out of an image layer here gives EXDEV: $exdev"
+  as bob 'mkdir /usr/local/runtime'
+  # One folder of an image layer for each way the script goes about it: a rename that goes wrong must not spoil the next one.
+  for variant in native bsd; do
+    env=$(variant_env $variant); [ "$env" != SKIP ] || continue
+    case $variant in native) dir=share ;; bsd) dir=lib ;; esac
+    variant_start $variant
+    pre=; [ "$variant" = native ] || pre="PATH=/tmp/shim:\$PATH $env"
+    i=$(inode /usr/local/$dir)
+    r=$(verdict move bob /usr/local/$dir /usr/local/$dir.new 0 "$pre")
+    now=$(ls -di /usr/local/$dir /usr/local/$dir.new 2>/dev/null | cut -d' ' -f1 | tr '\n' ' ' | sed 's/ $//')
+    expect "17 $variant: whatever the answer was ($r), what is there is the folder that was, not a copy" "$i" "$now"
+    if [ "$exdev" = yes ]; then
+      expect "17 $variant: it was not renamed, and it was said so" "exit=1" "$r"
+      yes "17 $variant: with the system's own words" "$(cat /tmp/stderr.txt)" "cross-device"
+    fi
+    variant_end
+  done
+  runtime_inode=$(inode /usr/local/runtime)
+  expect "17 a folder made here, not out of a layer, is renamed" "done" "$(verdict move bob /usr/local/runtime /usr/local/runtime.new 0)"
+  expect "17 it is the same folder" "$runtime_inode" "$(inode /usr/local/runtime.new)"
+else
+  echo "note 17: the container's root is not an overlay file system with /usr/local/{share,lib,bin}"
+fi
+
 echo "RESULT fails=$fails"

@@ -533,6 +533,10 @@ mod tests {
             told.contains("GNU mv") && told.contains("perl") && told.contains("lab"),
             "{told}"
         );
+        assert_eq!(
+            told,
+            "cannot rename /srv/a/old.txt: lab has no perl, which this needs (or GNU mv, or an mv with -T): a plain mv could follow a link into another folder"
+        );
         assert!(say(&rename, Problem::OtherDevice).contains("does not copy"));
         assert!(say(&rename, Problem::NoTool("mv")).contains("no mv"));
         assert!(say(&make, Problem::NoShell).contains("sh"));
@@ -1286,6 +1290,362 @@ mod tests {
                 assert_eq!(got, Err(Problem::NoSafeRename), "{shell:?}");
             }
             assert_eq!(names(d.path()), ["folder", "from"], "{shell:?}");
+        }
+    }
+
+    /// A `stat` of a machine that has no `device:inode` to give: that form of the question fails there.
+    const NO_IDENTITY: &str = "case \"$*\" in *%d:%i*) exit 1 ;; *) exec stat \"$@\" ;; esac";
+
+    /// A `stat` that tells the device of what a path leads to by where that is: under `$YZ_OTHERFS` is
+    /// device 2, anywhere else device 1. Like the real one it looks at a link itself (so, at the folder
+    /// the link is in) unless the path goes on through it, as `link/.` does.
+    fn device_by_place() -> (tempfile::TempDir, String) {
+        shimmed(&[(
+            "stat",
+            r#"case "$*" in
+  *%d:%i*) exec stat "$@" ;;
+  *%d*) ;;
+  *) exec stat "$@" ;;
+esac
+for p; do :; done
+if [ -L "$p" ]; then here=$(cd "$(dirname "$p")" && pwd -P)
+elif [ -d "$p" ]; then here=$(cd "$p" && pwd -P)
+else here=$(cd "$(dirname "$p")" && pwd -P)
+fi
+case $here in "$YZ_OTHERFS"|"$YZ_OTHERFS"/*) echo 2 ;; *) echo 1 ;; esac"#,
+        )])
+    }
+
+    /// `home` holds a link to a folder on another file system (`proj`, to `other/proj`) and one to a folder
+    /// on the same one (`same`, to `real`); the `stat` of `device_by_place` is what tells them apart.
+    struct Linked {
+        _dir: tempfile::TempDir,
+        home: std::path::PathBuf,
+        other: std::path::PathBuf,
+    }
+
+    fn linked() -> Linked {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let (home, other) = (root.join("home"), root.join("other"));
+        fs::create_dir_all(other.join("proj")).unwrap();
+        fs::create_dir_all(home.join("real")).unwrap();
+        symlink(other.join("proj"), home.join("proj")).unwrap();
+        symlink(home.join("real"), home.join("same")).unwrap();
+        Linked {
+            _dir: dir,
+            home,
+            other,
+        }
+    }
+
+    #[test]
+    fn a_change_inside_a_folder_that_is_a_link_is_judged_by_the_folder_it_points_to() {
+        let (_shim, path) = device_by_place();
+        for shell in shells() {
+            let l = linked();
+            let env = [
+                ("PATH", path.as_str()),
+                ("YZ_OTHERFS", l.other.to_str().unwrap()),
+            ];
+            let run = |act: &Act| run_under(&shell, None, &env, act);
+            put(&l.other, "proj/file", b"mine");
+            put(&l.home, "real/file", b"two");
+            let mut wrong = Vec::new();
+            for (what, act, ok) in [
+                (
+                    "a rename in a link to a folder on another file system",
+                    Act::Move(&at(&l.home, "proj/file"), &at(&l.home, "proj/file2")),
+                    Ok(()),
+                ),
+                (
+                    "a rename in a link to a folder on the same file system",
+                    Act::Move(&at(&l.home, "same/file"), &at(&l.home, "same/file2")),
+                    Ok(()),
+                ),
+                (
+                    "a file made in it",
+                    Act::Make(&at(&l.home, "proj/new"), Kind::File),
+                    Ok(()),
+                ),
+                (
+                    "a folder made in it",
+                    Act::Make(&at(&l.home, "proj/newdir"), Kind::Folder),
+                    Ok(()),
+                ),
+                (
+                    "the link itself, renamed where it is",
+                    Act::Move(&at(&l.home, "proj"), &at(&l.home, "proj-renamed")),
+                    Ok(()),
+                ),
+            ] {
+                let got = run(&act);
+                if got != ok {
+                    wrong.push(format!("{what}: {got:?}"));
+                }
+            }
+            assert!(wrong.is_empty(), "{shell:?}: {wrong:#?}");
+            assert_eq!(
+                fs::read_to_string(at(&l.other, "proj-renamed/file2")).ok(),
+                None
+            );
+            assert_eq!(
+                fs::read_to_string(at(&l.other, "proj/file2")).unwrap(),
+                "mine"
+            );
+            assert_eq!(
+                fs::read_to_string(at(&l.home, "real/file2")).unwrap(),
+                "two"
+            );
+            assert_eq!(
+                fs::read_link(at(&l.home, "proj-renamed")).unwrap(),
+                l.other.join("proj")
+            );
+        }
+    }
+
+    #[test]
+    fn a_move_into_or_out_of_a_folder_that_is_a_link_to_another_file_system_is_refused_not_copied()
+    {
+        let (_shim, path) = device_by_place();
+        for shell in shells() {
+            let l = linked();
+            let env = [
+                ("PATH", path.as_str()),
+                ("YZ_OTHERFS", l.other.to_str().unwrap()),
+            ];
+            put(&l.home, "outside", b"out");
+            fs::create_dir(at(&l.home, "outdir")).unwrap();
+            put(&l.home, "outdir/x", b"x");
+            put(&l.other, "proj/inside", b"in");
+            let mut wrong = Vec::new();
+            for (what, from, to) in [
+                ("a file from outside into it", "outside", "proj/arrived"),
+                ("a folder from outside into it", "outdir", "proj/arriveddir"),
+                ("a file out of it", "proj/inside", "left"),
+            ] {
+                let act = Act::Move(&at(&l.home, from), &at(&l.home, to));
+                let got = run_under(&shell, None, &env, &act);
+                if got != Err(Problem::OtherDevice) {
+                    wrong.push(format!("{what}: {got:?}"));
+                }
+            }
+            assert!(wrong.is_empty(), "{shell:?}: {wrong:#?}");
+            assert_eq!(fs::read_to_string(at(&l.home, "outside")).unwrap(), "out");
+            assert_eq!(fs::read_to_string(at(&l.home, "outdir/x")).unwrap(), "x");
+            assert_eq!(names(&l.other.join("proj")), ["inside"], "{shell:?}");
+            assert!(names(&l.home).iter().all(|n| n != "left"), "{shell:?}");
+        }
+    }
+
+    #[test]
+    fn a_stat_with_no_identity_to_give_leaves_the_name_it_cannot_tell_from_another_and_says_so() {
+        // A plain failure, or an empty file or folder of someone else's put at the name that was taken:
+        // where `stat` has no `device:inode` to give, nothing can say the empty entry at the name is the
+        // one made, so it stays, and the answer says it does.
+        let failing = rename_shims("echo \"mv: simulated: disk on fire\" >&2; exit 1");
+        let swap_file = rename_shims("rm -f -- \"$to\"; : > \"$to\"; exit 1");
+        let swap_dir = rename_shims("rmdir -- \"$to\"; mkdir -- \"$to\"; exit 1");
+        let mut wrong = Vec::new();
+        for (what, shims, folder) in [
+            ("a failed rename", &failing, false),
+            ("a failed rename of a folder", &failing, true),
+            ("their empty file", &swap_file, false),
+            ("their empty folder", &swap_dir, true),
+        ] {
+            let (_dir, path) = shimmed(&[
+                (shims[0].0, &shims[0].1),
+                (shims[1].0, &shims[1].1),
+                ("stat", NO_IDENTITY),
+            ]);
+            for (looks, takes_first) in ways() {
+                if !takes_first {
+                    continue;
+                }
+                for shell in shells() {
+                    let d = tempfile::tempdir().unwrap();
+                    let from = at(d.path(), "from");
+                    if folder {
+                        fs::create_dir(&from).unwrap();
+                    } else {
+                        fs::write(&from, "mine").unwrap();
+                    }
+                    let to = at(d.path(), "to");
+                    let env = env_for(&path, looks, &[]);
+                    let got = run_under(&shell, None, &env, &Act::Move(&from, &to));
+                    let said = matches!(&got, Err(Problem::Failed(w)) if w.contains(&to) && w.contains("left"));
+                    let kept = fs::metadata(&to)
+                        .map(|m| m.is_dir() == folder)
+                        .unwrap_or(false);
+                    if !said || !kept || !Path::new(&from).exists() {
+                        wrong.push(format!(
+                            "{shell:?} {looks:?} {what}: said={said} kept={kept} {got:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[test]
+    fn a_stat_with_no_identity_to_give_does_not_hide_a_source_that_is_gone_behind_a_name_it_left() {
+        let shims = rename_shims("mv -- \"$from\" \"$YZ_ELSEWHERE\"");
+        let (_dir, path) = shimmed(&[
+            (shims[0].0, &shims[0].1),
+            (shims[1].0, &shims[1].1),
+            ("stat", NO_IDENTITY),
+        ]);
+        for (looks, takes_first) in ways() {
+            if !takes_first {
+                continue;
+            }
+            for shell in shells() {
+                let d = tempfile::tempdir().unwrap();
+                let elsewhere = tempfile::tempdir().unwrap();
+                let from = put(d.path(), "from", b"mine");
+                let to = at(d.path(), "to");
+                let env = env_for(
+                    &path,
+                    looks,
+                    &[("YZ_ELSEWHERE", elsewhere.path().to_str().unwrap())],
+                );
+                let got = run_under(&shell, None, &env, &Act::Move(&from, &to));
+                let label = format!("{shell:?} {looks:?}: {got:?}");
+                assert!(
+                    matches!(&got, Err(Problem::Failed(w)) if w.contains(&to) && w.contains("gone")),
+                    "{label}"
+                );
+                assert!(Path::new(&to).exists(), "{label}");
+            }
+        }
+    }
+
+    /// A `mv` that answers as GNU's does (`--version`, and `--help` with or without `--no-copy`), writes
+    /// the arguments of every rename it is given to `$YZ_LOG`, and carries it out with the `mv` of the
+    /// machine the test runs on. With `YZ_COPIES` set it copies and removes instead, as GNU's does when
+    /// the system cannot rename.
+    fn gnu_looking_mv() -> (tempfile::TempDir, String) {
+        shimmed(&[(
+            "mv",
+            r#"case $1 in
+  --version) echo "mv (GNU coreutils) 9.4"; exit 0 ;;
+  --help)
+    echo "Usage: mv [OPTION]... [-T] SOURCE DEST"
+    [ -z "$YZ_NOCOPY" ] || echo "      --no-copy                do not copy if renaming fails"
+    echo "  -T, --no-target-directory    treat DEST as a normal file"
+    exit 0 ;;
+esac
+echo "$*" >> "$YZ_LOG"
+for a in "$@"; do from=$to; to=$a; done
+if [ -n "$YZ_COPIES" ]; then cp -R "$from" "$to" && rm -rf "$from"; exit $?; fi
+exec mv -n -- "$from" "$to""#,
+        )])
+    }
+
+    /// The programs the script needs besides `mv`, in a folder of their own, so that a PATH can be made of
+    /// just those and the shim of `mv`: a machine with no `perl`.
+    fn only_the_basics() -> tempfile::TempDir {
+        let bin = tempfile::tempdir().unwrap();
+        for tool in ["stat", "rm", "rmdir", "mkdir"] {
+            let found = Command::new("/bin/sh")
+                .args(["-c", &format!("command -v {tool}")])
+                .output()
+                .unwrap();
+            symlink(
+                String::from_utf8(found.stdout).unwrap().trim(),
+                bin.path().join(tool),
+            )
+            .unwrap();
+        }
+        bin
+    }
+
+    #[test]
+    fn a_gnu_mv_that_can_refuse_to_copy_is_told_to_and_one_that_cannot_is_not_asked_to_rename_a_folder()
+     {
+        let (shim, with_perl) = gnu_looking_mv();
+        let basics = only_the_basics();
+        let without_perl = format!("{}:{}", shim.path().display(), basics.path().display());
+        let log = at(shim.path(), "log");
+        for shell in shells() {
+            // (does it have --no-copy, is the source a folder, is there perl, the arguments `mv` is to get)
+            for (nocopy, folder, perl, want) in [
+                (true, false, true, Some("--no-copy -nT -- ")),
+                (true, true, true, Some("--no-copy -nT -- ")),
+                (false, false, true, Some("-nT -- ")),
+                (false, true, false, Some("-nT -- ")),
+                (false, true, true, None),
+            ] {
+                if perl && want.is_none() && !has_perl() {
+                    continue;
+                }
+                let d = tempfile::tempdir().unwrap();
+                let from = at(d.path(), "from");
+                if folder {
+                    fs::create_dir(&from).unwrap();
+                    put(d.path(), "from/x", b"x");
+                } else {
+                    put(d.path(), "from", b"x");
+                }
+                let to = at(d.path(), "to");
+                let _ = fs::remove_file(&log);
+                let mut env = vec![
+                    (
+                        "PATH",
+                        if perl {
+                            with_perl.as_str()
+                        } else {
+                            without_perl.as_str()
+                        },
+                    ),
+                    ("YZ_LOG", log.as_str()),
+                ];
+                if nocopy {
+                    env.push(("YZ_NOCOPY", "1"));
+                }
+                let got = run_under(&shell, None, &env, &Act::Move(&from, &to));
+                let label = format!("{shell:?} nocopy={nocopy} folder={folder} perl={perl}");
+                assert_eq!(got, Ok(()), "{label}");
+                assert!(
+                    !Path::new(&from).exists() && Path::new(&to).exists(),
+                    "{label}"
+                );
+                let logged = fs::read_to_string(&log).unwrap_or_default();
+                match want {
+                    Some(start) => {
+                        assert_eq!(logged.trim(), format!("{start}{from} {to}"), "{label}");
+                    }
+                    None => assert_eq!(logged, "", "{label}: mv was asked to rename a folder"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_rename_that_was_a_copy_is_not_said_to_have_been_a_replacement() {
+        // A GNU mv that cannot rename and was not told to refuse copies and removes: the entry at the new
+        // name is another one and the source is gone. That cannot be told from a replacement by someone
+        // else, so the answer says both.
+        let (shim, _) = gnu_looking_mv();
+        let basics = only_the_basics();
+        let path = format!("{}:{}", shim.path().display(), basics.path().display());
+        let log = at(shim.path(), "log");
+        for shell in shells() {
+            let d = tempfile::tempdir().unwrap();
+            let from = at(d.path(), "from");
+            fs::create_dir(&from).unwrap();
+            let to = at(d.path(), "to");
+            let env = [
+                ("PATH", path.as_str()),
+                ("YZ_LOG", log.as_str()),
+                ("YZ_COPIES", "1"),
+            ];
+            let got = run_under(&shell, None, &env, &Act::Move(&from, &to));
+            assert!(
+                matches!(&got, Err(Problem::Failed(w)) if w.contains("copied") && w.contains(&to)),
+                "{shell:?}: {got:?}"
+            );
         }
     }
 
