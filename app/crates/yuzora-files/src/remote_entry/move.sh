@@ -8,10 +8,12 @@ for tool in mv stat rm; do
 done
 idof() { stat -c '%d:%i' -- "$1" 2>/dev/null || stat -f '%d:%i' -- "$1" 2>/dev/null; }
 dev() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null; }
-held= heldid= heldkind= how= gnu=
+held= heldid= heldkind= how= gnu= left=
 giveback() {
   if [ -n "$held" ]; then
-    if [ -n "$heldid" ] && [ "$(idof "$held")" != "$heldid" ]; then
+    if [ -z "$heldid" ]; then
+      left="$held is left in place: it was made empty to hold the new name, and stat gives no identity here to tell it from an empty entry that someone else put there (delete it if it is empty and not yours)"
+    elif [ "$(idof "$held")" != "$heldid" ]; then
       :
     elif [ "$heldkind" = dir ]; then
       rmdir -- "$held" 2>/dev/null
@@ -21,7 +23,8 @@ giveback() {
   fi
   held=
 }
-trap giveback EXIT
+leave() { [ -n "$held" ] || return 0; giveback; [ -z "$left" ] || printf '%s\n' "$left" >&2; }
+trap leave EXIT
 trap 'echo "stopped before it was done: it may or may not have been" >&2; exit 1' HUP INT TERM
 pick() {
   [ -z "$how" ] || return 0
@@ -78,11 +81,13 @@ else
 fi
 if there "$from"; then
   giveback
+  [ -z "$left" ] || fail "${msg:-it failed without saying why}: $left"
   blame "$to"
   fail "$msg"
 fi
 if [ "$rc" -ne 0 ]; then
   giveback
+  [ -z "$left" ] || fail "$from is gone, and $left"
   echo gone
   exit 0
 fi
