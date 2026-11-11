@@ -2,7 +2,7 @@ Herdr third-party notices
 =========================
 Regenerate with just notices. See licenses/README.md.
 
-Input-SHA256: 05ed7b8af2453ad4be8a1a119cf6441a9ae2828b08a291f8e01272f3eb15c475 Cargo.lock
+Input-SHA256: b785101d09cebb93f69a8d7a62e5078df598e3c1eda3fed7d7a2b821ae6992a0 Cargo.lock
 Input-SHA256: 4cf0c9aa5864fc34c25e9583c909ae9ba5b7a775cd2f08c7d8014f88cf13cf3b Cargo.toml
 Input-SHA256: c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4 LICENSE
 Input-SHA256: e58cb0de2dde300bcda769ca993fde2737f42c0274082f038621ab22975a49e2 about.toml
@@ -16036,8 +16036,8 @@ THE SOFTWARE.
 
 ----------------------------------------------------------------------
 MIT License (MIT)
-  libsqlite3-sys 0.38.2 — https://github.com/rusqlite/rusqlite
-  rusqlite 0.40.2 — https://github.com/rusqlite/rusqlite
+  libsqlite3-sys 0.39.1 — https://github.com/rusqlite/rusqlite
+  rusqlite 0.41.1 — https://github.com/rusqlite/rusqlite
 
 Copyright (c) 2014 The rusqlite developers
 
