@@ -231,6 +231,12 @@ export default class Spaces extends View {
         exec("git", ["rev-parse", "--path-format=absolute", "--show-toplevel"], { cwd, on }),
         exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on }),
       );
+      if (r.code !== 0 || common.code !== 0) {
+        // Only git's own "no" is remembered as no repo; anything else is asked again.
+        if (!/not a git repository/i.test(r.code !== 0 ? r.stderr : common.stderr)) this.unsure.add(key);
+        this.git[key] = null;
+        return;
+      }
       const top = r.stdout.replace(/\n$/, ""), repo = common.stdout.replace(/\n$/, "");
       const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
       const info = { name, branch: g.branch, ahead: g.ahead, behind: g.behind, repo: JSON.stringify([on, repo]), linked: repo !== `${top}/.git` }; // yuzora(L2c): from g

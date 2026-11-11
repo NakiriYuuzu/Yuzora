@@ -1,6 +1,6 @@
 import { test, expect, spyOn } from "bun:test";
 import { readFile } from "node:fs/promises";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs"; // yuzora: realpathSync, for the temp folder below
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const source = (await readFile(new URL("../defaults/mods/spaces/main.js", import.meta.url), "utf8"))
@@ -17,7 +17,7 @@ function harness(replies: unknown[] = [], storage = new Map<string, string>(), s
     if (String(method).startsWith("on_")) handlers[String(method)] = args.at(-1);
     return element;
   } });
-  const Spaces = new Function("View", "hc", "localStorage", "spaces", "panes", "run", "v_flex", "h_flex", "div", "svg", "shared", "machines", "exec", `${source}; return Spaces;`)(
+  const Spaces = new Function("View", "hc", "localStorage", "spaces", "panes", "run", "v_flex", "h_flex", "div", "svg", "shared", "machines", "exec", "gitStatus", `${source}; return Spaces;`)(
     class {},
     async (args: string[]) => {
       calls.push(args);
@@ -32,6 +32,17 @@ function harness(replies: unknown[] = [], storage = new Map<string, string>(), s
       moves.push(args);
     },
     ...Array(4).fill(() => element), () => null, () => availability, execGit,
+    // yuzora(L2c): the mod asks yuzora:shell's gitStatus for the branch and the counts. Here it answers as that does
+    // (yuzora-shell's git.rs: null where HEAD can't be read, no branch when detached), one read at a time over the same fake.
+    async (cwd: string, { on }: { on: string | null }) => {
+      if (!execGit) return null;
+      const head: any = await execGit("git", ["symbolic-ref", "-q", "HEAD"], { cwd, on });
+      if (head.code === 1) return { branch: null, ahead: 0, behind: 0 };
+      if (head.code !== 0) return null;
+      const counts: any = await execGit("git", ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], { cwd, on });
+      const [ahead, behind] = counts.code === 0 ? counts.stdout.trim().split(/\s+/).map(Number) : [0, 0];
+      return { branch: head.stdout.trim().replace(/^refs\/heads\//, ""), ahead, behind };
+    },
   );
   const view = new Spaces();
   view.reconnecting = {};
@@ -42,7 +53,7 @@ function harness(replies: unknown[] = [], storage = new Map<string, string>(), s
 }
 
 test("git grouping reads refs for normal, detached, unborn and bare worktrees", async () => {
-  const root = mkdtempSync(join(tmpdir(), "herdr-spaces-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-spaces-"))); // yuzora: macOS's temp folder is a link, and git answers with where it leads
   const git = (cwd: string, ...args: string[]) => {
     const result = Bun.spawnSync(["git", ...args], { cwd, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com" } });
     if (result.exitCode) throw new Error(result.stderr.toString());
@@ -78,7 +89,7 @@ test("git grouping reads refs for normal, detached, unborn and bare worktrees", 
     git(repo, "worktree", "add", "-b", "topic", tree);
     expect(await check(tree)).toMatchObject({ branch: "topic", ahead: 0, behind: 0, linked: true, repo: JSON.stringify([null, join(repo, ".git")]) });
     git(tree, "checkout", "--detach");
-    expect(await check(tree)).toMatchObject({ branch: "(detached)", ahead: 0, behind: 0 });
+    expect(await check(tree)).toMatchObject({ branch: null, ahead: 0, behind: 0 }); // yuzora(L2c): gitStatus names no branch when detached; the row says "detached"
     expect(await check(root)).toBeNull();
     expect(h.view.unsure.has(JSON.stringify([null, root]))).toBe(false);
     const bare = join(root, "bare.git"), bareTree = join(root, "bare-tree");
