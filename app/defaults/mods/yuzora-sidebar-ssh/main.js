@@ -35,8 +35,11 @@ export default class SidebarSsh extends View {
       showPrompts();
       this.publish();
       const next = JSON.stringify(hostStates());
-      if (next !== this.seen) {
+      // The host editor moves the selection when a host it saved got a new id.
+      const picked = shared(SELECTED) ?? null;
+      if (next !== this.seen || picked !== this.selected) {
         this.seen = next;
+        this.selected = picked;
         this.list = hosts();
         cx.notify();
       }

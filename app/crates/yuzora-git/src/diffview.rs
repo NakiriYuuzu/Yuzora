@@ -135,12 +135,20 @@ pub fn blob(repo: &Repo, spec: &str) -> GitResult<Option<Vec<u8>>> {
 
 /// The index's text of `path` as `oid` names it (the entry [`index_entry`] read), with
 /// the work tree's conversions for that path, as `cat-file --filters :path` gives.
+///
+/// The entry says the file is in the index, so a read that fails is an error, not a file
+/// that isn't there: a required filter that fails (git-lfs not installed) would otherwise
+/// show a tracked file as new, and discarding all of a new file deletes it. A submodule's
+/// entry names a commit of the other repository, which this one need not hold.
 fn blob_by_id(repo: &Repo, path: &str, mode: &str, oid: &str) -> GitResult<Option<Vec<u8>>> {
     // A link's text is its target, as it is: `:path` knows the entry is a link and converts nothing;
     // an id alone doesn't say, so (as `write_index` does) no conversion is asked for.
     let cmd = if mode == "120000" { Git::read(["cat-file", "blob"]).arg(oid) } else { Git::read(["cat-file", "--filters"]).arg(format!("--path={path}")).arg(oid) };
     let out = repo.run(cmd.max_output(MAX_SIDE + 1))?;
-    Ok(out.ok().then_some(out.stdout))
+    if mode == "160000" && !out.ok() {
+        return Ok(None);
+    }
+    out.into_result().map(Some)
 }
 
 /// The modes on each side of an unstaged (index → work tree) or staged
@@ -1222,6 +1230,27 @@ exec 'REAL' "$@"
         let (repo, _) = timed_git(&s, Some("cat-file"));
         let d = DiffSession::load(repo, "new.txt".into(), None, Mode::Unstaged).unwrap();
         assert_eq!((d.left, d.right.as_deref()), (None, Some(&b"x\n"[..])));
+    }
+
+    /// The index has the file and its text can't be read (a required filter that fails): no
+    /// diff is shown. Shown with an empty index side it would be a new file, and discarding
+    /// all of a new file deletes it.
+    #[cfg(unix)]
+    #[test]
+    fn an_index_text_that_cannot_be_read_opens_no_diff_to_discard() {
+        let s = scratch();
+        s.commit("f.txt", "a\n", "base");
+        s.write("f.txt", "b\n");
+        let (repo, _) = timed_git(&s, Some("cat-file"));
+        for mode in [Mode::Unstaged, Mode::Staged] {
+            let failed = DiffSession::load(repo.clone(), "f.txt".into(), None, mode).err();
+            assert!(matches!(failed, Some(GitError::Failed { .. })), "{failed:?}");
+        }
+        assert_eq!(s.read("f.txt"), "b\n");
+        // A submodule's entry names a commit this repository doesn't hold: that side is empty, as before.
+        s.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{},sub", "1".repeat(40))]);
+        let d = DiffSession::load(s.repo.clone(), "sub".into(), None, Mode::Staged).unwrap();
+        assert_eq!(d.right, None);
     }
 
     // yuzora(v010): copying from the pane. What a selection covers is the file's own text.

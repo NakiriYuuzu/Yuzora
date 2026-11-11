@@ -335,6 +335,42 @@ impl Manager {
         result
     }
 
+    /// Saves a profile ([`hosts::save_profile`]) and `password` as its saved password, when one
+    /// is given. Returns the profile's id.
+    ///
+    /// A profile that comes back under a new id now reaches another server: what was open under
+    /// the old id ends (session, tunnels, questions), since no key finds it any more, and the
+    /// saved password goes with the profile. A save whose password can't be stored changes
+    /// nothing, so it can be tried again.
+    pub fn save_profile(&self, profile: hosts::Profile, password: Option<&str>) -> Result<String> {
+        let before = hosts::profiles(&self.ctx);
+        let was = profile.id.clone();
+        let id = hosts::save_profile(&self.ctx, profile)?;
+        let key = |id: &str| crate::auth::password_key(&format!("profile:{id}"));
+        let moved = !was.is_empty() && was != id;
+        let password = match password.filter(|p| !p.is_empty()) {
+            Some(given) => Some(given.to_owned()),
+            None if moved => self.ctx.secrets.get(&key(&was)).ok().flatten(),
+            None => None,
+        };
+        if let Some(Err(e)) = password.map(|p| self.ctx.secrets.set(&key(&id), &p)) {
+            hosts::write_profiles(&self.ctx, &before)?;
+            return Err(SshError::new(ErrorKind::Io, e.to_string()));
+        }
+        if moved {
+            let old = format!("profile:{was}");
+            self.prompts.cancel_host(&old);
+            self.tunnels.close_host(&old);
+            let session = lock(&self.sessions).remove(&old);
+            lock(&self.states).remove(&old);
+            if let Some(s) = session {
+                crate::runtime::handle().spawn(async move { s.close().await });
+            }
+            let _ = self.ctx.secrets.delete(&key(&was));
+        }
+        Ok(id)
+    }
+
     /// Ends a host's session and everything on it (tunnels, SFTP).
     pub async fn disconnect(&self, key: &str) {
         let Ok(def) = self.lookup(key) else { return };

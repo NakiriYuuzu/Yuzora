@@ -3,12 +3,13 @@
 // edit, { id, remove: true } to delete. Owned by lane L4.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { theme, props, closeOverlay } from "herdr";
+import { theme, props, closeOverlay, setShared } from "herdr";
 import { t } from "yuzora:core";
 import { hosts, saveProfile, removeProfile } from "yuzora:ssh";
 
 // Errors read "`yuzora:ssh.<fn>`: [code] text"; people see the text.
 const message = (e) => String(e?.message ?? e).replace(/^(Error: )?(`[^`]*`: )?\[[a-z-]+\] /, "");
+const SELECTED = "yuzora.ssh.selected";
 const FIELDS = [
   ["name", "namePlaceholder"],
   ["host", "hostPlaceholder"],
@@ -46,10 +47,13 @@ export default class SshHost extends View {
     const v = (k) => this.inputs[k].value().trim();
     const port = v("port") ? Number(v("port")) : null;
     try {
-      saveProfile(
+      const id = saveProfile(
         { id: this.profile?.id ?? "", name: v("name"), host: v("host"), port: Number.isInteger(port) && port > 0 ? port : null, user: v("user") || null, identityFile: v("identityFile") || null, proxyJump: v("proxyJump") || null },
         this.inputs.password.value() || null,
       );
+      // A host that now reaches another server comes back under a new id. The sidebar edits
+      // the host it shows, so its selection (this key in shared) goes to the new id.
+      if (this.profile && this.profile.id !== id) setShared(SELECTED, `profile:${id}`);
       this.dismiss();
     } catch (e) {
       this.error = t("failed", { why: message(e) });

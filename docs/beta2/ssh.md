@@ -11,7 +11,7 @@ beta.2 的 SSH 主機、SFTP 雙欄傳輸、tunnel 與已知主機。Rust 原生
 | `app/crates/yuzora-ssh/src/config.rs` | `~/.ssh/config` 解析：Include（相對、`~`、glob、條件式引入、16 層上限）、Host 萬用字元與否定、Match（`all`／`host`／`originalhost`／`user`／`localuser`）、第一個值生效、token 展開、ProxyJump／ProxyCommand 等常用選項。唯讀 |
 | `hosts.rs` | 三個主機來源合併：ssh config 的具名 Host、Yuzora profiles（settings `ssh.profiles`）、herdr machines（`hc machine ls`，由 mod 傳入）。id 為 `ssh:<alias>`、`profile:<id>`、`machine:<name>` |
 | `known_hosts.rs` | OpenSSH known_hosts：明文／hashed（`|1|`）、`[host]:port`、萬用字元、否定、`@revoked`；`@cert-authority` 忽略。只寫 Yuzora 自己的檔 |
-| `session.rs` | 每台主機一個共用 SSH session（`Manager::session`）、host key 檢查、ProxyJump（多段）、ProxyCommand、keepalive、延遲量測 |
+| `session.rs` | 每台主機一個共用 SSH session（`Manager::session`，以主機 id 為鍵；自建主機存檔後連到的 user、hostname、port、ProxyJump 或 ProxyCommand 和原本不同時（照連線時的解析結果比，profile 沒填的由 `~/.ssh/config` 或預設值補上），`hosts::save_profile` 會給它新的 id（id 是毫秒時間的 hex，而且一定比清單裡現有的都大；帶著清單裡沒有的 id 存檔會得到 `unknown-host`，所以用過的 id 不會回來），`Manager::save_profile` 接著把密碼存到新 id（有給新密碼就存新的，沒給就把舊 id 存著的搬過去；存不進去時把 profile 清單寫回原樣並回錯誤，整次存檔等於沒發生，可以重試）、結束舊 id 底下的 session 與 tunnel，所以握著舊 id 的 SFTP pane、傳輸、遠端編輯會得到 `unknown-host`，不會改到另一台伺服器上；`~/.ssh/config` 的 alias 在 app 外被改指到別處時，已開的 session 照舊沿用到斷線或手動中斷為止）、host key 檢查、ProxyJump（多段）、ProxyCommand、keepalive、延遲量測 |
 | `auth.rs` | 登入：ssh-agent → 私鑰檔（加密時問密語）→ keyboard-interactive → 密碼；遵守 PreferredAuthentications、IdentitiesOnly、IdentityAgent、各 `*Authentication` 開關，支援 partial success（多因子） |
 | `prompt.rs` | 連線途中要問使用者的問題佇列（新金鑰、金鑰變更、密碼、密語、keyboard-interactive），任何 mod 都能 claim 並回答 |
 | `sftp.rs` | 雙欄瀏覽：本機與遠端同一種 entry 形狀；新增資料夾、重新命名、刪除（資料夾遞迴）；拒絕 `/`、`~` 等根目錄與不合法名稱 |

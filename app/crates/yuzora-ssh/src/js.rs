@@ -231,11 +231,7 @@ pub fn host_module() -> HostModule {
         .function("saveProfile", |a| {
             let m = manager();
             let profile: Profile = serde_json::from_value(arg(a, 0)).map_err(|e| HostError::new(e.to_string()))?;
-            let id = crate::hosts::save_profile(&m.ctx, profile).map_err(fail)?;
-            if let Some(pw) = a.get(1).and_then(HostValue::as_str).filter(|s| !s.is_empty()) {
-                m.ctx.secrets.set(&crate::auth::password_key(&format!("profile:{id}")), pw).map_err(|e| HostError::new(e.to_string()))?;
-            }
-            Ok(HostValue::Str(id))
+            Ok(HostValue::Str(m.save_profile(profile, a.get(1).and_then(HostValue::as_str)).map_err(fail)?))
         })
         .function("removeProfile", |a| {
             let m = manager();

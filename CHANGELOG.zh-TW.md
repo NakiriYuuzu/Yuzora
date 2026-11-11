@@ -34,6 +34,7 @@
 - Git：開著多個專案時，Graph 以及 diff、merge、rebase pane 會留在目前的 Space，不再跳回最先開過它們的那個專案。每個 Space 各有自己的一份。更新之後，beta.4 留下的 diff 請求不會再顯示另一個專案的檔案。
 - Git：並排 diff 左右各佔一半寬度。拖曳中間的分隔線可以在 15% 到 85% 之間調整，雙擊回到一半。所有 diff 共用這個比例，重新啟動後也保留。長行留在自己那一側，兩側一起橫向捲動，行太寬時底部會出現捲軸。
 - Git：並排 diff 在重新讀取後（存檔、stage、commit、fetch 之後）會保留橫向捲動位置。Yuzora 曾經忙到量不完某一長行時，橫向捲動範圍不會再一直過寬。
+- Git：已追蹤的檔案在 index 裡的內容讀不出來時（例如必要的 filter 執行失敗，像是沒有安裝 git-lfs），不再被當成新檔案開啟，diff pane 會顯示錯誤。以前對這種檔案按 Discard 全部，會把檔案刪掉。
 - Database：資料表的編輯可以存檔了。列讀完就能編輯，不必等總列數，存檔也不再排在總列數後面。Cmd+S（Windows 與 Linux 是 Ctrl+S）可以存檔，儲存格編輯框開著時也可以。存檔卡在連線或別處持有的列鎖時，可以按 Stop 停止，訊息會說明是否可能已經存入。工具列的 Stop 只停自己的語句，不會停掉進行中的存檔。表格會說明為什麼不能編輯，存檔失敗時可以展開看伺服器的完整訊息，窄的 pane 裡 Discard 與 Write back 也不會被切掉。
 - Database：SQL Server 上，trigger 回傳列不再讓存檔回滾；伺服器關掉閒置連線後的第一次存檔，會重新連線並完成。含 `geography`、`geometry` 或 `hierarchyid` 欄位的表會顯示錯誤，不再一直載入。PostgreSQL 上，Stop 會送到這條連線所在的伺服器，不再送到按下當時主機名稱指向的位址。輸入法還在組字的文字，在按 Write back 或離開儲存格時不會被存進去。
 - Database：SQL Server 的 `datetime`、`smalldatetime` 儲存格，年份在前的日期（例如 `2024-01-06 10:00`、`20240106`）不論登入語言，都照輸入的樣子存入。Yuzora 無法確定怎麼讀的日期，會在送出前拒絕。PostgreSQL 的資料表以 `datestyle = ISO` 與 `extra_float_digits = 3` 讀寫，所以用時區縮寫（例如 `CST`）讀出的 `timestamptz` 寫回時不會再差好幾個小時，以浮點數為主鍵的列也找得到。SQL 分頁維持伺服器自己的設定，和 `psql` 一致。
@@ -42,6 +43,7 @@
 - Database：已經開著資料表時，在側欄再點另一張表，不再出現「This view could not be re-rendered」，也不會停在「Loading…」。pane 會換成點到的表，有未儲存的編輯時會先詢問。
 - Database：資料表 pane 的 SQL 分頁裡，資料表還在讀取時（例如在等 SQL 分頁留下沒提交的交易），按 Run 或 Cmd+Enter 不再毫無反應。Run 會先停掉那個讀取再執行 SQL，所以 COMMIT 只要按一次。自己執行中的語句不會被停掉，SQL 分頁會寫明要先按 Stop。有未存的編輯（包括存檔途中）時會先詢問。
 - Database：資料表存檔時，在 Yuzora 送出 COMMIT 之前按 Stop，一定不會存入，即使 app 忙到沒能及時注意到這次 Stop 也一樣。以前會存進去，然後說資料庫可能已經存了。SQL Server 上，另一個連線同時在建立或刪除資料表時，瀏覽資料庫物件或開表不會再因為「deadlocked … Rerun the transaction」（Msg 1205）而失敗，Yuzora 會再讀一次。
+- SSH：修改 Yuzora 自建主機的位址、port、使用者或跳板主機之後，它會成為一台新的主機，Yuzora 會結束到舊位址的連線與它的 tunnel，存著的密碼跟著過去。屬於舊位址的 SFTP pane、傳輸與開啟編輯的檔案會回報沒有這台主機，請從新的主機重新開啟。以前 SFTP 會繼續在舊的伺服器上操作，清單卻顯示新的位址。
 - Windows：從開始功能表捷徑啟動的 Yuzora 可以自己更新。以前用這種方式啟動時，更新一定失敗。更新裝不上時，Settings › Updates 會說明原因與該怎麼做，按 Restart 會出現一則通知，點下去就開那一頁。Windows 上還在用 beta 的人，請先看下方〈安裝說明〉。
 - 更新：更新提示改寫 `Yuzora <version> is ready`，不再是 `Herdr <version> is ready`。從 beta 更新到 0.1.0 時看到的仍是舊字樣。
 
@@ -51,6 +53,8 @@
 - Files：遠端 Space 裡，Files 側欄讀 Git 狀態仍要對那台機器依序呼叫四次，所以 Git 標記會比樹晚出現。
 - Git diff：Copy as patch 一律把檔案模式寫成 100644，所以新增的可執行檔或符號連結，套用後會變成一般檔案。含非 UTF-8 位元組的檔案，patch 可能套不上，通知卻顯示已複製。`diff.renames=copies` 時，來源檔也被修改的 copy 會寫成 rename。在最後一行沒有換行的 CRLF 檔案加行時，補上的行尾是 LF。
 - Settings 對話框、歡迎畫面、What's new 與 dock 的抽屜視窗出現時不會淡入，關閉任何東西也沒有動畫。
+- Git：merge pane 的 Edit 會把區塊裡的 tab 顯示成四個空白，按 Use 也會照這樣寫入。需要保留 tab 的檔案（例如 Makefile），請改選其中一側，或用編輯器修改檔案。
+- SFTP：重試的傳輸，或是再傳一次到同一個目的地，會從 `.part` 檔的大小接續，不比對內容，和 OpenSSH 的 `reget`、`reput` 相同。來源在傳輸中斷後改過，或主機已經改指到另一台伺服器的話，請先刪掉 `.part` 檔。
 - Database：同一個 pane 的 SQL 分頁有沒結束的交易時，可能擋住這個 pane 的資料表。SQL Server 上，資料表會一直等到你按 Stop。SQLite 上，約 5 秒後存檔失敗。請先按 Stop，再到 SQL 分頁執行 COMMIT 或 ROLLBACK。
 - Database：一個 pane 現在最多用三條連線：SQL 分頁、資料表，以及計算總列數時的那一條。連線數上限很緊的登入上，SQL 分頁或資料表可能失敗並顯示「too many connections」。
 - Database：伺服器在存檔時改過的值（四捨五入或定序轉換），表格裡仍顯示你輸入的樣子。
