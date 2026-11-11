@@ -45,7 +45,7 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
   暫存，另有提交紀錄與分支圖、分支、push、三方合併、互動式 rebase 與 annotate。repo 自己的 Git 設定會執行程式的
   資料夾，要先信任才會動作。
 - **檔案與編輯器。** 帶 Git 標記的檔案樹、檔名與內容搜尋、tree-sitter 上色的程式碼編輯器、Markdown 預覽，以及圖片
-  與 SVG 檢視（repo 的 SVG 在獨立的行程裡畫，有時間與記憶體上限）。beta.2 起，遠端機器上的檔案以唯讀開啟。不提供 language
+  與 SVG 檢視（repo 的 SVG 在獨立的行程裡畫，有時間與記憶體上限）。0.1.0 起，遠端機器上的檔案可以編輯並存檔。不提供 language
   server（LSP）。
 - **資料庫**：PostgreSQL、SQL Server、SQLite。schema 樹、可在單一交易內寫回修改的資料表格、資料表結構與 SQL pane。
 - **SSH／SFTP**：主機來自 `~/.ssh/config`、Yuzora 自建主機與 herdr machines；以指紋確認主機金鑰；SFTP 雙欄傳輸可以
@@ -69,7 +69,7 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
 
 ## 下載與安裝
 
-請從 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) 或官方網站下載 v0.1.0。macOS 與 Linux 上的 beta.2 到 beta.4 會自己更新到它。Windows 上的 beta 無法自己更新：請下載安裝程式直接覆蓋安裝，並閱讀[版本紀錄](CHANGELOG.zh-TW.md)裡給 Windows 的說明。
+請從 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) 或官方網站下載 v0.1.0。macOS 與 Linux 上的 beta.2 到 beta.4 會自己更新到它。Windows 上的 beta 無法自己更新：請先完全關閉 Yuzora，再下載安裝程式直接覆蓋安裝，並閱讀[版本紀錄](CHANGELOG.zh-TW.md)裡給 Windows 的說明。
 
 | 平台 | 檔案 | 安裝位置 |
 |:--|:--|:--|
@@ -177,7 +177,7 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
 - **編輯器** pane：14 種語言的 tree-sitter 上色，存檔時檢查衝突（⌘S），尋找與取代（⌘F／⌘H）。磁碟上的變更會即時跟上，
   有 agent 在改同一個檔案時會顯示。
 - **Markdown** pane：GFM 預覽，跟著編輯器即時更新，可以切換原始碼與預覽。另有圖片與 SVG 檢視。
-- beta.2 起可以瀏覽並以唯讀開啟其他機器（遠端 Space）上的檔案。
+- beta.2 起可以瀏覽其他機器（遠端 Space）上的檔案。0.1.0 起可以編輯並存檔，也可以新增檔案、新增資料夾與重新命名。存檔需要兩邊的 herdr-core 都是 0.1.19 以上。遠端刪除還不能用。
 
 細節見 [docs/beta2/files.md](docs/beta2/files.md)。
 

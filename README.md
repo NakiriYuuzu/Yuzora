@@ -47,7 +47,7 @@ the same window.
   and annotate. Folders whose own Git config runs programs ask for your trust first.
 - **Files and editor.** A file tree with Git marks and file-name and content search, a code editor with tree-sitter
   highlighting, a Markdown preview, and an image and SVG viewer (a repo's SVG is drawn in a separate process, with
-  time and memory limits). Files on a remote machine open read-only since beta.2. There is no language server (LSP).
+  time and memory limits). Files on a remote machine can be edited and saved since 0.1.0. There is no language server (LSP).
 - **Databases**: PostgreSQL, SQL Server and SQLite, with a schema tree, a data grid that writes edited cells back in
   one transaction, the table structure and a SQL pane.
 - **SSH / SFTP**: hosts from `~/.ssh/config`, Yuzora's own hosts and herdr machines; host keys checked by
@@ -71,7 +71,7 @@ Not in the new app: the Browser, Companion and AgentZone of the Tauri app.
 
 ## Download and install
 
-Download v0.1.0 from [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) or from the website. On macOS and Linux, beta.2 to beta.4 update themselves to it. On Windows, a beta can't update itself: download the installer, run it over your install, and read the Windows note in the [release notes](CHANGELOG.md).
+Download v0.1.0 from [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) or from the website. On macOS and Linux, beta.2 to beta.4 update themselves to it. On Windows, a beta can't update itself: close Yuzora, download the installer, run it over your install, and read the Windows note in the [release notes](CHANGELOG.md).
 
 | Platform | File | Installs to |
 |:--|:--|:--|
@@ -188,7 +188,7 @@ The SSH / SFTP mode in the right-hand dock lists hosts from `~/.ssh/config`, Yuz
 - **Files** mode in the right-hand dock: the focused pane's repo as a tree with git marks (M/A/D/U/?), new file and folder, rename, move to Trash, copy path, reveal in Finder; fuzzy file-name search and content search (ripgrep when installed, a built-in search otherwise).
 - **Editor** pane: tree-sitter highlighting for 14 languages, save with a conflict check (⌘S), find and replace (⌘F / ⌘H). It follows changes made on disk and shows when an agent is editing the same file.
 - **Markdown** pane: a GFM preview that follows the editor as you type, with a source / preview toggle. An image and SVG viewer.
-- Files on another machine (remote spaces) can be browsed and opened read-only since beta.2.
+- Files on another machine (remote spaces) can be browsed since beta.2. Since 0.1.0 they can be edited and saved, and files and folders can be created and renamed there. Saving needs herdr-core 0.1.19 or newer on both machines. Deleting there isn't available yet.
 
 Details: [docs/beta2/files.md](docs/beta2/files.md).
 <!-- yuzora:lane:L5:end -->

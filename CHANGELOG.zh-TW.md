@@ -15,11 +15,11 @@
 
 ### 新增
 
-- **在其他機器的 Space 編輯並儲存檔案。** 遠端 Space 的檔案不再一律唯讀。存檔會一次換掉原檔，保留權限與擁有者。開啟之後檔案在那台機器上被改過的話，會顯示衝突，不會蓋掉。存檔需要那台機器有 `sh`，以及支援 `hc exec --stdin` 的 herdr-core（以 0.1.19 驗證）。超過 8 MiB 的檔案不能在遠端存檔，8 到 16 MiB 的檔案以唯讀開啟。存檔保留不了擁有者或群組的檔案，以及只能透過 ACL 或附屬群組寫入的檔案，也會以唯讀開啟。
-- **在其他機器的 Space 新增檔案、新增資料夾與重新命名。** Files 側欄的工具列、右鍵選單與按鍵，在遠端的行為和本機相同。名稱已被檔案、資料夾或連結佔用時，會以「already exists」拒絕，不會取代任何東西。只改大小寫的重新命名，在不分大小寫的檔案系統上可以成功。新建的檔案與資料夾，權限和那台機器自己用 `touch`、`mkdir` 建立的相同。開著的文件若是被改名的檔案，或在被改名的資料夾底下，會連同未存的修改移到新路徑，下一次存檔就寫到那裡。遠端刪除還不能用。
+- **在其他機器的 Space 編輯並儲存檔案。** 遠端 Space 的檔案不再一律唯讀。存檔會一次換掉原檔，保留權限與擁有者。開啟之後檔案在那台機器上被改過的話，會顯示衝突，不會蓋掉。存檔需要那台機器有 `sh`，而且兩邊的 herdr-core 都要 0.1.19 以上。超過 8 MiB 的檔案不能在遠端存檔，8 到 16 MiB 的檔案以唯讀開啟。存檔保留不了擁有者或群組的檔案，以及只能透過 ACL 或附屬群組寫入的檔案，也會以唯讀開啟。
+- **在其他機器的 Space 新增檔案、新增資料夾與重新命名。** Files 側欄的工具列、右鍵選單與按鍵，在遠端也能新增與重新命名，做法和本機一樣。名稱已被檔案、資料夾或連結佔用時，會以「already exists」拒絕，不會取代任何東西。只改大小寫的重新命名，在不分大小寫的檔案系統上可以成功。新建的檔案與資料夾，權限和那台機器自己用 `touch`、`mkdir` 建立的相同。開著的文件若是被改名的檔案，或在被改名的資料夾底下，會連同未存的修改移到新路徑，下一次存檔就寫到那裡。遠端刪除還不能用。
 - **從 Git diff 複製。** 點一列即可選取，Shift＋點另一列可延伸選取。Cmd+C（Windows 與 Linux 是 Ctrl+C）會複製選取的行，內容是檔案原文，保留 tab 與行尾空白，不含行號與 `+`、`-`。並排 diff 的選取屬於你點的那一側。在列上按右鍵可選 Copy、Copy hunk 與 Copy as patch。
 - **拖曳選取 diff 的列。** 在一列的文字上按下並拖過其他列即可選取，選取屬於按下的那一側。指標停在列表上緣或下緣附近時，列表會自動捲動。Cmd+C 複製選取的內容。
-- **對話框、popup 與 toast 會淡入。** 對話框與 popup 在 120 ms 內淡入並移動 6 px 到定位，toast 則是 160 ms。右側 dock 的選取框會滑到你選的模式，資源用量條會平滑變到新的長度，設定頁的開關會滑動。系統開啟「減少動態效果」時，一律直接出現。在 macOS 與 Windows 上，Yuzora 只在啟動時讀取這個設定。
+- **對話框、popup 與 toast 會淡入。** 對話框與 popup 在 120 ms 內淡入並移動 6 px 到定位，toast 則是 160 ms。右側 dock 的選取框會滑到你選的模式，資源用量條會平滑變到新的長度，設定頁的開關會滑動。系統開啟「減少動態效果」時，一律直接出現。在 macOS 與 Windows 上，Yuzora 只在啟動時讀取這個設定。Linux 上這個設定來自 desktop portal，沒有 portal 的 session 一律照常播放動畫。
 
 ### 改善
 
@@ -34,7 +34,7 @@
 - Git：開著多個專案時，Graph 以及 diff、merge、rebase pane 會留在目前的 Space，不再跳回最先開過它們的那個專案。每個 Space 各有自己的一份。更新之後，beta.4 留下的 diff 請求不會再顯示另一個專案的檔案。
 - Git：並排 diff 左右各佔一半寬度。拖曳中間的分隔線可以在 15% 到 85% 之間調整，雙擊回到一半。所有 diff 共用這個比例，重新啟動後也保留。長行留在自己那一側，兩側一起橫向捲動，行太寬時底部會出現捲軸。
 - Git：並排 diff 在重新讀取後（存檔、stage、commit、fetch 之後）會保留橫向捲動位置。Yuzora 曾經忙到量不完某一長行時，橫向捲動範圍不會再一直過寬。
-- Database：資料表的編輯可以存檔了。列讀完就能編輯，不必等總列數，存檔也不再排在總列數後面。Cmd+S 可以存檔，儲存格編輯框開著時也可以。存檔卡在連線或別處持有的列鎖時，可以按 Stop 停止，訊息會說明是否可能已經存入。工具列的 Stop 只停自己的語句，不會停掉進行中的存檔。表格會說明為什麼不能編輯，存檔失敗時可以展開看伺服器的完整訊息，窄的 pane 裡 Discard 與 Write back 也不會被切掉。
+- Database：資料表的編輯可以存檔了。列讀完就能編輯，不必等總列數，存檔也不再排在總列數後面。Cmd+S（Windows 與 Linux 是 Ctrl+S）可以存檔，儲存格編輯框開著時也可以。存檔卡在連線或別處持有的列鎖時，可以按 Stop 停止，訊息會說明是否可能已經存入。工具列的 Stop 只停自己的語句，不會停掉進行中的存檔。表格會說明為什麼不能編輯，存檔失敗時可以展開看伺服器的完整訊息，窄的 pane 裡 Discard 與 Write back 也不會被切掉。
 - Database：SQL Server 上，trigger 回傳列不再讓存檔回滾；伺服器關掉閒置連線後的第一次存檔，會重新連線並完成。含 `geography`、`geometry` 或 `hierarchyid` 欄位的表會顯示錯誤，不再一直載入。PostgreSQL 上，Stop 會送到這條連線所在的伺服器，不再送到按下當時主機名稱指向的位址。輸入法還在組字的文字，在按 Write back 或離開儲存格時不會被存進去。
 - Database：SQL Server 的 `datetime`、`smalldatetime` 儲存格，年份在前的日期（例如 `2024-01-06 10:00`、`20240106`）不論登入語言，都照輸入的樣子存入。Yuzora 無法確定怎麼讀的日期，會在送出前拒絕。PostgreSQL 的資料表以 `datestyle = ISO` 與 `extra_float_digits = 3` 讀寫，所以用時區縮寫（例如 `CST`）讀出的 `timestamptz` 寫回時不會再差好幾個小時，以浮點數為主鍵的列也找得到。SQL 分頁維持伺服器自己的設定，和 `psql` 一致。
 - Database：清空沒有「空值」的型別（數字、布林、日期與時間、`uuid`、`inet`、`json`）的儲存格，會存成 NULL，而且存檔前儲存格就顯示 NULL。以前 SQL Server 會存成 0 或 1900-01-01，PostgreSQL 多半拒絕。文字儲存格仍存成空字串。
@@ -43,7 +43,7 @@
 - Database：資料表 pane 的 SQL 分頁裡，資料表還在讀取時（例如在等 SQL 分頁留下沒提交的交易），按 Run 或 Cmd+Enter 不再毫無反應。Run 會先停掉那個讀取再執行 SQL，所以 COMMIT 只要按一次。自己執行中的語句不會被停掉，SQL 分頁會寫明要先按 Stop。有未存的編輯（包括存檔途中）時會先詢問。
 - Database：資料表存檔時，在 Yuzora 送出 COMMIT 之前按 Stop，一定不會存入，即使 app 忙到沒能及時注意到這次 Stop 也一樣。以前會存進去，然後說資料庫可能已經存了。SQL Server 上，另一個連線同時在建立或刪除資料表時，瀏覽資料庫物件或開表不會再因為「deadlocked … Rerun the transaction」（Msg 1205）而失敗，Yuzora 會再讀一次。
 - Windows：從開始功能表捷徑啟動的 Yuzora 可以自己更新。以前用這種方式啟動時，更新一定失敗。更新裝不上時，Settings › Updates 會說明原因與該怎麼做，按 Restart 會出現一則通知，點下去就開那一頁。Windows 上還在用 beta 的人，請先看下方〈安裝說明〉。
-- 更新：更新提示改寫 `Yuzora <version> is ready`，不再是 `Herdr <version> is ready`。
+- 更新：更新提示改寫 `Yuzora <version> is ready`，不再是 `Herdr <version> is ready`。從 beta 更新到 0.1.0 時看到的仍是舊字樣。
 
 ### 已知限制
 
@@ -59,14 +59,15 @@
 - Database：開表之後、存檔之前，欄位被改名或兩個欄位互換名稱的話，存檔可能寫到錯的欄位。欄位可能變動時，請先重新整理資料表再編輯。
 - Database：SQL Server 上，`rowversion` 欄與 temporal 資料表看得見的 period 欄看起來可以編輯，改了之後存檔會被伺服器拒絕。
 - Database：沒有在 Azure SQL、Always Encrypted 欄位、CLR 使用者定義型別與 memory-optimized 資料表上驗證過。
-- 依賴套件：`tokio` 與三個 `zstd` crate 已升到安全公告指定的版本。`rsa` 0.10.0-rc.18（Marvin 計時攻擊公告，RUSTSEC-2023-0071）與 `crypto-bigint` 0.7.5 維持原版本，目前沒有紀錄到修正版。SSH 用它們處理 RSA 金鑰與只提供 RSA 的主機。
+- 依賴套件：`tokio`、三個 `zstd` crate 與 `rusqlite` 已升到安全公告指定的版本。`rusqlite` 0.41.1 內建 SQLite 3.54.1（RUSTSEC-2026-0459）。`rsa` 0.10.0-rc.18（Marvin 計時攻擊公告，RUSTSEC-2023-0071）與 `crypto-bigint` 0.7.5 維持原版本，目前沒有紀錄到修正版。SSH 用它們處理 RSA 金鑰與只提供 RSA 的主機。
+- Files：在其他機器上存檔逾時的話，檔案旁邊可能留下名為 `.yuzora-save-<hex>` 的資料夾，裡面是新的內容。Files 與搜尋不會列出它，但 `git status` 會，`git add -A` 也會把它加進去。Yuzora 不會自動刪除它。確認沒有存檔正在寫那個資料夾之後，在那台機器上用 `rm -r` 刪掉。
 - Files：tab 的名稱是開檔當時的檔名，檔案重新命名後也不會跟著變。tab 開著時被重新命名的檔案，重新啟動後那個 tab 會顯示「Can't open this file」，請從 Files 再開一次。
 - Files：在其他機器上重新命名資料夾時，如果那台機器的 `mv` 是沒有 `--no-copy` 的 GNU coreutils（8.32，例如 Ubuntu 22.04），就需要那台機器有 `perl`。沒有的話，檔案系統只能用複製來完成的改名，會在新名稱留下一份複製。Yuzora 會回答「already exists」或說資料夾被複製或被換掉，舊資料夾可能還在。
 
 ### 安裝說明
 
 - macOS 與 Linux 上的 beta.2 到 beta.4 會自己更新到 0.1.0。Yuzora 啟動 10 秒後檢查一次，之後每小時一次，下次重新啟動 Yuzora 時套用。
-- **Windows 上還在用 beta（0.1.0-beta.2 到 beta.4）的人：** beta 版在 Windows 上無法自動更新，請從這個 release 下載 `Yuzora-windows-x64-setup.exe`，直接執行覆蓋安裝，裝完請重新開機一次。beta 版啟動了一個背景程式（herdr-core），它還握著 Yuzora 的安裝資料夾，會讓 0.1.0 之後的第一次自動更新失敗，直到它結束為止；重新開機會結束它，裡面的終端機也會一起結束。不想重新開機的話，可以在 Yuzora 以外的終端機執行 `hc server stop`：它會結束所有終端機與裡面執行的 agent，和重新開機的損失一樣。從 0.1.0 起，Yuzora 會自己更新。
+- **Windows 上還在用 beta（0.1.0-beta.2 到 beta.4）的人：** beta 版在 Windows 上無法自動更新，請先完全關閉 Yuzora，再從這個 release 下載 `Yuzora-windows-x64-setup.exe`，直接執行覆蓋安裝（beta 還開著時，安裝程式可能無法取代它的檔案），裝完請重新開機一次。beta 版啟動了一個背景程式（herdr-core），它還握著 Yuzora 的安裝資料夾，會讓 0.1.0 之後的第一次自動更新失敗，直到它結束為止；重新開機會結束它，裡面的終端機也會一起結束。不想重新開機的話，可以在 Yuzora 以外的終端機執行 `hc server stop`：它會結束所有終端機與裡面執行的 agent，和重新開機的損失一樣。從 0.1.0 起，Yuzora 會自己更新。
 - 0.1.0 的更新清單刻意不列 Windows。Windows 上的 beta 無法安裝更新，列了只會讓它顯示一個永遠裝不上的更新。請照上一條手動安裝 0.1.0。
 - Tauri 版（v0.0.19、0.1.0-beta.1）不會提供 0.1.0，請自行下載安裝。這是另一個 App，Tauri 版的設定與資料不會搬過來：資料庫連線、SSH 主機與設定要重新設定。Tauri 版的檔案原封不動，重新安裝 Tauri 版就能回去用。新 App 沒有 Browser、Companion 與 AgentZone，編輯器也沒有 LSP。Windows 的安裝程式會詢問是否移除舊版的全機安裝。
 - macOS App 僅支援 Apple Silicon，請下載 `Yuzora-macos-aarch64.dmg`。App 只有 ad-hoc 簽章，沒有 Apple Developer ID 簽章或公證，所以第一次開啟會被 Gatekeeper 擋下。到「系統設定 › 隱私權與安全性」按「強制打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。只對從本 repo Releases 下載的 DMG 這樣做。更新之後，macOS 可能會再詢問一次麥克風、相機或資料夾的存取權限。
