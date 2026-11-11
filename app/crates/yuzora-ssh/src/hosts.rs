@@ -138,7 +138,7 @@ pub fn profiles(ctx: &Context) -> Vec<Profile> {
         .unwrap_or_default()
 }
 
-fn write_profiles(ctx: &Context, list: &[Profile]) -> Result<()> {
+pub(crate) fn write_profiles(ctx: &Context, list: &[Profile]) -> Result<()> {
     let mut section = yuzora_core::settings::section_from(&ctx.settings, SECTION);
     if !section.is_object() {
         section = json!({});
@@ -147,8 +147,9 @@ fn write_profiles(ctx: &Context, list: &[Profile]) -> Result<()> {
     yuzora_core::settings::set_section_at(&ctx.settings, SECTION, section).map_err(SshError::io)
 }
 
-/// Adds or replaces a profile (by id; a new one gets an id). Returns its id, which is a new one
-/// when the profile was edited to reach another host, port or user.
+/// Adds a profile (no id) or replaces the one with its id. Returns its id, which is a new one
+/// when the profile was edited to reach another server or account, or to go there another way
+/// ([`elsewhere`]).
 pub fn save_profile(ctx: &Context, mut p: Profile) -> Result<String> {
     p.host = p.host.trim().to_owned();
     p.name = p.name.trim().to_owned();
@@ -173,13 +174,17 @@ pub fn save_profile(ctx: &Context, mut p: Profile) -> Result<String> {
         return Err(SshError::text(ErrorKind::Invalid, "unsafe-name", &[("name", user.to_owned())]));
     }
     let mut list = profiles(ctx);
-    let at = list.iter().position(|q| q.id == p.id);
+    // An id no profile has is one a profile had before it was removed or pointed elsewhere:
+    // saving under it would bring that id back.
+    let at = match p.id.is_empty() {
+        true => None,
+        false => Some(list.iter().position(|q| q.id == p.id).ok_or_else(|| SshError::text(ErrorKind::UnknownHost, "unknown-host", &[("host", format!("profile:{}", p.id))]))?),
+    };
     // A profile that now names another server or account is another host, and gets another id.
     // What knows the old id (an SFTP pane and its listing, a transfer and its `.part`, a file
     // opened for editing) was made on the first server: under the same id it would go on
-    // working on the second. Under a new one it finds no host. An id no profile has is not
-    // taken as given either: it may be one a profile had before.
-    if at.is_none_or(|i| elsewhere(&list[i], &p)) {
+    // working on the second. Under a new one it finds no host.
+    if at.is_none_or(|i| elsewhere(ctx, &list[i], &p)) {
         p.id = new_id(&list);
     }
     match at {
@@ -190,9 +195,16 @@ pub fn save_profile(ctx: &Context, mut p: Profile) -> Result<String> {
     Ok(p.id)
 }
 
-/// Whether two profiles reach different servers or accounts.
-fn elsewhere(a: &Profile, b: &Profile) -> bool {
-    a.host != b.host || a.port.unwrap_or(22) != b.port.unwrap_or(22) || a.user != b.user
+/// Whether two profiles reach different servers or accounts, or the same address through other
+/// jump hosts (an address behind one bastion is another machine behind the next). As connecting
+/// resolves them: what a profile leaves out, `~/.ssh/config` or the defaults fill in.
+fn elsewhere(ctx: &Context, a: &Profile, b: &Profile) -> bool {
+    let cfg = SshConfig::load(&ctx.ssh_config, &ctx.config);
+    let reach = |p: &Profile| {
+        let r = from_profile(ctx, &cfg, p);
+        (r.user, r.hostname, r.port, r.proxy_jump)
+    };
+    reach(a) != reach(b)
 }
 
 pub fn remove_profile(ctx: &Context, id: &str) -> Result<bool> {
@@ -372,37 +384,59 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_keeps_its_id_until_it_reaches_another_host_port_or_user() {
+    fn a_profile_keeps_its_id_until_it_reaches_another_server_or_account() {
         let w = TestWorld::new("hosts-profile-id");
+        w.write_ssh_config("Host nas\n  HostName nas.local\n  Port 2222\n  User admin\n");
         let ctx = w.context();
+        let ids = || profiles(&ctx).into_iter().map(|p| p.id).collect::<Vec<_>>();
         let other = save_profile(&ctx, Profile { host: "other.example".into(), ..Default::default() }).unwrap();
-        let first = Profile { name: "box".into(), host: "h.example".into(), user: Some("me".into()), ..Default::default() };
-        let id = save_profile(&ctx, first).unwrap();
+        let mut id = save_profile(&ctx, Profile { name: "box".into(), host: "h.example".into(), user: Some("me".into()), ..Default::default() }).unwrap();
+        let mut seen = vec![other.clone(), id.clone()];
         let edit = |id: &str, f: &dyn Fn(&mut Profile)| {
             let mut p = profiles(&ctx).into_iter().find(|p| p.id == id).unwrap();
             f(&mut p);
             save_profile(&ctx, p).unwrap()
         };
-        // The same server and account, reached or named another way.
-        assert_eq!(edit(&id, &|p| p.name = "renamed".into()), id);
-        assert_eq!(edit(&id, &|p| p.identity_file = Some("~/.ssh/other".into())), id);
-        assert_eq!(edit(&id, &|p| p.proxy_jump = Some("bastion".into())), id);
-        assert_eq!(edit(&id, &|p| p.port = Some(22)), id, "no port is port 22");
-        // Another one: each is a new id, in the profile's place.
-        let mut ids = vec![other.clone(), id.clone()];
-        let mut id = id;
-        for (what, f) in [("host", (&|p: &mut Profile| p.host = "h2.example".into()) as &dyn Fn(&mut Profile)), ("port", &|p| p.port = Some(2222)), ("user", &|p| p.user = Some("root".into()))] {
-            let moved = edit(&id, f);
-            assert_ne!(moved, id, "{what}");
-            assert_eq!(profiles(&ctx).iter().map(|p| p.id.clone()).collect::<Vec<_>>(), [other.clone(), moved.clone()], "{what}");
-            assert_eq!(lookup(&ctx, &[], &format!("profile:{id}")).unwrap_err().kind, ErrorKind::UnknownHost, "{what}");
-            ids.push(moved.clone());
-            id = moved;
+        type Edit<'a> = (&'a str, bool, &'a dyn Fn(&mut Profile));
+        let edits: [Edit; 15] = [
+            // The same server and account, named or signed in to another way.
+            ("name", false, &|p| p.name = "renamed".into()),
+            ("key", false, &|p| p.identity_file = Some("~/.ssh/other".into())),
+            ("port 22 for none", false, &|p| p.port = Some(22)),
+            ("no jump, said", false, &|p| p.proxy_jump = Some("none".into())),
+            // Another one.
+            ("host", true, &|p| p.host = "h2.example".into()),
+            ("port", true, &|p| p.port = Some(2200)),
+            ("user", true, &|p| p.user = Some("root".into())),
+            ("jump", true, &|p| p.proxy_jump = Some("bastion".into())),
+            ("another jump", true, &|p| p.proxy_jump = Some("bastion-2".into())),
+            // What the profile leaves out is what ~/.ssh/config says, not 22 and the local user.
+            ("config host", true, &|p| *p = Profile { id: p.id.clone(), host: "nas".into(), ..Default::default() }),
+            ("the config's port", false, &|p| p.port = Some(2222)),
+            ("the config's user", false, &|p| p.user = Some("admin".into())),
+            ("port 22 for the config's", true, &|p| p.port = Some(22)),
+            ("the config's port for 22", true, &|p| p.port = None),
+            ("the name the config gives", true, &|p| p.host = "nas.local".into()),
+        ];
+        for (what, moves, f) in edits {
+            let next = edit(&id, f);
+            assert_eq!(next != id, moves, "{what}");
+            assert_eq!(ids(), [other.clone(), next.clone()], "{what}: in the profile's place");
+            if moves {
+                assert_eq!(lookup(&ctx, &[], &format!("profile:{id}")).unwrap_err().kind, ErrorKind::UnknownHost, "{what}");
+                seen.push(next.clone());
+            }
+            id = next;
         }
-        // No id comes back, for a new profile or for one saved under an id it had before.
-        let stale = Profile { id: ids[1].clone(), host: "h.example".into(), ..Default::default() };
-        ids.extend([save_profile(&ctx, Profile { host: "new.example".into(), ..Default::default() }).unwrap(), save_profile(&ctx, stale).unwrap()]);
-        let distinct: std::collections::HashSet<_> = ids.iter().collect();
-        assert_eq!(distinct.len(), ids.len(), "{ids:?}");
+        // No id comes back: a new profile's is past every one there is, whatever the clock says,
+        seen.push(save_profile(&ctx, Profile { host: "new.example".into(), ..Default::default() }).unwrap());
+        let distinct: std::collections::HashSet<_> = seen.iter().collect();
+        assert_eq!(distinct.len(), seen.len(), "{seen:?}");
+        let far = Profile { id: format!("{:x}", u128::MAX / 2), ..Default::default() };
+        assert_eq!(new_id(&[far]), format!("{:x}", u128::MAX / 2 + 1));
+        // and a profile is not saved under an id none has (one it had before).
+        let stale = Profile { id: seen[1].clone(), host: "h.example".into(), ..Default::default() };
+        assert_eq!(save_profile(&ctx, stale).unwrap_err().kind, ErrorKind::UnknownHost);
+        assert_eq!(ids().len(), 3);
     }
 }

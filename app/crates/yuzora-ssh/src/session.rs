@@ -337,36 +337,38 @@ impl Manager {
 
     /// Saves a profile ([`hosts::save_profile`]) and `password` as its saved password, when one
     /// is given. Returns the profile's id.
+    ///
+    /// A profile that comes back under a new id now reaches another server: what was open under
+    /// the old id ends (session, tunnels, questions), since no key finds it any more, and the
+    /// saved password goes with the profile. A save whose password can't be stored changes
+    /// nothing, so it can be tried again.
     pub fn save_profile(&self, profile: hosts::Profile, password: Option<&str>) -> Result<String> {
+        let before = hosts::profiles(&self.ctx);
         let was = profile.id.clone();
         let id = hosts::save_profile(&self.ctx, profile)?;
-        if !was.is_empty() && was != id {
-            self.profile_moved(&was, &id);
+        let key = |id: &str| crate::auth::password_key(&format!("profile:{id}"));
+        let moved = !was.is_empty() && was != id;
+        let password = match password.filter(|p| !p.is_empty()) {
+            Some(given) => Some(given.to_owned()),
+            None if moved => self.ctx.secrets.get(&key(&was)).ok().flatten(),
+            None => None,
+        };
+        if let Some(Err(e)) = password.map(|p| self.ctx.secrets.set(&key(&id), &p)) {
+            hosts::write_profiles(&self.ctx, &before)?;
+            return Err(SshError::new(ErrorKind::Io, e.to_string()));
         }
-        if let Some(password) = password.filter(|p| !p.is_empty()) {
-            let key = crate::auth::password_key(&format!("profile:{id}"));
-            self.ctx.secrets.set(&key, password).map_err(|e| SshError::new(ErrorKind::Io, e.to_string()))?;
+        if moved {
+            let old = format!("profile:{was}");
+            self.prompts.cancel_host(&old);
+            self.tunnels.close_host(&old);
+            let session = lock(&self.sessions).remove(&old);
+            lock(&self.states).remove(&old);
+            if let Some(s) = session {
+                crate::runtime::handle().spawn(async move { s.close().await });
+            }
+            let _ = self.ctx.secrets.delete(&key(&was));
         }
         Ok(id)
-    }
-
-    /// After [`hosts::save_profile`] gave a profile a new id (it now reaches another server or
-    /// account): what was open under the old id ends, since no key finds it any more, and the
-    /// saved password goes with the profile.
-    fn profile_moved(&self, old: &str, new: &str) {
-        let (old, new) = (format!("profile:{old}"), format!("profile:{new}"));
-        self.prompts.cancel_host(&old);
-        self.tunnels.close_host(&old);
-        let session = lock(&self.sessions).remove(&old);
-        lock(&self.states).remove(&old);
-        if let Some(s) = session {
-            crate::runtime::handle().spawn(async move { s.close().await });
-        }
-        let from = crate::auth::password_key(&old);
-        if let Ok(Some(password)) = self.ctx.secrets.get(&from) {
-            let _ = self.ctx.secrets.set(&crate::auth::password_key(&new), &password);
-        }
-        let _ = self.ctx.secrets.delete(&from);
     }
 
     /// Ends a host's session and everything on it (tunnels, SFTP).

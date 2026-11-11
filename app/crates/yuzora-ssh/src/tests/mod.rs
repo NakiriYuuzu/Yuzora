@@ -353,6 +353,60 @@ async fn a_profile_that_now_reaches_another_server_is_another_host() {
     assert!(to_b.ping().await.is_ok());
 }
 
+/// A credential store that can be told to refuse writes (a locked keychain, no Secret Service).
+struct Refusing(Arc<yuzora_core::secrets::MemoryStore>, std::sync::atomic::AtomicBool);
+
+impl SecretStore for Refusing {
+    fn set(&self, key: &SecretKey, secret: &str) -> std::result::Result<(), yuzora_core::secrets::SecretError> {
+        match self.1.load(std::sync::atomic::Ordering::Relaxed) {
+            true => Err(yuzora_core::secrets::SecretError::Denied("refused".into())),
+            false => self.0.set(key, secret),
+        }
+    }
+    fn get(&self, key: &SecretKey) -> std::result::Result<Option<String>, yuzora_core::secrets::SecretError> {
+        self.0.get(key)
+    }
+    fn delete(&self, key: &SecretKey) -> std::result::Result<(), yuzora_core::secrets::SecretError> {
+        self.0.delete(key)
+    }
+}
+
+/// The dialog stays open on a failed save, holding the id it opened with: saving again from it
+/// has to be the same save, not one for a profile that has meanwhile moved to a new id.
+#[test]
+fn a_save_whose_password_cannot_be_stored_changes_nothing() {
+    let w = TestWorld::new("it-save-refused");
+    let store = Arc::new(Refusing(w.secrets.clone(), false.into()));
+    let ctx = crate::context::Context { secrets: store.clone(), ..w.context() };
+    let refuse = |yes: bool| store.1.store(yes, std::sync::atomic::Ordering::Relaxed);
+    let profile = |id: &str, port: u16| crate::hosts::Profile { id: id.into(), name: "box".into(), host: "h.example".into(), port: Some(port), ..Default::default() };
+    let password = |id: &str| w.secrets.get(&SecretKey::new("ssh", format!("password:profile:{id}"))).unwrap();
+    let saved = || crate::hosts::profiles(&ctx).into_iter().map(|p| (p.id, p.port)).collect::<Vec<_>>();
+    let m = Manager::new(ctx.clone());
+    let id = m.save_profile(profile("", 22), Some("first")).unwrap();
+
+    refuse(true);
+    // A new address with a new password, then a new address with the one it has.
+    for given in [Some("second"), None] {
+        assert_eq!(m.save_profile(profile(&id, 2222), given).unwrap_err().kind, ErrorKind::Io, "{given:?}");
+        assert_eq!(saved(), [(id.clone(), Some(22))], "{given:?}");
+        assert_eq!(password(&id).as_deref(), Some("first"), "{given:?}");
+    }
+    // The same address with a new password, and a new profile.
+    assert!(m.save_profile(crate::hosts::Profile { name: "renamed".into(), ..profile(&id, 22) }, Some("second")).is_err());
+    assert!(m.save_profile(profile("", 22), Some("third")).is_err());
+    assert_eq!(crate::hosts::profiles(&ctx).into_iter().map(|p| (p.id, p.name)).collect::<Vec<_>>(), [(id.clone(), "box".to_owned())]);
+
+    refuse(false);
+    let moved = m.save_profile(profile(&id, 2222), Some("second")).unwrap();
+    assert_ne!(moved, id);
+    assert_eq!(saved(), [(moved.clone(), Some(2222))], "the save that failed left a profile behind");
+    assert_eq!((password(&moved).as_deref(), password(&id)), (Some("second"), None));
+    // Saved again under the id it had: there is no such profile now, and none is added.
+    assert_eq!(m.save_profile(profile(&id, 2222), None).unwrap_err().kind, ErrorKind::UnknownHost);
+    assert_eq!(saved(), [(moved, Some(2222))]);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sftp_browses_and_changes_both_sides() {
     let w = TestWorld::new("it-sftp-browse");
