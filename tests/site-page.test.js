@@ -18,7 +18,8 @@ function localReferenceExists(reference, baseFile = "site/index.html") {
     return true
   }
   const [file, fragment] = reference.split("#")
-  const path = resolve(root, dirname(baseFile), file)
+  // A module's URL may carry `?v=`: the file is the part before it.
+  const path = resolve(root, dirname(baseFile), file.split("?")[0])
   if (!existsSync(path)) return false
   if (fragment && file.endsWith(".svg")) {
     const svg = new DOMParser().parseFromString(readFileSync(path, "utf8"), "image/svg+xml")
@@ -30,8 +31,10 @@ function localReferenceExists(reference, baseFile = "site/index.html") {
 describe("GitHub Pages product page", () => {
   it("publishes the static stylesheet and one application module", () => {
     expect(page.querySelector('link[href="./styles.css"]')).not.toBeNull()
-    expect(page.querySelector('script[type="module"][src="./app.js"]')).not.toBeNull()
-    expect(appSource).toContain('from "./downloads.js"')
+    // The modules are cached for hours: their URLs carry a version that changes with them.
+    expect(page.querySelector('script[type="module"][src="./app.js?v=0.1.0"]')).not.toBeNull()
+    expect(appSource).toContain('from "./downloads.js?v=0.1.0"')
+    expect(appSource).toContain('from "./i18n.js?v=0.1.0"')
   })
 
   it("contains the current product narrative and download surfaces", () => {
