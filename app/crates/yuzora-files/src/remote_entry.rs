@@ -1890,6 +1890,7 @@ exec mv -n -- "$from" "$to""#,
         let mut failures = Vec::new();
         for (image, shell) in [
             ("alpine:3", "sh"),
+            ("ubuntu:22.04", "sh"),
             ("ubuntu:24.04", "dash"),
             ("ubuntu:24.04", "bash --posix"),
             ("ubuntu:25.10", "sh"),
