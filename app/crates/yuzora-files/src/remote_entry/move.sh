@@ -8,7 +8,7 @@ for tool in mv stat rm; do
 done
 idof() { stat -c '%d:%i' -- "$1" 2>/dev/null || stat -f '%d:%i' -- "$1" 2>/dev/null; }
 dev() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null; }
-held= heldid= heldkind= how= gnu= left=
+held= heldid= heldkind= how= gnu= nocopy= left=
 giveback() {
   if [ -n "$held" ]; then
     if [ -z "$heldid" ]; then
@@ -62,8 +62,16 @@ a=$(dev "$from") b=$(dev "$d/.")
 if [ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ]; then echo 'refused device'; exit 0; fi
 before=$(idof "$from")
 case $(mv --version 2>&1) in *'GNU coreutils'*) gnu=1 ;; esac
+# Where the system cannot rename (EXDEV: a folder out of an image layer of an overlay file system, a bind mount)
+# GNU mv copies. --no-copy (9.4) makes it fail instead; without it a folder is renamed by rename(2) alone.
 if [ -n "$gnu" ]; then
-  msg=$(mv -nT -- "$from" "$to" 2>&1)
+  case $(mv --help 2>&1) in
+    *--no-copy*) nocopy=--no-copy ;;
+    *) if [ -d "$from" ] && [ ! -L "$from" ] && command -v perl >/dev/null 2>&1; then gnu=; fi ;;
+  esac
+fi
+if [ -n "$gnu" ]; then
+  msg=$(mv $nocopy -nT -- "$from" "$to" 2>&1)
   rc=$?
 else
   pick
@@ -93,4 +101,4 @@ if [ "$rc" -ne 0 ]; then
 fi
 held=
 if [ -z "$before" ] || [ "$(idof "$to")" = "$before" ]; then echo done; exit 0; fi
-fail "$from was renamed, but what is at $to is not the entry that was at $from: one of them was replaced meanwhile"
+fail "$from is gone and $to is there, but what is at $to is not the entry that was at $from: either it was copied instead of renamed (mv does that where the system cannot rename), or one of the two was replaced meanwhile"

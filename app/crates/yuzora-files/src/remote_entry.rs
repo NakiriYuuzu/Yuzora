@@ -36,7 +36,11 @@ const MAKE_SCRIPT: &str = concat!(
 /// to move into). Plain `mv` cannot promise that: it takes a folder, or a link to one, at `to`
 /// for the place to move into, and replaces a file. So:
 /// - GNU `mv -nT` does it in one call (`renameat2` with `RENAME_NOREPLACE`) where the kernel and
-///   file system have that, and `-T` keeps it from following `to` where they do not.
+///   file system have that, and `-T` keeps it from following `to` where they do not. Where the
+///   system cannot rename at all (EXDEV: a folder out of an image layer of an overlay file system,
+///   or across a bind mount, where the device is the same) GNU `mv` copies; `--no-copy`, where
+///   `mv --help` lists it (9.4), makes it fail instead. A GNU `mv` without it is not asked to
+///   rename a folder when there is `perl`: that goes the way below.
 /// - Anywhere else the script first takes the name `to` (an empty file made the way `MAKE_SCRIPT`
 ///   makes one, or an empty folder for a folder), which nobody can then make, and renames over
 ///   that with a call that cannot take `to` for a place to move into: `perl`'s `rename`, or
@@ -44,9 +48,12 @@ const MAKE_SCRIPT: &str = concat!(
 ///   empty folder, is all it asks of the system. A machine with none of these (macOS has `perl`)
 ///   gets `refused rename`: the script does not fall back to a plain `mv`.
 /// - If the rename fails, or the source is gone by then, the name taken is given back, but only
-///   if it is still the one made (`device:inode`, and a folder only when it is empty).
+///   if it is still the one made (`device:inode`, and a folder only when it is empty). Where
+///   `stat` gives no `device:inode` nothing can say that, so the name stays and the answer says so.
 /// - A name that is the same entry under other letters (`$3`) is renamed in place, on a file
 ///   system that folds case.
+/// - The device of the folder `to` is in is read through `/.`: `stat` alone looks at a link, and
+///   a link to a folder is that folder to a rename.
 const MOVE_SCRIPT: &str = concat!(
     include_str!("remote_entry/common.sh"),
     include_str!("remote_entry/move.sh")
