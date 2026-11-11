@@ -171,7 +171,7 @@ case $tool:$1 in
       gnuless) if [ "$1" = --version ]; then echo "mv (uutils coreutils) 0.2.2"; else echo "  -T, --no-target-directory  treat DEST as a normal file"; fi; exit 0 ;;
     esac ;;
 esac
-case $1 in -f|-n|-T|-fT|-nT|-e)
+case $1 in -f|-n|-T|-fT|-nT|-e|--no-copy)
   for a in "$@"; do from=$to; to=$a; done
   case $YZ_WHAT in
     vanish) mv -- "$from" /tmp/elsewhere/ ;;

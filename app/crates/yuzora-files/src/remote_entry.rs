@@ -903,7 +903,7 @@ mod tests {
             (
                 "mv",
                 format!(
-                    "case $1 in --version|--help) [ -z \"$YZ_MVLOOKS\" ] || {{ echo 'usage: mv [-f | -i | -n] [-hv] source target' >&2; exit 64; }} ;; esac\nreal=mv\ncase $1 in -f|-n|-T|-fT|-nT) {hook} ;; esac\nexec mv \"$@\""
+                    "case $1 in --version|--help) [ -z \"$YZ_MVLOOKS\" ] || {{ echo 'usage: mv [-f | -i | -n] [-hv] source target' >&2; exit 64; }} ;; esac\nreal=mv\ncase $1 in -f|-n|-T|-fT|-nT|--no-copy) {hook} ;; esac\nexec mv \"$@\""
                 ),
             ),
             (
