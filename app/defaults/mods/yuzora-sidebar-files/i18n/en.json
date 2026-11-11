@@ -2,9 +2,6 @@
   "title": "Files",
   "description": "File tree",
   "local": "Local",
-  "remote": {
-    "readonly": "Remote files are read-only in this version"
-  },
   "action": {
     "new_file": "New file",
     "new_folder": "New folder",

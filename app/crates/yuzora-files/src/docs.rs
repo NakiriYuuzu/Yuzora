@@ -122,8 +122,8 @@ fn forget(id: u64, cx: &mut App) {
     }
 }
 
-/// Renames a file or folder (this machine only), then points the documents
-/// open at it, or under it, at the new path: their panes keep showing them,
+/// Renames a file or folder (here, or on the machine `on`), then points the documents
+/// open at it, or under it, on that machine at the new path: their panes keep showing them,
 /// and the next look at the disk finds the file where it now is. Refused
 /// while a document is open at the new path (its file deleted): the two
 /// would edit one file. A save and a rename of its file never overlap: the
@@ -136,12 +136,12 @@ pub fn rename(
     cx: &mut App,
 ) -> oneshot::Receiver<Result<(), String>> {
     let (tx, rx) = oneshot::channel();
+    let on = on.filter(|m| !m.is_empty());
     let open_there = all(cx).into_iter().find_map(|d| {
         let key = &d.read(cx).key;
-        (key.on.is_none() && renamed(&key.path, &to, &to).is_some()).then(|| key.path.clone())
+        (key.on == on && renamed(&key.path, &to, &to).is_some()).then(|| key.path.clone())
     });
-    let local = fsops::machine(on.as_deref()).is_none();
-    if let Some(path) = open_there.filter(|_| local) {
+    if let Some(path) = open_there {
         let _ = tx.send(Err(format!(
             "{path} is still open (its file was deleted): close it first"
         )));
@@ -151,7 +151,7 @@ pub fn rename(
         .into_iter()
         .filter(|d| {
             let key = &d.read(cx).key;
-            local && key.on.is_none() && renamed(&key.path, &from, &to).is_some()
+            key.on == on && renamed(&key.path, &from, &to).is_some()
         })
         .collect();
     if let Some(doc) = moving.iter().map(|d| d.read(cx)).find(|d| d.saving) {
@@ -166,7 +166,7 @@ pub fn rename(
     }
     let moving: Vec<_> = moving.iter().map(Entity::downgrade).collect();
     cx.spawn(async move |cx| {
-        let (f, t, o) = (from.clone(), to.clone(), on);
+        let (f, t, o) = (from.clone(), to.clone(), on.clone());
         let result = blocking(move || fsops::rename(&f, &t, o.as_deref()))
             .await
             .unwrap_or_else(|| Err("could not start a worker".into()));
@@ -175,7 +175,7 @@ pub fn rename(
                 let _ = doc.update(cx, |doc, _| doc.moving = false);
             }
             if result.is_ok() {
-                moved(&from, &to, cx);
+                moved(&from, &to, on.as_deref(), cx);
             }
         });
         let _ = tx.send(result);
@@ -184,17 +184,20 @@ pub fn rename(
     rx
 }
 
-/// Re-keys the documents on this machine at `from`, or under it, to `to`.
-fn moved(from: &str, to: &str, cx: &mut App) {
+/// Re-keys the documents on `on` at `from`, or under it, to `to`.
+fn moved(from: &str, to: &str, on: Option<&str>, cx: &mut App) {
     for view in all(cx) {
         let (id, key) = {
             let doc = view.read(cx);
             (doc.id, doc.key.clone())
         };
-        let Some(path) = renamed(&key.path, from, to).filter(|_| key.on.is_none()) else {
+        let Some(path) = renamed(&key.path, from, to).filter(|_| key.on.as_deref() == on) else {
             continue;
         };
-        let new_key = DocKey { on: None, path };
+        let new_key = DocKey {
+            on: key.on.clone(),
+            path,
+        };
         let docs = cx.default_global::<Docs>();
         if docs.by_key.get(&key) == Some(&id) {
             docs.by_key.remove(&key);
@@ -1605,7 +1608,7 @@ mod tests {
         // The check looks at the old path; the rename re-keys the document
         // before its answer lands.
         drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
-        cx.update(|cx| moved(&from, &to, cx));
+        cx.update(|cx| moved(&from, &to, None, cx));
         cx.run_until_parked();
         cx.update(|cx| {
             let doc = view.read(cx);
@@ -1983,6 +1986,141 @@ mod tests {
         cx.update(|cx| assert!(!view.read(cx).deleted));
     }
 
+    /// A rename on `machine` through [`rename`], waited for.
+    #[cfg(unix)]
+    fn renamed_on(
+        machine: Option<&str>,
+        from: &std::path::Path,
+        to: &std::path::Path,
+        cx: &mut gpui::TestAppContext,
+    ) -> Result<(), String> {
+        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let rx = cx.update(|cx| rename(path(from), path(to), machine.map(str::to_owned), cx));
+        cx.run_until_parked();
+        futures::executor::block_on(rx).unwrap()
+    }
+
+    #[cfg(unix)]
+    fn key_on(machine: Option<&str>, path: &std::path::Path) -> DocKey {
+        DocKey {
+            on: machine.map(str::to_owned),
+            path: path.to_string_lossy().into_owned(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn an_open_document_on_a_machine_follows_its_file_when_renamed(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a.txt"), "one\n").unwrap();
+        crate::remote_write::testing::fake_hc();
+        let old = key_on(Some("lab"), &sub.join("a.txt"));
+        let id = cx.update(|cx| open(old.clone(), cx));
+        cx.run_until_parked();
+        // The file, then its folder: the document stays on its machine.
+        renamed_on(Some("lab"), &sub.join("a.txt"), &sub.join("b.txt"), cx).unwrap();
+        renamed_on(Some("lab"), &sub, &dir.path().join("sub2"), cx).unwrap();
+        let moved = key_on(Some("lab"), &dir.path().join("sub2/b.txt"));
+        cx.update(|cx| {
+            assert_eq!(find(&old, cx), None);
+            assert_eq!(find(&moved, cx), Some(id));
+            assert_eq!(get(id, cx).unwrap().read(cx).key, moved);
+        });
+        // Where it is now, it is not deleted.
+        let view = cx.update(|cx| get(id, cx).unwrap());
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(!view.read(cx).deleted));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn unsaved_edits_survive_a_rename_on_a_machine_and_the_next_save_goes_to_the_new_path(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "one\n").unwrap();
+        let (view, window) = editing_on("lab", &a, cx);
+        type_text(&view, window, "mine ", cx);
+        renamed_on(Some("lab"), &a, &b, cx).unwrap();
+        cx.update(|cx| {
+            let doc = view.read(cx);
+            assert!(doc.dirty && !doc.conflict && !doc.deleted);
+            assert_eq!(doc.text(cx).as_ref(), "mine one\n");
+            assert_eq!(doc.key, key_on(Some("lab"), &b));
+        });
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        let saved = futures::executor::block_on(saved).unwrap();
+        assert_eq!((saved.ok, saved.conflict, saved.error), (true, false, None));
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "mine one\n");
+        assert!(!a.exists());
+        cx.update(|cx| assert!(!view.read(cx).dirty));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_rename_on_one_machine_moves_the_documents_of_that_machine_only(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "one\n").unwrap();
+        crate::remote_write::testing::fake_hc();
+        // The same path on this machine, on `lab` and on `box`: three files, three documents.
+        let keys = [None, Some("lab"), Some("box")].map(|m| key_on(m, &a));
+        let ids = keys.clone().map(|k| cx.update(|cx| open(k, cx)));
+        cx.run_until_parked();
+        renamed_on(Some("lab"), &a, &b, cx).unwrap();
+        cx.update(|cx| {
+            assert_eq!(find(&keys[0], cx), Some(ids[0]));
+            assert_eq!(find(&keys[1], cx), None);
+            assert_eq!(find(&key_on(Some("lab"), &b), cx), Some(ids[1]));
+            assert_eq!(find(&keys[2], cx), Some(ids[2]));
+        });
+        // And the other way: a rename here leaves a machine's document at its path.
+        std::fs::remove_file(&b).unwrap();
+        std::fs::write(&a, "again\n").unwrap();
+        renamed_on(None, &a, &b, cx).unwrap();
+        cx.update(|cx| {
+            assert_eq!(find(&key_on(None, &b), cx), Some(ids[0]));
+            assert_eq!(find(&keys[2], cx), Some(ids[2]));
+            assert_eq!(find(&key_on(Some("lab"), &b), cx), Some(ids[1]));
+        });
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_rename_onto_an_open_deleted_file_is_refused_on_its_own_machine_only(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "moved\n").unwrap();
+        std::fs::write(&b, "kept in its pane\n").unwrap();
+        crate::remote_write::testing::fake_hc();
+        let on_lab = key_on(Some("lab"), &b);
+        let on_box = key_on(Some("box"), &b);
+        let (lab_id, box_id) = (
+            cx.update(|cx| open(on_lab.clone(), cx)),
+            cx.update(|cx| open(on_box.clone(), cx)),
+        );
+        cx.run_until_parked();
+        std::fs::remove_file(&b).unwrap();
+        let refused = renamed_on(Some("lab"), &a, &b, cx).unwrap_err();
+        assert!(refused.contains("close it first"), "{refused}");
+        assert!(a.exists() && !b.exists());
+        // Closed there, the name is free; another machine's document at the path was no obstacle.
+        cx.update(|cx| release(lab_id, None, cx));
+        cx.run_until_parked();
+        renamed_on(Some("lab"), &a, &b, cx).unwrap();
+        assert!(b.exists());
+        cx.update(|cx| assert_eq!(find(&on_box, cx), Some(box_id)));
+    }
+
     #[gpui::test]
     fn a_save_and_a_rename_of_its_file_never_overlap(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -2024,6 +2162,39 @@ mod tests {
         cx.run_until_parked();
         assert!(futures::executor::block_on(saved).unwrap().ok);
         assert_eq!((read(&b), a.exists()), (text(cx), false));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_save_and_a_rename_of_its_file_on_a_machine_never_overlap(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "one\n").unwrap();
+        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let (view, window) = editing_on("lab", &a, cx);
+        let read = |p: &std::path::Path| std::fs::read_to_string(p).unwrap();
+        // A save in flight: the rename is refused, and the file is saved where it was.
+        type_text(&view, window, "two ", cx);
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        let rx = cx.update(|cx| rename(path(&a), path(&b), Some("lab".into()), cx));
+        cx.run_until_parked();
+        let refused = futures::executor::block_on(rx).unwrap().unwrap_err();
+        assert!(refused.contains("being saved"), "{refused}");
+        assert!(futures::executor::block_on(saved).unwrap().ok);
+        assert_eq!((read(&a), b.exists()), ("two one\n".into(), false));
+        // A rename in flight: the save is refused (it would write the old path), then saves where the file is.
+        type_text(&view, window, "three ", cx);
+        let rx = cx.update(|cx| rename(path(&a), path(&b), Some("lab".into()), cx));
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        assert_eq!(futures::executor::block_on(rx).unwrap(), Ok(()));
+        let saved = futures::executor::block_on(saved).unwrap();
+        assert_eq!((saved.ok, saved.error.as_deref()), (false, Some("busy")));
+        assert!(!a.exists());
+        let saved = view.update(cx, |doc, cx| doc.save(false, cx));
+        cx.run_until_parked();
+        assert!(futures::executor::block_on(saved).unwrap().ok);
+        assert_eq!((read(&b), a.exists()), ("two three one\n".into(), false));
     }
 
     #[cfg(unix)]

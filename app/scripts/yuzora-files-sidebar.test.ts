@@ -32,18 +32,22 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
     toasts: [] as any[], opened: [] as { path: string; on: string | null; space: string }[], log: [] as string[], lists: [] as { id: string; count: number }[],
     query: "", keys: [] as string[], onClick: null as any, onSecondary: null as any, menus: [] as any[], shared: new Map<string, any>(),
     timers: [] as { ms: number; fn: () => void; fired: boolean }[],
-    calls: { list: [] as Call[], git: [] as Call[], stat: [] as Call[], watch: [] as Call[] },
+    calls: { list: [] as Call[], git: [] as Call[], stat: [] as Call[], watch: [] as Call[], make: [] as Call[] },
+    name: "", props: null as any, clicks: new Map<string, any>(), moved: [] as any[][],
   };
   const active = () => world.spaces.find(s => s.active)?.id;
-  const ask = (kind: "list" | "git" | "stat" | "watch", args: any[]) => {
+  const ask = (kind: "list" | "git" | "stat" | "watch" | "make", args: any[]) => {
     const [call, promise] = waiting();
     call.args = args;
     world.calls[kind].push(call);
     return promise;
   };
+  let id = "";
   const chain: any = new Proxy(function () {}, {
     get: (_t, prop) => prop === "then" ? undefined : (...args: any[]) => {
       for (const a of args) if (typeof a === "string") world.log.push(a);
+      if (prop === "id") id = args[0];
+      if (prop === "on_click") world.clicks.set(id, args[0]);
       if (prop === "on_item_click") world.onClick = args[0];
       if (prop === "on_item_secondary_click") world.onSecondary = args[0];
       if (prop === "when") { if (args[0]) args[1](chain); }
@@ -51,7 +55,13 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
     },
   });
   const maker = () => chain;
-  const input = { on() {}, value: () => world.query, set_value() {}, focus() {}, set_selected_range() {} };
+  // The search box is the first input made, the name being typed for a new file or a rename the second.
+  const inputs: any[] = [];
+  const makeInput = () => {
+    const input = { on() {}, value: () => (inputs[0] === input ? world.query : world.name), set_value() {}, focus() {}, set_selected_range() {} };
+    inputs.push(input);
+    return input;
+  };
   const stubs: Record<string, any> = {
     View: class {},
     div: maker, svg: maker, v_flex: maker, h_flex: maker,
@@ -61,28 +71,31 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
       render({ start: 0, end: count });
       return chain;
     },
-    InputState: { new: () => input }, Input: { new: maker }, Scrollbar: { vertical: maker },
+    InputState: { new: makeInput }, Input: { new: maker }, Scrollbar: { vertical: maker },
     spaces: () => world.spaces, panes: () => [], focused: () => null, theme: () => new Proxy({}, { get: () => "#000000" }),
-    run() {}, home: () => "/home/me", props: () => null, openOverlay: (o: any) => world.menus.push(o), closeOverlay() {},
+    run() {}, home: () => "/home/me", props: () => world.props, openOverlay: (o: any) => world.menus.push(o), closeOverlay() {},
     shared: (key: string) => world.shared.get(key) ?? null, setShared: (key: string, value: any) => world.shared.set(key, value), notify: (n: any) => world.toasts.push(n), watchFolder: (path: string) => ask("watch", [path]),
     window: () => ({ platform: "macos" }),
     t: (key: string, vars?: object) => (vars ? `${key} ${JSON.stringify(vars)}` : key), tokens: () => ({}),
     listDir: (path: string, options: object) => ask("list", [path, options]),
     gitStatus: (cwd: string, options: object) => ask("git", [cwd, options]),
     stat: (path: string, options: object) => ask("stat", [path, options]),
-    createFile() {}, createFolder() {}, rename() {}, trash() {}, reveal() {}, copyText() {}, findFiles() {}, grep() {}, unsavedCount: () => 0,
-    openFile: (path: string, on: string | null) => world.opened.push({ path, on: on ?? null, space: active() }), moved() {},
+    createFile: (path: string, options: object) => ask("make", ["createFile", path, options]),
+    createFolder: (path: string, options: object) => ask("make", ["createFolder", path, options]),
+    rename: (from: string, to: string, options: object) => ask("make", ["rename", from, to, options]),
+    trash() {}, reveal() {}, copyText() {}, findFiles() {}, grep() {}, unsavedCount: () => 0,
+    openFile: (path: string, on: string | null) => world.opened.push({ path, on: on ?? null, space: active() }), moved: (...args: any[]) => world.moved.push(args),
     fileIcon: () => ({ icon: "file", color: "dim" }),
     localStorage: { getItem: () => null, setItem() {} },
   };
-  const View = new Function(...Object.keys(stubs), `${source}\nreturn FilesSidebar;`)(...Object.values(stubs));
+  const { FilesSidebar: View, menuItems } = new Function(...Object.keys(stubs), `${source}\nreturn { FilesSidebar, menuItems };`)(...Object.values(stubs));
   const cx: any = {
     spawn: (fn: (cx: any) => Promise<any>) => { fn(cx); }, notify() {},
     timer: { every() {}, after: (ms: number, fn: () => void) => { world.timers.push({ ms, fn, fired: false }); } },
   };
   const view = new View();
   view.init(null, cx);
-  const pending = (kind: "list" | "git" | "stat" | "watch") => world.calls[kind].filter(c => !c.answered);
+  const pending = (kind: "list" | "git" | "stat" | "watch" | "make") => world.calls[kind].filter(c => !c.answered);
   const answer = async (call: Call, value: any) => { call.answered = true; call.resolve(value); await flush(); };
   const fail = async (call: Call, error: Error) => { call.answered = true; call.reject(error); await flush(); };
   // The frame: what it says, which lists it draws, and the key each of the tree's rows was drawn with.
@@ -116,7 +129,7 @@ function sidebar(spaces: any[] = two("/a", "/b")) {
     throw new Error("the host is still being asked");
   };
   const show = (space: string) => { for (const s of world.spaces) s.active = s.id === space; };
-  return { view, cx, world, pending, answer, fail, frame, press, pressRight, fireTimers, fireWithin, settle, show };
+  return { view, cx, world, pending, answer, fail, frame, press, pressRight, fireTimers, fireWithin, settle, show, menuItems };
 }
 
 const A = { "/a": listing("src/", "x.txt", "gone.txt"), "/a/src": listing("a.js") };
@@ -624,4 +637,186 @@ test("a closed folder with a change below it carries a dot, and a changed file i
   const open = s.frame().texts;
   expect(open).toEqual(expect.arrayContaining(["M", "A"]));
   expect(open).not.toContain("•");
+});
+
+// New file, new folder and rename work on the machine and in the folder of the row they were started on.
+
+const spacesAt = (folder: string, machine: string | null) => [
+  { id: "s1", active: true, folder, machine },
+  { id: "s2", active: false, folder: "/b", machine: null },
+];
+async function sidebarAt(machine: string | null, folder = "/srv") {
+  const s = sidebar(spacesAt(folder, machine));
+  await s.settle({ [folder]: listing("src/", "a.txt") }, repo(folder));
+  return s;
+}
+const SRC_ROW = 0, A_ROW = 1;
+
+// The name typed in the bar above the tree, and Enter.
+async function submit(s: Awaited<ReturnType<typeof sidebarAt>>, name: string) {
+  s.world.name = name;
+  s.view.submitEdit(s.cx);
+  await flush();
+}
+const makes = (s: Awaited<ReturnType<typeof sidebarAt>>) => s.world.calls.make.map(c => c.args);
+
+for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null]] as const) {
+  test(`${where}: the toolbar's new file is made where the Space is, and opened there`, async () => {
+    const s = await sidebarAt(machine);
+    s.frame();
+    expect(s.world.clicks.has("new-file")).toBe(true);
+    s.world.clicks.get("new-file")(null, s.cx);
+    expect(s.view.edit).toMatchObject({ kind: "new-file", dir: "/srv" });
+    expect(s.world.toasts).toEqual([]);
+    await submit(s, "n.txt");
+    expect(makes(s)).toEqual([["createFile", "/srv/n.txt", { on: machine }]]);
+    await s.answer(s.pending("make")[0], null);
+    expect(s.world.opened).toEqual([{ path: "/srv/n.txt", on: machine, space: "s1" }]);
+    expect(s.world.toasts).toEqual([]);
+    expect(s.pending("list").map(c => [c.args[0], c.args[1].on])).toContainEqual(["/srv", machine]);
+  });
+
+  test(`${where}: the toolbar's new folder is made where the Space is, in the folder selected`, async () => {
+    const s = await sidebarAt(machine);
+    s.press(s.frame(), SRC_ROW);
+    await s.settle({ "/srv/src": listing("x.js") }, repo("/srv"));
+    s.frame();
+    expect(s.view.selectedDir()).toBe("/srv/src");
+    s.world.clicks.get("new-folder")(null, s.cx);
+    await submit(s, "lib");
+    expect(makes(s)).toEqual([["createFolder", "/srv/src/lib", { on: machine }]]);
+    await s.answer(s.pending("make")[0], null);
+    expect(s.world.opened).toEqual([]);
+    expect(s.view.here.open.has("src")).toBe(true);
+    expect(s.view.here.selected).toBe("src/lib");
+  });
+
+  test(`${where}: a rename from the right-click menu renames there, and tells the panes showing it`, async () => {
+    const s = await sidebarAt(machine);
+    s.pressRight(s.frame(), A_ROW);
+    const menu = s.world.menus[0].props.menu;
+    expect(menu).toMatchObject({ abs: "/srv/a.txt", on: machine });
+    s.menuItems(menu).find((i: any) => i?.label === "menu.rename").run();
+    s.frame();
+    expect(s.view.edit).toMatchObject({ kind: "rename", path: "/srv/a.txt", dir: "/srv" });
+    expect(s.world.toasts).toEqual([]);
+    await submit(s, "b.txt");
+    expect(makes(s)).toEqual([["rename", "/srv/a.txt", "/srv/b.txt", { on: machine }]]);
+    expect(s.world.moved).toEqual([]);
+    await s.answer(s.pending("make")[0], null);
+    expect(s.world.moved).toEqual([["/srv/a.txt", "/srv/b.txt", machine]]);
+    expect(s.view.here.selected).toBe("b.txt");
+  });
+
+  test(`${where}: the menu's new file and rename start an edit, and a new folder from a folder row is made in it`, async () => {
+    const s = await sidebarAt(machine);
+    s.pressRight(s.frame(), SRC_ROW);
+    const menu = s.world.menus[0].props.menu;
+    s.menuItems(menu).find((i: any) => i?.label === "menu.new_folder").run();
+    s.frame();
+    expect(s.view.edit).toMatchObject({ kind: "new-folder", dir: "/srv/src" });
+    await submit(s, "lib");
+    expect(makes(s)).toEqual([["createFolder", "/srv/src/lib", { on: machine }]]);
+  });
+
+  test(`${where}: a name that cannot be made says why, and the tree is read again`, async () => {
+    const s = await sidebarAt(machine);
+    s.view.startEdit("new-file", null, s.view.selectedDir(), s.cx);
+    await submit(s, "a.txt");
+    await s.fail(s.pending("make")[0], new Error("/srv/a.txt already exists"));
+    expect(s.world.toasts.map(n => [n.title, n.body])).toEqual([["error.new-file", "/srv/a.txt already exists"]]);
+    expect(s.world.opened).toEqual([]);
+    expect(s.pending("list").map(c => c.args[0])).toContain("/srv");
+  });
+}
+
+test("the menu of a remote Space offers new file, new folder and rename, and still not the trash or the file manager", async () => {
+  const s = await sidebarAt("lab");
+  s.pressRight(s.frame(), A_ROW);
+  const items = s.menuItems(s.world.menus[0].props.menu).filter((i: any) => i);
+  const enabled = Object.fromEntries(items.map((i: any) => [i.label, i.enabled !== false]));
+  expect(enabled).toMatchObject({ "menu.new_file": true, "menu.new_folder": true, "menu.rename": true, "menu.trash": false, "menu.copy_path": true });
+  expect(Object.entries(enabled).filter(([label, on]) => !on).map(([label]) => label).sort()).toEqual(["menu.trash", expect.stringMatching(/^menu\.reveal/)].sort());
+});
+
+test("the toolbar of a remote Space has no read-only tooltip, and nothing is refused", async () => {
+  const s = await sidebarAt("lab");
+  const shown = s.frame();
+  expect(shown.texts).not.toContain("remote.readonly");
+  s.view.startEdit("new-folder", null, "/srv", s.cx);
+  expect(s.world.toasts).toEqual([]);
+  expect(s.view.edit).toMatchObject({ kind: "new-folder" });
+});
+
+test("a name typed for one machine is made on that machine, though another Space is shown by the time Enter is heard", async () => {
+  const s = await sidebarAt("lab");
+  s.view.startEdit("new-file", null, s.view.selectedDir(), s.cx);
+  await submit(s, "n.txt");
+  expect(makes(s)).toEqual([["createFile", "/srv/n.txt", { on: "lab" }]]);
+  // The Space changes while the machine is asked.
+  s.show("s2");
+  s.frame();
+  await s.settle(B, repo("/b"));
+  await s.answer(s.pending("make")[0], null);
+  // Not opened in the pane of another Space, and no other folder is marked or read for it.
+  expect(s.world.opened).toEqual([]);
+  expect(s.world.toasts).toEqual([]);
+  expect(s.pending("list").map(c => [c.args[0], c.args[1].on])).toEqual([["/srv", "lab"]]);
+  expect(s.view.here.cwd).toBe("/b");
+  expect(s.view.here.selected).toBeNull();
+});
+
+test("an edit started in one Space is dropped when another is shown: nothing is made for it", async () => {
+  const s = await sidebarAt("lab");
+  s.view.startEdit("new-file", null, s.view.selectedDir(), s.cx);
+  s.show("s2");
+  s.frame();
+  await submit(s, "n.txt");
+  expect(makes(s)).toEqual([]);
+});
+
+test("a remote and a local Space on the same folder name are two places: the edit goes where its Space is", async () => {
+  const s = sidebar([{ id: "s1", active: true, folder: "/srv", machine: "lab" }, { id: "s2", active: false, folder: "/srv", machine: null }]);
+  await s.settle({ "/srv": listing("a.txt") }, repo("/srv"));
+  s.show("s2");
+  s.frame();
+  await s.settle({ "/srv": listing("b.txt") }, repo("/srv"));
+  s.view.startEdit("new-file", null, s.view.selectedDir(), s.cx);
+  await submit(s, "n.txt");
+  expect(makes(s)).toEqual([["createFile", "/srv/n.txt", { on: null }]]);
+  await s.answer(s.pending("make")[0], null);
+  expect(s.world.opened).toEqual([{ path: "/srv/n.txt", on: null, space: "s2" }]);
+});
+
+test("a request from the popup of another machine, or of a root this tree is not, starts nothing", async () => {
+  const s = await sidebarAt("lab");
+  s.frame();
+  s.world.shared.set("yuzora.files.request", { action: "new-file", root: "/srv", on: null, seq: 1, dir: "/srv" });
+  s.frame();
+  expect(s.view.edit).toBeNull();
+  s.world.shared.set("yuzora.files.request", { action: "new-file", root: "/elsewhere", on: "lab", seq: 2, dir: "/elsewhere" });
+  s.frame();
+  expect(s.view.edit).toBeNull();
+  s.world.shared.set("yuzora.files.request", { action: "new-file", root: "/srv", on: "lab", seq: 3, dir: "/srv" });
+  s.frame();
+  expect(s.view.edit).toMatchObject({ kind: "new-file", dir: "/srv" });
+  expect(s.world.toasts).toEqual([]);
+});
+
+test("a name made in a folder of the tree drawn from the folder is made there, whatever root git names next", async () => {
+  const s = sidebar(spacesAt(SUB, "lab"));
+  await flush();
+  await s.answer(s.pending("list")[0], listing("lib/", "README.md"));
+  s.press(s.frame(), 0);
+  await flush();
+  expect(s.view.selectedDir()).toBe(`${SUB}/lib`);
+  s.view.startEdit("new-file", null, s.view.selectedDir(), s.cx);
+  // The repo's top is named and listed before the name is entered.
+  await s.answer(s.pending("git")[0], repo("/repo"));
+  for (const c of s.pending("list")) await s.answer(c, c.args[0] === "/repo" ? listing("lib/", "sub/") : listing("x.js"));
+  s.frame();
+  await submit(s, "n.txt");
+  expect(makes(s)).toEqual([["createFile", `${SUB}/lib/n.txt`, { on: "lab" }]]);
+  await s.answer(s.pending("make")[0], null);
+  expect(s.world.opened).toEqual([{ path: `${SUB}/lib/n.txt`, on: "lab", space: "s1" }]);
 });
