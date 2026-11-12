@@ -630,12 +630,26 @@ pub fn pull(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> 
 }
 
 /// Where a push of the current branch goes, and the commits it would send.
-pub fn push_preview(repo: &Repo) -> GitResult<Value> {
+/// Where the checked-out branch pushes to when nothing else names it.
+struct PushTarget {
+    branch: String,
+    upstream: Option<String>,
+    remotes: Vec<String>,
+    remote: String,
+    target: String,
+}
+
+/// The branch HEAD is on; a push needs one.
+fn push_branch(repo: &Repo) -> GitResult<String> {
     let branch = repo.run(Git::read(["symbolic-ref", "-q", "--short", "HEAD"]))?;
     if !branch.ok() {
         return Err(GitError::other("HEAD is detached: check out a branch to push"));
     }
-    let branch = branch.stdout_text().trim().to_owned();
+    Ok(branch.stdout_text().trim().to_owned())
+}
+
+fn push_target(repo: &Repo) -> GitResult<PushTarget> {
+    let branch = push_branch(repo)?;
     let upstream = repo.run(Git::read(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"]))?;
     let upstream = upstream.ok().then(|| upstream.stdout_text().trim().to_owned()).filter(|u| !u.is_empty());
     let remotes = remote_names(repo)?;
@@ -654,6 +668,11 @@ pub fn push_preview(repo: &Repo) -> GitResult<Value> {
         },
         None => (remotes.first().cloned().unwrap_or_else(|| "origin".into()), branch.clone()),
     };
+    Ok(PushTarget { branch, upstream, remotes, remote, target })
+}
+
+pub fn push_preview(repo: &Repo) -> GitResult<Value> {
+    let PushTarget { branch, upstream, remotes, remote, target } = push_target(repo)?;
     let range = match &upstream {
         Some(u) => format!("{u}..HEAD"),
         None => "HEAD".into(),
@@ -681,10 +700,20 @@ fn push_dest(repo: &Repo, branch: &str) -> GitResult<Option<(String, Option<Stri
 
 pub fn push(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> {
     let s = |k: &str| o.get(k).and_then(Value::as_str).map(str::to_owned).filter(|s| !s.is_empty());
-    let preview = push_preview(repo)?;
-    let remote = s("remote").unwrap_or_else(|| preview["remote"].as_str().unwrap_or("origin").to_owned());
-    let branch = s("branch").unwrap_or_else(|| preview["branch"].as_str().unwrap_or_default().to_owned());
-    let target = s("target").unwrap_or_else(|| preview["target"].as_str().unwrap_or(&branch).to_owned());
+    // What the caller names is pushed as named (the push dialog names all of
+    // it, from the preview it showed); only the rest is read, and never the
+    // preview's list of commits and tags.
+    let named = (s("remote"), s("branch"), s("target"), o.get("setUpstream").and_then(Value::as_bool));
+    let (remote, branch, target, set_upstream) = match named {
+        (Some(remote), Some(branch), Some(target), Some(set_upstream)) => {
+            push_branch(repo)?;
+            (remote, branch, target, set_upstream)
+        }
+        (remote, branch, target, set_upstream) => {
+            let to = push_target(repo)?;
+            (remote.unwrap_or(to.remote), branch.unwrap_or(to.branch), target.unwrap_or(to.target), set_upstream.unwrap_or(to.upstream.is_none()))
+        }
+    };
     let force = s("force").unwrap_or_default();
     if !force.is_empty() && crate::settings::is_protected(&target) {
         return Err(GitError::Other(format!("{target} is protected: force push is not allowed (Settings → Git)")));
@@ -704,7 +733,7 @@ pub fn push(repo: &Repo, o: &Value, cancel: Option<Cancel>) -> GitResult<Value> 
         if o.get("noVerify").and_then(Value::as_bool).unwrap_or(false) {
             cmd = cmd.arg("--no-verify");
         }
-        if o.get("setUpstream").and_then(Value::as_bool).unwrap_or(preview["newBranch"].as_bool().unwrap_or(false)) {
+        if set_upstream {
             cmd = cmd.arg("--set-upstream");
         }
         cmd.args([remote.clone(), format!("refs/heads/{branch}:refs/heads/{target}")])
@@ -1652,6 +1681,43 @@ mod tests {
         let p = push_preview(&s.repo).unwrap();
         assert_eq!((p["remote"].as_str(), p["target"].as_str()), (Some("team/origin"), Some("main")), "{p}");
         assert_eq!(p["commits"].as_array().unwrap().len(), 1, "{p}");
+    }
+
+    #[test]
+    fn a_push_goes_where_its_options_name_and_otherwise_where_the_branch_pushes() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let dir = tempfile::tempdir().unwrap();
+        let bare = dir.path().to_string_lossy().into_owned();
+        s.git(&["init", "-q", "--bare", &bare]);
+        s.git(&["remote", "add", "origin", &bare]);
+        s.git(&["push", "-q", "-u", "origin", "main"]);
+        let there = |name: &str| String::from_utf8_lossy(&std::process::Command::new("git").args(["-C", &bare, "rev-parse", "-q", "--verify", &format!("refs/heads/{name}")]).output().unwrap().stdout).trim().to_owned();
+        let head = || s.git(&["rev-parse", "HEAD"]).trim().to_owned();
+        // Nothing named: the branch's own upstream.
+        s.commit("a.txt", "2\n", "second");
+        let out = push(&s.repo, &json!({}), None).unwrap();
+        assert_eq!((out["ok"].as_bool(), there("main")), (Some(true), head()), "{out}");
+        // All of it named, as the push dialog does: there and nowhere else, and the upstream stays.
+        s.commit("a.txt", "3\n", "third");
+        let out = push(&s.repo, &json!({ "remote": "origin", "branch": "main", "target": "other", "setUpstream": false }), None).unwrap();
+        assert_eq!((out["ok"].as_bool(), there("other")), (Some(true), head()), "{out}");
+        assert_ne!(there("main"), head());
+        assert_eq!(s.git(&["rev-parse", "--abbrev-ref", "@{u}"]).trim(), "origin/main");
+        // A branch with no upstream gets one, unless the caller says otherwise.
+        s.git(&["switch", "-q", "-c", "feature"]);
+        let out = push(&s.repo, &json!({}), None).unwrap();
+        assert_eq!((out["ok"].as_bool(), there("feature")), (Some(true), head()), "{out}");
+        assert_eq!(s.git(&["rev-parse", "--abbrev-ref", "@{u}"]).trim(), "origin/feature");
+        // Only part of it named: the rest is where the branch pushes.
+        s.commit("a.txt", "4\n", "fourth");
+        let out = push(&s.repo, &json!({ "target": "feature" }), None).unwrap();
+        assert_eq!((out["ok"].as_bool(), there("feature")), (Some(true), head()), "{out}");
+        // A detached HEAD pushes nothing, named or not.
+        s.git(&["switch", "-q", "--detach"]);
+        for o in [json!({}), json!({ "remote": "origin", "branch": "main", "target": "main", "setUpstream": false })] {
+            assert!(push(&s.repo, &o, None).is_err_and(|e| e.to_string().contains("detached")), "{o}");
+        }
     }
 
     #[test]
