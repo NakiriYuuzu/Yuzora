@@ -58,7 +58,7 @@ yuzora-git-settings ┘
 情境：同一個 Space 裡有好幾個 repo，例如外層資料夾放了好幾個專案，或 monorepo 裡的子 repo。不跨 Space，也不做 submodule／worktree 的切換。
 
 - 右側模式頂端的 repo 選擇器：預設「跟隨焦點」，和以前一樣看焦點 pane 的資料夾（否則 Space 的資料夾，`location()`）；也可以替這個 Space 釘選一個 repo，之後焦點怎麼換都看那個 repo。每個 Space 各自記住選擇：存在 shared 的 `yuzora.git.repo.<space id>`（`{root, on}`），shared 會存檔，所以重啟後仍然有效；選「跟隨焦點」就清掉。選擇器標示目前的 repo，釘選時名稱前有一個點。
-- 鍵盤：指令 `yuzora-sidebar-git.pick-repo`（和其他 mod 指令一樣用點號寫進 `keys.json`，或 `herdr-app do`）把選擇器置中打開。選擇器裡 ↑↓ 在「跟隨焦點」與各 repo 之間移動（頭尾相接，一開始停在目前選的那一列），Enter 選定，Esc 關閉。和分支 popup 一樣，選到的列不會自動捲進畫面。
+- 鍵盤：指令 `yuzora-sidebar-git.pick-repo`（和其他 mod 指令一樣用點號寫進 `keys.json`，或 `herdr-app do`）把選擇器置中打開。選擇器裡 ↑↓ 在「跟隨焦點」與各 repo 之間移動（頭尾相接，一開始停在目前選的那一列），Enter 選定，Esc 關閉。釘選的 repo 不在清單裡時（清單讀不到，例如那台機器離線；或被上限截掉），還沒按過 ↑↓ 就按 Enter 只關閉選擇器、不取消釘選；按過 ↑↓ 之後 Enter 才照所在的列選定（`scripts/yuzora-git-picker.test.ts`）。和分支 popup 一樣，選到的列不會自動捲進畫面。
 - 跟著選中的 repo：右側模式本身、`yuzora.badge.git`、`yuzora.status.git`，以及從右側模式開的 Git Log、diff、分支 popup、Push 對話框、merge（都用右側模式的 `repo`）。狀態列底部的 git 摘要不在範圍內，仍跟著焦點的終端機。
 - 列出 repo：`repos(folder, on, cwds)`（`repos.rs`），只讀檔案系統，不跑 git，所以不論信任與否都不會執行 repo 設定的程式。列出的順序：
   1. Space 資料夾所在的 repo：資料夾本身，或往上最近一個有 `.git` 的資料夾（照真實路徑，和 git 往上找的方式相同；Space 資料夾是某個 repo 的子資料夾時就是那個 repo）。
