@@ -1,5 +1,6 @@
 // The tab bar. Owned by lane L1.
-// The current Space's tabs only (the sidebar tells Spaces apart), each with its Space's badge, its most urgent agent state and (when
+// The current Space's tabs only (the sidebar tells Spaces apart), each with its Space's badge (a file's tab: the file's icon, as
+// the Files sidebar draws it), its most urgent agent state and (when
 // shown) a close button; + opens Herdr's new-tab menu. The bar has no new-pane or split
 // buttons. The new-pane menu mixes a tool pane (yuzora:core panes(): mods whose mod.json
 // says "yuzora": {"pane": …}), a terminal or an agent into the shown tab, right of or below
@@ -11,9 +12,12 @@ import { h_flex, v_flex } from "gpui-base";
 import { spaces, panes, focused, knownAgents, run, openOverlay, closeOverlay, props, theme, window, layout, settings, shared, setShared, nextCommand } from "herdr";
 import { t, tokens, panes as toolPanes } from "yuzora:core";
 import { spaceBadges } from "yuzora:shell";
+import { fileIcon } from "./icons.js"; // yuzora-sidebar-files/icons.js, kept the same (a mod imports only its own folder)
+import { leadOf, tabFile } from "./lead.js";
 
 const SELF = "yuzora-shell-tabs";
 const STATUS = "mods/yuzora-sidebar-workspace/status";
+const FILE_ICONS = "mods/yuzora-sidebar-files/icons/files";
 const AGENTS = "yuzora.shell.agents"; // machine -> the agents knownAgents() last listed
 const SPLIT = "yuzora.shell.split"; // "right" | "down": where the new-pane menu puts things
 
@@ -72,7 +76,7 @@ function find(node, id) {
 // A tab's name: the one someone gave it, else its agent's or program's.
 export function tabName(tab, mine) {
   if (tab.named) return tab.name;
-  const lead = mine.find((p) => p.program?.agent) ?? mine.find((p) => p.terminal) ?? mine[0];
+  const lead = leadOf(mine);
   const p = lead?.program;
   return ((p?.agent || p?.shell) && p.name) || lead?.title || p?.name || tab.name;
 }
@@ -245,6 +249,7 @@ export default class Tabs extends View {
       const mine = ps.filter((p) => p.tab === c.id);
       const name = tabName(c, mine);
       const badge = badges[s.id];
+      const file = tabFile(mine), kind = file ? fileIcon(file.split(/[/\\]/).pop()) : null;
       return h_flex().id(`tab-${c.id}`).h(26).px(8).gap(6).rounded(6).items_center().flex_none().text_size(12.5)
         .border(1).border_color(on ? th.input : th.chrome).bg(on ? th.raised : th.chrome).text_color(on ? th.foreground : th.muted)
         .when(!on, (el) => el.hover((st) => st.bg(th.hover)))
@@ -258,8 +263,9 @@ export default class Tabs extends View {
           else run("tab.select", { id: c.id });
         })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: s.id } } }); })
-        .child(div().size(14).flex_none().rounded(3).bg(badge.color).flex().items_center().justify_center()
-          .text_size(9).font_bold().text_color(tk.text.on_badge).child(badge.initial))
+        .child(kind ? svg(`${FILE_ICONS}/${kind.icon}.svg`).size(14).flex_none().text_color(th[kind.color] ?? th.dim)
+          : div().size(14).flex_none().rounded(3).bg(badge.color).flex().items_center().justify_center()
+            .text_size(9).font_bold().text_color(tk.text.on_badge).child(badge.initial))
         .child(div().max_w(160).truncate().child(c.zoomed ? `${name} ⤢` : name))
         .when(Boolean(c.status) && c.status !== "idle", (el) => el.child(svg(`${STATUS}/${c.status}.svg`).size(8).flex_none().text_color(tk.status[c.status]?.mark ?? th.dim)))
         .when(on, (el) => el.child(div().id(`close-${c.id}`).size(16).flex_none().flex().items_center().justify_center().rounded(4).text_color(th.dim)
