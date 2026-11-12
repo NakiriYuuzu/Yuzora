@@ -431,10 +431,17 @@ fn full(repo: &Repo) -> GitResult<()> {
 fn gitlinks(repo: &Repo, cap: usize) -> Option<Vec<String>> {
     // `<mode> <oid> <stage>\t<path>\0`
     let index = repo.run(Git::read(["ls-files", "-s", "-z"]).max_output(cap + 1)).ok().filter(|o| o.ok() && o.stdout.len() <= cap)?.stdout;
-    let mut links: Vec<String> = split_z(&index).filter_map(|e| e.strip_prefix("160000 ").and_then(|e| e.split_once('\t')).map(|(_, p)| p.to_owned())).collect();
+    let mut links: Vec<String> = split_z(&index).filter_map(|e| e.split_once(' ').filter(|(mode, _)| is_gitlink(mode)).and_then(|(_, e)| e.split_once('\t')).map(|(_, p)| p.to_owned())).collect();
     // A conflict lists a path once per stage.
     links.dedup();
     Some(links)
+}
+
+/// Whether a mode as `ls-files -s` prints it (octal) is a gitlink's: by its
+/// type bits, as git tells one (`S_ISGITLINK`), whatever the others are (an
+/// index made by hand may set them).
+fn is_gitlink(mode: &str) -> bool {
+    u32::from_str_radix(mode, 8).is_ok_and(|m| m & 0o170000 == 0o160000)
 }
 
 fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {

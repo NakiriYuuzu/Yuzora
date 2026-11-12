@@ -665,7 +665,10 @@ const SCAN: &str = "yuzora-trust-scan";
 /// out when its folder has a `.git`, and git works in it with `GIT_DIR=.git`
 /// (never a repo further up), so its config is read that way, and its own
 /// gitlinks are where its work tree is (its `core.worktree`, from its config
-/// or its gitdir's). grep picks the gitlinks out of git's list, and must pass
+/// or its gitdir's). grep picks the gitlinks out of git's list by the type
+/// bits of the mode, as git tells one (`S_ISGITLINK`: of the last six octal
+/// digits the second is 6 and the first odd, whatever the rest, so `160755`
+/// and `360000` from an index made by hand count), and must pass
 /// on a last line added to it: a grep that failed would print nothing, which
 /// would read as no gitlinks. Each repo (git dir and work tree) is read once,
 /// in one shell that remembers them: met again below itself, it is a way
@@ -735,7 +738,7 @@ where() {
 }
 scan() {
   [ "$2" -lt 16 ] || { printf 'sub\0%s\0err\0depth\0' "$1"; return; }
-  links=$( { GIT_DIR=$3 GIT_WORK_TREE=$4 git -C "$4" -c core.quotepath=false ls-files -s || echo '#failed'; echo '160000 #end'; } | LC_ALL=C grep -e '^160000 ' -e '^#failed$') || links=
+  links=$( { GIT_DIR=$3 GIT_WORK_TREE=$4 git -C "$4" -c core.quotepath=false ls-files -s || echo '#failed'; echo '160000 #end'; } | LC_ALL=C grep -e '^[0-7]*[1357]6[0-7][0-7][0-7][0-7] ' -e '^#failed$') || links=
   case "$nl$links" in
     *"$nl#failed$nl"*) links= ;;
     *"${nl}160000 #end") ;;
