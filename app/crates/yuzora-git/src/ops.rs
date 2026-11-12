@@ -107,12 +107,22 @@ impl CommitOptions {
 /// Warnings to confirm before committing (IntelliJ's check-in handlers).
 pub fn commit_checks(repo: &Repo, amend: bool) -> GitResult<Value> {
     let mut warnings = Vec::new();
-    let name = repo.run(Git::read(["config", "user.name"]))?;
-    let email = repo.run(Git::read(["config", "user.email"]))?;
+    let warn_crlf = crate::settings::flag("warnCrlf") && !repo.place.is_remote();
+    // None of these reads needs another, and each is a process (a round trip
+    // on a machine): side by side, judged in the order they used to run.
+    let (name, email, refreshed, autocrlf) = std::thread::scope(|s| {
+        let name = crate::exec::spawn_scoped(s, || repo.run(Git::read(["config", "user.name"])));
+        let email = crate::exec::spawn_scoped(s, || repo.run(Git::read(["config", "user.email"])));
+        let autocrlf = warn_crlf.then(|| crate::exec::spawn_scoped(s, || repo.run(Git::read(["config", "--get", "core.autocrlf"]))));
+        let refreshed = crate::status::refresh(repo);
+        let join = |h: std::thread::ScopedJoinHandle<'_, GitResult<crate::exec::Output>>| h.join().unwrap_or_else(|_| Err(GitError::Other("a commit check panicked".into())));
+        (join(name), join(email), refreshed, autocrlf.map(join))
+    });
+    let (name, email) = (name?, email?);
     if !name.ok() || !email.ok() {
         warnings.push(json!({ "kind": "identity" }));
     }
-    crate::status::refresh(repo)?;
+    refreshed?;
     // Deletions are something to commit, with no file to look at.
     let (detached, op, conflicts, staged, deleted): (bool, String, usize, Vec<String>, bool) = {
         let c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
@@ -134,8 +144,8 @@ pub fn commit_checks(repo: &Repo, amend: bool) -> GitResult<Value> {
             warnings.push(json!({ "kind": "large", "files": big }));
         }
     }
-    if crate::settings::flag("warnCrlf") && !repo.place.is_remote() {
-        let autocrlf = repo.run(Git::read(["config", "--get", "core.autocrlf"]))?.stdout_text();
+    if let Some(autocrlf) = autocrlf {
+        let autocrlf = autocrlf?.stdout_text();
         if autocrlf.trim().is_empty() || autocrlf.trim() == "false" {
             let small = |p: &String| std::fs::metadata(repo.abs(p)).is_ok_and(|m| m.is_file() && m.len() < (4 << 20));
             let crlf: Vec<&String> = staged.iter().filter(|p| small(p) && std::fs::read(repo.abs(p)).is_ok_and(|b| !b[..b.len().min(8000)].contains(&0) && b.windows(2).any(|w| w == b"\r\n"))).take(20).collect();
