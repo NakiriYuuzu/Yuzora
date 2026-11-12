@@ -431,8 +431,8 @@ export default class extends View {
 fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut TestAppContext) {
     let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
     let (from, to) = (
-        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify } from \"herdr\";\nimport { t, tokens, session } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
-        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify, session, t, tokens, open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, gitSettings } from \"fixture\";",
+        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify } from \"herdr\";\nimport { t, tokens, session } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, DiffLine, diffLook, settings as gitSettings } from \"yuzora:git\";",
+        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify, session, t, tokens, open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, DiffLine, diffLook, gitSettings } from \"fixture\";",
     );
     assert_eq!(source.matches(from).count(), 1, "the diff mod no longer has: {from}");
     source = source.replacen(from, to, 1);
@@ -482,6 +482,7 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
         }
         module = module.function("t", |a| Ok(a.string(0)?.into()));
         module = module.function("session", |_| Ok("fixture-run".into()));
+        module = yuzora_git::line_view::register(module);
         let count = opened.clone();
         module = module.function("diffOpen", move |_| {
             count.set(count.get() + 1);
@@ -566,15 +567,15 @@ export default class Probed extends GitDiff {
     note("pick", side, index);
     super.toggleLine(h, side, index, cx);
   }
-  shade(th, left, side) {
-    const el = super.shade(th, left, side);
-    return this.probing ? el.id(`probe-shade-${side}`).on_size_change((s) => note("shade", side, s.width)) : el;
-  }
-
-  segments(segs, text, ...rest) {
+  // The probe row's line, in a box as wide as it that reports that width and where the pointer is over it, and a
+  // box that reports the selection over it (`shade`) when it appears.
+  text(r, side, k, look, marks, sel) {
+    const text = side === "l" ? r.lt ?? r.t : r.rt ?? r.t;
     built.n += 1 + text.length;
-    const el = super.segments(segs, text, ...rest), first = String.fromCodePoint(text.codePointAt(0));
-    return this.probing ? el.id(`probe-text-${first}`).on_size_change((s) => note("text", first, s.width)).on_mouse_move((e) => note("over", first, e.local_position.x)) : el;
+    const el = super.text(r, side, k, look, marks, sel), first = String.fromCodePoint(text.codePointAt(0));
+    if (!this.probing) return el;
+    return div().id(`probe-text-${first}`).h_full().on_size_change((s) => note("text", first, s.width)).on_mouse_move((e) => note("over", first, e.local_position.x))
+      .child(el).when(Boolean(sel), (box) => box.child(div().id(`probe-shade-${side}`).absolute().w(1).h(1).on_size_change(() => note("shade", side, sel))));
   }
   rowList(...rest) {
     return div().size_full().on_size_change((s) => note("list", s.height)).child(super.rowList(...rest));
@@ -640,7 +641,7 @@ export default class Probed extends GitDiff {
     const v = this.view, pane = props().pane;
     if (v && v.rows.length && this.layout !== "unified") {
       this.probing = true;
-      const row = this.row(v.rows[0], 0, theme(), tokens().diff ?? {}, 0);
+      const row = this.row(v.rows[0], 0, theme(), tokens().diff ?? {}, this.look(theme(), tokens().diff ?? {}), 0);
       this.probing = false;
       root = root.child(div().absolute().top(300).left(0).w_full().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).child(row));
     }
@@ -869,6 +870,8 @@ impl DiffPane {
             git = git.function(name, |_| Ok(HostValue::Null));
         }
         git = git.async_function("changes", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
+        // The lines are the real ones: drawn, measured and pressed on as the app does.
+        git = yuzora_git::line_view::register(git);
         // As the Rust side answers: the lines of one side named by `[side, start, end)` runs, joined by `\n`.
         let told = notes.clone();
         git = git.function("diffText", move |a| {
@@ -1053,13 +1056,14 @@ impl DiffPane {
 
     /// What the last frame painted of the unified rows: how far the lines are scrolled and how wide the rows are (their
     /// backgrounds are the widest quads there are, as wide as the box they scroll in, and start that far to the left), how
-    /// many rows are tinted (a quad the row's width less its numbers: 88px, and 2px more in the row of the current hunk,
-    /// which has a border), and how much room is left after the end of the line that ends in a highlighted word (the
-    /// window's width less where that word ends).
+    /// many rows are tinted (a quad in the selection's colour, the accent's wash), and how much room is left after the end
+    /// of the line that ends in a highlighted word (the window's width less where that word ends).
     fn unified_extent(&mut self) -> (f64, f64, usize, f64) {
         let scale = self.visual.update(|window, _| window.scale_factor());
-        // (where it starts, how wide, how far down)
-        let quads: Vec<(f64, f64, f64)> = self
+        let wash: gpui::Hsla = gpui::rgba(0x4080ff44).into();
+        let tinted = |c: Option<gpui::Hsla>| c.is_some_and(|c| (c.h - wash.h).abs() < 1e-3 && (c.s - wash.s).abs() < 1e-3 && (c.l - wash.l).abs() < 1e-3 && (c.a - wash.a).abs() < 1e-3);
+        // (where it starts, how wide, how far down, whether it is the selection's)
+        let quads: Vec<(f64, f64, f64, bool)> = self
             .visual
             .update(|window, _| window.painted_quads())
             .into_iter()
@@ -1070,6 +1074,7 @@ impl DiffPane {
                     at(q.bounds.origin.x.as_f32()),
                     at(q.bounds.size.width.as_f32()),
                     at(q.bounds.origin.y.as_f32()),
+                    tinted(q.background.as_solid()),
                 )
             })
             .collect();
@@ -1079,13 +1084,10 @@ impl DiffPane {
             .filter(|q| q.1 >= widest - 0.5)
             .map(|q| q.0)
             .fold(f64::INFINITY, f64::min);
-        let tints = quads
-            .iter()
-            .filter(|q| q.1 > widest - 91. && q.1 < widest - 87.)
-            .count();
+        let tints = quads.iter().filter(|q| q.3).count();
         let word_end = quads
             .iter()
-            .filter(|q| q.2 >= COPY_HEADER && q.1 < 40.)
+            .filter(|q| q.2 >= COPY_HEADER && q.1 < 40. && !q.3)
             .map(|q| q.0 + q.1)
             .fold(f64::NEG_INFINITY, f64::max);
         (
@@ -2646,13 +2648,13 @@ fn yuzora_diff_in_unified_a_selection_takes_no_room_from_how_far_the_lines_scrol
     cx: &mut TestAppContext,
 ) {
     let long = format!("{}END", "w".repeat(297));
-    let ending = json!([{"t": "w".repeat(297), "h": false}, {"t": "END", "h": true}]);
+    let ending = json!([[297, 300]]);
     let rows = json!([
-        {"k": "-", "h": 0, "l": 1, "li": 0, "t": long, "s": ending},
+        {"k": "-", "h": 0, "l": 1, "li": 0, "t": long, "m": ending},
         {"k": "=", "l": 2, "r": 1, "t": "same"},
         {"k": "+", "h": 0, "r": 2, "ri": 1, "t": "new"},
         {"k": "-", "h": 0, "l": 3, "li": 2, "t": "old"},
-        {"k": "+", "h": 0, "r": 3, "ri": 2, "t": long, "s": ending},
+        {"k": "+", "h": 0, "r": 3, "ri": 2, "t": long, "m": ending},
     ]);
     let mut diff = Diff::of(rows).files(&[&long, "same", "old"], &["same", "new", &long]);
     diff.hunks = json!([{"index": 0, "a": [0, 1], "b": [1, 2]}]);
@@ -4016,9 +4018,8 @@ fn yuzora_diff_a_zoom_set_while_it_is_open_holds_from_the_next_frame(cx: &mut Te
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-// yuzora(v010): a zoom set while the diff is open measures its lines again: each piece of a line is rounded up to a pixel
-// of the window, and what a pixel is, in the unit the pane writes lengths in, is what the zoom makes it. A line of 40
-// pieces measured at zoom 2 is 20px short of what is drawn at zoom 1.
+// yuzora(v010): a zoom set while the diff is open measures its lines again: a line is rounded up to a pixel of the window,
+// and what a pixel is, in the unit the pane writes lengths in, is what the zoom makes it.
 #[gpui::test]
 fn yuzora_diff_a_zoom_set_while_it_is_open_measures_the_lines_again(cx: &mut TestAppContext) {
     if !alone("yuzora_diff_a_zoom_set_while_it_is_open_measures_the_lines_again") {
@@ -4132,14 +4133,13 @@ fn yuzora_diff_the_pointer_and_the_wheel_move_what_they_touch_at_every_zoom(cx: 
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// A diff whose widest lines are the first rows, 300 characters on each side and cut into pieces, and `rows` rows after
-/// them whose lines are short.
+/// A diff whose widest lines are the first rows, 300 characters on each side with every other piece of them marked, and
+/// `rows` rows after them whose lines are short.
 fn wide_lines_then(rows: usize) -> Value {
-    let widest = |letter: char| pieces_of(&[4, 7, 3, 9, 5, 8, 6], 300).into_iter().map(|n| letter.to_string().repeat(n)).collect::<Vec<_>>();
-    let cut = |letter: char| widest(letter).iter().enumerate().map(|(i, t)| json!({"t": t, "h": i % 2 == 1})).collect::<Vec<_>>();
+    let lengths = pieces_of(&[4, 7, 3, 9, 5, 8, 6], 300);
     let mut all = vec![];
     for _ in 0..3 {
-        all.push(json!({"k": "~", "h": 0, "l": 1, "li": 0, "lt": widest('a').concat(), "ls": cut('a'), "r": 1, "ri": 0, "rt": widest('b').concat(), "rs": cut('b')}));
+        all.push(json!({"k": "~", "h": 0, "l": 1, "li": 0, "lt": "a".repeat(300), "lm": marks_of(&lengths), "r": 1, "ri": 0, "rt": "b".repeat(300), "rm": marks_of(&lengths)}));
     }
     all.extend((0..rows).map(|i| json!({"k": "~", "h": 0, "l": i + 2, "li": i + 1, "lt": "a line of text", "r": i + 2, "ri": i + 1, "rt": "another line"})));
     Value::Array(all)
@@ -4221,7 +4221,7 @@ fn yuzora_diff_the_lines_are_measured_in_the_font_the_rows_are_drawn_in() {
         let mut failures = Vec::new();
         for (case, rows) in [
             ("a line", json!([text_row(Some(&"a".repeat(200)), Some("b"))])),
-            ("a line cut into pieces", Value::Array(vec![row_in_pieces('a', &pieces_of(&[4, 7, 3, 9, 5, 8, 6], 400)), text_row(Some(&"a".repeat(380)), Some("b"))])),
+            ("a line with words marked", Value::Array(vec![row_in_pieces('a', &pieces_of(&[4, 7, 3, 9, 5, 8, 6], 400)), text_row(Some(&"a".repeat(380)), Some("b"))])),
             ("a line in a script the table lists", json!([text_row(Some(&"\u{6f22}".repeat(100)), Some("b"))])),
         ] {
             let first = if case.contains("script") { "\u{6f22}" } else { "a" };
@@ -4237,12 +4237,24 @@ fn yuzora_diff_the_lines_are_measured_in_the_font_the_rows_are_drawn_in() {
     });
 }
 
-/// A changed row whose left line is cut into pieces of `lengths` characters of `letter`, the way the word diff cuts a
-/// line (every other piece is a change), each piece drawn on its own.
+/// A changed row whose left line is pieces of `lengths` characters of `letter`, every other piece marked as the word diff
+/// marks a change.
 fn row_in_pieces(letter: char, lengths: &[usize]) -> Value {
-    let pieces: Vec<Value> = lengths.iter().enumerate().map(|(i, n)| json!({"t": letter.to_string().repeat(*n), "h": i % 2 == 1})).collect();
-    let text: String = pieces.iter().map(|p| p["t"].as_str().unwrap()).collect();
-    json!({"k": "~", "h": 0, "l": 1, "li": 0, "lt": text, "ls": pieces, "r": 1, "ri": 0, "rt": "b"})
+    let text = letter.to_string().repeat(lengths.iter().sum());
+    json!({"k": "~", "h": 0, "l": 1, "li": 0, "lt": text, "lm": marks_of(lengths), "r": 1, "ri": 0, "rt": "b"})
+}
+
+/// The marks of pieces of `lengths` characters, every other one marked: `[[from, to]]`.
+fn marks_of(lengths: &[usize]) -> Value {
+    let mut at = 0;
+    let mut out = Vec::new();
+    for (i, n) in lengths.iter().enumerate() {
+        if i % 2 == 1 {
+            out.push(json!([at, at + n]));
+        }
+        at += n;
+    }
+    Value::Array(out)
 }
 
 /// Pieces of the lengths in `cycle`, one after the other, until they are `total` characters.
@@ -4259,10 +4271,9 @@ fn pieces_of(cycle: &[usize], total: usize) -> Vec<usize> {
     out
 }
 
-// yuzora(v010): a line is scrolled to its end as it is drawn, and a line the word diff cut into pieces is drawn a
-// piece at a time: each piece is as wide as its text, rounded up to a pixel. Working its width out as one piece fell
-// short by up to a pixel a piece (24px for 360 characters in 40 pieces, 88px for 1,000 in 200, 38px for a line of
-// JSON with 40 values changed), and the last characters of the line a change was made in could not be scrolled to.
+// yuzora(v010): a line is scrolled to its end as it is drawn, whatever the word diff marked in it. (When each marked word
+// was drawn as a text of its own, each was rounded up to a pixel, and a width worked out as one text fell short by up to a
+// pixel a piece; a line is one text now, and the marks are painted under it.)
 #[gpui::test]
 fn yuzora_diff_a_line_cut_into_pieces_is_scrolled_to_its_end_as_it_is_drawn(cx: &mut TestAppContext) {
     if !alone("yuzora_diff_a_line_cut_into_pieces_is_scrolled_to_its_end_as_it_is_drawn") {
@@ -4303,10 +4314,9 @@ impl Dice {
     }
 }
 
-// yuzora(v010): whatever the lines are cut into, the range ends where the widest one is drawn, which is not always the
-// one with the most characters (a piece takes up to a pixel more than its text) nor the one with the most pieces.
-// The widest drawn is the first row (the one the window can measure); the rest have more characters, more pieces, or
-// both, and the room left after it is the same whichever.
+// yuzora(v010): whatever is marked in the lines, the range ends where the widest one is drawn. The widest drawn is the
+// first row (the one the window can measure); the rest have as many characters or fewer, more marks or fewer, and the
+// room left after it is the same whichever.
 #[gpui::test]
 fn yuzora_diff_the_range_ends_where_the_widest_line_is_drawn_whatever_the_lines_are_cut_into(cx: &mut TestAppContext) {
     let mut dice = Dice(2463534242);
@@ -4323,8 +4333,8 @@ fn yuzora_diff_the_range_ends_where_the_widest_line_is_drawn_whatever_the_lines_
             }
             out
         };
-        // What a piece of `n` letters is drawn as wide as at zoom 1: 6.9 pixels a letter, rounded up.
-        let drawn = |pieces: &[usize]| pieces.iter().map(|n| (*n as f64 * 6.9).ceil()).sum::<f64>();
+        // What a line of these pieces is drawn as wide as at zoom 1: one text, 6.9 pixels a letter, rounded up.
+        let drawn = |pieces: &[usize]| (pieces.iter().sum::<usize>() as f64 * 6.9).ceil();
         let mut lines: Vec<Vec<usize>> = (0..2 + dice.below(5)).map(|_| cut(&mut dice)).collect();
         lines.sort_by(|a, b| drawn(b).total_cmp(&drawn(a)));
         let rows = Value::Array(lines.iter().map(|pieces| row_in_pieces('a', pieces)).collect());
@@ -4561,19 +4571,16 @@ fn yuzora_diff_a_line_longer_than_a_frame_is_laid_out_alone_and_scrolled_to_its_
     );
 }
 
-// yuzora(v010): a line drawn in many pieces (250 of 32 letters; each 32 * 6.9 = 220.8px, which the window rounds up to 221,
-// 55,250px in all) is laid out in one frame and the range ends where it does. The line is built as 250 elements in the
-// frame that lays it out, which the engine cuts off at 50 ms: this machine takes about 3 of them, and a frame that is
-// cut is built again smaller, but a line cannot be made smaller than itself. (The first version of this had 1,000 pieces
-// and expected 224px a piece, 7px a letter, and was 3,000px off.)
+// yuzora(v010): a long line with many words marked (8,000 letters, every other one of 250 pieces of 32 marked; one text,
+// about 8,000 * 6.9 = 55,200px) is laid out in one frame and the range ends where it does. The frame that lays it out is cut off
+// by the engine at 50 ms, and a frame that is cut is built again smaller, but a line cannot be made smaller than itself.
+// (When each marked word was drawn as a text of its own, it was 250 elements and 55,250px, each piece rounded up.)
 #[gpui::test]
 fn yuzora_diff_a_line_in_two_hundred_and_fifty_pieces_is_laid_out_in_a_frame_and_scrolled_to_its_end(
     cx: &mut TestAppContext,
 ) {
-    let mut rows: Vec<Value> = (0..100)
-        .map(|_| text_row(Some("a short line"), Some("b")))
-        .collect();
-    rows.push(row_in_pieces('a', &[32; 250]));
+    let mut rows = vec![row_in_pieces('a', &[32; 250])];
+    rows.extend((0..100).map(|_| text_row(Some("a short line"), Some("b"))));
     let pane = DiffPane::mount(cx, Value::Array(rows), 1200., &Shared::default());
     let (ranges, pending) = (pane.ranges(), pane.pending());
     let drawn = pane
@@ -4581,8 +4588,11 @@ fn yuzora_diff_a_line_in_two_hundred_and_fifty_pieces_is_laid_out_in_a_frame_and
         .iter()
         .filter(|(view, error)| view == "d1" && error.is_null())
         .count();
+    // As the window draws it (the probe row is the first): the test font adds its 6.9px a letter up in f32.
+    let line = pane.text_width("a");
     pane.close();
-    let wanted = 250. * (32. * 6.9_f64).ceil() + 6. + 12. - 555.5;
+    assert!((line - 8000. * 6.9).abs() < 8000. * 6.9 * 0.01, "the line is drawn {line}px wide");
+    let wanted = line + 6. + 12. - 555.5;
     assert!(
         drawn >= 2 && !pending,
         "drawn {drawn} times, and lines left to lay out: {pending}"
@@ -4634,16 +4644,13 @@ fn yuzora_diff_a_held_thumb_stays_under_the_pointer_when_the_range_changes(cx: &
     pane.close();
 }
 
-// yuzora(v010): the end of the right side's line is scrolled to when its line is the widest and cut into pieces (the left
-// side's lines are plainer and shorter): the pieces each side's lines are cut into are their own, and the half cell
-// each piece but the first may be rounded up by is counted for the right side's as for the left's.
+// yuzora(v010): the end of the right side's line is scrolled to when its line is the widest and has words marked (the left
+// side's lines are plainer and shorter): each side's lines are measured as that side draws them.
 #[gpui::test]
 fn yuzora_diff_the_right_sides_line_cut_into_pieces_is_scrolled_to_its_end(cx: &mut TestAppContext) {
-    let pieces: Vec<Value> = pieces_of(&[3], 360).iter().enumerate().map(|(i, n)| json!({"t": "b".repeat(*n), "h": i % 2 == 1})).collect();
-    let text: String = pieces.iter().map(|p| p["t"].as_str().unwrap()).collect();
     let rows = json!([
-        {"k": "~", "h": 0, "l": 1, "li": 0, "lt": "a".repeat(5), "r": 1, "ri": 0, "rt": text, "rs": pieces},
-        text_row(Some("a"), Some(&"b".repeat(362))),
+        {"k": "~", "h": 0, "l": 1, "li": 0, "lt": "a".repeat(5), "r": 1, "ri": 0, "rt": "b".repeat(362), "rm": marks_of(&pieces_of(&[3], 362))},
+        text_row(Some("a"), Some(&"b".repeat(360))),
     ]);
     let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
     let gap = pane.end_gap_right("b");

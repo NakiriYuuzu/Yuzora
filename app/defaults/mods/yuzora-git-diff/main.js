@@ -1,4 +1,4 @@
-// The diff pane: one file, side by side or unified, with word highlights;
+// The diff pane: one file, side by side or unified, its code coloured as the editor colours it, with word highlights;
 // stage, unstage or discard hunks or lines without touching the rest; select rows (by a click, a Shift-click or by
 // dragging across them) and copy their lines, a hunk or a patch. Follows shared "yuzora.git.diff" ({cwd, on, path, orig, mode, rev?, to?, at}).
 // The same class draws the menu a right-click opens (props.menu), as the Git log does.
@@ -6,7 +6,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, Scrollbar, VirtualListScrollHandle } from "gpui-base";
 import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify } from "herdr";
 import { t, tokens, session } from "yuzora:core";
-import { open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from "yuzora:git";
+import { open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, DiffLine, diffLook, settings as gitSettings } from "yuzora:git";
 
 // Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
 // the space of the pane it is given, so a pane is only looked for among the tabs of the shown
@@ -57,14 +57,13 @@ const MENU_W = 210, MENU_ROW = 28, MENU_PAD = 4, MENU_HEIGHT = 3 * MENU_ROW + 2 
 // out of sight, for the next slice, the first included. It works out what each line can take at most, in cells
 // ([`bound`], reading LINE characters of a line at most), and puts the lines in the order of that, widest first (once
 // all the rows are ranked, natively, a side at a time, ORDER units a line; a side whose turn comes with the slice used
-// up waits for the next one); a line that three cells a character cannot make as wide as the FEW widest read so far is
+// up waits for the next one); a line that WORST cells a character cannot make as wide as the FEW widest read so far is
 // not read. Then each frame lays out
 // the first lines in that order, out of sight, in the box the rows draw them in ([`GitDiff.probes`]): one a side in the
 // first, GROW times as many as in the one before after it, and never more than FRAME in all, counted as [`cost`] says. A
-// line that costs more than FRAME by itself is laid out alone, a side to a frame, up to LAYOUT characters or TEXTS
-// pieces, past which it is not laid out at all. The range is the widest line laid out, and while lines are left that can
-// be wider, the most the widest of them can take at most. A piece of a line is rounded up to a pixel of the window,
-// which is at most HALF a cell for each piece but the first.
+// line that costs more than FRAME by itself is laid out alone, a side to a frame, up to LAYOUT characters, past which it
+// is not laid out at all. The range is the widest line laid out, and while lines are left that can be wider, the most the
+// widest of them can take at most. A line is one text ([`DiffLine`]), rounded up to a pixel of the window once.
 //
 // The engine cuts off what runs past its time (50 ms in a frame, 500 in an event), and a cut leaves nothing behind but the
 // mark of what was begun: a slice or a batch is marked when it starts and unmarked when it is back, so the one that starts
@@ -74,9 +73,9 @@ const MENU_W = 210, MENU_ROW = 28, MENU_PAD = 4, MENU_HEIGHT = 3 * MENU_ROW + 2 
 // never to the size that was cut: half of that is the most they are asked for from then on. When both sides had a batch
 // in the frame that was cut, the one whose batch cost more is the cause. An event asks for the next frame before it
 // works; a frame cannot ask, so a timer asks, LATE ms after the event that wanted the frame, if nothing came of it.
-const GROW = 4, FRAME = 1 << 15, LAYOUT = 1 << 18, TEXTS = 1 << 12;
+const GROW = 4, FRAME = 1 << 15, LAYOUT = 1 << 18;
 const LATE = 120, RETRIES = 40;
-const SLICE = 2e6, ORDER = 6, STEP = 100, TOLL = 200, SLOW = 25, LINE = 1 << 20, SORT = 1 << 16, FEW = 4, WORST = 3, HALF = 0.5;
+const SLICE = 2e6, ORDER = 6, STEP = 100, TOLL = 200, SLOW = 25, LINE = 1 << 20, SORT = 1 << 16, FEW = 4, WORST = 4;
 // The width of a run of this over its length is what a cell takes in the font. The layout rounds that width up
 // to a pixel, which on a cell is the less the longer the run.
 const RULER = "W".repeat(1 << 16);
@@ -293,7 +292,7 @@ export default class GitDiff extends View {
   show(view) {
     this.view = view; this.gauge = null; this.mark = null; this.floor = this.shown;
     this.endSweep();
-    this.fit = this.layout === "unified" ? { longest: Math.min(2000, view.rows.reduce((m, r) => Math.max(m, (r.t ?? "").length, (r.lt ?? "").length, (r.rt ?? "").length), 0)) } : ranking(view.rows);
+    this.fit = this.layout === "unified" ? { longest: Math.min(2000, view.rows.reduce((m, r) => Math.max(m, cells(r.t, m), cells(r.lt, m), cells(r.rt, m)), 0)) } : ranking(view.rows);
   }
 
   // The next slice of the rows is ranked, when a frame has asked for it out of sight. The frame after it is asked for first,
@@ -372,7 +371,7 @@ export default class GitDiff extends View {
   }
 
   // How wide the box of the widest line of a side that was not laid out may be, in the unit the pane writes
-  // lengths in (a cell is not known till the ruler is laid out; the pieces of a line are in its cells).
+  // lengths in (a cell is not known till the ruler is laid out).
   later(name) {
     const cells = this.remain(name), bound = cells ? INDENT + cells * (this.unit?.w ?? 0) : 0;
     return this.fit.done ? bound : Math.max(bound, this.floor?.[name] ?? 0);
@@ -582,29 +581,34 @@ export default class GitDiff extends View {
     else if (e.key === "u" && this.view?.stageable && this.spec?.mode === "staged") { this.apply(cx, "unstage", Object.keys(this.picked()).length ? [] : [this.hunk], this.picked()); cx.stop_propagation(); }
   }
 
-  segments(segs, text, color, strong) {
-    if (!segs || !segs.length) return div().whitespace_nowrap().text_color(color).child(text || " ");
-    return h_flex().whitespace_nowrap().text_color(color)
-      .children(segs.map((s, i) => div().id(`s${i}`).when(s.h, (el) => el.bg(strong).rounded(2)).child(s.t || "")));
+  // The number the lines know the theme's colours by: code as the editor colours it, the marks of what changed and the
+  // selection. Asked for once for each look.
+  look(th, d) {
+    const key = JSON.stringify([syntax(th), d.removed, d.added, th.accent]);
+    if (this.looked?.key !== key) {
+      this.looked = { key, id: diffLook({ syntax: syntax(th), removed: `${d.removed ?? "#f08a8a"}55`, added: `${d.added ?? "#86d17a"}55`, selection: wash(th.accent) }) };
+    }
+    return this.looked.id;
   }
 
-  // The tint over a selected line's text, from `left` to the row's end. It is laid over the row, out of its
-  // flow, and is not in [`line`], so it takes no room and the measuring of the lines does not see it.
-  shade(th, left, side) {
-    return div().id(`shade-${side}`).absolute().top(0).bottom(0).left(left).right(0).bg(wash(th.accent));
+  // A line's text, drawn natively as one text: the line as the file has it, its code coloured by the diff's syntax, the
+  // words that changed marked (`m`, or a side's `lm` and `rm`), and `sel` tinted ([from, to] in the line, from below 0
+  // and to past its end reaching the row's edges). `side` is the side the line is of ("l" or "r"), `k` its place there.
+  text(r, side, k, look, marks, sel) {
+    const text = side === "l" ? r.lt ?? r.t : r.rt ?? r.t;
+    return DiffLine.new(`${side}${k}`, { text, diff: this.view.id, side, line: k, look, ...(marks ? { marks } : {}), ...(sel ? { sel } : {}) });
   }
 
-  // The box a line's text is drawn in. The cell draws it and the measuring of the lines lays it out ([`probes`]):
-  // how wide a line is is how wide this is, whatever it is cut into.
-  line(r, side, th, d) {
-    const del = side === "l", text = del ? r.lt ?? r.t : r.rt ?? r.t;
-    const strong = del ? `${d.removed ?? "#f08a8a"}55` : `${d.added ?? "#86d17a"}55`;
-    return div().flex_none().pl(INDENT).child(r[side] !== undefined ? this.segments(r[`${side}s`], text, th.foreground, strong) : "");
+  // The box a line's text is drawn in. The cell draws it and the measuring of the lines lays it out ([`probes`]): how
+  // wide a line is is how wide this is.
+  line(r, side, look, sel) {
+    const n = r[side];
+    return div().flex_none().h_full().pl(INDENT).when(n !== undefined, (el) => el.child(this.text(r, side, n - 1, look, r[`${side}m`], sel)));
   }
 
   // One side's cell: number (click picks the line), then the text, which `sx` moves under the cell's
   // edge. `grow` is its share of the row, the same for every row; `selected`, that the row is in the selection.
-  cell(r, side, th, d, grow, sx, selected) {
+  cell(r, side, th, d, look, grow, sx, selected) {
     const n = r[side];
     const changedRow = r.k === "~" || r.k === "-" || r.k === "+";
     const present = n !== undefined;
@@ -614,15 +618,14 @@ export default class GitDiff extends View {
     const picked = changedRow && present && this.sel[r.h]?.[del ? "del" : "add"]?.has(index);
     const canPick = changedRow && present && this.view.stageable;
     return h_flex().w(0).flex_grow(grow).min_w(0).h_full().relative().when(Boolean(bg), (el) => el.bg(bg)).when(changedRow && !present, (el) => el.bg(th.raised))
-      .when(selected && present, (el) => el.child(this.shade(th, GUTTER, side)))
       .child(div().w(GUTTER).flex_none().h_full().pr(6).text_right().text_color(picked ? th.foreground : th.dim)
         .when(picked, (el) => el.bg(del ? d.removed ?? th.ansi1 : d.added ?? th.ansi2).text_color(th.background))
         .when(canPick, (el) => el.cursor_pointer().hover((s) => s.text_color(th.foreground)))
         .child(present ? String(n) : ""))
-      .child(h_flex().flex_1().min_w(0).h_full().overflow_hidden().child(this.line(r, side, th, d).ml(-sx)));
+      .child(h_flex().flex_1().min_w(0).h_full().overflow_hidden().child(this.line(r, side, look, selected ? WHOLE : null).ml(-sx)));
   }
 
-  row(r, i, th, d, width) {
+  row(r, i, th, d, look, width) {
     if (r.k === "fold") {
       return h_flex().id(`r${i}`).h(ROW).px(10).items_center().bg(th.raised).text_color(th.dim).cursor_pointer()
         .hover((s) => s.text_color(th.foreground)).child(t("fold", { count: r.n }));
@@ -636,19 +639,21 @@ export default class GitDiff extends View {
       const side = del ? "del" : "add";
       const picked = (del || add) && this.sel[r.h]?.[side]?.has(index);
       const canPick = (del || add) && this.view.stageable;
+      // The sign and the text are one clipped box: a selection reaches from its left to its right.
+      const on = add ? "r" : "l", n = add ? r.ri : del ? r.li : r.l - 1;
       return base.relative().when(current, (el) => el.border_l(2).border_color(th.accent)).when(Boolean(bg), (el) => el.bg(bg))
-        .when(this.marked(i, "l"), (el) => el.child(this.shade(th, GUTTER * 2, "u")))
         .child(div().w(GUTTER * 2).flex_none().h_full().flex().text_color(picked ? th.background : th.dim)
           .when(picked, (el) => el.bg(del ? d.removed ?? th.ansi1 : d.added ?? th.ansi2))
           .when(canPick, (el) => el.cursor_pointer())
           .child(div().w(GUTTER).pr(6).text_right().child(r.l !== undefined ? String(r.l) : ""))
           .child(div().w(GUTTER).pr(6).text_right().child(r.r !== undefined ? String(r.r) : "")))
-        .child(div().w(14).flex_none().text_color(del ? d.removed : add ? d.added : th.dim).child(del ? "−" : add ? "+" : ""))
-        .child(div().flex_1().min_w(width).child(this.segments(r.s, r.t, th.foreground, del ? `${d.removed}55` : `${d.added}55`)));
+        .child(h_flex().flex_1().min_w(14 + width).h_full().overflow_hidden()
+          .child(div().w(14).flex_none().text_color(del ? d.removed : add ? d.added : th.dim).child(del ? "−" : add ? "+" : ""))
+          .child(this.text(r, on, n, look, r.m, this.marked(i, "l") ? WHOLE : null)));
     }
     // The current hunk's mark sits over the row's edge: a border would move this row's divider off the others'.
     const lay = this.lay;
-    return base.relative().child(this.cell(r, "l", th, d, lay.l, lay.sx, this.marked(i, "l"))).child(div().w(1).flex_none().h_full().bg(th.border)).child(this.cell(r, "r", th, d, lay.r, lay.sx, this.marked(i, "r")))
+    return base.relative().child(this.cell(r, "l", th, d, look, lay.l, lay.sx, this.marked(i, "l"))).child(div().w(1).flex_none().h_full().bg(th.border)).child(this.cell(r, "r", th, d, look, lay.r, lay.sx, this.marked(i, "r")))
       .when(current, (el) => el.child(div().absolute().top(0).left(0).w(2).h_full().bg(th.accent)));
   }
 
@@ -689,11 +694,11 @@ export default class GitDiff extends View {
   // and where they start in the order. A line that costs a frame by itself is a batch of its own, unless it is past
   // what can be laid out: those are passed over, and kept in `blind`.
   batch(name) {
-    const g = this.gauge[name], rank = this.fit[name], { text, pieces } = SIDES[name], lines = [];
+    const g = this.gauge[name], rank = this.fit[name], text = SIDES[name], lines = [];
     let used = 0;
     for (let at = g.left; at >= 0 && lines.length < GROW ** g.rounds && used <= g.frame; at--) {
-      const { cells, r } = entry(rank, at), long = (r[text] ?? r.t).length, cut = r[pieces]?.length || 1, price = cost(long, cut);
-      if (long > LAYOUT || cut > TEXTS) {
+      const { cells, r } = entry(rank, at), long = (r[text] ?? r.t).length, price = cost(long);
+      if (long > LAYOUT) {
         if (lines.length) break;
         g.blind = Math.max(g.blind, cells);
         g.left = at - 1;
@@ -742,7 +747,7 @@ export default class GitDiff extends View {
   // batch of each side is laid out while some lines of it may be wider than the widest laid out so far, and a run of
   // ruler, which says what a cell is for the lines that are not. Each reports its width, which is how far the sides
   // scroll; they go away once nothing is left to find out.
-  probes(th, d) {
+  probes(look) {
     const g = this.gauge, fit = this.fit;
     if (!g) return div();
     const hidden = () => v_flex().absolute().top(0).left(0).h(0).overflow_hidden();
@@ -759,7 +764,7 @@ export default class GitDiff extends View {
         g[name].trying = batch;
         out.push(hidden().id(`gauge-${g.id}-${name}-${batch.from}-${g[name].cuts}`)
           .on_size_change((size, cx) => this.measured(g, name, batch, size, cx))
-          .children(batch.lines.map((r) => h_flex().child(this.line(r, name, th, d)))));
+          .children(batch.lines.map((r) => h_flex().child(this.line(r, name, look, null)))));
       }
     }
     if (this.unit?.key !== g.key) {
@@ -775,7 +780,7 @@ export default class GitDiff extends View {
 
   // Side by side: the sides share the width by one ratio whatever their lines hold, each clipping its
   // own, and the lines scroll sideways together.
-  sideBody(v, th, d, mono) {
+  sideBody(v, th, d, look, mono) {
     this.gauged();
     const ratio = this.ratio(), width = this.rowsWidth ?? 0, reach = this.reach(ratio);
     // What is kept, a wheel's or a thumb's reach past the end included, is brought within the room there is
@@ -793,16 +798,16 @@ export default class GitDiff extends View {
         .on_size_change((size, cx) => { this.boxH = size.height; if (Math.abs(size.width - this.rowsPx) > 0.5) { this.rowsPx = size.width; cx.notify(); } })
         .on_mouse_down("left", (e, cx) => this.pressed(e, cx))
         .on_scroll_wheel((e, cx) => this.wheel(e, cx))
-        .child(this.rowList(v, th, d, 0)))
+        .child(this.rowList(v, th, d, look, 0)))
       .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().top(0).left(0).right(0).bottom(reach > 0 ? BAR : 0))
       .child(this.splitter(th))
       .when(reach > 0, (el) => el.child(this.hbar(th)))
-      .child(this.probes(th, d));
+      .child(this.probes(look));
   }
 
-  rowList(v, th, d, width) {
+  rowList(v, th, d, look, width) {
     return v_virtual_list("diff-rows", v.rows.length, ROW, (i) => String(i),
-      (range) => v.rows.slice(range.start, range.end).map((r, k) => this.row(r, range.start + k, th, d, width)))
+      (range) => v.rows.slice(range.start, range.end).map((r, k) => this.row(r, range.start + k, th, d, look, width)))
       .on_item_click((key, cx) => this.clickRow(Number(key), cx))
       .on_item_secondary_click((key, e, cx) => this.openMenu(Number(key), e.local_position?.x == null ? -1 : unzoom(e.local_position.x), cx))
       .track_scroll(this.scroll).size_full();
@@ -904,15 +909,15 @@ export default class GitDiff extends View {
     else if (v.binary) body = div().p(16).text_color(th.dim).child(t("binary"));
     else if (v.identical || !v.rows.length) body = div().p(16).text_color(th.dim).child(!v.leftExists && !v.rightExists ? t("missing") : v.modes ? t("modes", { from: v.modes[0], to: v.modes[1] }) : t("identical"));
     else if (this.layout === "unified") {
-      const width = (this.fit?.longest ?? 0) * CHAR + 24;
+      const width = (this.fit?.longest ?? 0) * CHAR + 24, look = this.look(th, d);
       body = div().flex_1().min_h(0).relative().font_family(mono).text_size(11.5)
         .child(div().id("diff-x").size_full().overflow_x_scrollbar()
           .child(div().id("diff-rows-box").w_full().min_w(GUTTER * 2 + 14 + width).h_full()
             .on_size_change((size) => { this.rowsPx = size.width; this.boxH = size.height; })
             .on_mouse_down("left", (e, cx) => this.pressed(e, cx))
-            .child(this.rowList(v, th, d, width))))
+            .child(this.rowList(v, th, d, look, width))))
         .child(Scrollbar.vertical("diff-rows").viewport_from_layout().absolute().inset_0());
-    } else body = this.sideBody(v, th, d, mono);
+    } else body = this.sideBody(v, th, d, this.look(th, d), mono);
 
     const ask = this.askDiscard && h_flex().px(10).py(6).gap(8).items_center().bg((tokens().attention ?? {}).background ?? th.raised).text_size(11.5)
       .child(div().flex_1().child(t("discard.ask")))
@@ -944,6 +949,38 @@ const linesCopied = (n) => (n === 1 ? t("copied.lines_one") : t("copied.lines_ot
 
 // The accent as a wash over what is under it (a color that is not #rrggbb is used as it is).
 const wash = (c) => (/^#[0-9a-f]{6}$/i.test(c ?? "") ? `${c}44` : c);
+
+// A whole line selected: from before its start to past its end.
+const WHOLE = [-1, 2 ** 30];
+
+// How many cells a line is drawn in, a tab four, when that can be more than `than` (a tab is the widest a unit is drawn).
+function cells(s, than) {
+  if (!s || s.length * 4 <= than) return 0;
+  let n = s.length;
+  for (let at = s.indexOf("\t"); at >= 0; at = s.indexOf("\t", at + 1)) n += 3;
+  return n;
+}
+
+// Code colors by theme color name, so code reads on light and dark themes alike. A name not listed takes its prefix's
+// (`keyword.control` is a keyword). The table and [`syntax`] are the editor's (yuzora-editor/doc-pane.js), held equal by
+// a test in yuzora-git.
+const SYNTAX = {
+  keyword: "ansi5",
+  function: "ansi12", "function.method": "ansi12", link: "ansi12",
+  "function.builtin": "ansi6", operator: "ansi6", "string.escape": "ansi6", "string.special": "ansi6",
+  type: "ansi11", "type.builtin": "ansi11", constructor: "ansi11", namespace: "ansi11", module: "ansi11",
+  string: "ansi2", literal: "ansi2",
+  number: "ansi3", boolean: "ansi3", constant: "ansi3", "constant.builtin": "ansi3", attribute: "ansi3",
+  comment: "dim",
+  property: "ansi1", tag: "ansi1", label: "ansi1", heading: "ansi1", "variable.builtin": "ansi1", "variable.parameter": "ansi1",
+};
+
+// The theme's colors for code (`syntax` of Editor and Markdown). Built with
+// `fromEntries`: mods run with frozen built-in prototypes, where
+// `out.constructor = …` throws.
+function syntax(th) {
+  return Object.fromEntries(Object.entries(SYNTAX).filter(([, color]) => th[color]).map(([name, color]) => [name, th[color]]));
+}
 
 // The rows a selection covers, first to last, whichever way it was made.
 function span(m) {
@@ -1005,18 +1042,22 @@ function press(m, row, side, shift) {
 // JetBrains Mono and what the system falls back to for the rest draw (scripts/fixtures/yuzora-git-diff-font-widths.json,
 // held to by yuzora-git-diff-layout.test.ts): Latin, Greek, Cyrillic, punctuation, arrows and box drawing take 1;
 // Chinese, Japanese, full width 1.67 and Korean 1.44; a symbol drawn as an emoji 2.17, and one past U+FFFF is two
-// units. Each is rounded up with some to spare, and what is not listed is taken at [`WORST`].
+// units; a tab, drawn as four spaces, 4, the most a unit is drawn ([`WORST`]). Each is rounded up with some to spare,
+// and what is not listed is taken at [`UNLISTED`], three cells.
 // This is never a width. It says in what order the lines are laid out and when to stop (when what is left cannot be
 // wider than what was laid out), so a cell too many here costs a line laid out, not a pixel of range. What it must
 // not be is too few: a character that takes more than its class says can end the laying out while a line with it in
 // is wider than the widest laid out, by that character's excess.
-const ASCII = /[\0-\x7f]+/g;
+const ASCII = /[\0-\x08\x0a-\x7f]+/g;
 const NARROW = /[^\x80-\u058f\u2000-\u206f\u2190-\u22ff\u2500-\u259f]+/g;
 const WIDE = /[^\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]+/g;
 const PAIR = /[^\ud800-\udfff]+/g;
+const TABS = /[^\t]+/g;
+const UNLISTED = 3;
 
 // The cells a line takes at most, reading its first [`LINE`] characters (the rest is taken at [`WORST`] a unit, as is
-// every character that is not ASCII in a line with more than [`SORT`] of them). What the reading costs, [`TOLL`] and
+// every character that is not ASCII in a line with more than [`SORT`] of them). A tab is read with the characters that are
+// not ASCII, and taken at WORST: four cells, as it is drawn. What the reading costs, [`TOLL`] and
 // [`SLOW`], is taken from `meter`.
 function bound(s, meter) {
   const n = s.length, read = Math.min(n, LINE), head = read < n ? s.slice(0, read) : s;
@@ -1026,26 +1067,22 @@ function bound(s, meter) {
   if (other.length > SORT) return cells + WORST * other.length;
   if (other.length) {
     const count = (re) => other.replace(re, "").length;
-    const narrow = count(NARROW), wide = count(WIDE), pair = count(PAIR);
-    cells += 1.25 * narrow + 2 * wide + 1.5 * pair + WORST * (other.length - narrow - wide - pair);
+    const narrow = count(NARROW), wide = count(WIDE), pair = count(PAIR), tabs = count(TABS);
+    cells += 1.25 * narrow + 2 * wide + 1.5 * pair + WORST * tabs + UNLISTED * (other.length - narrow - wide - pair - tabs);
   }
   return cells;
 }
 
-// Where in a row each side's line is: its text (an unchanged row has one, `t`, for both), and the pieces it is drawn in
-// (one text if there are none).
-const SIDES = {
-  l: { text: "lt", pieces: "ls" },
-  r: { text: "rt", pieces: "rs" },
-};
+// Where in a row each side's line is (an unchanged row has one, `t`, for both).
+const SIDES = { l: "lt", r: "rt" };
 
-// What laying out a line costs, in the characters it has and the texts it is drawn in.
-function cost(chars, pieces) {
-  return chars + 16 * pieces + 64;
+// What laying out a line costs, in the characters it has.
+function cost(chars) {
+  return chars + 80;
 }
 
 // Every line of a side in the order they are laid out in, widest first by what each can take at most, in cells:
-// [`bound`] of its text, and what its pieces may be rounded up by. The order is a sort of numbers (a bound in quarters
+// [`bound`] of its text. The order is a sort of numbers (a bound in quarters
 // of a cell above, the row below, in one number), so what a frame goes through of it is the few lines it takes off the
 // end, and nothing depends on how many rows there are. How wide the lines are is found by laying them out in that
 // order: what the table of cells says is wrong costs lines to lay out, not the range. A line that is the same on both
@@ -1058,7 +1095,7 @@ function ranking(rows) {
 
 // Ranks the rows from where `fit` left off until `meter` has nothing left, and puts the lines of a side in order when all
 // the rows have been (a side whose turn comes with the meter used up is left for the next call).
-// A line is read in full if it can beat the FEW widest read so far, else it is taken at three cells a unit.
+// A line is read in full if it can beat the FEW widest read so far, else it is taken at WORST cells a unit.
 // This can be cut off anywhere, and the next call goes on from the last row it finished. The engine looks at the clock where
 // the script calls or branches, so a row is written in places that doing it again writes the same in, and the counts that
 // make it count, `fit.at` last, are set together with nothing in between to call or branch.
@@ -1069,16 +1106,14 @@ function scan(fit, meter) {
     meter.left -= STEP;
     let same = 0, lc = 0, rc = 0, readL = false, readR = false;
     if (lt) {
-      const cut = row.ls?.length;
-      lc = WORST * lt.length + (cut > 1 ? HALF * (cut - 1) : 0);
-      if (!hurt && lc > l.floor) { lc = bound(lt, meter) + (cut > 1 ? HALF * (cut - 1) : 0); readL = true; }
-      if (rt === lt && !row.ls && !row.rs) same = lc;
+      lc = WORST * lt.length;
+      if (!hurt && lc > l.floor) { lc = bound(lt, meter); readL = true; }
+      if (rt === lt) same = lc;
     }
     if (rt) {
-      const cut = row.rs?.length;
-      rc = same || WORST * rt.length + (cut > 1 ? HALF * (cut - 1) : 0);
+      rc = same || WORST * rt.length;
       if (same) readR = rc > r.floor;
-      else if (!hurt && rc > r.floor) { rc = bound(rt, meter) + (cut > 1 ? HALF * (cut - 1) : 0); readR = true; }
+      else if (!hurt && rc > r.floor) { rc = bound(rt, meter); readR = true; }
     }
     if (readL) keep(l, lc);
     if (readR) keep(r, rc);

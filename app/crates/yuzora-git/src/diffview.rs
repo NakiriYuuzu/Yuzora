@@ -35,7 +35,6 @@ pub fn is_too_large(side: &[u8]) -> bool {
 /// Word diff inside blocks up to this size.
 const WORD_DIFF_LINES: usize = 300;
 const WORD_DIFF_CHARS: usize = 40_000;
-const TAB: &str = "    ";
 
 /// Which two versions are compared.
 #[derive(Clone, Debug, PartialEq)]
@@ -336,13 +335,13 @@ impl DiffSession {
     }
 }
 
-/// Display text: UTF-8 (lossy), no line ending, tabs as spaces.
-fn display(line: &[u8]) -> String {
-    String::from_utf8_lossy(diff::strip_eol(line)).replace('\t', TAB)
+/// A line as the file has it: UTF-8 (lossy), no line end, tabs as tabs.
+fn own(line: &[u8]) -> String {
+    String::from_utf8_lossy(diff::strip_eol(line)).into_owned()
 }
 
-/// Word-level segments for one block: per line, `[{t, h}]`.
-fn word_segments(left: &[String], right: &[String], ws: Whitespace) -> Option<(Vec<Vec<Value>>, Vec<Vec<Value>>)> {
+/// What changed in one block, word by word: per line, the byte ranges of it that differ (`[[from, to]]`).
+fn word_marks(left: &[String], right: &[String], ws: Whitespace) -> Option<(Vec<Value>, Vec<Value>)> {
     if left.is_empty() || right.is_empty() || left.len() > WORD_DIFF_LINES || right.len() > WORD_DIFF_LINES {
         return None;
     }
@@ -352,35 +351,27 @@ fn word_segments(left: &[String], right: &[String], ws: Whitespace) -> Option<(V
         return None;
     }
     let (ra, rb) = diff::diff_words(&a, &b, ws);
-    Some((split_segments(left, &ra), split_segments(right, &rb)))
+    Some((split_marks(left, &ra), split_marks(right, &rb)))
 }
 
-/// Cuts highlight ranges of the joined block back into per-line segments.
-fn split_segments(lines: &[String], ranges: &[std::ops::Range<usize>]) -> Vec<Vec<Value>> {
-    let mut out = Vec::with_capacity(lines.len());
+/// Cuts ranges of the joined block back into ranges of each line.
+fn split_marks(lines: &[String], ranges: &[std::ops::Range<usize>]) -> Vec<Value> {
     let mut offset = 0;
-    for line in lines {
-        let (start, end) = (offset, offset + line.len());
-        let mut segs = Vec::new();
-        let mut pos = start;
-        for r in ranges {
-            let (s, e) = (r.start.max(start), r.end.min(end));
-            if s >= e {
-                continue;
-            }
-            if s > pos {
-                segs.push(json!({ "t": &line[pos - start..s - start], "h": false }));
-            }
-            segs.push(json!({ "t": &line[s - start..e - start], "h": true }));
-            pos = e;
-        }
-        if pos < end {
-            segs.push(json!({ "t": &line[pos - start..], "h": false }));
-        }
-        out.push(segs);
-        offset = end + 1;
+    lines
+        .iter()
+        .map(|line| {
+            let (start, end) = (offset, offset + line.len());
+            offset = end + 1;
+            Value::Array(ranges.iter().map(|r| (r.start.max(start), r.end.min(end))).filter(|(s, e)| s < e).map(|(s, e)| json!([s - start, e - start])).collect())
+        })
+        .collect()
+}
+
+/// A line's marks in a row, under `key`, unless it has none.
+fn put_marks(row: &mut Value, key: &str, marks: Option<&Value>) {
+    if let Some(m) = marks.filter(|m| m.as_array().is_some_and(|a| !a.is_empty())) {
+        row[key] = m.clone();
     }
-    out
 }
 
 /// The rows the pane draws.
@@ -395,7 +386,7 @@ fn rows(ll: &[&[u8]], rl: &[&[u8]], changes: &[Change], unified: bool, context: 
         let tail = if last { 0 } else { ctx.min(n - head) };
         let fold = n.saturating_sub(head + tail);
         let push = |out: &mut Vec<Value>, k: usize| {
-            let (lt, rt) = (display(ll[a + k]), display(rl[b + k]));
+            let (lt, rt) = (own(ll[a + k]), own(rl[b + k]));
             let row = if lt == rt { json!({ "k": "=", "l": a + k + 1, "r": b + k + 1, "t": lt }) } else { json!({ "k": "=", "l": a + k + 1, "r": b + k + 1, "t": lt, "rt": rt }) };
             out.push(row);
         };
@@ -416,15 +407,19 @@ fn rows(ll: &[&[u8]], rl: &[&[u8]], changes: &[Change], unified: bool, context: 
     let total = changes.len();
     for (h, c) in changes.iter().enumerate() {
         equal(&mut out, i, j, c.a.start - i, h == 0, false);
-        let left: Vec<String> = ll[c.a.clone()].iter().map(|l| display(l)).collect();
-        let right: Vec<String> = rl[c.b.clone()].iter().map(|l| display(l)).collect();
-        let segs = word_segments(&left, &right, ws);
+        let left: Vec<String> = ll[c.a.clone()].iter().map(|l| own(l)).collect();
+        let right: Vec<String> = rl[c.b.clone()].iter().map(|l| own(l)).collect();
+        let marks = word_marks(&left, &right, ws);
         if unified {
             for (k, t) in left.iter().enumerate() {
-                out.push(json!({ "k": "-", "h": h, "l": c.a.start + k + 1, "li": c.a.start + k, "t": t, "s": segs.as_ref().map(|s| &s.0[k]) }));
+                let mut row = json!({ "k": "-", "h": h, "l": c.a.start + k + 1, "li": c.a.start + k, "t": t });
+                put_marks(&mut row, "m", marks.as_ref().map(|m| &m.0[k]));
+                out.push(row);
             }
             for (k, t) in right.iter().enumerate() {
-                out.push(json!({ "k": "+", "h": h, "r": c.b.start + k + 1, "ri": c.b.start + k, "t": t, "s": segs.as_ref().map(|s| &s.1[k]) }));
+                let mut row = json!({ "k": "+", "h": h, "r": c.b.start + k + 1, "ri": c.b.start + k, "t": t });
+                put_marks(&mut row, "m", marks.as_ref().map(|m| &m.1[k]));
+                out.push(row);
             }
         } else {
             for k in 0..left.len().max(right.len()) {
@@ -433,13 +428,13 @@ fn rows(ll: &[&[u8]], rl: &[&[u8]], changes: &[Change], unified: bool, context: 
                     row["l"] = json!(c.a.start + k + 1);
                     row["li"] = json!(c.a.start + k);
                     row["lt"] = json!(left[k]);
-                    row["ls"] = json!(segs.as_ref().map(|s| &s.0[k]));
+                    put_marks(&mut row, "lm", marks.as_ref().map(|m| &m.0[k]));
                 }
                 if k < right.len() {
                     row["r"] = json!(c.b.start + k + 1);
                     row["ri"] = json!(c.b.start + k);
                     row["rt"] = json!(right[k]);
-                    row["rs"] = json!(segs.as_ref().map(|s| &s.1[k]));
+                    put_marks(&mut row, "rm", marks.as_ref().map(|m| &m.1[k]));
                 }
                 out.push(row);
             }
@@ -857,7 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_fold_unchanged_runs_and_carry_word_segments() {
+    fn rows_fold_unchanged_runs_and_carry_word_marks() {
         let a: String = (1..=20).map(|i| format!("line {i}\n")).collect();
         let b = a.replace("line 10\n", "line ten\n");
         let (la, lb) = (diff::lines(a.as_bytes()), diff::lines(b.as_bytes()));
@@ -866,7 +861,9 @@ mod tests {
         let kinds: Vec<&str> = side.iter().map(|r| r["k"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["fold", "=", "=", "=", "~", "=", "=", "=", "fold"]);
         assert_eq!(side[0]["n"], 6);
-        assert_eq!(side[4]["ls"], json!([{ "t": "line ", "h": false }, { "t": "10", "h": true }]));
+        assert_eq!(side[4]["lm"], json!([[5, 7]]), "`10` of `line 10`");
+        assert_eq!(side[4]["rm"], json!([[5, 8]]));
+        assert!(side[1].get("lm").is_none() && side[1].get("m").is_none(), "an unchanged line has no marks");
         let all = rows(&la, &lb, &cs, true, -1, Whitespace::Exact);
         assert_eq!(all.len(), 21);
         assert_eq!(all[9]["k"], "-");
@@ -1312,6 +1309,7 @@ exec 'REAL' "$@"
         let b = DiffSession::load(s.repo.clone(), "bin.dat".into(), None, Mode::Unstaged).unwrap();
         assert_eq!(b.lines_text(&[(Side::Right, 0, 1)]), "", "a binary file shows no lines");
     }
+
 
     /// Two commits of `path`, and the first one's id: the patch of the second's diff applies to the first.
     fn two_texts(s: &crate::repo::testing::Scratch, path: &str, old: &str, new: &str) -> (String, String) {

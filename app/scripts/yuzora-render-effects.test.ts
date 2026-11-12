@@ -308,6 +308,7 @@ const REVIEWED: Record<string, { why: string; pending?: boolean }> = {
   "yuzora-git-merge/retirePlain:setShared": { why: "once per run: it is guarded by yuzora.git.run" },
   "yuzora-git-diff/GitDiff.follow:spawn": { why: "follow() sets the state the frame draws and says so: no notify before the first await" },
   "yuzora-git-diff/retirePlain:setShared": { why: "once per run: it is guarded by yuzora.git.run" },
+  "yuzora-git-diff/GitDiff.look:diffLook": { why: "numbers the theme's colours in yuzora-git's table of looks (the same colours, the same number, kept once) and notifies nothing; asked only when the colours change" },
   "yuzora-git-rebase/GitRebase.begin:spawn": { why: "begin() sets the state the frame draws and says so: no notify before the first await" },
   "yuzora-git-rebase/GitRebase.begin:set_value": { why: "set_value of a text is not refused in a frame" },
   "yuzora-git-rebase/retirePlain:setShared": { why: "once per run: it is guarded by yuzora.git.run" },

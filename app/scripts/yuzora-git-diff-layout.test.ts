@@ -27,9 +27,9 @@ type Pane = {
   cutBatch(name: string, cause: boolean): void;
 };
 const zoomed = { zoom: 1 };
-const { ratioOf, bound, ranking, scan, cutSlice, regrow, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW } = (() => {
+const { ratioOf, bound, ranking, scan, cutSlice, regrow, entry, cost, GitDiff, LINE, LAYOUT, WORST, FRAME, SLICE, STEP, TOLL, SLOW } = (() => {
   const body = src.replace(/^import [\s\S]*?;\n/gm, "").replace("export default class GitDiff", "class GitDiff");
-  return new Function("View", "settings", `${body}; return { ratioOf, bound, ranking, scan, cutSlice, regrow, entry, cost, GitDiff, LINE, LAYOUT, TEXTS, WORST, HALF, FRAME, SLICE, STEP, TOLL, SLOW };`)(class {}, () => zoomed);
+  return new Function("View", "settings", `${body}; return { ratioOf, bound, ranking, scan, cutSlice, regrow, entry, cost, GitDiff, LINE, LAYOUT, WORST, FRAME, SLICE, STEP, TOLL, SLOW };`)(class {}, () => zoomed);
 })() as {
   ratioOf: (v: unknown) => number;
   bound: (text: string, meter: { left: number }) => number;
@@ -38,13 +38,11 @@ const { ratioOf, bound, ranking, scan, cutSlice, regrow, entry, cost, GitDiff, L
   cutSlice: (fit: Fit) => void;
   regrow: (fit: Fit) => void;
   entry: (rank: Rank, at: number) => { cells: number; r: Record<string, unknown> };
-  cost: (chars: number, pieces: number) => number;
+  cost: (chars: number) => number;
   GitDiff: { prototype: object };
   LINE: number;
   LAYOUT: number;
-  TEXTS: number;
   WORST: number;
-  HALF: number;
   FRAME: number;
   SLICE: number;
   STEP: number;
@@ -73,7 +71,8 @@ const ranksInSlices = (rows: object[], slice = SLICE) => {
 };
 // What each character takes in the diff's font, in cells, as it was measured.
 const measured = new Map(fonts.samples.filter((s) => [...s.text].length === 1).map((s) => [s.text, s.cells]));
-const truly = (text: string) => [...text].reduce((n, ch) => n + (measured.get(ch) ?? 1), 0);
+// A tab is drawn as four spaces.
+const truly = (text: string) => [...text].reduce((n, ch) => n + (ch === "\t" ? 4 : measured.get(ch) ?? 1), 0);
 
 test("a kept share is used as it is within 15% to 85%, clamped outside, and half when it is not a number", () => {
   expect([0.5, 0.3, 0.85, 0.15].map(ratioOf)).toEqual([0.5, 0.3, 0.85, 0.15]);
@@ -94,6 +93,13 @@ test("an ASCII line takes a cell a character, no more, and a wide one is not tak
   expect(bound("\u{1f600}".repeat(100), plenty())).toBe(300);
 });
 
+test("a tab takes four cells, as it is drawn, and a character no class lists three", () => {
+  expect(bound("\tx", plenty())).toBe(5);
+  expect(bound("\t\u0627\u0628", plenty())).toBe(10);
+  expect(bound("\t\t漢", plenty())).toBe(10);
+  expect(bound("\t".repeat(10), plenty())).toBeGreaterThanOrEqual(truly("\t".repeat(10)));
+});
+
 test("the rest of a line past what is read of it is taken at its worst, and what reading costs is taken from the meter", () => {
   expect(bound("a".repeat(LINE + 10), plenty())).toBe(LINE + WORST * 10);
   const meter = { left: 10000 };
@@ -103,12 +109,19 @@ test("the rest of a line past what is read of it is taken at its worst, and what
   expect(meter.left).toBe(10000 - TOLL - 100 - TOLL - 20 - SLOW * 20);
 });
 
+// A changed row; `pieces`: the left line's words, every other one marked as the word diff marks a change.
 const row = (lt?: string, rt?: string, pieces?: string[]) => ({
   k: "~",
   ...(lt !== undefined && { lt }),
   ...(rt !== undefined && { rt }),
-  ...(pieces && { ls: pieces.map((t, i) => ({ t, h: i % 2 === 1 })) }),
+  ...(pieces && { lm: marks(pieces) }),
 });
+function marks(pieces: string[]) {
+  const out: number[][] = [];
+  let at = 0;
+  pieces.forEach((t, i) => { if (i % 2 === 1) out.push([at, at + t.length]); at += t.length; });
+  return out;
+}
 // The texts of a side in the order they are laid out in: widest first by what they can take at most.
 const order = (rows: object[], side: "l" | "r" = "l") => {
   const r = ranks(rows)[side];
@@ -125,12 +138,12 @@ test("the lines are laid out in the order of the cells they may take, not of the
   expect(order(many).map((e) => e.cells)).toEqual(order(many).map((e) => e.cells).sort((a, b) => b - a));
 });
 
-test("a line drawn in pieces may take half a cell more for each piece after the first, which the window rounds up", () => {
+test("a line with words marked takes what it takes without: it is drawn as one text", () => {
   const one = "a".repeat(100), pieces = Array.from({ length: 34 }, (_, i) => (i < 33 ? "aaa" : "a"));
   const [plain] = order([row(one, "b")]);
-  const [piecewise] = order([row(one, "b", pieces)]);
+  const [marked] = order([row(one, "b", pieces)]);
   expect(plain.cells).toBe(100);
-  expect(piecewise.cells).toBe(100 + HALF * (pieces.length - 1));
+  expect(marked.cells).toBe(100);
 });
 
 test("a bound is a whole number of quarters of a cell, which is how it is kept in the order", () => {
@@ -146,8 +159,8 @@ test("a line that is the same on both sides, in an unchanged row, is read once",
   expect(order(same, "r").map((e) => e.cells)).toEqual(order(same, "l").map((e) => e.cells));
 });
 
-test("a line that three cells a character cannot make as wide as the widest read is not read", () => {
-  // Six lines of 900 characters, then five thousand of 200: 600 cells at most each, under the 900 of the four widest.
+test("a line that WORST cells a character cannot make as wide as the widest read is not read", () => {
+  // Six lines of 900 characters, then five thousand of 200: 800 cells at most each, under the 900 of the four widest.
   const rows = [...Array.from({ length: 6 }, () => row("a".repeat(900))), ...Array.from({ length: 5000 }, () => row("b".repeat(200)))];
   const { out, read } = reading(() => ranks(rows));
   expect(read).toBeLessThan(20000);
@@ -161,13 +174,10 @@ test("an unchanged row counts on both sides, a side that has no line counts on n
   expect(texts(rows, "r")).toEqual(["only right is a longer line", "same line"]);
 });
 
-// What the window draws a line as wide as: each piece is as wide as its text in the font, rounded up to a pixel
-// of the window (a pixel is 1/zoom of what the pane writes lengths in), and the line has 6 of indent.
+// What the window draws a line as wide as: one text as wide as it is in the font, rounded up to a pixel of the window
+// (a pixel is 1/zoom of what the pane writes lengths in), and the line has 6 of indent.
 const CELL = 6.9;
-const drawn = (r: Record<string, unknown>, side: "l" | "r", zoom: number) => {
-  const pieces = (r[`${side}s`] as { t: string }[] | undefined)?.map((p) => p.t) ?? [String(r[`${side}t`] ?? r.t)];
-  return 6 + pieces.reduce((w, p) => w + Math.ceil(truly(p) * CELL * zoom - 1e-9) / zoom, 0);
-};
+const drawn = (r: Record<string, unknown>, side: "l" | "r", zoom: number) => 6 + Math.ceil(truly(String(r[`${side}t`] ?? r.t)) * CELL * zoom - 1e-9) / zoom;
 
 // Measures the rows' lines as the pane does, a batch a frame, laying out each batch as the window does (here, by the
 // table of widths and the rounding), until nothing is asked for.
@@ -229,13 +239,13 @@ test("what each frame lays out is a few lines, whatever the diff, and a line tha
   g.l.rounds = 10;
   const batch = pane.batch("l");
   expect(batch.cost).toBeLessThanOrEqual(FRAME);
-  expect(batch.lines.length).toBeGreaterThan(FRAME / 2 / cost(90, 1));
-  expect(batch.lines.length).toBeLessThanOrEqual(FRAME / cost(30, 1) + 1);
+  expect(batch.lines.length).toBeGreaterThan(FRAME / 2 / cost(90));
+  expect(batch.lines.length).toBeLessThanOrEqual(FRAME / cost(30) + 1);
 });
 
 test("a line that costs more than a frame is a batch of its own, and one past what can be laid out is passed over", () => {
   const heavy = "a".repeat(FRAME), short = row("short", "b");
-  expect(cost(heavy.length, 1)).toBeGreaterThan(FRAME);
+  expect(cost(heavy.length)).toBeGreaterThan(FRAME);
   const open = (rows: object[]) => {
     const pane = Object.assign(Object.create(GitDiff.prototype), { fit: ranks(rows), gauge: null, unit: null }) as Pane;
     pane.gauged().l.rounds = 10;
@@ -250,9 +260,8 @@ test("a line that costs more than a frame is a batch of its own, and one past wh
   expect(first.lines).toEqual([row(heavy, "b")]);
   behind.gauge!.l.left = first.from - first.lines.length;
   expect(behind.batch("l").lines).toEqual([row("a".repeat(FRAME - 500), "b")]);
-  // Past LAYOUT characters or TEXTS pieces it is not laid out; what it could take at most is still in the room.
-  const pieces = Array.from({ length: TEXTS + 1 }, () => "a");
-  for (const past of [row("a".repeat(LAYOUT + 1), "b"), row(pieces.join(""), "b", pieces)]) {
+  // Past LAYOUT characters it is not laid out; what it could take at most is still in the room.
+  for (const past of [row("a".repeat(LAYOUT + 1), "b")]) {
     const over = open([past, short]);
     expect(over.batch("l").lines).toEqual([short]);
     expect(over.gauge!.l.blind).toBeGreaterThanOrEqual(entry(over.fit.l, 1).cells);
@@ -378,7 +387,7 @@ test("putting a side's lines in order is work of the slice: with the slice used 
 test("a slice cut off anywhere is gone on from without a row lost, and every line is still bounded from above", () => {
   const rows = [
     row("a".repeat(40), "b".repeat(30)), { k: "=", t: "unchanged line é" }, { k: "=", t: "" }, row("م".repeat(60), ""), row("", "x".repeat(8)),
-    { k: "~", lt: "ab".repeat(20), ls: [{ t: "ab".repeat(10) }, { t: "ab".repeat(10), h: true }], rt: "cd".repeat(20), rs: [{ t: "cd".repeat(5) }, { t: "cd".repeat(15), h: true }] },
+    { k: "~", lt: "ab".repeat(20), lm: [[20, 40]], rt: "cd".repeat(20), rm: [[10, 40]] },
     row("✓ done ".repeat(9), "\u{1f600}".repeat(6)), { k: "=", t: "same on both sides ".repeat(4) }, row("w".repeat(70), "w".repeat(70)), row("short", "also short"),
   ];
   const cut = new Error("cut");
@@ -558,7 +567,7 @@ test("the widest line is found whatever the table of cells says of the rest: any
       if (uniform) return pick(next()).repeat(length);
       return Array.from({ length }, () => pick(next() < lean ? next() : 0)).join("");
     }).filter(Boolean);
-    // Some lines are drawn in pieces, as the word diff cuts them.
+    // Some lines have words marked, as the word diff marks them.
     const rows = lines.map((t, i) => {
       if (i % 3) return row(t, "b");
       const pieces: string[] = [];

@@ -9,7 +9,7 @@
 //! - [`repo`]: opened repos, change generations, `.git` state;
 //! - [`repos`]: which repositories a Space holds (the sidebar's picker);
 //! - [`status`] + [`watch`]: status by dirty scope, the file watcher;
-//! - [`diff`] + [`diffview`] + [`syntax`]: Myers/Patience diff, the diff pane and its code's syntax, partial staging;
+//! - [`diff`] + [`diffview`] + [`syntax`] + [`line_view`]: Myers/Patience diff, the diff pane, its code's syntax and its lines, partial staging;
 //! - [`log`] + [`graph`] + [`graph_view`]: two-phase log, the graph and its element;
 //! - [`ops`]: commit, branches, remotes, stash, history, tags, patches…;
 //! - [`merge`]: three-way conflicts; [`rebase`]: interactive rebase;
@@ -20,6 +20,7 @@ pub mod diffview;
 pub mod exec;
 pub mod graph;
 pub mod graph_view;
+pub mod line_view;
 pub mod log;
 pub mod lru;
 pub mod merge;
@@ -98,6 +99,12 @@ export function diffView(id: number, options?: { layout?: string; context?: numb
 /** Stages whole hunks, or lines of hunks ({hunk: {del: [line], add: [line]}}). */
 /** The lines of a loaded diff named by runs `[side, start, end]` (side "l" or "r", lines `start` to `end` of it, 0-based, half open), as the file has them: only the line ends dropped, runs and lines joined by "\n". */
 export function diffText(id: number, runs: ["l" | "r", number, number][]): string;
+/** One line of a loaded diff, its code coloured: props {text (the line as the file has it), diff, side "l" | "r", line (0-based), look (diffLook), marks?: [from, to][], sel?: [from, to]} (byte offsets; sel from below 0: from before the line, to past it: past its end). */
+export const DiffLine: { new(id: string, props: Record<string, unknown>): import("gpui-kit").NativeElement };
+/** The number DiffLine knows a look by: the theme's colours for code (by semantic name, as the editor's `syntax`), for removed and added text, and for the selection (#rrggbb or #rrggbbaa). */
+export function diffLook(look: { syntax?: Record<string, string>; removed?: string; added?: string; selection?: string }): number;
+/** The place (byte offset) of a line of a diff that a press at window x lands on, by the text the line was last drawn in; null for a line not drawn lately. */
+export function diffHit(id: number, side: "l" | "r", line: number, x: number): number | null;
 /** The patch (as `git apply` takes it) of some hunks of a loaded diff, numbered in the view whitespace none | trim | all makes. Empty when none is named. */
 export function diffPatch(id: number, hunks: number[], whitespace?: string): Promise<string>;
 export function diffStage(id: number, hunks: number[], lines?: Record<string, { del?: number[]; add?: number[] }>): Promise<Outcome>;
@@ -420,6 +427,7 @@ pub fn host_module() -> HostModule {
         let d = diffview::get(a.integer(0)? as u64).map_err(err)?;
         Ok(HostValue::Str(d.lines_text(&runs(&arg(a, 1)).map_err(err)?)))
     });
+    m = line_view::register(m);
     m = m.async_function("diffPatch", |a| {
         let d = diffview::get(a.integer(0)? as u64).map_err(err)?;
         let hunks: Vec<usize> = arg(a, 1).as_array().map(|h| h.iter().filter_map(|h| h.as_u64().map(|h| h as usize)).collect()).unwrap_or_default();
