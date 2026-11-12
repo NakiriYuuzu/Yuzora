@@ -349,25 +349,44 @@ pub fn tokens(text: &str) -> Vec<Range<usize>> {
     out
 }
 
-/// Word-level changes between two texts: the byte ranges that differ on each side.
+/// Word-level changes between two texts (lines joined by `\n`): the byte ranges that differ on each side. Whitespace
+/// counts as it does where the lines are compared: all of it under Exact, under Trim all but what begins or ends a line,
+/// under Ignore none.
 pub fn diff_words(a: &str, b: &str, ws: Whitespace) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
     let ta = tokens(a);
     let tb = tokens(b);
+    // Whitespace the policy does not count: one token to compare, and never a change's first or last.
+    let ignored = |s: &str, toks: &[Range<usize>], i: usize| {
+        let t = &s[toks[i].clone()];
+        let blank = t.bytes().all(|b| b.is_ascii_whitespace());
+        match ws {
+            Whitespace::Exact => false,
+            Whitespace::Trim => blank && (t.contains('\n') || i == 0 || i + 1 == toks.len()),
+            Whitespace::Ignore => blank,
+        }
+    };
     let mut ids: HashMap<&str, u32> = HashMap::new();
-    let mut number = |t| -> u32 {
-        let key = if ws != Whitespace::Exact && str::chars(t).all(char::is_whitespace) { " " } else { t };
+    let mut number = |t, ignore: bool| -> u32 {
+        // Under Trim a token in a line never has a line end in it: this key is no such token's.
+        let key = if ignore { "\n" } else { t };
         let n = ids.len() as u32;
         *ids.entry(key).or_insert(n)
     };
-    let ia: Vec<u32> = ta.iter().map(|r| number(&a[r.clone()])).collect();
-    let ib: Vec<u32> = tb.iter().map(|r| number(&b[r.clone()])).collect();
+    let ia: Vec<u32> = (0..ta.len()).map(|i| number(&a[ta[i].clone()], ignored(a, &ta, i))).collect();
+    let ib: Vec<u32> = (0..tb.len()).map(|i| number(&b[tb[i].clone()], ignored(b, &tb, i))).collect();
     let cs = myers(&ia, &ib, 2_000).unwrap_or_else(|| vec![Change { a: 0..ia.len(), b: 0..ib.len() }]);
-    let span = |toks: &[Range<usize>], r: &Range<usize>| -> Option<Range<usize>> {
-        if r.is_empty() { None } else { Some(toks[r.start].start..toks[r.end - 1].end) }
+    let span = |s: &str, toks: &[Range<usize>], r: &Range<usize>| -> Option<Range<usize>> {
+        let (mut from, mut to) = (r.start, r.end);
+        while from < to && ignored(s, toks, from) {
+            from += 1;
+        }
+        while to > from && ignored(s, toks, to - 1) {
+            to -= 1;
+        }
+        (from < to).then(|| toks[from].start..toks[to - 1].end)
     };
-    let skip_ws = |s: &str, r: &Range<usize>| ws != Whitespace::Exact && s[r.clone()].chars().all(char::is_whitespace);
-    let left = cs.iter().filter_map(|c| span(&ta, &c.a)).filter(|r| !skip_ws(a, r)).collect();
-    let right = cs.iter().filter_map(|c| span(&tb, &c.b)).filter(|r| !skip_ws(b, r)).collect();
+    let left = cs.iter().filter_map(|c| span(a, &ta, &c.a)).collect();
+    let right = cs.iter().filter_map(|c| span(b, &tb, &c.b)).collect();
     (left, right)
 }
 
@@ -521,8 +540,31 @@ mod tests {
         assert_eq!(l.iter().map(|x| &"let offset = 0;"[x.clone()]).collect::<Vec<_>>(), ["0"]);
         let rt = "let offset = remote.stat(&path)?.size;";
         assert_eq!(r.iter().map(|x| &rt[x.clone()]).collect::<String>(), "remote.stat(&path)?.size");
-        let (l, r) = diff_words("a  b", "a b", Whitespace::Trim);
-        assert!(l.is_empty() && r.is_empty());
         assert_eq!(tokens("fn 名前(x)").len(), 6);
+    }
+
+    /// What changed of whitespace alone is marked where the policy counts it: everywhere under Exact, inside a line under
+    /// Trim, nowhere under Ignore.
+    #[test]
+    fn whitespace_is_marked_where_the_policy_counts_it() {
+        let marks = |a: &'static str, b: &'static str, ws| {
+            let (l, r) = diff_words(a, b, ws);
+            (l.into_iter().map(|x| &a[x]).collect::<Vec<_>>(), r.into_iter().map(|x| &b[x]).collect::<Vec<_>>())
+        };
+        let none = (vec![], vec![]);
+        // A tab for four spaces, two spaces for one inside a line, spaces after the code, and over two lines.
+        let (indent, inside, after) = (("\tlet a", "    let a"), ("a  b", "a b"), ("x;", "x;  "));
+        let lines = ("x = 1;  \n\ty = 2;", "x = 1;\n    y = 3;");
+        let all = [indent, inside, after, lines];
+        let [i, n, t, l] = all.map(|(a, b)| marks(a, b, Whitespace::Exact));
+        assert_eq!((i, n, t), ((vec!["\t"], vec!["    "]), (vec!["  "], vec![" "]), (vec![], vec!["  "])));
+        assert_eq!(l, (vec!["  \n\t", "2"], vec!["\n    ", "3"]), "the lines' ends and starts too");
+        let [i, n, t, l] = all.map(|(a, b)| marks(a, b, Whitespace::Trim));
+        assert_eq!((i, n, t), (none.clone(), (vec!["  "], vec![" "]), none.clone()), "only inside the line");
+        assert_eq!(l, (vec!["2"], vec!["3"]));
+        let [i, n, t, l] = all.map(|(a, b)| marks(a, b, Whitespace::Ignore));
+        assert_eq!((i, n, t, l), (none.clone(), none.clone(), none.clone(), (vec!["2"], vec!["3"])));
+        assert_eq!(marks("f(a,b) + 1", "f(a, b) + 2", Whitespace::Ignore), (vec!["1"], vec!["2"]), "a space put in is no change");
+        assert_eq!(marks("a\u{a0}b", "a b", Whitespace::Ignore), (vec!["\u{a0}"], vec![]), "only ASCII whitespace is ignored, as the lines are compared");
     }
 }

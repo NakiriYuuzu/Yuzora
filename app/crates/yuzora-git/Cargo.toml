@@ -10,8 +10,12 @@ publish.workspace = true
 # THIRD-PARTY-NOTICES) stays as it is. The diff algorithms are our own.
 [dependencies]
 yuzora-core = { path = "../yuzora-core" }
+# The editor's highlighter and palette: a diff's code is coloured as the editor colours the file.
+yuzora-files = { path = "../yuzora-files" }
 gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui-base = { path = "../../vendor/gpui-kit/crates/base" }
 async-channel = "2"
+unicode-segmentation = "1.12"
 notify = "7"
 regex = "1"
 serde_json = "1"

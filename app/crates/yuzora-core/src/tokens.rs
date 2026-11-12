@@ -80,7 +80,7 @@ mod tests {
         for light in [false, true] {
             let t = for_theme(light);
             assert!(t.get("light").is_none(), "the light part never shows");
-            for k in ["added", "added_bg", "removed", "removed_bg"] {
+            for k in ["added", "added_bg", "removed", "removed_bg", "added_filler", "removed_filler"] {
                 assert!(is_hex(&t["diff"][k]), "diff.{k}");
             }
             for k in ["claude", "codex", "pi", "gemini"] {
@@ -200,6 +200,13 @@ mod tests {
             let s = |a: &str, b: &str| t.pointer(&format!("/{a}/{b}")).and_then(Value::as_str).unwrap().to_owned();
             for (fg, bg) in [(s("diff", "added"), s("diff", "added_bg")), (s("diff", "removed"), s("diff", "removed_bg")), (s("attention", "text"), s("attention", "background"))] {
                 assert!(contrast(&fg, &bg) >= 4.5, "light={light}: {fg} on {bg}");
+            }
+            // The room beside a line only one side has (no text on it) is the change's colour, softer than a line of it:
+            // each channel between the background's and the line's, and neither of them.
+            let rgb = |h: &str| [1, 3, 5].map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap());
+            for (filler, line) in [("added_filler", "added_bg"), ("removed_filler", "removed_bg")] {
+                let (f, l, b) = (rgb(&s("diff", filler)), rgb(&s("diff", line)), rgb(&c("background")));
+                assert!(f != l && f != b && (0..3).all(|i| l[i].min(b[i]) <= f[i] && f[i] <= l[i].max(b[i])), "light={light}: diff.{filler} {f:?} between {b:?} and {l:?}");
             }
             // Databases: SQL on the editor and grid, an edited row, an error, the tree's icons.
             let edited = s("database", "edited_row");

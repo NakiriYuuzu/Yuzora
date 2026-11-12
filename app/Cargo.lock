@@ -11321,14 +11321,17 @@ name = "yuzora-git"
 version = "0.1.1"
 dependencies = [
  "async-channel",
+ "gpui-base",
  "gpui-pre",
  "libc",
  "notify",
  "regex",
  "serde_json",
  "tempfile",
+ "unicode-segmentation",
  "windows-sys 0.61.2",
  "yuzora-core",
+ "yuzora-files",
 ]
 
 [[package]]

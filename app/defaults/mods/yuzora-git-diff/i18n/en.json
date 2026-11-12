@@ -43,6 +43,7 @@
   "copied.lines_other": "Copied {count} lines",
   "copied.hunk": "Copied the hunk",
   "copied.patch": "Copied the patch",
+  "copied.selection": "Copied the selection",
   "copy.failed": "Couldn't copy",
   "menu.copy": "Copy",
   "menu.copy_one": "Copy 1 line",

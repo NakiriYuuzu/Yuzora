@@ -21,6 +21,7 @@ use crate::exec::{Git, GitError, GitResult};
 use crate::lru::Lru;
 use crate::repo::{PathKind, Repo};
 use crate::status::Scope;
+use crate::syntax::{Span, Syntax};
 
 /// Bigger sides aren't diffed (shown as "too large").
 pub const MAX_SIDE: usize = 16 << 20;
@@ -34,7 +35,6 @@ pub fn is_too_large(side: &[u8]) -> bool {
 /// Word diff inside blocks up to this size.
 const WORD_DIFF_LINES: usize = 300;
 const WORD_DIFF_CHARS: usize = 40_000;
-const TAB: &str = "    ";
 
 /// Which two versions are compared.
 #[derive(Clone, Debug, PartialEq)]
@@ -88,6 +88,8 @@ pub struct DiffSession {
     pub modes: Option<(String, String)>,
     /// Exact changes (what staging uses).
     pub changes: Vec<Change>,
+    /// Each side's syntax, parsed for the first view that shows lines.
+    syntax: OnceLock<(Option<Syntax>, Option<Syntax>)>,
 }
 
 /// A hunk header's `start,count`: git leaves the count out for one line, and for none the start
@@ -269,7 +271,28 @@ impl DiffSession {
             diff::diff_lines(&diff::lines(l), &diff::lines(r), Whitespace::Exact)
         };
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        Ok(DiffSession { id: NEXT.fetch_add(1, Ordering::SeqCst), repo, path, orig, mode, left, right, index_entry, binary, too_large, modes, changes })
+        Ok(DiffSession { id: NEXT.fetch_add(1, Ordering::SeqCst), repo, path, orig, mode, left, right, index_entry, binary, too_large, modes, changes, syntax: OnceLock::new() })
+    }
+
+    /// Each side's syntax, by the name the file has on that side. Both sides are parsed together, once, on the
+    /// thread of the view that first asks: a file is parsed whole, which no later view waits for again.
+    fn syntax(&self) -> &(Option<Syntax>, Option<Syntax>) {
+        self.syntax.get_or_init(|| {
+            let before = self.orig.as_deref().unwrap_or(&self.path);
+            std::thread::scope(|s| {
+                let left = s.spawn(|| self.left.as_deref().and_then(|text| Syntax::of(before, text)));
+                let right = self.right.as_deref().and_then(|text| Syntax::of(&self.path, text));
+                (left.join().unwrap_or(None), right)
+            })
+        })
+    }
+
+    /// The syntax spans of line `k` of a side, as ranges of the line as the file has it. None till a view has
+    /// parsed the sides, and none for a file of no language the editor knows.
+    pub fn line_spans(&self, side: Side, k: usize) -> Vec<Span> {
+        let Some((left, right)) = self.syntax.get() else { return Vec::new() };
+        let syntax = if side == Side::Left { left } else { right };
+        syntax.as_ref().map(|s| s.line(k)).unwrap_or_default()
     }
 
     /// The view: hunks and rows (`side` or `unified`), `context` lines around
@@ -284,7 +307,12 @@ impl DiffSession {
         let add: usize = changes.iter().map(|c| c.b.len()).sum();
         let del: usize = changes.iter().map(|c| c.a.len()).sum();
         let hunks: Vec<Value> = changes.iter().enumerate().map(|(i, c)| json!({ "index": i, "a": [c.a.start, c.a.end], "b": [c.b.start, c.b.end] })).collect();
-        let rows = if shown { rows(&ll, &rl, &changes, layout == "unified", context, ws) } else { Vec::new() };
+        let rows = if shown {
+            self.syntax();
+            rows(&ll, &rl, &changes, layout == "unified", context, ws)
+        } else {
+            Vec::new()
+        };
         json!({
             "id": self.id,
             "path": self.path,
@@ -307,13 +335,13 @@ impl DiffSession {
     }
 }
 
-/// Display text: UTF-8 (lossy), no line ending, tabs as spaces.
-fn display(line: &[u8]) -> String {
-    String::from_utf8_lossy(diff::strip_eol(line)).replace('\t', TAB)
+/// A line as the file has it: UTF-8 (lossy), no line end, tabs as tabs.
+fn own(line: &[u8]) -> String {
+    String::from_utf8_lossy(diff::strip_eol(line)).into_owned()
 }
 
-/// Word-level segments for one block: per line, `[{t, h}]`.
-fn word_segments(left: &[String], right: &[String], ws: Whitespace) -> Option<(Vec<Vec<Value>>, Vec<Vec<Value>>)> {
+/// What changed in one block, word by word: per line, the byte ranges of it that differ (`[[from, to]]`).
+fn word_marks(left: &[String], right: &[String], ws: Whitespace) -> Option<(Vec<Value>, Vec<Value>)> {
     if left.is_empty() || right.is_empty() || left.len() > WORD_DIFF_LINES || right.len() > WORD_DIFF_LINES {
         return None;
     }
@@ -323,35 +351,27 @@ fn word_segments(left: &[String], right: &[String], ws: Whitespace) -> Option<(V
         return None;
     }
     let (ra, rb) = diff::diff_words(&a, &b, ws);
-    Some((split_segments(left, &ra), split_segments(right, &rb)))
+    Some((split_marks(left, &ra), split_marks(right, &rb)))
 }
 
-/// Cuts highlight ranges of the joined block back into per-line segments.
-fn split_segments(lines: &[String], ranges: &[std::ops::Range<usize>]) -> Vec<Vec<Value>> {
-    let mut out = Vec::with_capacity(lines.len());
+/// Cuts ranges of the joined block back into ranges of each line.
+fn split_marks(lines: &[String], ranges: &[std::ops::Range<usize>]) -> Vec<Value> {
     let mut offset = 0;
-    for line in lines {
-        let (start, end) = (offset, offset + line.len());
-        let mut segs = Vec::new();
-        let mut pos = start;
-        for r in ranges {
-            let (s, e) = (r.start.max(start), r.end.min(end));
-            if s >= e {
-                continue;
-            }
-            if s > pos {
-                segs.push(json!({ "t": &line[pos - start..s - start], "h": false }));
-            }
-            segs.push(json!({ "t": &line[s - start..e - start], "h": true }));
-            pos = e;
-        }
-        if pos < end {
-            segs.push(json!({ "t": &line[pos - start..], "h": false }));
-        }
-        out.push(segs);
-        offset = end + 1;
+    lines
+        .iter()
+        .map(|line| {
+            let (start, end) = (offset, offset + line.len());
+            offset = end + 1;
+            Value::Array(ranges.iter().map(|r| (r.start.max(start), r.end.min(end))).filter(|(s, e)| s < e).map(|(s, e)| json!([s - start, e - start])).collect())
+        })
+        .collect()
+}
+
+/// A line's marks in a row, under `key`, unless it has none.
+fn put_marks(row: &mut Value, key: &str, marks: Option<&Value>) {
+    if let Some(m) = marks.filter(|m| m.as_array().is_some_and(|a| !a.is_empty())) {
+        row[key] = m.clone();
     }
-    out
 }
 
 /// The rows the pane draws.
@@ -366,7 +386,7 @@ fn rows(ll: &[&[u8]], rl: &[&[u8]], changes: &[Change], unified: bool, context: 
         let tail = if last { 0 } else { ctx.min(n - head) };
         let fold = n.saturating_sub(head + tail);
         let push = |out: &mut Vec<Value>, k: usize| {
-            let (lt, rt) = (display(ll[a + k]), display(rl[b + k]));
+            let (lt, rt) = (own(ll[a + k]), own(rl[b + k]));
             let row = if lt == rt { json!({ "k": "=", "l": a + k + 1, "r": b + k + 1, "t": lt }) } else { json!({ "k": "=", "l": a + k + 1, "r": b + k + 1, "t": lt, "rt": rt }) };
             out.push(row);
         };
@@ -387,15 +407,19 @@ fn rows(ll: &[&[u8]], rl: &[&[u8]], changes: &[Change], unified: bool, context: 
     let total = changes.len();
     for (h, c) in changes.iter().enumerate() {
         equal(&mut out, i, j, c.a.start - i, h == 0, false);
-        let left: Vec<String> = ll[c.a.clone()].iter().map(|l| display(l)).collect();
-        let right: Vec<String> = rl[c.b.clone()].iter().map(|l| display(l)).collect();
-        let segs = word_segments(&left, &right, ws);
+        let left: Vec<String> = ll[c.a.clone()].iter().map(|l| own(l)).collect();
+        let right: Vec<String> = rl[c.b.clone()].iter().map(|l| own(l)).collect();
+        let marks = word_marks(&left, &right, ws);
         if unified {
             for (k, t) in left.iter().enumerate() {
-                out.push(json!({ "k": "-", "h": h, "l": c.a.start + k + 1, "li": c.a.start + k, "t": t, "s": segs.as_ref().map(|s| &s.0[k]) }));
+                let mut row = json!({ "k": "-", "h": h, "l": c.a.start + k + 1, "li": c.a.start + k, "t": t });
+                put_marks(&mut row, "m", marks.as_ref().map(|m| &m.0[k]));
+                out.push(row);
             }
             for (k, t) in right.iter().enumerate() {
-                out.push(json!({ "k": "+", "h": h, "r": c.b.start + k + 1, "ri": c.b.start + k, "t": t, "s": segs.as_ref().map(|s| &s.1[k]) }));
+                let mut row = json!({ "k": "+", "h": h, "r": c.b.start + k + 1, "ri": c.b.start + k, "t": t });
+                put_marks(&mut row, "m", marks.as_ref().map(|m| &m.1[k]));
+                out.push(row);
             }
         } else {
             for k in 0..left.len().max(right.len()) {
@@ -404,13 +428,13 @@ fn rows(ll: &[&[u8]], rl: &[&[u8]], changes: &[Change], unified: bool, context: 
                     row["l"] = json!(c.a.start + k + 1);
                     row["li"] = json!(c.a.start + k);
                     row["lt"] = json!(left[k]);
-                    row["ls"] = json!(segs.as_ref().map(|s| &s.0[k]));
+                    put_marks(&mut row, "lm", marks.as_ref().map(|m| &m.0[k]));
                 }
                 if k < right.len() {
                     row["r"] = json!(c.b.start + k + 1);
                     row["ri"] = json!(c.b.start + k);
                     row["rt"] = json!(right[k]);
-                    row["rs"] = json!(segs.as_ref().map(|s| &s.1[k]));
+                    put_marks(&mut row, "rm", marks.as_ref().map(|m| &m.1[k]));
                 }
                 out.push(row);
             }
@@ -549,11 +573,14 @@ impl DiffSession {
         (diff::lines(self.left.as_deref().unwrap_or_default()), diff::lines(self.right.as_deref().unwrap_or_default()))
     }
 
-    /// The lines the pane's selection covers, as the file has them: each run is lines
+    /// The text the pane's selection covers, as the file has it: each run is lines
     /// `start..end` (0-based) of one side, taken in the order given and joined by `\n`. A line
     /// keeps its tabs, spaces and characters, and loses only its line end; where a run runs past
-    /// the side it stops at the side's last line. Nothing for a diff that shows no lines.
-    pub fn lines_text(&self, runs: &[(Side, usize, usize)]) -> String {
+    /// the side it stops at the side's last line. `cut` is where the selection begins in the first
+    /// line and ends in the last (byte offsets of the line as the rows have it, UTF-8 (lossy), on a
+    /// character's boundary or the one before; past the line's end, all of it): `(0, usize::MAX)` is
+    /// whole lines. Nothing for a diff that shows no lines.
+    pub fn lines_text(&self, runs: &[(Side, usize, usize)], cut: (usize, usize)) -> String {
         if self.binary || self.too_large {
             return String::new();
         }
@@ -565,6 +592,12 @@ impl DiffSession {
             for line in lines.get(start..end).unwrap_or_default() {
                 out.push(String::from_utf8_lossy(diff::strip_eol(line)).into_owned());
             }
+        }
+        if let Some(last) = out.last_mut() {
+            last.truncate(last.floor_char_boundary(cut.1.min(last.len())));
+        }
+        if let Some(first) = out.first_mut() {
+            first.drain(..first.floor_char_boundary(cut.0.min(first.len())));
         }
         out.join("\n")
     }
@@ -828,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_fold_unchanged_runs_and_carry_word_segments() {
+    fn rows_fold_unchanged_runs_and_carry_word_marks() {
         let a: String = (1..=20).map(|i| format!("line {i}\n")).collect();
         let b = a.replace("line 10\n", "line ten\n");
         let (la, lb) = (diff::lines(a.as_bytes()), diff::lines(b.as_bytes()));
@@ -837,11 +870,34 @@ mod tests {
         let kinds: Vec<&str> = side.iter().map(|r| r["k"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["fold", "=", "=", "=", "~", "=", "=", "=", "fold"]);
         assert_eq!(side[0]["n"], 6);
-        assert_eq!(side[4]["ls"], json!([{ "t": "line ", "h": false }, { "t": "10", "h": true }]));
+        assert_eq!(side[4]["lm"], json!([[5, 7]]), "`10` of `line 10`");
+        assert_eq!(side[4]["rm"], json!([[5, 8]]));
+        assert!(side[1].get("lm").is_none() && side[1].get("m").is_none(), "an unchanged line has no marks");
         let all = rows(&la, &lb, &cs, true, -1, Whitespace::Exact);
         assert_eq!(all.len(), 21);
         assert_eq!(all[9]["k"], "-");
         assert_eq!(all[10]["k"], "+");
+    }
+
+    /// A line changed in its whitespace alone is a change with that whitespace marked, as far as the policy counts it: a
+    /// tab made spaces only under Exact, two spaces made one inside the line under Trim too, nothing under Ignore.
+    #[test]
+    fn a_change_of_whitespace_alone_is_marked_where_the_policy_counts_it() {
+        let a = "fn f() {\n\tlet a  = 1;\n}\n";
+        let b = "fn f() {\n    let a = 1;\n}\n";
+        let (la, lb) = (diff::lines(a.as_bytes()), diff::lines(b.as_bytes()));
+        let row = |ws, unified| {
+            let cs = diff::diff_lines(&la, &lb, ws);
+            rows(&la, &lb, &cs, unified, -1, ws)
+        };
+        let side = row(Whitespace::Exact, false);
+        assert_eq!((&side[1]["k"], &side[1]["lm"], &side[1]["rm"]), (&json!("~"), &json!([[0, 1], [6, 8]]), &json!([[0, 4], [9, 10]])), "the tab, the two spaces; four spaces, one");
+        let unified = row(Whitespace::Exact, true);
+        assert_eq!((&unified[1]["m"], &unified[2]["m"]), (&json!([[0, 1], [6, 8]]), &json!([[0, 4], [9, 10]])));
+        let trim = row(Whitespace::Trim, false);
+        assert_eq!((&trim[1]["k"], &trim[1]["lm"], &trim[1]["rm"]), (&json!("~"), &json!([[6, 8]]), &json!([[9, 10]])), "the spaces inside the line");
+        let ignore = row(Whitespace::Ignore, false);
+        assert!(ignore.iter().all(|r| r["k"] == "=" && r.get("lm").is_none() && r.get("rm").is_none()), "{ignore:?}");
     }
 
     #[test]
@@ -1261,27 +1317,47 @@ exec 'REAL' "$@"
         let text = "\tindent with a tab\n  trailing spaces  \n\n\u{6F22}\u{5B57}\u{FF21}\u{1F600}\ncrlf line\r\nlast line, no newline";
         s.write("f.txt", text);
         let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Unstaged).unwrap();
-        let right = |from, to| d.lines_text(&[(Side::Right, from, to)]);
+        let right = |from, to| d.lines_text(&[(Side::Right, from, to)], WHOLE);
         assert_eq!(right(0, 2), "\tindent with a tab\n  trailing spaces  ", "tab and trailing spaces kept");
         assert_eq!(right(1, 3), "  trailing spaces  \n", "an empty line is a line");
         assert_eq!(right(3, 4), "\u{6F22}\u{5B57}\u{FF21}\u{1F600}", "wide characters kept");
         assert_eq!(right(4, 5), "crlf line", "only the line end goes, the carriage return with it");
         assert_eq!(right(5, 6), "last line, no newline", "a last line with no newline gets none");
-        assert_eq!(d.lines_text(&[(Side::Left, 0, 1)]), "keep", "the left side is the index's text");
-        assert_eq!(d.lines_text(&[(Side::Right, 5, 6), (Side::Left, 0, 1)]), "last line, no newline\nkeep", "runs in the order given, either side");
+        assert_eq!(d.lines_text(&[(Side::Left, 0, 1)], WHOLE), "keep", "the left side is the index's text");
+        assert_eq!(d.lines_text(&[(Side::Right, 5, 6), (Side::Left, 0, 1)], WHOLE), "last line, no newline\nkeep", "runs in the order given, either side");
         assert_eq!(right(5, 99), "last line, no newline", "a run past the end stops at the last line");
         assert_eq!((right(99, 100), right(3, 3), right(4, 2)), (String::new(), String::new(), String::new()));
-        assert_eq!(d.lines_text(&[(Side::Right, 1, 1), (Side::Right, 0, 1)]), "\tindent with a tab", "a run of no lines adds no empty line");
-        assert_eq!(d.lines_text(&[]), "");
+        assert_eq!(d.lines_text(&[(Side::Right, 1, 1), (Side::Right, 0, 1)], WHOLE), "\tindent with a tab", "a run of no lines adds no empty line");
+        assert_eq!(d.lines_text(&[], WHOLE), "");
 
         s.commit("g.txt", "a\n", "g");
         std::fs::write(std::path::Path::new(s.root()).join("g.txt"), b"a\xffb\nsecond\n").unwrap();
         let g = DiffSession::load(s.repo.clone(), "g.txt".into(), None, Mode::Unstaged).unwrap();
-        assert_eq!(g.lines_text(&[(Side::Right, 0, 2)]), "a\u{FFFD}b\nsecond", "a byte that is not UTF-8 shows as the replacement character");
+        assert_eq!(g.lines_text(&[(Side::Right, 0, 2)], WHOLE), "a\u{FFFD}b\nsecond", "a byte that is not UTF-8 shows as the replacement character");
 
         s.write("bin.dat", "a\0b\n");
         let b = DiffSession::load(s.repo.clone(), "bin.dat".into(), None, Mode::Unstaged).unwrap();
-        assert_eq!(b.lines_text(&[(Side::Right, 0, 1)]), "", "a binary file shows no lines");
+        assert_eq!(b.lines_text(&[(Side::Right, 0, 1)], WHOLE), "", "a binary file shows no lines");
+    }
+
+    /// Whole lines: from each line's start to past its end.
+    const WHOLE: (usize, usize) = (0, usize::MAX);
+
+    /// A selection of characters copies from where it begins in its first line to where it ends in its last, as the file
+    /// has them: the tab a tab, a wide character whole, the lines between whole.
+    #[test]
+    fn a_selection_of_characters_copies_from_its_first_place_to_its_last() {
+        let s = scratch();
+        s.commit("f.txt", "keep\n", "base");
+        s.write("f.txt", "\tlet a = 1;\n\u{6F22}\u{5B57} b\nlast\n");
+        let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Unstaged).unwrap();
+        let run = [(Side::Right, 0, 3)];
+        assert_eq!(d.lines_text(&run, (1, 2)), "let a = 1;\n\u{6F22}\u{5B57} b\nla", "after the tab, to two bytes into the last line");
+        assert_eq!(d.lines_text(&run, (0, 0)), "\tlet a = 1;\n\u{6F22}\u{5B57} b\n", "to the last line's start: its line end is what ends it");
+        assert_eq!(d.lines_text(&[(Side::Right, 1, 2)], (3, 6)), "\u{5B57}", "one line, from one character to the next");
+        assert_eq!(d.lines_text(&[(Side::Right, 1, 2)], (4, 6)), "\u{5B57}", "a place inside a character is the one before it");
+        assert_eq!(d.lines_text(&[(Side::Right, 1, 2)], (5, 2)), "", "nothing between a place and one before it");
+        assert_eq!(d.lines_text(&[(Side::Right, 0, 1), (Side::Left, 0, 1)], (5, 2)), "a = 1;\nke", "runs of either side, cut at the first and the last");
     }
 
     /// Two commits of `path`, and the first one's id: the patch of the second's diff applies to the first.
@@ -1422,5 +1498,46 @@ exec 'REAL' "$@"
         let patch = d.patch(Whitespace::Trim, &[0]);
         applied(&s, &one, &patch);
         assert_eq!(s.read("f.txt"), "a\n  b\nc\nD\ne\nf\ng\nh\ni\nj\nk\n", "the hunk that is there, the indent as it was");
+    }
+
+    fn named(spans: &[Span], name: &str) -> Vec<std::ops::Range<usize>> {
+        spans.iter().filter(|(_, n)| *n == name).map(|(r, _)| r.clone()).collect()
+    }
+
+    #[test]
+    fn a_comment_that_begins_outside_the_hunk_styles_the_hunks_lines() {
+        let s = scratch();
+        let text = |word: &str| format!("/* a comment that\n   runs over\n   several lines, {word} fn and let\n   and \"strings\" too */\nfn main() {{}}\n");
+        s.commit("c.rs", &text("mentioning"), "base");
+        s.write("c.rs", &text("naming"));
+        let d = DiffSession::load(s.repo.clone(), "c.rs".into(), None, Mode::Unstaged).unwrap();
+        assert_eq!(d.line_spans(Side::Left, 2), [], "nothing is parsed before a view shows lines");
+        // No context: the line where the comment begins is not among the rows.
+        let rows = d.view("side", 0, Whitespace::Exact)["rows"].clone();
+        assert_eq!(rows.as_array().unwrap().iter().map(|r| r["k"].as_str().unwrap()).collect::<Vec<_>>(), ["fold", "~", "fold"]);
+        assert_eq!(named(&d.line_spans(Side::Left, 2), "comment"), [0..40], "`fn` and `let` in it are comment too, to its `\\n`");
+        assert_eq!(named(&d.line_spans(Side::Right, 2), "comment"), [0..36]);
+        assert_eq!(named(&d.line_spans(Side::Right, 4), "keyword"), [0..2], "and code after it is code");
+    }
+
+    #[test]
+    fn a_renamed_files_sides_are_each_styled_by_their_own_name() {
+        let s = scratch();
+        s.commit("old.txt", "fn main() {}\n// done\n", "base");
+        s.git(&["mv", "old.txt", "new.rs"]);
+        let d = DiffSession::load(s.repo.clone(), "new.rs".into(), Some("old.txt".into()), Mode::Staged).unwrap();
+        d.view("side", -1, Whitespace::Exact);
+        assert_eq!(d.line_spans(Side::Left, 1), [], "`old.txt` is plain text");
+        assert_eq!(named(&d.line_spans(Side::Right, 1), "comment"), [0..7]);
+    }
+
+    #[test]
+    fn a_file_of_no_known_language_has_no_spans() {
+        let s = scratch();
+        s.commit("notes.txt", "fn alpha() {}\n", "base");
+        s.write("notes.txt", "fn beta() {}\n");
+        let d = DiffSession::load(s.repo.clone(), "notes.txt".into(), None, Mode::Unstaged).unwrap();
+        d.view("side", -1, Whitespace::Exact);
+        assert_eq!((d.line_spans(Side::Left, 0), d.line_spans(Side::Right, 0)), (vec![], vec![]));
     }
 }
