@@ -2,6 +2,44 @@
 
 <samp>English · <a href="CHANGELOG.zh-TW.md">繁體中文</a></samp>
 
+## [0.1.1] - 2026-11-12
+
+A fix release. The Git branch popup lists its actions, branches and tags again, so Pull and Fetch can be reached. Settings has a Database page for the row limit. Counts of one are written in the singular. 0.1.1 is the first update that Yuzora on Windows installs by itself.
+
+> **Before you upgrade.** 0.1.0 updates to 0.1.1 by itself on macOS, Linux and Windows. So do beta.2 to beta.4 on macOS and Linux. On Windows, a beta can't update itself, and the Tauri app (v0.0.19 and 0.1.0-beta.1) doesn't offer 0.1.1. In both cases, download the installer by hand. See the installation notes below.
+
+### Added
+
+- **Settings › Database sets how many rows a result keeps.** A query or a table read stops once it has this many rows. The limit is 100,000 unless you change it, and can be set from 100 to 5,000,000. The next query or table read uses the new value. Changing it used to take an edit of `settings.json`.
+
+### Fixed
+
+- Git: the branch popup, opened from the branch button in the Git sidebar, lists its actions (Update project, Pull…, Fetch, Push…, New branch… and the rest) and your branches and tags. It used to show only its search box. Pull and Fetch have no other button, so they couldn't be reached. A list longer than the popup scrolls inside it.
+- Git: in the Git sidebar's repository picker, pressing Enter before any arrow key no longer drops the repository you pinned when it isn't on the list, because it couldn't be read or the list was cut short before it. The picker closes and the pin stays.
+- Git diff: when a row of the right-click menu fails, as when the copy doesn't go through, the menu closes and a toast says why. The error used to be drawn in a row that the popup cut off.
+- Database: picking another table in the sidebar while a statement of yours is still running in the pane's SQL tab asks first. You can keep it running, or stop it and open the table. It used to be stopped without a question, and on SQL Server that rolls its transaction back.
+- Updates: when an update can't be installed, Settings › Updates says why only while that update is the one waiting. The reason used to stay on the page after a newer update was downloaded.
+- macOS: the application menu is named Yuzora and says Hide Yuzora and Quit Yuzora, and the command palette says Quit Yuzora. They said Herdr. Typing "herdr" in the palette still finds the entry.
+- Counts of one are written in the singular: "1 pane · 1 Space" and "1 agent" in the status bar, "1 change" and "1 commit to push" in Git, "1 row affected" in Database, and "1 file has conflicts."
+- A count from 999,500 to 999,999 is no longer written `1000k`. The Git sidebar's line counts write `999k`, and the Database sidebar's row counts write `1M`.
+
+### Known limitations
+
+- Git: the branch popup's list scrolls with the wheel or the trackpad and shows no scrollbar, like the repository picker.
+- The known limitations of 0.1.0 still apply.
+
+### Installation notes
+
+- Installs of 0.1.0 update themselves to 0.1.1, and so do beta.2 to beta.4 on macOS and Linux. They check 10 seconds after Yuzora starts and then every hour, and apply the update the next time Yuzora restarts.
+- **Windows, on 0.1.0:** this is the first update that Yuzora installs by itself on Windows. If you installed 0.1.0 over a beta and haven't restarted your PC since, the update can fail once: the beta started a background program (herdr-core) that still holds Yuzora's install folder. Settings › Updates says so. Restart your PC, or run `hc server stop` in a terminal outside Yuzora (it ends every terminal and the agents running in them, the same as a restart would), then start Yuzora again.
+- **Windows, if you are still on a beta (0.1.0-beta.2 to beta.4):** the beta cannot update itself on Windows. It may show `Herdr 0.1.1 is ready`, but Restart doesn't install it. Close Yuzora, download `Yuzora-windows-x64-setup.exe` from this release and run it over your install. (With the beta still open, the installer may not be able to replace its files.) Then restart your PC once, for the reason above.
+- The Tauri app (v0.0.19 and 0.1.0-beta.1) doesn't offer 0.1.1. Download and install 0.1.1 yourself. It is a different app, and the Tauri app's settings and data don't carry over: set up database connections, SSH hosts and settings again. The Tauri app's files stay where they were, so you can go back by installing it again. The new app has no Browser, Companion or AgentZone, and its editor has no LSP. On Windows, the installer offers to remove the old all-users install.
+- The macOS app supports only Apple Silicon. Download `Yuzora-macos-aarch64.dmg`. The app has only an ad-hoc signature, with no Apple Developer ID signature or notarization, so Gatekeeper blocks the first open. Go to "System Settings › Privacy & Security" and click "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/Yuzora.app`. Do this only for a DMG you downloaded from this repository's Releases. After an update, macOS may ask again for microphone, camera or folder access.
+- On Windows, `Yuzora-windows-x64-setup.exe` is a per-user installer that needs no admin rights. Authenticode isn't enabled, so SmartScreen may show a warning. Choose More info › Run anyway.
+- Linux (experimental) gets `yuzora-0.1.1-linux-x86_64.tar.gz` and `yuzora-0.1.1-linux-aarch64.tar.gz`. Unpack one and run `yuzora/install`.
+- This release was checked on a real Mac. On Windows and Linux, it was checked only by automated runs on CI runners (on Windows, installing, updating twice and uninstalling; on Linux, running `install`). Nobody tried it on a real Windows or Linux machine, so the update from 0.1.0 to 0.1.1 on Windows has only run on CI runners.
+- Requires herdr-core 0.1.11 or newer. If it isn't installed, the first screen offers to install it. Saving a file on another machine needs herdr-core 0.1.19 or newer on both machines.
+
 ## [0.1.0] - 2026-11-12
 
 The first stable release of the new Yuzora, built on herdr-app. Files can edit, create and rename files on other machines, and opens each file in a tab of its own. Git switches projects faster, and its diff splits in half and can be copied. Table edits in Database save. Dialogs, popups and toasts fade in. From 0.1.0 on, Yuzora on Windows updates itself.

@@ -1,6 +1,21 @@
 # Yuzora 更新說明
 
 <!-- yuzora(L7): CHANGELOG.md 裡 Yuzora 每一筆的繁體中文版，版本、### New／### Fixed 標題與項目數都要一樣（App 依標題判斷 Fixed）。這裡沒有的版本，App 會改顯示 CHANGELOG.md 的英文。 -->
+## [0.1.1] - 2026-11-12
+
+### New
+- **Settings › Database 可以設定每個結果保留幾列。** 查詢或讀取資料表時，讀到這個列數就停止。預設是 100,000，可以設成 100 到 5,000,000。下一次查詢或讀取資料表時套用新的值。以前要自己改 `settings.json`。
+
+### Fixed
+- Git：從 Git 側欄的分支按鈕打開的分支 popup，會列出動作（Update project、Pull…、Fetch、Push…、New branch… 等）以及分支與 tag。以前只看得到搜尋框。Pull 與 Fetch 沒有其他按鈕，所以完全按不到。清單比 popup 長的時候，在 popup 裡捲動。
+- Git：在 Git 側欄的 repo 選擇器裡，還沒按方向鍵就按 Enter 時，不再丟掉你釘選的 repo。釘選的 repo 不在清單上時會這樣，可能是它讀不到，或清單在它之前就被截斷。現在選擇器會關閉，釘選保留。
+- Git diff：右鍵選單的某一項失敗時（例如複製沒有成功），選單會關閉，並用 toast 說明原因。以前錯誤畫在選單裡的一列，被 popup 的高度切掉。
+- 資料庫：pane 的 SQL 分頁還有你執行中的陳述式時，在側欄點另一張資料表會先詢問。可以讓它繼續執行，或停止它並開啟資料表。以前會不問就停止，在 SQL Server 上這會讓它的交易 rollback。
+- 更新：更新裝不上時，Settings › Updates 只在那一版還在等待安裝時說明原因。以前下載了更新的版本之後，舊的原因還留在頁面上。
+- macOS：應用程式選單的名稱是 Yuzora，項目是 Hide Yuzora 與 Quit Yuzora，命令面板是 Quit Yuzora。以前寫的是 Herdr。在命令面板輸入「herdr」仍然找得到這一項。
+- 數量是 1 的時候改用單數：狀態列的「1 pane · 1 Space」與「1 agent」、Git 的「1 change」與「1 commit to push」、Database 的「1 row affected」，以及「1 file has conflicts.」。
+- 999,500 到 999,999 的數量不再寫成 `1000k`。Git 側欄的行數寫 `999k`，Database 側欄的列數寫 `1M`。
+
 ## [0.1.0] - 2026-11-12
 
 ### New

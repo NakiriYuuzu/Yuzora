@@ -2,6 +2,21 @@
 
 <!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
 <!-- yuzora(L7): each Yuzora entry here has its Traditional Chinese twin in CHANGELOG.zh-TW.md: add a line to both. -->
+## [0.1.1] - 2026-11-12
+
+### New
+- **Settings › Database sets how many rows a result keeps.** A query or a table read stops once it has this many rows. The limit is 100,000 unless you change it, and can be set from 100 to 5,000,000. The next query or table read uses the new value. Changing it used to take an edit of `settings.json`.
+
+### Fixed
+- Git: the branch popup, opened from the branch button in the Git sidebar, lists its actions (Update project, Pull…, Fetch, Push…, New branch… and the rest) and your branches and tags. It used to show only its search box. Pull and Fetch have no other button, so they couldn't be reached. A list longer than the popup scrolls inside it.
+- Git: in the Git sidebar's repository picker, pressing Enter before any arrow key no longer drops the repository you pinned when it isn't on the list, because it couldn't be read or the list was cut short before it. The picker closes and the pin stays.
+- Git diff: when a row of the right-click menu fails, as when the copy doesn't go through, the menu closes and a toast says why. The error used to be drawn in a row that the popup cut off.
+- Database: picking another table in the sidebar while a statement of yours is still running in the pane's SQL tab asks first. You can keep it running, or stop it and open the table. It used to be stopped without a question, and on SQL Server that rolls its transaction back.
+- Updates: when an update can't be installed, Settings › Updates says why only while that update is the one waiting. The reason used to stay on the page after a newer update was downloaded.
+- macOS: the application menu is named Yuzora and says Hide Yuzora and Quit Yuzora, and the command palette says Quit Yuzora. They said Herdr. Typing "herdr" in the palette still finds the entry.
+- Counts of one are written in the singular: "1 pane · 1 Space" and "1 agent" in the status bar, "1 change" and "1 commit to push" in Git, "1 row affected" in Database, and "1 file has conflicts."
+- A count from 999,500 to 999,999 is no longer written `1000k`. The Git sidebar's line counts write `999k`, and the Database sidebar's row counts write `1M`.
+
 ## [0.1.0] - 2026-11-12
 
 ### New
