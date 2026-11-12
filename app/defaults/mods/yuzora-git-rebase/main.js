@@ -73,6 +73,8 @@ const BY_LETTER = Object.fromEntries(ACTIONS.map((a) => [LETTER[a], a]));
 // status().operation.kind is "none" (or empty) when nothing is in progress.
 const kindOf = (st) => (st?.operation?.kind && st.operation.kind !== "none" ? st.operation.kind : "");
 
+const conflictsText = (n) => (n === 1 ? t("conflicts_one") : t("conflicts_other", { count: n }));
+
 export default class GitRebase extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
@@ -187,7 +189,7 @@ export default class GitRebase extends View {
       try {
         const out = await work(this.repo);
         if (out?.ok === false) this.note = { tone: "error", text: out.output || t("failed") };
-        else if (out?.conflicts?.length) this.note = { tone: "warning", text: t("conflicts", { count: out.conflicts.length }) };
+        else if (out?.conflicts?.length) this.note = { tone: "warning", text: conflictsText(out.conflicts.length) };
       } catch (e) { this.note = { tone: "error", text: String(e) }; }
       finally { this.busy = null; await this.reload(cx, ctx, true); }
     });

@@ -102,6 +102,8 @@ const holds = (v) => Boolean(v.busy || v.warnings || v.note?.tone === "error" ||
 // What an arrival throws when the place it was for was left while it waited.
 const MOVED = Symbol("moved");
 
+const conflictsText = (n) => (n === 1 ? t("conflicts_one") : t("conflicts_other", { count: n }));
+
 export default class SidebarGit extends View {
   init(_props, cx) {
     this.menu = props()?.menu ?? null;
@@ -435,7 +437,7 @@ export default class SidebarGit extends View {
       try {
         const out = await work(v.repo);
         if (out && out.ok === false) v.note = { tone: "error", text: out.output || t("failed") };
-        else if (out?.conflicts?.length) v.note = { tone: "warning", text: t("conflicts", { count: out.conflicts.length }) };
+        else if (out?.conflicts?.length) v.note = { tone: "warning", text: conflictsText(out.conflicts.length) };
       } catch (e) { v.note = { tone: "error", text: String(e) }; }
       finally { v.busy = null; await this.reload(cx, v); }
     });

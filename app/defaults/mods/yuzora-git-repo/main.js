@@ -58,6 +58,8 @@ function location() {
 const pad = (n) => String(n).padStart(2, "0");
 const stamp = (s) => { const d = new Date(s * 1000); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 
+const conflictsText = (n) => (n === 1 ? t("conflicts_one") : t("conflicts_other", { count: n }));
+
 export default class GitRepo extends View {
   init(_props, cx) {
     const p = props() ?? {};
@@ -176,7 +178,7 @@ export default class GitRepo extends View {
         const out = await work(this.repo, token, cx);
         if (this.cancelled) this.note = { tone: "warning", text: t("cancelled") };
         else if (out && out.ok === false) this.note = { tone: "error", text: out.output || t("failed") };
-        else if (out?.conflicts?.length) this.note = { tone: "warning", text: t("conflicts", { count: out.conflicts.length }) };
+        else if (out?.conflicts?.length) this.note = { tone: "warning", text: conflictsText(out.conflicts.length) };
         else if (out?.output || opts.ok) this.note = { tone: "ok", text: out?.output || opts.ok };
       } catch (e) { this.note = this.cancelled ? { tone: "warning", text: t("cancelled") } : { tone: "error", text: String(e) }; }
       finally { this.busy = null; this.token = null; await this.pull(); cx.notify(); }
