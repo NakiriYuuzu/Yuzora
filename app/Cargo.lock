@@ -3931,7 +3931,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "herdr-app"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -11239,7 +11239,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-channel",
  "base64",
@@ -11252,7 +11252,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-db"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-channel",
  "bytes",
@@ -11279,7 +11279,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-files"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-channel",
  "base64",
@@ -11318,7 +11318,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-git"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-channel",
  "gpui-base",
@@ -11336,7 +11336,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-perf"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-channel",
  "libc",
@@ -11348,7 +11348,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-settings"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-channel",
  "serde_json",
@@ -11357,7 +11357,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-shell"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-channel",
  "gethostname",
@@ -11368,7 +11368,7 @@ dependencies = [
 
 [[package]]
 name = "yuzora-ssh"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64",
  "hmac 0.13.0",

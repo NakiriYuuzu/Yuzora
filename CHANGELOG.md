@@ -2,6 +2,50 @@
 
 <samp>English · <a href="CHANGELOG.zh-TW.md">繁體中文</a></samp>
 
+## [0.1.2] - 2026-11-13
+
+Git's diff colors code, selects text by the character, and shows more clearly which lines one side has alone and where only whitespace changed. Git mode answers faster. A file's tab shows the file's icon. Color themes other than Yuzora's own no longer draw a magenta line beside the sidebar.
+
+> **Before you upgrade.** 0.1.0 and 0.1.1 update to 0.1.2 by themselves on macOS, Linux and Windows. So do beta.2 to beta.4 on macOS and Linux. On Windows, a beta can't update itself, and the Tauri app (v0.0.19 and 0.1.0-beta.1) doesn't offer 0.1.2. In both cases, download the installer by hand. See the installation notes below.
+
+### Added
+
+- **Git diff colors code as the editor does.** Side by side and unified, in light and dark themes. An open diff follows a theme switch.
+- **Git diff selects text by the character.** Drag from any character to any other, across lines, and Copy takes exactly that text, with its tabs kept. It used to select whole lines only. A drag that begins on the line numbers still selects whole lines. Picking lines by their numbers, the right-click menu and copying whole lines work as before.
+
+### Changed
+
+- Git diff, side by side: the empty half beside a line that only one side has takes that change's color, a shade lighter, as in JetBrains IDEs. It used to be gray.
+- Git diff: a change of whitespace alone, such as a tab for spaces or one more space, is marked inside the line. With Whitespace set to Trim or Ignore, the whitespace that setting ignores is not marked.
+- A file's tab shows the file's icon, the one the Files sidebar gives it, in place of its Space's badge. Tabs of terminals, agents and other tools keep the badge.
+- Git mode is faster. Staging, unstaging, discarding and committing no longer check the folder's Git settings again after each write of the index. Measured on one large repository on a Mac: a commit with its checks went from about 290 ms to about 130 ms, a file's history shows its first rows after about 130 ms where it took about 440 ms, and a change made outside Yuzora shows after about 65 ms where it took about 315 ms.
+
+### Fixed
+
+- With the Yuzora layout, a color theme other than Yuzora's own no longer shows a magenta line beside the sidebar, and the resource usage popover opens under those themes.
+- Git: a stash that includes untracked files takes them out of the work tree, and popping it brings them back. They used to stay where they were, so the pop refused to write over them and the stash was kept. Smart checkout stashes this way, and with an untracked file around it left a "yuzora: smart checkout of …" stash behind on every switch. "Keep index" on a stash keeps the index. It used to fail after the changes were already stashed.
+- Git: opening a repository no longer waits for seconds when macOS is slow to start watching the folder.
+- Git: the check a folder goes through before you trust it sees a submodule whose index entry has mode bits that git never writes. Such an index comes from outside git, for example from an unpacked archive.
+
+### Known limitations
+
+- Git: three operations still take more than 250 ms on a large repository, and the time is git's own. They are blame (about 330 ms), loading the whole graph behind its first screen (about 470 ms) and switching branches across many commits with uncommitted changes (about 700 ms).
+- Git diff: opening a diff of a very large file takes longer than in 0.1.1, because both sides are read whole for their colors.
+- Git diff, unified: a selection that starts before a line's first character also draws over the line's − or + mark.
+- The known limitations of 0.1.1 still apply.
+
+### Installation notes
+
+- Installs of 0.1.0 and 0.1.1 update themselves to 0.1.2, and so do beta.2 to beta.4 on macOS and Linux. They check 10 seconds after Yuzora starts and then every hour, and apply the update the next time Yuzora restarts.
+- **Windows, on 0.1.0 or 0.1.1:** if you installed it over a beta and haven't restarted your PC since, the update can fail once: the beta started a background program (herdr-core) that still holds Yuzora's install folder. Settings › Updates says so. Restart your PC, or run `hc server stop` in a terminal outside Yuzora (it ends every terminal and the agents running in them, the same as a restart would), then start Yuzora again.
+- **Windows, if you are still on a beta (0.1.0-beta.2 to beta.4):** the beta cannot update itself on Windows. It may show `Herdr 0.1.2 is ready`, but Restart doesn't install it. Close Yuzora, download `Yuzora-windows-x64-setup.exe` from this release and run it over your install. (With the beta still open, the installer may not be able to replace its files.) Then restart your PC once, for the reason above.
+- The Tauri app (v0.0.19 and 0.1.0-beta.1) doesn't offer 0.1.2. Download and install 0.1.2 yourself. It is a different app, and the Tauri app's settings and data don't carry over: set up database connections, SSH hosts and settings again. The Tauri app's files stay where they were, so you can go back by installing it again. The new app has no Browser, Companion or AgentZone, and its editor has no LSP. On Windows, the installer offers to remove the old all-users install.
+- The macOS app supports only Apple Silicon. Download `Yuzora-macos-aarch64.dmg`. The app has only an ad-hoc signature, with no Apple Developer ID signature or notarization, so Gatekeeper blocks the first open. Go to "System Settings › Privacy & Security" and click "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/Yuzora.app`. Do this only for a DMG you downloaded from this repository's Releases. After an update, macOS may ask again for microphone, camera or folder access.
+- On Windows, `Yuzora-windows-x64-setup.exe` is a per-user installer that needs no admin rights. Authenticode isn't enabled, so SmartScreen may show a warning. Choose More info › Run anyway.
+- Linux (experimental) gets `yuzora-0.1.2-linux-x86_64.tar.gz` and `yuzora-0.1.2-linux-aarch64.tar.gz`. Unpack one and run `yuzora/install`.
+- This release was checked on a real Mac. On Windows and Linux, it was checked only by automated runs on CI runners (on Windows, installing, updating twice and uninstalling; on Linux, running `install`). Nobody tried it on a real Windows or Linux machine.
+- Requires herdr-core 0.1.11 or newer. If it isn't installed, the first screen offers to install it. Saving a file on another machine needs herdr-core 0.1.19 or newer on both machines.
+
 ## [0.1.1] - 2026-11-12
 
 A fix release. The Git branch popup lists its actions, branches and tags again, so Pull can be reached. Settings has a Database page for the row limit. Most counts of one are written in the singular. 0.1.1 is the first update that Yuzora on Windows installs by itself.

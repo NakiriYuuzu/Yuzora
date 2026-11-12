@@ -69,7 +69,7 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
 
 ## 下載與安裝
 
-請從 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) 或官方網站下載 v0.1.1。0.1.0 會自己更新到它，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Windows 上的 beta 無法自己更新：請先完全關閉 Yuzora，再下載安裝程式直接覆蓋安裝，並閱讀[版本紀錄](CHANGELOG.zh-TW.md)裡給 Windows 的說明。
+請從 [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) 或官方網站下載 v0.1.2。0.1.0 與 0.1.1 會自己更新到它，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Windows 上的 beta 無法自己更新：請先完全關閉 Yuzora，再下載安裝程式直接覆蓋安裝，並閱讀[版本紀錄](CHANGELOG.zh-TW.md)裡給 Windows 的說明。
 
 | 平台 | 檔案 | 安裝位置 |
 |:--|:--|:--|
@@ -84,7 +84,7 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
   「系統設定 › 隱私權與安全性」按「強制打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。
   只對從本 repo Releases 下載的 DMG 這樣做。更新之後，macOS 可能會再詢問一次麥克風、相機或資料夾的存取權限。
 - **Windows 沒有 Authenticode 簽章。** SmartScreen 可能出現警告，請點「其他資訊 › 仍要執行」。
-- **Windows 與 Linux 只通過 CI。** 0.1.1 沒有人在實體的 Windows 或 Linux 機器上試過。Linux 是實驗性的。
+- **Windows 與 Linux 只通過 CI。** 0.1.2 沒有人在實體的 Windows 或 Linux 機器上試過。Linux 是實驗性的。
 - **herdr-core。** 終端機與 agent 由 herdr-core（`hc`）執行，需要 0.1.11 以上。還沒安裝時，第一次開啟的畫面會提供
   「幫我安裝」，使用 herdr-core 官方的安裝程式。
 - 從 v0.0.9 起，macOS App 僅支援 Apple Silicon；Intel Mac 仍可當遠端主機。
@@ -206,7 +206,7 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
   清單必須以 release 金鑰簽章，每個檔案也必須符合它的 SHA-256，否則什麼都不會安裝。beta build 只會更新到正式版
   （0.1.0 以後），不會更新到其他 beta，beta 請手動下載；正式 build 走 stable 通道，要連 Pre-release 一起收，在
   `~/.config/yuzora/yuzora/settings.json` 寫 `"update": {"channel": "beta"}`。
-- **從 0.0.x 或 0.1.0-beta.1 升級。** 請自行下載安裝 0.1.1（見[下載與安裝](#下載與安裝)）：舊版 App 的更新不會提供它。
+- **從 0.0.x 或 0.1.0-beta.1 升級。** 請自行下載安裝 0.1.2（見[下載與安裝](#下載與安裝)）：舊版 App 的更新不會提供它。
   舊版 App 的資料留在原處；連線與設定不會搬過來，要重新設定。Windows 的安裝程式
   會詢問是否移除舊的全機安裝。
 - **命令列程式叫 `yuzora`**（指令和 `herdr-app` 相同：`yuzora status`、`yuzora do …`）。Yuzora 不會在 PATH 放
