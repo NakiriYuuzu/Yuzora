@@ -14,7 +14,7 @@ beta.2 的資料庫功能：連線管理、右側模式 schema 樹、資料表 p
 | 原生元件 | `src/grid.rs`、`src/editor.rs` | `DataGrid`（GPUI `uniform_list`）、`SqlEditor`（gpui-base Editor＋SQL 上色） |
 | 設定與憑證 | `src/config.rs`、`src/history.rs` | Yuzora settings 的 `db` section、keyring namespace `db`、查詢歷史 |
 | 執行環境 | `src/runtime.rs` | crate 自己的 tokio runtime（2 個 worker）；HostModule 的 async 函式把工作丟過去，用 oneshot 拿結果 |
-| mods | `app/defaults/mods/yuzora-sidebar-database`、`yuzora-db-connection`、`yuzora-db-table`、`yuzora-db-query` | 右側模式、連線對話框、資料表 pane、SQL pane |
+| mods | `app/defaults/mods/yuzora-sidebar-database`、`yuzora-db-connection`、`yuzora-db-table`、`yuzora-db-query`、`yuzora-db-settings` | 右側模式、連線對話框、資料表 pane、SQL pane、設定頁 |
 
 gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。tokio-postgres、tiberius 都需要 tokio reactor，所以 crate 自帶 runtime，`runtime::run` 把 future 丟過去，回傳一個 `Send` 的 future 給 HostModule。
 
@@ -70,7 +70,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 每個「停止」只停它旁邊標示的那件事。工作的停止（工具列）只取消工作當下正在跑的那句：讀列時是資料表的連線（`{owner}:table`），count 時是 count 的連線（`Job.serving`；借資料表連線的 count 是請它自己放手，`Stop::Count`），讀完之後不再碰資料表的連線，因為那上面可能正在寫回。寫回的停止（footer）只結束那次寫回。SQL 分頁的查詢在自己的連線上，有自己的語句和自己的 Stop；工作仍是一個 pane 一個（`new_job` 先 `supersede`），所以在 SQL 分頁按 Run，會取消同一個 pane 還在讀的資料表或還在算的 count，並取代它的結果集。寫回不是工作：它在等列鎖時 SQL 分頁照常執行，兩邊的 Stop 互不影響（`postgres_a_sql_tab_statement_and_a_waiting_write_back_are_stopped_apart`、`mssql_a_sql_tab_statement_and_a_waiting_write_back_are_stopped_apart`）。
 - 連線還在建立時按「停止」也有效：引擎先把自己的取消機制準備好，然後在每個 statement 執行前檢查工作是否已經停止（`RowSink::cancelled`）。所以 UPDATE、DELETE 這類不回傳列的語句，不會在回報取消之後才執行。
 - 讀取是串流的：引擎每 512 列（`engine::BATCH`）交給 `RowSink` 一次，grid 立即重畫，不等整個查詢結束。
-- 上限 `db.maxRows`（預設 100,000，可設 100～5,000,000）。真的有列放不下時才停止讀取並標成 truncated（剛好等於上限不算）；開表會多讀一列（`LIMIT maxRows + 1`）來判斷。
+- 上限 `db.maxRows`（預設 100,000，可設 100～5,000,000）。設定 › Database（`yuzora-db-settings`）可以改：值經 `yuzora:db` 的 `setRowLimit` 寫入（`session::set_max_rows`），它讀出整個 `db` section、只換 `maxRows` 再寫回，讀到的連線清單原樣寫回（`setting_the_row_limit_keeps_the_saved_connections_and_stays_within_its_range`）。讀與寫之間沒有跨呼叫的鎖（`settings::WRITE` 只保護寫入那一步），和 `config::store` 存連線時一樣：同一瞬間另一條執行緒正在存連線的話，後寫的那一方會蓋掉先寫的，已知、未處理；不從 JS 用 `setSetting("db", …)` 寫，那會覆寫整個 section。下一次查詢或開表就用新值，不必重啟。真的有列放不下時才停止讀取並標成 truncated（剛好等於上限不算）；開表會多讀一列（`LIMIT maxRows + 1`）來判斷。
 - 排序在用戶端，只排已讀進來的列（排的是檢視的索引，不搬資料）。整數與數字文字逐位精確比較，不經過 f64，所以超過 2^53 的 bigint 和高精度 numeric 也排得對。NaN 排在所有數字之後（和 PostgreSQL 一樣）。PostgreSQL 的 money 依數值排序：只把數字之間的 `.`、`,` 當分隔，所以 `$1,234.56`、`1.234,56 €`、`￥1,234` 都會正確排序。查詢還在串流時就排序，之後到的列也會依排序併入。被截斷的結果要完整排序，請在 SQL 加 `ORDER BY`。
 - 開表時另外跑一次 `COUNT(*)`（MSSQL 是 `COUNT_BIG`），狀態列顯示「X 列 · 顯示 a–b · N ms」。
 
@@ -237,5 +237,4 @@ YUZORA_DATABASE_TEST_ENGINES=postgres,mssql YUZORA_PERF_KEEP=1 \
 ## 後續整合
 
 - L4：#190 提供 `yuzora_ssh::tunnel::open(TunnelSpec::new(ssh_host, host, port))`，回傳的 `Tunnel` 在 drop 時關閉。合併後，L3 在 `session::spec_for` 開 tunnel、把 `ConnectSpec::endpoint` 設成 `127.0.0.1:local_port`，並讓 `Tunnel` 跟連線池的那條連線同生命週期，然後拿掉 `refuse_tunnel`。兩個引擎驗證憑證時都已經用設定的 host，不用 endpoint，所以經過 tunnel 時 verify-full 不受影響。
-- L6：`db.maxRows` 的設定頁（目前只能手改 `settings.json`）。
 - L1：狀態列讀 `yuzora.status.db`，模式列讀 `yuzora.badge.database`。pane 標題目前顯示 mod 名稱（`yuzora-db-table`），應改成資料表或查詢名稱。

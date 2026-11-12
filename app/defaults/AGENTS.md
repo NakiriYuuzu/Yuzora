@@ -1288,7 +1288,9 @@ with these differences.
 - Databases (PostgreSQL, SQL Server, SQLite) live in the right
   dock's `yuzora-sidebar-database` mode. Saved connections are the `db` section of
   `yuzora/settings.json` (`connections`, and `maxRows`, the most rows a result
-  keeps: 100000 by default). Passwords are in the system's credential store,
+  keeps: 100000 by default). The person changes `maxRows` under Settings ›
+  Database; a mod changes it with `setRowLimit(rows)` from `yuzora:db`, which
+  rewrites only that key. Passwords are in the system's credential store,
   never in that file; don't write one there. Query history is
   `yuzora/db-history.json` (statements only).
 - Open a table or a query for the person with `pane.split` or `tab.new`:
