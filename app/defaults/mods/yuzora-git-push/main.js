@@ -98,7 +98,7 @@ export default class GitPush extends View {
         .child(div().id("target").w(180).h(24).px(6).flex().items_center().rounded(5).border_1().border_color(th.border).bg(th.background)
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.target).w_full()))
         .when(p.newBranch, (el) => el.child(div().text_size(11).text_color(th.accent).child(t("new")))))
-      .child(div().text_size(11.5).text_color(th.dim).child(p.commits.length ? t("commits", { count: p.commits.length }) : t("nothing")))
+      .child(div().text_size(11.5).text_color(th.dim).child(p.commits.length === 1 ? t("commits_one") : p.commits.length ? t("commits_other", { count: p.commits.length }) : t("nothing")))
       .child(v_flex().id("commits").flex_1().min_h(0).overflow_y_scrollbar().rounded(6).border_1().border_color(th.border).bg(th.background)
         .children(p.commits.map((c, i) => h_flex().id(`c${i}`).h(24).px(8).gap(8).items_center().text_size(11.5)
           .child(div().w(64).flex_none().text_color(th.dim).child(c.short))

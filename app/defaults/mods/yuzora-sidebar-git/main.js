@@ -409,7 +409,7 @@ export default class SidebarGit extends View {
       const sync = `${b.ahead ? ` ↑${b.ahead}` : ""}${b.behind ? ` ↓${b.behind}` : ""}`;
       const op = st.operation.kind && st.operation.kind !== "none" ? ` · ${t(`op.${st.operation.kind}`)}` : "";
       status = {
-        text: `⎇ ${name}${sync}${op} · ${n ? t("status.changes", { count: n }) : t("status.clean")}`,
+        text: `⎇ ${name}${sync}${op} · ${n === 1 ? t("status.changes_one") : n ? t("status.changes_other", { count: n }) : t("status.clean")}`,
         tone: st.conflicts.length ? "blocked" : v.busy || op ? "working" : n ? "accent" : "muted",
       };
     }

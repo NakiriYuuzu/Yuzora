@@ -170,6 +170,18 @@ function world(settings: object = {}, props: any = null) {
   return { w, view, cx, frame, aim, press, type, tick, go, settle, pending, answer, fail, badge, submit, pin };
 }
 
+test("the status bar's line counts one change in the singular and more in the plural", async () => {
+  const s = world();
+  s.go("/b");
+  await s.settle();
+  s.frame();
+  expect(s.w.shared.get("yuzora.status.git").text).toBe("⎇ main · status.changes_other");
+  s.w.status["/b"] = { staged: [], unstaged: [file("x.txt")], counts: { staged: 0, unstaged: 1, untracked: 0, conflicts: 0, total: 1 }, generation: 2 };
+  s.go("/a"); s.frame(); await s.settle();
+  s.go("/b"); s.frame(); await s.settle(); s.frame();
+  expect(s.w.shared.get("yuzora.status.git").text).toBe("⎇ main · status.changes_one");
+});
+
 test("a new place is followed in the next frame, without waiting for the sidebar's timer", async () => {
   const s = world();
   await s.settle();
