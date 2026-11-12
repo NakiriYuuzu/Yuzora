@@ -486,15 +486,15 @@ fn index_stands_alone(bytes: &[u8], id_len: usize) -> Option<bool> {
 
 /// The extensions of an index whose ids are `id_len` bytes long, when it
 /// reads as one to its trailing checksum, each entry read as git reads it
-/// (`create_from_disk`) without threads.
+/// (`create_from_disk`) without threads. None for what git stops at too: an
+/// extended flag or a required extension it doesn't know.
 fn index_extensions(bytes: &[u8], id_len: usize) -> Option<Vec<[u8; 4]>> {
     index_read(bytes, id_len).map(|(ext, _)| ext)
 }
 
 /// Whether an index that reads to its end ([`index_extensions`]) has a
 /// gitlink among its entries: a mode of that type (`S_ISGITLINK`), whatever
-/// its other bits (`ls-files -s` would print them; the scan's grep takes
-/// `160000` only, so this counts more, never fewer).
+/// its other bits, as the scan's grep tells one in what `ls-files -s` prints.
 fn index_has_gitlink(bytes: &[u8], id_len: usize) -> Option<bool> {
     index_read(bytes, id_len).map(|(_, gitlink)| gitlink)
 }
@@ -519,8 +519,12 @@ fn index_read(bytes: &[u8], id_len: usize) -> Option<(Vec<[u8; 4]>, bool)> {
         let flags_at = at.checked_add(40 + id_len)?;
         let flags = u16::from_be_bytes(bytes.get(flags_at..flags_at + 2)?.try_into().ok()?);
         let mut path = flags_at + 2;
-        // Extended flags (in any version, as git reads them).
+        // Extended flags (in any version, as git reads them): git knows two
+        // (intent to add, skip worktree) and stops at any other.
         if flags & 0x4000 != 0 {
+            if u16::from_be_bytes(bytes.get(path..path + 2)?.try_into().ok()?) & !0x6000 != 0 {
+                return None;
+            }
             path += 2;
         }
         // Version 4: how much of the last path this one keeps (it drops the
@@ -552,7 +556,13 @@ fn index_read(bytes: &[u8], id_len: usize) -> Option<(Vec<[u8; 4]>, bool)> {
     let checksum = bytes.len().checked_sub(id_len)?;
     let mut ext = Vec::new();
     while at < checksum {
-        ext.push(bytes.get(at..at + 4)?.try_into().ok()?);
+        let name: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+        // git skips an extension it doesn't know only when its name begins
+        // with a capital; any other it must understand, and it knows these two.
+        if !name[0].is_ascii_uppercase() && &name != b"link" && &name != b"sdir" {
+            return None;
+        }
+        ext.push(name);
         at = at.checked_add(8)?.checked_add(be32(at + 4)? as usize)?;
     }
     (at == checksum).then_some((ext, gitlink))
