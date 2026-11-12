@@ -42,6 +42,10 @@ function openRequested(key, mod, name, fields) {
 // ---- end of the shared pane helpers ----
 
 const LIMIT = 30;
+// A popup is as tall as what is in it: the column takes its rows' height, up to the 460 the Git
+// sidebar opens it with, less the frame's border, and only then does the list shrink and scroll.
+// Nothing here fills a parent's height (size_full, flex_1, overflow_y_scrollbar): the list would be 0 high.
+const POPUP_MAX = 458;
 
 export default class GitBranches extends View {
   init(_props, cx) {
@@ -286,10 +290,10 @@ export default class GitBranches extends View {
   }
 
   row(e, i, sel, th) {
-    if (e.kind === "title") return div().id(`t${i}`).px(10).pt(8).pb(3).text_size(10.5).font_semibold().text_color(th.dim).child(e.label);
-    if (e.kind === "more") return div().id(`m${i}`).px(14).py(3).text_size(11).text_color(th.dim).child(e.label);
+    if (e.kind === "title") return div().id(`t${i}`).flex_none().px(10).pt(8).pb(3).text_size(10.5).font_semibold().text_color(th.dim).child(e.label);
+    if (e.kind === "more") return div().id(`m${i}`).flex_none().px(14).py(3).text_size(11).text_color(th.dim).child(e.label);
     const isRef = e.kind === "local" || e.kind === "remote" || e.kind === "tag";
-    return h_flex().id(`e${i}`).h(26).mx(4).px(8).gap(6).items_center().rounded(5).cursor_pointer().text_size(12)
+    return h_flex().id(`e${i}`).h(26).mx(4).px(8).gap(6).flex_none().items_center().rounded(5).cursor_pointer().text_size(12)
       .when(sel, (el) => el.bg(th.selected)).hover((s) => s.bg(th.hover))
       .on_click((_e, cx) => this.pick(e, cx))
       .when(isRef, (el) => el.child(div().w(12).text_color(e.current ? th.accent : th.dim).child(e.kind === "tag" ? "◆" : e.current ? "●" : "⎇")))
@@ -311,7 +315,7 @@ export default class GitBranches extends View {
     });
     const ask = this.askBox(th);
     return v_flex().id("branches").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
-      .size_full().bg(th.popover ?? th.raised).text_color(th.foreground).text_size(12)
+      .w_full().max_h(POPUP_MAX).min_h(0).bg(th.popover ?? th.raised).text_color(th.foreground).text_size(12)
       .child(h_flex().h(34).px(10).gap(6).flex_none().items_center().border_b(1).border_color(th.border)
         .when(Boolean(this.picked), (el) => el.child(div().id("back").text_color(th.muted).cursor_pointer().hover((s) => s.text_color(th.foreground))
           .on_click((_e, cx) => { this.picked = null; this.ask = null; this.hi = 0; cx.notify(); }).child("‹")))
@@ -322,9 +326,8 @@ export default class GitBranches extends View {
         .when(Boolean(this.token), (el) => el.child(div().id("stop").cursor_pointer().text_color(th.ansi1).on_click(() => cancel(this.token)).child(t("cancel"))))))
       .when(Boolean(this.note), (el) => el.child(div().px(10).py(4).text_size(11).text_color(th.ansi1).child(this.note)))
       .when(Boolean(ask), (el) => el.child(ask))
-      .child(div().flex_1().min_h(0).relative()
-        .child(v_flex().id("branch-list").size_full().overflow_y_scrollbar().py(4).children(rows))
-        .when(!this.data && !this.error, (el) => el.child(div().p(12).text_color(th.dim).child(t("loading"))))
-        .when(Boolean(this.error), (el) => el.child(div().p(12).text_color(th.ansi1).child(this.error))));
+      .child(v_flex().id("branch-list").min_h(0).overflow_y_scroll().py(4).children(rows))
+      .when(!this.data && !this.error, (el) => el.child(div().p(12).text_color(th.dim).child(t("loading"))))
+      .when(Boolean(this.error), (el) => el.child(div().p(12).text_color(th.ansi1).child(this.error)));
   }
 }
