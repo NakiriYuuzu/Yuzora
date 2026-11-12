@@ -401,6 +401,9 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
     for (k, v) in overrides {
         t.insert(k.clone(), v.clone());
     }
+    // yuzora(L1): Yuzora's layout and mods draw their lines in `divider`; a theme that names none draws them as its border.
+    let border = t["border"].clone();
+    t.entry("divider".into()).or_insert(border);
     t
 }
 
