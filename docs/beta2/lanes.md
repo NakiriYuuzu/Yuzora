@@ -101,6 +101,8 @@ scripts/yuzora/check-mods                 # 每個 yuzora-* mod 的 herdr-app ch
 scripts/yuzora/check-mods yuzora-git-log  # 指定 mod
 ```
 
+- **本機跑測試用 `scripts/yuzora/test-isolated [cargo test 的參數] [-- 測試參數]`**（例：`scripts/yuzora/test-isolated -p yuzora-files`）。直接 `cargo test` 時，有些測試會寫進真實的 `~/.config/yuzora`、經 `hc` 啟動真實的 herdr-core，`checker_job_waits_for_demand_and_runs_once` 還會在真實的 launchd 註冊 job。這支腳本給測試一個用完即丟的 `HOME` 與 XDG 資料夾、一個只會失敗的 `hc`，清掉 `HERDR_*`／`HC_*`，並略過那個 launchd 測試。它先單獨建置再跑測試：沒有 `.git` 的 `vendor/ghostty` 複本建置時要 `GIT_CEILING_DIRECTORIES`，而 `yuzora-git` 的測試帶著它會失敗。`CARGO_TARGET_DIR` 照下面的 slot 規則自己設。CI 不用它（runner 本來就是乾淨的）。
+
 - slot 分配：L1＋L5 → `slot-1`、L2＋L3 → `slot-2`、L4＋L6＋L10 → `slot-3`、L7 → `slot-4`，L8 擇未上鎖者。cargo 會對 target 上鎖，出現 `Blocking waiting for file lock` 就等，不要建新的 slot。
 - 同一個 slot 的執行檔會被另一條 lane 覆寫；要量測或保留的 binary 先複製出去。
 - 開建前先看 `df -h`，可用空間低於 50 GB 就停下回報總指揮。不要刪除其他 lane 或實驗的資料。
