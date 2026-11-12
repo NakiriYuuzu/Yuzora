@@ -90,6 +90,21 @@ test("no selection covers no lines, and a selection past the rows is cut at the 
   expect(copyRuns([], sel("left", 0, 3))).toEqual([]);
 });
 
+test("a selection that ends at a line's start has nothing of that line", () => {
+  const rows = [same(1, 1), same(2, 2), changed(0, 3, 3), same(4, 4)];
+  // From inside row 0's line to the start of row 2's: rows 0 and 1, and the line end before row 2.
+  const m = chars("left", 0, 2, 2, 0);
+  expect([0, 1, 2].map((i) => covers(m, i))).toEqual([true, true, false]);
+  expect(touchedHunks(rows, m)).toEqual([]);
+  // The copy still takes that line end: row 2's line, cut at its start.
+  expect(copyRuns(rows, m)).toEqual([["l", 0, 3]]);
+  expect(cutOf(rows, m)).toEqual([2, 0]);
+  // Made up the rows it is the same selection; a character into the line, the line is in it.
+  expect(touchedHunks(rows, chars("left", 2, 0, 0, 2))).toEqual([]);
+  expect(touchedHunks(rows, chars("left", 0, 2, 2, 1))).toEqual([0]);
+  expect(covers(chars("left", 0, 2, 2, 1), 2)).toBe(true);
+});
+
 test("a selection across hunks touches each hunk that has a selected line, once, in order", () => {
   const rows = [changed(0, 1, 1), same(2, 2), changed(1, 3, 3), changed(1, 4, 4), same(5, 5), changed(2, 6, 6)];
   expect(touchedHunks(rows, sel("left", 0, 5))).toEqual([0, 1, 2]);

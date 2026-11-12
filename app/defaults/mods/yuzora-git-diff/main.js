@@ -214,14 +214,22 @@ export default class GitDiff extends View {
     cx.notify();
   }
 
-  // The line a press at `x` picks (a change's own number, in a diff that can stage), or null.
-  pickAt(r, x) {
-    if (!this.view.stageable || r.h === undefined || x < 0) return null;
-    if (this.layout === "unified") return x < GUTTER * 2 ? (r.k === "-" ? ["l", r.li] : ["r", r.ri]) : null;
+  // The side whose line numbers a press at `x` is on ("l" or "r"; unified has both in one place, told as "l"), or null.
+  numbersAt(x) {
+    if (x < 0) return null;
+    if (this.layout === "unified") return x < GUTTER * 2 ? "l" : null;
     // Where the left side ends, as the last frame laid it out: its share of the row, less the divider.
     const left = ((this.rowsWidth ?? 0) - 1) * (this.lay?.ratio ?? 0.5);
-    if (x < GUTTER && r.l !== undefined) return ["l", r.li];
-    if (x > left && x < left + 1 + GUTTER && r.r !== undefined) return ["r", r.ri];
+    return x < GUTTER ? "l" : x > left && x < left + 1 + GUTTER ? "r" : null;
+  }
+
+  // The line a press at `x` picks (a change's own number, in a diff that can stage), or null.
+  pickAt(r, x) {
+    const on = this.numbersAt(x);
+    if (!this.view.stageable || r.h === undefined || !on) return null;
+    if (this.layout === "unified") return r.k === "-" ? ["l", r.li] : ["r", r.ri];
+    if (on === "l" && r.l !== undefined) return ["l", r.li];
+    if (on === "r" && r.r !== undefined) return ["r", r.ri];
     return null;
   }
 
@@ -285,9 +293,8 @@ export default class GitDiff extends View {
   marked(i, side) {
     const m = this.mark;
     if (!covers(m, i) || empty(m) || m.side !== "unified" && m.side !== (side === "l" ? "left" : "right")) return null;
-    const [a, b] = ends(m), from = i === a.row ? a.at : -1, to = i === b.row ? b.at : EOL;
-    // Ending at a line's start selects the line end before it, and nothing of this one.
-    return i === b.row && i !== a.row && to <= 0 ? null : [from, to];
+    const [a, b] = ends(m);
+    return [i === a.row ? a.at : -1, i === b.row ? b.at : EOL];
   }
 
   // The width the rows are laid out in. It is kept as the box reported it, in window pixels: a new zoom changes
@@ -450,7 +457,8 @@ export default class GitDiff extends View {
     if (!r || r.k === "fold" || this.pickAt(r, this.downX)) return;
     // The list's top in the window, where the pointer will be told as a position in the window, not in the rows.
     const side = this.sideAt(this.downX);
-    this.sweep = { from, side, at: this.placeAt(from, side, e.position.x) ?? -1, shift: this.downShift, top: e.position.y - y, x0: e.position.x, y0: e.position.y, x: e.position.x, y: e.position.y, drag: false, began: false };
+    // Begun on the numbers (where none is picked), the drag is of whole lines, as a click there selects one.
+    this.sweep = { from, side, lines: Boolean(this.numbersAt(this.downX)), at: this.placeAt(from, side, e.position.x) ?? -1, shift: this.downShift, top: e.position.y - y, x0: e.position.x, y0: e.position.y, x: e.position.x, y: e.position.y, drag: false, began: false };
   }
 
   // How tall the rows' list is: its box less the bar under the lines when they scroll sideways, which the box leaves room for.
@@ -515,14 +523,15 @@ export default class GitDiff extends View {
     if (!s.began) {
       s.began = true;
       const m = this.mark;
-      this.mark = s.shift && m ? m : { side: s.side, anchor: { row: s.from, at: s.at }, head: { row: s.from, at: s.at } };
+      this.mark = s.shift && m ? m : s.lines ? whole(s.from, s.side) : { side: s.side, anchor: { row: s.from, at: s.at }, head: { row: s.from, at: s.at } };
       if (rows[s.from].h !== undefined) this.hunk = rows[s.from].h;
       moved = true;
     }
     const m = this.mark, before = row < m.anchor.row;
-    // Over a row whose line was not drawn (or that has none on the side): before or past it, as the pointer goes.
-    const head = { row, at: this.placeAt(row, m.side, s.x) ?? (before ? -1 : EOL) };
-    if (head.row !== m.head.row || head.at !== m.head.at) { this.mark = { ...m, head }; moved = true; }
+    // Whole lines reach the row by lines. Else to the place under the pointer; over a row whose line was not drawn (or that
+    // has none on the side): before or past it, as the pointer goes.
+    const to = s.lines && lines(m) ? reach(m, row) : { ...m, head: { row, at: this.placeAt(row, m.side, s.x) ?? (before ? -1 : EOL) } };
+    if (to.head.row !== m.head.row || to.head.at !== m.head.at || to.anchor.at !== m.anchor.at) { this.mark = to; moved = true; }
     if (moved) cx.notify();
   }
 
@@ -1012,10 +1021,17 @@ function ends(m) {
   return h.row < a.row || h.row === a.row && h.at < a.at ? [h, a] : [a, h];
 }
 
+// The rows a selection has something of, first and last: one that ends at a line's start takes the line end before it and
+// nothing of that line.
+function span(m) {
+  const [a, b] = ends(m);
+  return [a.row, b.row > a.row && b.at <= 0 ? b.row - 1 : b.row];
+}
+
 function covers(m, row) {
   if (!m) return false;
-  const [from, to] = ends(m);
-  return row >= from.row && row <= to.row;
+  const [from, to] = span(m);
+  return row >= from && row <= to;
 }
 
 // A selection of nothing: a drag that came back to where it began.
@@ -1087,7 +1103,7 @@ function copyRuns(rows, m) {
 
 // The hunks that have a selected line, once each (hunks run in the order of the rows).
 function touchedHunks(rows, m) {
-  return [...new Set(lineOfRows(rows, m).map(({ r }) => r.h).filter((h) => h !== undefined))];
+  return [...new Set(lineOfRows(rows, m).filter(({ i }) => covers(m, i)).map(({ r }) => r.h).filter((h) => h !== undefined))];
 }
 
 // A hunk's lines as they are after the change (the right side's range); none for a hunk that only deletes.
