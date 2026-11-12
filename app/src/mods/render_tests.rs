@@ -2297,6 +2297,69 @@ fn yuzora_git_repo_picker_fills_its_overlay_frame(cx: &mut TestAppContext) {
     }
 }
 
+/// The branches popup in the frame an overlay gives a popup (`render_overlays`): 340 wide, at most
+/// 460 high, as tall as what is in it. `n` local branches, remote branches and tags each; without
+/// `loaded` the refs are still being read. Reports the frame's size; a row picked says `pick`.
+fn branches_in_overlay(n: usize, loaded: bool) -> String {
+    format!(
+        r#"
+import Real from "./mods/yuzora-git-branches/main.js";
+import {{ div }} from "gpui-kit";
+import {{ InputState }} from "gpui-base";
+import {{ note }} from "probe";
+export default class Scenario extends Real {{
+  init(p, cx) {{
+    this.error = null; this.busy = null; this.note = null; this.picked = null; this.ask = null; this.hi = 0; this.query = "";
+    this.search = InputState.new({{ placeholder: "" }});
+    this.name = InputState.new({{ placeholder: "" }});
+    this.handle = cx.focus_handle();
+    const refs = (prefix, more) => Array.from({{ length: {n} }}, (_, i) => ({{ name: prefix + i, hash: "h", time: i, subject: "s", ...more }}));
+    this.data = {loaded} ? {{ current: null, head: "h", recent: [], local: refs("b", {{ ahead: 0, behind: 0, current: false }}), remote: refs("origin/b", {{ remote: "origin", branch: "b" }}), tags: refs("v", {{}}) }} : null;
+  }}
+  pick(e) {{ note("pick", e.id ?? e.name); }}
+  render(cx) {{
+    return div().id("scenario").size_full().child(
+      div().id("ov-frame").w(340).max_h(460).border_1().overflow_hidden().flex().on_size_change((s) => note("frame", s.width, s.height))
+        .child(div().size_full().child(div().relative().flex().flex_col().min_h(0).child(super.render(cx)))));
+  }}
+}}
+"#
+    )
+}
+
+// yuzora(L2): the branches popup opens from the Git sidebar's branch button as a popup, so it is as
+// tall as what is in it, up to the frame's 460. Filling its parent (size_full, flex_1 and a scroll
+// area that fills) its list was 0 high and the frame 36: only the search box showed, so update, pull,
+// fetch, push and every branch and tag were out of reach. Laid out in the overlay's frame: the
+// actions and refs show and can be clicked, the last ref too once scrolled to, and the text shown
+// while the refs are read has room.
+#[gpui::test]
+fn yuzora_git_branches_popup_fills_its_overlay_frame(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let size = |s: &Scenario, k: &str| s.last(k).map(|v| v[2].as_f64().unwrap()).unwrap_or_else(|| panic!("{k} not measured"));
+    let picked = |s: &mut Scenario, y: f64| {
+        let before = s.notes.borrow().len();
+        s.click(100.0, y);
+        s.notes.borrow()[before..].iter().rev().find(|n| n[0] == json!("pick")).map(|n| n[1].as_str().unwrap().to_owned())
+    };
+    // The search row is 34, the list pads 4 above and below its rows of 26, the frame's border is 1.
+    let staged = Staged::new();
+    let mut s = Scenario::mount(cx, &staged, &branches_in_overlay(0, true), 600.0, 800.0);
+    assert_eq!(size(&s, "frame"), 34.0 + 8.0 + 8.0 * 26.0 + 2.0, "no refs: the frame takes the eight actions' height");
+    for (i, action) in ["update", "pull", "fetch", "push"].into_iter().enumerate() {
+        assert_eq!(picked(&mut s, 1.0 + 34.0 + 4.0 + 13.0 + 26.0 * i as f64).as_deref(), Some(action));
+    }
+    let mut s = Scenario::mount(cx, &staged, &branches_in_overlay(20, true), 600.0, 800.0);
+    assert_eq!(size(&s, "frame"), 460.0, "60 refs: the frame is at its limit");
+    for (i, action) in ["update", "pull", "fetch", "push"].into_iter().enumerate() {
+        assert_eq!(picked(&mut s, 1.0 + 34.0 + 4.0 + 13.0 + 26.0 * i as f64).as_deref(), Some(action), "60 refs: the rows keep their height");
+    }
+    s.wheel(100.0, 200.0, -5000.0);
+    assert_eq!(picked(&mut s, 460.0 - 1.0 - 4.0 - 13.0).as_deref(), Some("v19"), "scrolled to the end, the last tag is there");
+    let s = Scenario::mount(cx, &staged, &branches_in_overlay(0, false), 600.0, 800.0);
+    assert!(size(&s, "frame") > 36.0 + 20.0, "reading the refs: room for the text under the search row: {}", size(&s, "frame"));
+}
+
 /// A sidebar file row in a list of `width` (padded and measured like the real list): its parts report
 /// their size (`name`, `dir`, `add`, `del`, `action:<label>`) and, under the pointer, where they sit
 /// (`at:<part>`, x and width). A click goes through the real `clickRow` and says what it did (`result`).
