@@ -879,6 +879,27 @@ mod tests {
         assert_eq!(all[10]["k"], "+");
     }
 
+    /// A line changed in its whitespace alone is a change with that whitespace marked, as far as the policy counts it: a
+    /// tab made spaces only under Exact, two spaces made one inside the line under Trim too, nothing under Ignore.
+    #[test]
+    fn a_change_of_whitespace_alone_is_marked_where_the_policy_counts_it() {
+        let a = "fn f() {\n\tlet a  = 1;\n}\n";
+        let b = "fn f() {\n    let a = 1;\n}\n";
+        let (la, lb) = (diff::lines(a.as_bytes()), diff::lines(b.as_bytes()));
+        let row = |ws, unified| {
+            let cs = diff::diff_lines(&la, &lb, ws);
+            rows(&la, &lb, &cs, unified, -1, ws)
+        };
+        let side = row(Whitespace::Exact, false);
+        assert_eq!((&side[1]["k"], &side[1]["lm"], &side[1]["rm"]), (&json!("~"), &json!([[0, 1], [6, 8]]), &json!([[0, 4], [9, 10]])), "the tab, the two spaces; four spaces, one");
+        let unified = row(Whitespace::Exact, true);
+        assert_eq!((&unified[1]["m"], &unified[2]["m"]), (&json!([[0, 1], [6, 8]]), &json!([[0, 4], [9, 10]])));
+        let trim = row(Whitespace::Trim, false);
+        assert_eq!((&trim[1]["k"], &trim[1]["lm"], &trim[1]["rm"]), (&json!("~"), &json!([[6, 8]]), &json!([[9, 10]])), "the spaces inside the line");
+        let ignore = row(Whitespace::Ignore, false);
+        assert!(ignore.iter().all(|r| r["k"] == "=" && r.get("lm").is_none() && r.get("rm").is_none()), "{ignore:?}");
+    }
+
     #[test]
     fn a_hunk_is_staged_without_touching_the_work_tree() {
         let s = scratch();
