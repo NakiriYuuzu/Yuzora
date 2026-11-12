@@ -239,7 +239,7 @@ pub fn repo_programs_here<E>(key: &str, top: &str, run: impl FnMut(&[&str]) -> R
 /// ([`kernel_keeps_ctime`]).
 fn programs_here_at<E>(key: &str, top: &str, run: impl FnMut(&[&str]) -> Result<(i32, Vec<u8>), E>, began: SystemTime, keeps_ctime: &dyn Fn(&Path) -> bool) -> Result<Vec<String>, E> {
     let id = format!("{key}\0{top}");
-    if let Some(keys) = kept_answer(&id, top) {
+    if let Some(keys) = kept_answer(&id, top, began, keeps_ctime) {
         return Ok(keys);
     }
     // The files as they were before the scan: the answer is kept only if
@@ -257,7 +257,7 @@ fn programs_here_at<E>(key: &str, top: &str, run: impl FnMut(&[&str]) -> Result<
         if all.len() >= KEEP_AT_MOST {
             all.clear();
         }
-        all.insert(id, Kept { dirs: read.dirs, stamps: read.stamps, keys: keys.clone() });
+        all.insert(id, Kept { dirs: read.dirs, stamps: read.stamps, id_len, keys: keys.clone() });
     }
     Ok(keys)
 }
@@ -270,11 +270,13 @@ const RACY: Duration = Duration::from_secs(3);
 const KEEP_AT_MOST: usize = 64;
 
 /// A folder's kept answer: the git dir and common dir git found from the
-/// top, and the files it was read from, as they were.
+/// top, the files it was read from, as they were, and the length of the
+/// repository's object ids (how a changed index is read, [`index_is_plain`]).
 #[derive(Clone)]
 struct Kept {
     dirs: (PathBuf, PathBuf),
     stamps: Vec<(PathBuf, Look, Stamp)>,
+    id_len: usize,
     keys: Vec<String>,
 }
 
@@ -288,13 +290,80 @@ fn kept() -> &'static Mutex<HashMap<String, Kept>> {
 /// and it's dropped. The files are looked at without the lock: a file
 /// system that doesn't answer (a hard NFS mount gone away) holds up only
 /// this folder's check.
-fn kept_answer(id: &str, top: &str) -> Option<Vec<String>> {
+///
+/// The index alone may have changed (every stage, commit and checkout
+/// writes it): the answer took from it only that it has no gitlink and
+/// holds all its entries itself, so a changed one is read here and the
+/// answer stands while that is still so ([`index_is_plain`]). Its new stamp
+/// is kept only once it changed [`RACY`] before `began`, as after a scan;
+/// until then each call reads it again.
+fn kept_answer(id: &str, top: &str, began: SystemTime, keeps_ctime: &dyn Fn(&Path) -> bool) -> Option<Vec<String>> {
     let entry = kept().lock().unwrap_or_else(|e| e.into_inner()).get(id)?.clone();
-    if found_dirs(Path::new(top)).as_ref() == Some(&entry.dirs) && entry.stamps.iter().all(|(path, look, was)| stamp(path, *look).as_ref() == Some(was)) {
-        return Some(entry.keys);
+    match still_stands(&entry, top, keeps_ctime) {
+        Some(Stands::AsItWas) => Some(entry.keys),
+        Some(Stands::IndexChanged { at, stamp, changed }) => {
+            if changed.is_some_and(|t| began.duration_since(t).is_ok_and(|d| d >= RACY)) {
+                let mut all = kept().lock().unwrap_or_else(|e| e.into_inner());
+                // Only over the entry looked at: another scan may have kept a newer one.
+                if let Some(now) = all.get_mut(id).filter(|now| (&now.dirs, &now.stamps) == (&entry.dirs, &entry.stamps)) {
+                    now.stamps[at].2 = stamp;
+                }
+            }
+            Some(entry.keys)
+        }
+        None => {
+            kept().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+            None
+        }
     }
-    kept().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-    None
+}
+
+/// How a kept answer still stands ([`still_stands`]).
+enum Stands {
+    /// Nothing it was read from changed.
+    AsItWas,
+    /// Only the index did, and it is still plain: where its stamp is in the
+    /// entry, the stamp it has now, and when it last changed.
+    IndexChanged { at: usize, stamp: Stamp, changed: Option<SystemTime> },
+}
+
+/// Whether a kept answer still stands; none when it must be scanned for again.
+fn still_stands(entry: &Kept, top: &str, keeps_ctime: &dyn Fn(&Path) -> bool) -> Option<Stands> {
+    if found_dirs(Path::new(top)).as_ref() != Some(&entry.dirs) {
+        return None;
+    }
+    let index = entry.dirs.0.join("index");
+    let mut differs = None;
+    for (at, (path, look, was)) in entry.stamps.iter().enumerate() {
+        if stamp(path, *look).as_ref() != Some(was) {
+            if *path != index || differs.is_some() {
+                return None;
+            }
+            differs = Some(at);
+        }
+    }
+    let Some(at) = differs else { return Some(Stands::AsItWas) };
+    let (stamp, changed) = index_is_plain(&index, entry.id_len, keeps_ctime)?;
+    Some(Stands::IndexChanged { at, stamp, changed })
+}
+
+/// The stamp of the index at `path` and when it last changed, if it is
+/// plain as a kept answer needs it: a regular file on a file system that
+/// keeps change times, read whole between two looks that agree, holding all
+/// its entries itself ([`index_stands_alone`]), none of them a gitlink. That
+/// is all the scan takes from the index (`ls-files -s` for gitlinks,
+/// `rev-parse --shared-index-path`). None for anything else, a missing index
+/// too: the scan answers then.
+fn index_is_plain(path: &Path, id_len: usize, keeps_ctime: &dyn Fn(&Path) -> bool) -> Option<(Stamp, Option<SystemTime>)> {
+    let (before, changed) = stamp_and_time(path, Look::Whole)?;
+    if before == Stamp::Missing || !keeps_ctime(path) {
+        return None;
+    }
+    let bytes = read_plain(path, INDEX_CAP)??;
+    if stamp(path, Look::Whole)? != before {
+        return None;
+    }
+    (index_stands_alone(&bytes, id_len)? && !index_has_gitlink(&bytes, id_len)?).then_some((before, changed))
 }
 
 /// The files a plain repository's answer came from, as they are now, and the
@@ -419,6 +488,19 @@ fn index_stands_alone(bytes: &[u8], id_len: usize) -> Option<bool> {
 /// reads as one to its trailing checksum, each entry read as git reads it
 /// (`create_from_disk`) without threads.
 fn index_extensions(bytes: &[u8], id_len: usize) -> Option<Vec<[u8; 4]>> {
+    index_read(bytes, id_len).map(|(ext, _)| ext)
+}
+
+/// Whether an index that reads to its end ([`index_extensions`]) has a
+/// gitlink among its entries: a mode of that type (`S_ISGITLINK`), whatever
+/// its other bits (`ls-files -s` would print them; the scan's grep takes
+/// `160000` only, so this counts more, never fewer).
+fn index_has_gitlink(bytes: &[u8], id_len: usize) -> Option<bool> {
+    index_read(bytes, id_len).map(|(_, gitlink)| gitlink)
+}
+
+/// [`index_extensions`], and whether an entry is a gitlink ([`index_has_gitlink`]).
+fn index_read(bytes: &[u8], id_len: usize) -> Option<(Vec<[u8; 4]>, bool)> {
     let be32 = |at: usize| bytes.get(at..at.checked_add(4)?).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
     if bytes.get(..4)? != b"DIRC" {
         return None;
@@ -430,8 +512,10 @@ fn index_extensions(bytes: &[u8], id_len: usize) -> Option<Vec<[u8; 4]>> {
     let mut at = 12usize;
     // Version 4: the last path's length (each path drops some of the last one's end).
     let mut last = 0usize;
+    let mut gitlink = false;
     for _ in 0..be32(8)? {
         // Times, device, inode, mode, owner, size; the id; the flags.
+        gitlink |= be32(at.checked_add(24)?)? & 0o170000 == 0o160000;
         let flags_at = at.checked_add(40 + id_len)?;
         let flags = u16::from_be_bytes(bytes.get(flags_at..flags_at + 2)?.try_into().ok()?);
         let mut path = flags_at + 2;
@@ -471,7 +555,7 @@ fn index_extensions(bytes: &[u8], id_len: usize) -> Option<Vec<[u8; 4]>> {
         ext.push(bytes.get(at..at + 4)?.try_into().ok()?);
         at = at.checked_add(8)?.checked_add(be32(at + 4)? as usize)?;
     }
-    (at == checksum).then_some(ext)
+    (at == checksum).then_some((ext, gitlink))
 }
 
 /// The git dir and common dir the top's `.git` leads to, as git reads them
@@ -2699,6 +2783,136 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    // Staging, committing and checking out write the index and nothing else
+    // the answer came from: it stands, with no git run, while the index
+    // still has no gitlink and holds its entries itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_kept_answer_stands_through_an_index_that_changed_and_is_still_plain() {
+        let k = "kept-index";
+        let (dir, top, git) = kept_repo(k);
+        let index = std::fs::canonicalize(Path::new(&top).join(".git/index")).unwrap();
+        let kept_stamp = || kept().lock().unwrap().get(&format!("{k}\0{top}")).and_then(|e| e.stamps.iter().find(|(p, _, _)| *p == index).map(|(_, _, s)| s.clone()));
+        let first = kept_stamp().unwrap();
+        std::fs::write(Path::new(&top).join("g"), "y\n").unwrap();
+        git("", &["add", "g"]);
+        assert_ne!(stamp(&index, Look::Whole), Some(first.clone()), "the index didn't change, so this test proves nothing");
+        // Changed a moment ago: answered from the index as it is, its stamp
+        // not kept (a later change could carry the same time).
+        assert_eq!(kept_scan(k, &top, SystemTime::now()), (keys(&[]), 0));
+        assert_eq!(kept_stamp(), Some(first), "the stamp of an index changed a moment ago was kept");
+        // Long enough after: its stamp is the one kept.
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0));
+        assert_eq!(kept_stamp(), stamp(&index, Look::Whole));
+        git("", &["commit", "-qm", "g"]);
+        git("", &["rm", "-q", "--cached", "f"]);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "a commit and an unstage");
+        // With the index, something else: scanned again.
+        std::fs::write(Path::new(&top).join("h"), "z\n").unwrap();
+        git("", &["add", "h"]);
+        git("", &["config", "core.sshCommand", "true"]);
+        assert_eq!(kept_scan(k, &top, later()), (keys(&["core.sshcommand"]), 1));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Reading a changed index here stands in for the scan only for the
+    // index: every other file the answer came from still sends it back to
+    // git, whether it changed alone or along with the index, and whenever.
+    #[cfg(unix)]
+    #[test]
+    fn whatever_else_the_answer_came_from_changes_is_scanned_again_with_or_without_the_index() {
+        let changes: [(&str, fn(&Path)); 6] = [
+            ("HEAD", |git_dir| std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/elsewhere\n").unwrap()),
+            ("config", |git_dir| {
+                let config = git_dir.join("config");
+                std::fs::write(&config, [std::fs::read(&config).unwrap().as_slice(), b"[core]\n\tsshCommand = true\n"].concat()).unwrap()
+            }),
+            ("config.worktree", |git_dir| std::fs::write(git_dir.join("config.worktree"), "").unwrap()),
+            ("remotes", |git_dir| {
+                std::fs::create_dir_all(git_dir.join("remotes")).unwrap();
+                std::fs::write(git_dir.join("remotes/r"), "URL: ext::true\n").unwrap()
+            }),
+            ("branches", |git_dir| {
+                std::fs::create_dir_all(git_dir.join("branches")).unwrap();
+                std::fs::write(git_dir.join("branches/b"), "ext::true\n").unwrap()
+            }),
+            ("modules", |git_dir| std::fs::create_dir_all(git_dir.join("modules")).unwrap()),
+        ];
+        for (name, change) in changes {
+            for with_index in [false, true] {
+                for began in [SystemTime::now(), later()] {
+                    let k = format!("kept-else-{name}-{with_index}-{}", began > SystemTime::now() + Duration::from_secs(1));
+                    let (dir, top, git) = kept_repo(&k);
+                    if with_index {
+                        std::fs::write(Path::new(&top).join("g"), "y\n").unwrap();
+                        git("", &["add", "g"]);
+                    }
+                    change(&Path::new(&top).join(".git"));
+                    assert_eq!(kept_scan(&k, &top, began).1, 1, "{name} changed (the index too: {with_index}) and the answer was kept");
+                    std::fs::remove_dir_all(&dir).unwrap();
+                }
+            }
+        }
+    }
+
+    // An index that changed is read only as far as the scan would trust it:
+    // a regular file on a file system that keeps change times, plain to its end.
+    #[cfg(unix)]
+    #[test]
+    fn a_changed_index_that_cant_be_read_as_plain_is_scanned_again() {
+        let scan = |key: &str, top: &str, keeps_ctime: &dyn Fn(&Path) -> bool| {
+            let mut runs = 0;
+            programs_here_at(
+                key,
+                top,
+                |args| {
+                    runs += 1;
+                    let out = std::process::Command::new("git").args(READ_FLAGS).args(args).current_dir(top).output()?;
+                    Ok::<_, std::io::Error>(whole(out.status.code().unwrap_or(-1), out.stdout))
+                },
+                later(),
+                keeps_ctime,
+            )
+            .unwrap();
+            runs
+        };
+        // On a file system that keeps no change time of its own.
+        let k = "kept-index-fs";
+        let (dir, top, git) = kept_repo(k);
+        std::fs::write(Path::new(&top).join("g"), "y\n").unwrap();
+        git("", &["add", "g"]);
+        assert_eq!(scan(k, &top, &|p| !p.ends_with(".git/index")), 1, "an index whose change time a program may set");
+        std::fs::remove_dir_all(&dir).unwrap();
+        // Gone: git reads none, and so does the scan.
+        let k = "kept-index-gone";
+        let (dir, top, _git) = kept_repo(k);
+        std::fs::remove_file(Path::new(&top).join(".git/index")).unwrap();
+        assert_eq!(scan(k, &top, &kernel_keeps_ctime), 1, "a missing index");
+        std::fs::remove_dir_all(&dir).unwrap();
+        // Not an index git reads to its end (here: cut short).
+        let k = "kept-index-cut";
+        let (dir, top, _git) = kept_repo(k);
+        let index = Path::new(&top).join(".git/index");
+        let bytes = std::fs::read(&index).unwrap();
+        std::fs::write(&index, &bytes[..bytes.len() - 1]).unwrap();
+        assert_eq!(scan(k, &top, &kernel_keeps_ctime), 1, "an index cut short");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_gitlink_is_told_by_its_entrys_mode() {
+        // One entry, `a`: its mode is the 4 bytes after the times, device and inode.
+        let entry = |mode: u32| [b"DIRC\0\0\0\x02\0\0\0\x01".as_slice(), &[0; 24], &mode.to_be_bytes(), &[0; 32], &[0, 1], b"a\0", &[0; 20]].concat();
+        assert_eq!(index_has_gitlink(&entry(0o100644), 20), Some(false));
+        assert_eq!(index_has_gitlink(&entry(0o120000), 20), Some(false));
+        assert_eq!(index_has_gitlink(&entry(0o160000), 20), Some(true));
+        assert_eq!(index_has_gitlink(&entry(0o160755), 20), Some(true), "a gitlink whatever its other bits");
+        assert_eq!(index_has_gitlink(&entry(0o160000)[..80], 20), None, "an index cut short");
+        // The second of two entries.
+        let two = [b"DIRC\0\0\0\x02\0\0\0\x02".as_slice(), &[0; 24], &0o100644u32.to_be_bytes(), &[0; 32], &[0, 1], b"a\0", &[0; 24], &0o160000u32.to_be_bytes(), &[0; 32], &[0, 1], b"b\0", &[0; 20]].concat();
+        assert_eq!(index_has_gitlink(&two, 20), Some(true));
+    }
+
     // Every index git writes reads to its end: versions 2 to 4 (3 when an
     // entry has extended flags, 4 with paths shortened), SHA-1 and SHA-256.
     #[cfg(unix)]
@@ -2715,11 +2929,15 @@ mod tests {
         }
         std::fs::write(Path::new(&top).join("new"), "x\n").unwrap();
         git("", &["add", "-N", "new"]);
-        assert_eq!(kept_scan(k, &top, later()).1, 1);
-        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "kept with version 3");
+        // The kept answer reads the changed index itself; a caller that
+        // never scanned scans it, and keeps that.
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "version 3 read after a change");
+        assert_eq!(kept_scan("kept-versions-3", &top, later()).1, 1);
+        assert_eq!(kept_scan("kept-versions-3", &top, later()), (keys(&[]), 0), "kept with version 3");
         git("", &["update-index", "--index-version", "4"]);
-        assert_eq!(kept_scan(k, &top, later()).1, 1);
-        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "kept with version 4");
+        assert_eq!(kept_scan(k, &top, later()), (keys(&[]), 0), "version 4 read after a change");
+        assert_eq!(kept_scan("kept-versions-4", &top, later()).1, 1);
+        assert_eq!(kept_scan("kept-versions-4", &top, later()), (keys(&[]), 0), "kept with version 4");
         std::fs::remove_dir_all(&dir).unwrap();
         let k = "kept-sha256";
         let (dir, top, git) = scratch_dir(k);
