@@ -9,7 +9,7 @@
 //! - [`repo`]: opened repos, change generations, `.git` state;
 //! - [`repos`]: which repositories a Space holds (the sidebar's picker);
 //! - [`status`] + [`watch`]: status by dirty scope, the file watcher;
-//! - [`diff`] + [`diffview`]: Myers/Patience diff, the diff pane, partial staging;
+//! - [`diff`] + [`diffview`] + [`syntax`]: Myers/Patience diff, the diff pane and its code's syntax, partial staging;
 //! - [`log`] + [`graph`] + [`graph_view`]: two-phase log, the graph and its element;
 //! - [`ops`]: commit, branches, remotes, stash, history, tags, patches…;
 //! - [`merge`]: three-way conflicts; [`rebase`]: interactive rebase;
@@ -29,6 +29,7 @@ pub mod repo;
 pub mod repos;
 pub mod settings;
 pub mod status;
+pub mod syntax;
 pub mod trust;
 pub mod watch;
 

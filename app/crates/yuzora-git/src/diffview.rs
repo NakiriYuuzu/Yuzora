@@ -21,6 +21,7 @@ use crate::exec::{Git, GitError, GitResult};
 use crate::lru::Lru;
 use crate::repo::{PathKind, Repo};
 use crate::status::Scope;
+use crate::syntax::{Span, Syntax};
 
 /// Bigger sides aren't diffed (shown as "too large").
 pub const MAX_SIDE: usize = 16 << 20;
@@ -88,6 +89,8 @@ pub struct DiffSession {
     pub modes: Option<(String, String)>,
     /// Exact changes (what staging uses).
     pub changes: Vec<Change>,
+    /// Each side's syntax, parsed for the first view that shows lines.
+    syntax: OnceLock<(Option<Syntax>, Option<Syntax>)>,
 }
 
 /// A hunk header's `start,count`: git leaves the count out for one line, and for none the start
@@ -269,7 +272,28 @@ impl DiffSession {
             diff::diff_lines(&diff::lines(l), &diff::lines(r), Whitespace::Exact)
         };
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        Ok(DiffSession { id: NEXT.fetch_add(1, Ordering::SeqCst), repo, path, orig, mode, left, right, index_entry, binary, too_large, modes, changes })
+        Ok(DiffSession { id: NEXT.fetch_add(1, Ordering::SeqCst), repo, path, orig, mode, left, right, index_entry, binary, too_large, modes, changes, syntax: OnceLock::new() })
+    }
+
+    /// Each side's syntax, by the name the file has on that side. Both sides are parsed together, once, on the
+    /// thread of the view that first asks: a file is parsed whole, which no later view waits for again.
+    fn syntax(&self) -> &(Option<Syntax>, Option<Syntax>) {
+        self.syntax.get_or_init(|| {
+            let before = self.orig.as_deref().unwrap_or(&self.path);
+            std::thread::scope(|s| {
+                let left = s.spawn(|| self.left.as_deref().and_then(|text| Syntax::of(before, text)));
+                let right = self.right.as_deref().and_then(|text| Syntax::of(&self.path, text));
+                (left.join().unwrap_or(None), right)
+            })
+        })
+    }
+
+    /// The syntax spans of line `k` of a side, as ranges of the line as the file has it. None till a view has
+    /// parsed the sides, and none for a file of no language the editor knows.
+    pub fn line_spans(&self, side: Side, k: usize) -> Vec<Span> {
+        let Some((left, right)) = self.syntax.get() else { return Vec::new() };
+        let syntax = if side == Side::Left { left } else { right };
+        syntax.as_ref().map(|s| s.line(k)).unwrap_or_default()
     }
 
     /// The view: hunks and rows (`side` or `unified`), `context` lines around
@@ -284,7 +308,12 @@ impl DiffSession {
         let add: usize = changes.iter().map(|c| c.b.len()).sum();
         let del: usize = changes.iter().map(|c| c.a.len()).sum();
         let hunks: Vec<Value> = changes.iter().enumerate().map(|(i, c)| json!({ "index": i, "a": [c.a.start, c.a.end], "b": [c.b.start, c.b.end] })).collect();
-        let rows = if shown { rows(&ll, &rl, &changes, layout == "unified", context, ws) } else { Vec::new() };
+        let rows = if shown {
+            self.syntax();
+            rows(&ll, &rl, &changes, layout == "unified", context, ws)
+        } else {
+            Vec::new()
+        };
         json!({
             "id": self.id,
             "path": self.path,
@@ -1422,5 +1451,46 @@ exec 'REAL' "$@"
         let patch = d.patch(Whitespace::Trim, &[0]);
         applied(&s, &one, &patch);
         assert_eq!(s.read("f.txt"), "a\n  b\nc\nD\ne\nf\ng\nh\ni\nj\nk\n", "the hunk that is there, the indent as it was");
+    }
+
+    fn named(spans: &[Span], name: &str) -> Vec<std::ops::Range<usize>> {
+        spans.iter().filter(|(_, n)| *n == name).map(|(r, _)| r.clone()).collect()
+    }
+
+    #[test]
+    fn a_comment_that_begins_outside_the_hunk_styles_the_hunks_lines() {
+        let s = scratch();
+        let text = |word: &str| format!("/* a comment that\n   runs over\n   several lines, {word} fn and let\n   and \"strings\" too */\nfn main() {{}}\n");
+        s.commit("c.rs", &text("mentioning"), "base");
+        s.write("c.rs", &text("naming"));
+        let d = DiffSession::load(s.repo.clone(), "c.rs".into(), None, Mode::Unstaged).unwrap();
+        assert_eq!(d.line_spans(Side::Left, 2), [], "nothing is parsed before a view shows lines");
+        // No context: the line where the comment begins is not among the rows.
+        let rows = d.view("side", 0, Whitespace::Exact)["rows"].clone();
+        assert_eq!(rows.as_array().unwrap().iter().map(|r| r["k"].as_str().unwrap()).collect::<Vec<_>>(), ["fold", "~", "fold"]);
+        assert_eq!(named(&d.line_spans(Side::Left, 2), "comment"), [0..40], "`fn` and `let` in it are comment too, to its `\\n`");
+        assert_eq!(named(&d.line_spans(Side::Right, 2), "comment"), [0..36]);
+        assert_eq!(named(&d.line_spans(Side::Right, 4), "keyword"), [0..2], "and code after it is code");
+    }
+
+    #[test]
+    fn a_renamed_files_sides_are_each_styled_by_their_own_name() {
+        let s = scratch();
+        s.commit("old.txt", "fn main() {}\n// done\n", "base");
+        s.git(&["mv", "old.txt", "new.rs"]);
+        let d = DiffSession::load(s.repo.clone(), "new.rs".into(), Some("old.txt".into()), Mode::Staged).unwrap();
+        d.view("side", -1, Whitespace::Exact);
+        assert_eq!(d.line_spans(Side::Left, 1), [], "`old.txt` is plain text");
+        assert_eq!(named(&d.line_spans(Side::Right, 1), "comment"), [0..7]);
+    }
+
+    #[test]
+    fn a_file_of_no_known_language_has_no_spans() {
+        let s = scratch();
+        s.commit("notes.txt", "fn alpha() {}\n", "base");
+        s.write("notes.txt", "fn beta() {}\n");
+        let d = DiffSession::load(s.repo.clone(), "notes.txt".into(), None, Mode::Unstaged).unwrap();
+        d.view("side", -1, Whitespace::Exact);
+        assert_eq!((d.line_spans(Side::Left, 0), d.line_spans(Side::Right, 0)), (vec![], vec![]));
     }
 }
