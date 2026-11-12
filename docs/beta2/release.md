@@ -92,6 +92,7 @@
 
 - 資料夾沒有被動過（`rename(root → .old)` 沒成功就什麼都沒搬；第二步失敗會 rollback）。暫存的 `Yuzora.new` 與收據留著。
 - **原因的全文放在「設定 › Updates」**（`update::status()["app"]["failure"]`，設定畫面在 status 變動時重畫）：app 那一列下面一段可換行的文字，標題「The update could not be installed」，內文是下面的說明。只要暫存的更新還在，它就在；交換成功（程式隨即重開）或暫存的更新被丟掉就消失。啟動時（`apply_on_startup`）交換失敗、10 秒後的檢查又看到暫存的版本時，不必按任何東西，設定頁就看得到。
+  - 原因跟著「失敗當下在等的那個版本」（`SwapFailure.of`）：之後每小時的檢查若暫存了更新的版本，那個版本還沒試過交換，設定頁不再顯示上一個版本的原因（#261 審查 r2 的 P2-2 情境 A）；按 Restart 再失敗就記成新版本的。啟動時的交換失敗當下還不知道版本，算在之後第一個看到在等的版本上。暫存損壞被丟掉但 `READY` 沒清的情況（情境 B）沒有處理。Windows 上沒有實機驗證這一項，只有單元測試（`a_swap_failure_is_kept_for_as_long_as_the_update_waits_and_has_a_toast`）。
 - 按右下角更新提示的「Restart」（或設定頁的「Restart to update」，`app.update`）：開一個 toast：標題 `Yuzora could not install the update`，內文 `Install folder in use. Click for steps.`（非「被佔用」的失敗：`Click for the reason and what to do.`），30 秒才消失、一次只一個，點下去開「設定 › Updates」。toast 的標題與內文各只有一行（`mods/toast` 截成一行、340 px），所以全文放不進去；之前把整段 283 字放在內文，視窗裡只看得到開頭一行（審查 P1）。`yuzora do app.update`（CLI）仍回傳全文。
 - 說明全文（被佔用）：`Yuzora could not install the update because another program is using its install folder. Close any terminal opened in that folder. If you came from a beta, restart your PC once. Then choose Restart again, or download the installer from https://github.com/NakiriYuuzu/Yuzora/releases.`（其他錯誤：`Yuzora could not install the update: <系統訊息>. Choose Restart to try again, or download the installer from …`）。網址是文字，不能點（mod 沒有開網址的函式）；列為之後的改善。
 - 關閉視窗時（`on_app_quit`）失敗只記 log（`update: cannot move … aside: …`）；視窗不在，沒有地方顯示，下次啟動時照上面再來一次。
