@@ -364,7 +364,7 @@ pub fn checkout(repo: &Repo, target: &str, smart: bool, force: bool) -> GitResul
     }
     let top = |repo: &Repo| -> GitResult<String> { Ok(repo.run(Git::read(["rev-parse", "-q", "--verify", "refs/stash"]))?.stdout_text().trim().to_owned()) };
     let before = top(repo)?;
-    let stash = repo.run(Git::write(["stash", "push", "--include-untracked", "-m", &format!("yuzora: smart checkout of {target}")]))?;
+    let stash = repo.run(whole_tree(Git::write(["stash", "push", "--include-untracked", "-m", &format!("yuzora: smart checkout of {target}")])))?;
     if !stash.ok() {
         return Err(GitError::Failed { code: stash.code, message: stash.stderr_text() });
     }
@@ -776,9 +776,16 @@ pub fn stash_push(repo: &Repo, o: &Value) -> GitResult<Value> {
         cmd = cmd.args(["-m", m]);
     }
     let paths: Vec<String> = o.get("paths").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
-    let out = repo.run(cmd.pathspec(&paths))?;
+    let out = repo.run(if paths.is_empty() { whole_tree(cmd) } else { cmd.pathspec(&paths) })?;
     done(repo, true);
     Ok(outcome(&out))
+}
+
+/// A `stash push` with no paths of ours. git names the whole tree `:/` in the commands it runs for it (the `clean`
+/// that takes the untracked files away, the `checkout` that `--keep-index` puts the index back with), and while
+/// pathspecs are literal that is a file's name: nothing was removed, and nothing kept.
+fn whole_tree(cmd: Git) -> Git {
+    cmd.env("GIT_LITERAL_PATHSPECS", "0")
 }
 
 /// `apply` / `pop` (with `index` to restore the index too), `drop`, `branch`.
@@ -1367,6 +1374,37 @@ mod tests {
         // The edit conflicts with other's a.txt, so the stash stays and says so.
         assert_eq!(smart["restored"], false);
         assert_eq!(smart["conflicts"], json!(["a.txt"]));
+    }
+
+    // git's own `:/` (the whole tree) in `stash push` is a file named `:/` while pathspecs are literal: the untracked
+    // files stayed in the work tree, so the pop refused to write over them and kept the stash (after every smart
+    // checkout too), and `--keep-index` kept nothing.
+    #[test]
+    fn a_stash_of_everything_takes_the_untracked_files_and_can_keep_the_index() {
+        let s = scratch();
+        s.commit("a.txt", "1\n2\n3\n4\n5\n", "one");
+        s.git(&["branch", "other"]);
+        s.commit("a.txt", "1\n2\n3\n4\nfive\n", "two");
+        s.write("a.txt", "one\n2\n3\n4\nfive\n");
+        s.write("new.txt", "new\n");
+        assert_eq!(stash_push(&s.repo, &json!({ "untracked": true })).unwrap()["ok"], true);
+        assert!(!std::path::Path::new(&s.repo.abs("new.txt")).exists(), "the untracked file is still in the work tree");
+        let popped = stash_action(&s.repo, "pop", "stash@{0}", &json!({})).unwrap();
+        assert_eq!(popped["ok"], true, "{popped}");
+        assert_eq!((s.read("a.txt"), s.read("new.txt")), ("one\n2\n3\n4\nfive\n".into(), "new\n".into()));
+        assert_eq!(stashes(&s.repo).unwrap(), json!([]));
+
+        let smart = checkout(&s.repo, "other", true, false).unwrap();
+        assert_eq!((&smart["stashed"], &smart["restored"]), (&json!(true), &json!(true)), "{smart}");
+        assert_eq!((s.read("a.txt"), s.read("new.txt")), ("one\n2\n3\n4\n5\n".into(), "new\n".into()));
+        assert_eq!(stashes(&s.repo).unwrap(), json!([]), "the stash of the smart checkout was left behind");
+
+        s.git(&["add", "a.txt"]);
+        s.write("a.txt", "one\n2\nthree\n4\n5\n");
+        let kept = stash_push(&s.repo, &json!({ "keepIndex": true })).unwrap();
+        assert_eq!(kept["ok"], true, "{kept}");
+        assert_eq!(s.read("a.txt"), "one\n2\n3\n4\n5\n", "what was staged stays in the work tree");
+        assert_eq!(s.git(&["diff", "--cached", "--name-only"]).trim(), "a.txt");
     }
 
     #[test]
