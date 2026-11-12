@@ -195,8 +195,8 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 
 - `status --porcelain=v2 -z --branch --show-stash --untracked-files=no`，untracked 另走 `ls-files --others --exclude-standard`（與 IntelliJ 一樣分開，大量 untracked 不拖慢 tracked）；被忽略的目錄只用來過濾 watcher 事件。`+/-` 行數來自 `diff --numstat`（超過 3000 個變更就略過）；untracked 檔案直接數行（前 500 個），symlink 數它的目標字串（git 記錄的內容），不跟到目標檔案（可能在工作樹外）。全量刷新時這幾個讀取並行執行。status 與 untracked 清單超過輸出上限（64 MiB）時會被截斷，所以超過就回傳錯誤，不把只有前段的清單當成完整的存進快取（下次全部重讀）。
 - 不是 UTF-8 的路徑（unix 的檔名可以是任意位元組）在 JS 只能顯示成把壞位元組換成 U+FFFD 的字串，把這個字串交回 git 會變成另一個名稱，可能剛好是另一個真的叫這個名字的檔案。status 記下這些路徑的顯示名稱（`StatusCache::lossy`），`repo_fn` 對 `status`、`trust` 以外的呼叫檢查參數：任何字串等於這種顯示名稱，或是它所在的資料夾（本身也含 U+FFFD），就拒絕（`path.lossy`，請使用者改用終端機）。上層的正常資料夾（例如 `src`）照常可以操作，git 會用真正的位元組。watcher 看到不是 UTF-8 的路徑時整個重讀；部分刷新的路徑碰到這種顯示名稱時也改成全量，否則只用這個名稱查 git，只會列出真的叫這個名字的檔案，另一個就從快取消失。
-- watcher（notify，300 ms debounce）只在有 view 使用 repo 時運作。呼叫和等待（`changed()`、log 的 `logWait`）都算使用；超過 2 分鐘兩者都沒有，就停掉 watcher。下一次呼叫或等待會在背景執行緒重新啟動 watcher（遞迴監看可能要走過整個工作樹，不能放在 UI 執行緒），並把整個 repo 視為已變更。watcher 啟動失敗時改成輪詢（見〈pane 之間的約定〉的 `changed()`）。watcher 把事件分成 dirty scope：`.git/index` → 全部重讀；`.git` 內其他（refs、HEAD、MERGE_HEAD…）→ 全部＋refs；`.git` 雜訊（objects、logs、hooks、lock 檔…）與被忽略的目錄略過；工作目錄檔案 → 只重讀那些路徑。
-- 部分刷新只對 dirty 路徑跑 status（`GIT_LITERAL_PATHSPECS=1`），A／D／R／C 的路徑一併重讀以免拆散 rename；路徑數過多（擁擠的目錄先折疊成目錄，超過 50 000 就全量）時退回全量。submodule 裡的檔案改成查它的 gitlink（git 把裡面的變更報在 gitlink 上）；gitlink 從 index 列出（`ls-files -s`，以 mode 的型別位元判斷，見信任資料夾的「gitlink 的判斷」），沒寫在 `.gitmodules` 的也算，與全量刷新的其他讀取並行。這份清單失敗或超過輸出上限時，不存前段（後面的 gitlink 會漏掉，裡面的變更就查不到），而是記成不完整，部分刷新一律改成全量。折疊時去掉已被目錄涵蓋的路徑，只查每個路徑的上層目錄，不做兩兩比對（watcher 在 debounce 執行緒上同步呼叫，5 萬個路徑兩兩比對要 25 億次）。重讀前從快取拿掉這些路徑底下的項目時也一樣：每個項目用自己和上層目錄去查重讀的路徑集合（10 萬個項目、5000 個路徑原本要 18 秒）。
+- watcher（notify）只在有 view 使用 repo 時運作。`open` 第一次開一個 repo 時在另一個執行緒啟動它，最多等 100 ms（`WATCH_START`，v0.1.2）：macOS 的檔案事件服務有時要幾秒才回覆註冊，pane 的第一個畫面等的就是 `open`。來不及的話 `open` 先回覆，watch 啟動後把整個 repo 視為已變更。事件收齊 300 ms 沒有新事件才交出去（`DEBOUNCE`）；前一批交出去超過 300 ms 之後才來的第一個事件只等 50 ms（`FIRST`，v0.1.2），所以在外面改一個檔案約 65 ms 後畫面就跟上，連續的寫入（checkout、build）照舊合成一批。呼叫和等待（`changed()`、log 的 `logWait`）都算使用；超過 2 分鐘兩者都沒有，就停掉 watcher（先從 repo 的 watch 鎖裡取出再放掉：放掉也要問檔案事件服務，而每個呼叫一開始都要拿這把鎖）。下一次呼叫或等待會在背景執行緒重新啟動 watcher（遞迴監看可能要走過整個工作樹，不能放在 UI 執行緒），並把整個 repo 視為已變更。watcher 啟動失敗時改成輪詢（見〈pane 之間的約定〉的 `changed()`）。watcher 把事件分成 dirty scope：`.git/index` → 全部重讀；`.git` 內其他（refs、HEAD、MERGE_HEAD…）→ 全部＋refs；`.git` 雜訊（objects、logs、hooks、lock 檔…）與被忽略的目錄略過；工作目錄檔案 → 只重讀那些路徑。
+- 部分刷新只對 dirty 路徑跑 status（`GIT_LITERAL_PATHSPECS=1`），A／D／R／C 的路徑一併重讀以免拆散 rename；路徑數過多（擁擠的目錄先折疊成目錄，超過 50 000 就全量）時退回全量。部分刷新的四個讀取（status、untracked 清單、兩個 numstat）和全量一樣並行（v0.1.2）。submodule 裡的檔案改成查它的 gitlink（git 把裡面的變更報在 gitlink 上）；gitlink 從 index 列出（`ls-files -s`，以 mode 的型別位元判斷，見信任資料夾的「gitlink 的判斷」），沒寫在 `.gitmodules` 的也算，與全量刷新的其他讀取並行。這份清單失敗或超過輸出上限時，不存前段（後面的 gitlink 會漏掉，裡面的變更就查不到），而是記成不完整，部分刷新一律改成全量。折疊時去掉已被目錄涵蓋的路徑，只查每個路徑的上層目錄，不做兩兩比對（watcher 在 debounce 執行緒上同步呼叫，5 萬個路徑兩兩比對要 25 億次）。重讀前從快取拿掉這些路徑底下的項目時也一樣：每個項目用自己和上層目錄去查重讀的路徑集合（10 萬個項目、5000 個路徑原本要 18 秒）。
 - `.git` 的操作狀態（rebase-merge／rebase-apply、MERGE_HEAD、CHERRY_PICK_HEAD、REVERT_HEAD、BISECT_LOG）直接讀檔，對應 IntelliJ 的 `GitRepositoryReader`。
 
 ### Log 與分支圖（`log.rs`、`graph.rs`、`graph_view.rs`）
@@ -208,7 +208,7 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 - **layout index**：依 IntelliJ `GraphLayoutBuilder` 的 DFS，目前分支、main／master、其他本地、遠端、tag 依序先排，重要分支固定在左側；顏色由 layout index 決定，同一條分支的顏色穩定。色票是 tokens 的 `git_graph`（8 條 lane 與 HEAD 點，深色與淺色各一組，在 hover、selected 列上也至少 3:1），log pane 傳給 `GraphCell`。
 - **可見圖與列印元素**：依篩選得到可見列；每列的列印元素（節點欄、經過的邊、長邊箭頭，LONG_EDGE 30 列）在需要時才算，放 LRU（400）。元素排序移植 IntelliJ 的 `GraphElementComparatorByLayoutIndex`。
 - **繪製**：`GraphCell` 是 HostModule 元件（GPUI `canvas`），直接讀 Rust 端的列印元素畫線段、箭頭與節點（HEAD 實心＋外框、merge 實心、一般空心）。
-- **篩選**：branch、user、date、path、text（regex、區分大小寫）、hash、range、不含 merge。branch／path／range 篩選保留分支圖（`--parents` 改寫後的 parents）；user／text／date／hash／no-merges 顯示平面清單。篩選的 `--max-count` 分段 5 → 100 → 2000 → 全部（與 IntelliJ 一樣先給一屏）。branch／hash／range 是放在選項前面的 revision，開頭是 `-` 的一律拒絕，否則 git 會把它當成選項（例如 `--output=<file>` 會把 log 寫進那個檔案）；compare 的兩端也一樣。
+- **篩選**：branch、user、date、path、text（regex、區分大小寫）、hash、range、不含 merge。branch／path／range 篩選保留分支圖（`--parents` 改寫後的 parents）；user／text／date／hash／no-merges 顯示平面清單。篩選的 `--max-count` 分段 5 → 100 → 2000 → 全部（與 IntelliJ 一樣先給一屏）。保留分支圖的篩選原本每一段都帶 `--date-order`，git 要先走完篩選後的整段歷史才印第一列（Homebrew 的一個檔案 367 ms，不帶 94 ms）。v0.1.2 起前三段不帶，照 git 找到的順序讀，由引擎自己做拓撲排序（`topo_sort`，和未篩選 log 的第一段一樣）；最後一段照舊帶 `--date-order`。branch／hash／range 是放在選項前面的 revision，開頭是 `-` 的一律拒絕，否則 git 會把它當成選項（例如 `--output=<file>` 會把 log 寫進那個檔案）；compare 的兩端也一樣。
 - **持久化 index 的接縫**：圖只依賴 `RawCommit {hash, parents, time}`，`LogSession` 的第二階段來源可以換成讀 index；篩選目前全交給 git。
 
 ### Diff 與部分暫存（`diff.rs`、`diffview.rs`）
@@ -266,6 +266,173 @@ attach 的量測（v0.1.0 E1）：`app/scripts/git-bench/run-attach-bench.sh <yu
 | 5 個檔案的 repo，`again` | 40 ms（37–54） | 19 ms（18–25） | 4 → 3 |
 
 少掉的時間對得上單一指令的量測：`messages` 84 → 60 ms（拿掉 `log -n 300` 約 16 ms、`config` 與 `log -1` 並行約 12 ms），`status` 的 `cold` 112 → 89 ms（第二批 `numstat` 約 20–26 ms 與第一批重疊）。`status` 剩下的 90 ms 是兩個走整棵樹的 `ls-files --others`（單獨 50–60 ms，並行互搶 I/O 時各約 90 ms）與信任掃描，這次都沒動（信任關卡、ignored dirs 的列舉時機不在範圍）。
+
+### `yuzora:git` 每個操作的量測（v0.1.2）
+
+目標是 Git 模式的每個動作在 250 ms 內看到結果。fetch、pull、push、clone 的時間由網路與 repo 決定，這裡量的是 Yuzora 在 git 之外加上去的部分（remote 是 `/tmp` 裡的資料夾）。
+
+工具是 `crates/yuzora-git/src/perf.rs` 的 `perf_every_operation`（ignored 測試）。它在 mod 呼叫 `yuzora:git` 函式的地方計時，從呼叫到回覆，同時記下這段時間引擎啟動的每個 git 行程（`exec::trace`）。一列是一個呼叫，或一個 pane 為一個動作做的幾個呼叫（列名有 `→`）。每次計時前自己準備狀態，計時後用 git 本身確認事情真的做了，再把 repo 還原成原樣。呼叫失敗或事情沒做成記為錯誤，不算時間。模組的每個函式都要有一列，否則測試失敗。寫入類的操作會動到 repo，所以 harness 只接受 `make-perf-repo.sh` 做出來的 clone。
+
+指令（在 `app/` 下）：
+
+```bash
+scripts/git-bench/make-perf-repo.sh <來源 repo> /tmp/<dest>
+cargo test --locked -p yuzora-git --lib --no-run --config 'profile.dev.package.yuzora-git.opt-level=2'
+ROUNDS=5 scripts/git-bench/run-ops-bench.sh /tmp/<dest>/work <輸出資料夾> before=<之前的執行檔> after=<之後的執行檔>
+```
+
+- `make-perf-repo.sh` 只讀來源（`git clone` 走 `file://`）。clone 的唯一 remote 是旁邊的 bare repo，fetch、push 都不離開 `/tmp`。工作樹是髒的：40 個修改、10 個已暫存、1 個刪除、1 個 rename、27 個 untracked，另有 3 個 stash、1 個 linked worktree、一個會衝突的分支，領先 origin 1 個 commit。
+- `cargo test --no-run` 印出 `…/deps/yuzora_git-<hash>`。target 是共用的 slot，量之前先把執行檔複製出去。
+- `run-ops-bench.sh` 每一輪輪流執行每個執行檔，所以兩邊遇到同樣的雜訊。環境是暫存的 `HOME` 與 App 從 Finder 啟動時的 `PATH`（git 是 `/usr/bin/git`）。它印出一張表：每一列的中位數、範圍、次數、git 行程數、錯誤數。`YUZORA_GIT_PERF_ONLY=<part>,…` 只跑幾個部分，`YUZORA_GIT_PERF_ALONE=1` 另外把每個讀取指令單獨跑一次（寫在 `.tsv.calls`）。
+
+資料：`/opt/homebrew` 的 clone（52,917 commits、3,405 個檔案）。機器：Apple Silicon、macOS，量測時其他 session 同時在編譯（load average 5–26）。「之前」是有 harness、還沒有任何效能修改的樹，「之後」是下面「這次改掉的」各項都在的樹。5 輪交錯，每一列兩邊各 5 次，0 個錯誤。
+
+| 操作（harness 的列名） | 之前 ms：中位數（範圍） | git 行程 | 之後 ms：中位數（範圍） | git 行程 | 超過 250 ms |
+| --- | --- | --- | --- | --- | --- |
+| open · closed repo (the watch starts) | 12 (11–18) | 1 | 12 (10–10500) | 1 |  |
+| status · first read | 50 (42–60) | 6 | 46 (41–54) | 6 |  |
+| messages | 14 (11–26) | 2 | 13 (12–14) | 2 |  |
+| open · open repo | 11 (9–18) | 1 | 10 (9–11) | 1 |  |
+| status · nothing changed | 0.5 (0.4–0.6) | 0 | 0.5 (0.4–0.6) | 0 |  |
+| status · forced | 44 (43–56) | 6 | 46 (40–49) | 6 |  |
+| attach → open, status, messages (closed repo) | 81 (64–101) | 9 | 74 (63–3663) | 9 |  |
+| attach → open, status, messages (seen repo) | 24 (20–29) | 3 | 24 (19–26) | 3 |  |
+| repos | 1.2 (0.4–2.8) | 0 | 1.2 (1.1–2.6) | 0 |  |
+| changed · after a file is edited outside (watcher) | 316 (308–322) | 0 | 66 (62–72) | 0 |  |
+| status · after one file changed | 52 (44–81) | 4 | 16 (15–17) | 4 |  |
+| changes · after one of ours | 0.0 (0.0–0.0) | 0 | 0.0 (0.0–0.0) | 0 |  |
+| tree · first call after the index was written (the folder's programs are read) | 88 (63–95) | 2 | 18 (13–23) | 1 |  |
+| commitChecks | 32 (27–65) | 3 | 15 (10–20) | 3 |  |
+| branches | 81 (63–91) | 4 | 68 (65–105) | 4 |  |
+| stashes | 18 (14–30) | 1 | 18 (15–28) | 1 |  |
+| remotes | 11 (10–13) | 1 | 13 (9–14) | 1 |  |
+| worktrees | 11 (10–14) | 1 | 14 (9–16) | 1 |  |
+| submodules | 105 (82–136) | 1 | 94 (78–124) | 1 |  |
+| config | 121 (91–171) | 10 | 113 (87–143) | 10 |  |
+| pushPreview | 75 (62–94) | 6 | 76 (60–95) | 6 |  |
+| compare | 75 (50–92) | 4 | 57 (49–85) | 4 |  |
+| tree | 12 (10–34) | 1 | 15 (10–17) | 1 |  |
+| fileAt | 14 (11–20) | 1 | 13 (10–23) | 1 |  |
+| blame · work tree file | 394 (321–470) | 1 | 368 (313–704) | 1 | 是 |
+| blame · at HEAD | 362 (322–395) | 1 | 334 (312–363) | 1 | 是 |
+| blame · at HEAD again | 6 (6–10) | 0 | 6.0 (5.7–6.3) | 0 |  |
+| rebaseTodo | 45 (33–68) | 3 | 38 (32–45) | 3 |  |
+| patchCreate · one file | 14 (12–19) | 1 | 13 (12–16) | 1 |  |
+| patchSave | 13 (11–13) | 1 | 13 (11–16) | 1 |  |
+| patchApply · check only | 11 (9–15) | 1 | 10 (9–13) | 1 |  |
+| patchApply · to the work tree | 25 (19–45) | 2 | 19 (19–27) | 2 |  |
+| settings | 0.0 (0.0–0.0) | 0 | 0.0 (0.0–0.0) | 0 |  |
+| setSettings | 0.6 (0.3–1.6) | 0 | 0.9 (0.3–1.0) | 0 |  |
+| checkPattern | 0.5 (0.3–0.5) | 0 | 0.3 (0.2–0.3) | 0 |  |
+| version | 0.0 (0.0–0.0) | 0 | 0.0 (0.0–0.0) | 0 |  |
+| cancel | 0.0 (0.0–0.0) | 0 | 0.0 (0.0–0.0) | 0 |  |
+| diff → diffOpen, diffView (unstaged file) | 22 (20–49) | 3 | 21 (20–39) | 3 |  |
+| diff → diffOpen, diffView (staged file) | 24 (20–46) | 4 | 21 (20–37) | 4 |  |
+| diff → diffOpen, diffView (a commit's file) | 13 (11–25) | 3 | 12 (12–17) | 3 |  |
+| diffOpen · unstaged file | 23 (19–34) | 3 | 21 (19–29) | 3 |  |
+| diffView | 0.3 (0.2–0.3) | 0 | 0.2 (0.2–0.3) | 0 |  |
+| diffPatch | 0.0 (0.0–0.1) | 0 | 0.0 (0.0–0.0) | 0 |  |
+| diffText | 0.0 (0.0–0.0) | 0 | 0.0 (0.0–0.0) | 0 |  |
+| diffStage · one hunk | 35 (29–39) | 3 | 32 (29–41) | 3 |  |
+| diffUnstage · one hunk | 91 (85–157) | 4 | 39 (35–45) | 3 |  |
+| diffDiscard · one hunk | 55 (47–96) | 1 | 1.3 (1.2–1.5) | 0 |  |
+| log → logOpen to the first 40 rows | 67 (50–88) | 4 | 60 (48–64) | 4 |  |
+| log · the whole graph (behind the first screen) | 511 (394–575) | 1 | 466 (402–484) | 1 | 是 |
+| log → 40 rows far down | 16 (13–27) | 1 | 15 (13–18) | 1 |  |
+| logFind | 11 (6–11) | 0 | 5.9 (5.8–5.9) | 0 |  |
+| logInfo | 0.0 (0.0–0.0) | 0 | 0.0 (0.0–0.0) | 0 |  |
+| logRows · 40 loaded rows | 0.3 (0.3–0.3) | 0 | 0.3 (0.3–0.3) | 0 |  |
+| log → logRefresh to the first 40 rows | 0.3 (0.3–0.3) | 0 | 0.3 (0.3–0.4) | 0 |  |
+| logClose | 1.3 (1.1–2.2) | 0 | 1.3 (1.0–2.4) | 0 |  |
+| log → a file's history, first rows | 443 (357–471) | 4 | 129 (104–156) | 4 |  |
+| commitDetails | 36 (29–53) | 3 | 42 (30–43) | 3 |  |
+| commitDetails · again | 0.2 (0.2–0.4) | 0 | 0.2 (0.2–0.2) | 0 |  |
+| stage · one file | 16 (13–23) | 1 | 17 (13–21) | 1 |  |
+| stage · one file → status after it | 137 (89–143) | 5 | 17 (14–27) | 4 |  |
+| unstage · one file | 108 (79–132) | 3 | 43 (29–138) | 2 |  |
+| unstage · one file → status after it | 117 (95–172) | 5 | 21 (15–42) | 4 |  |
+| stage · everything | 102 (84–130) | 2 | 58 (38–95) | 1 |  |
+| stage · everything → status after it | 97 (86–118) | 7 | 44 (39–71) | 6 |  |
+| unstage · everything | 85 (77–123) | 3 | 36 (31–80) | 2 |  |
+| unstage · everything → status after it | 103 (94–136) | 7 | 46 (41–68) | 6 |  |
+| discard · a changed file | 73 (63–132) | 2 | 18 (16–26) | 1 |  |
+| discard · a changed file → status after it | 110 (93–153) | 5 | 17 (14–28) | 4 |  |
+| discard · an untracked file | 69 (59–78) | 2 | 14 (13–30) | 1 |  |
+| commit → commitChecks, commit, status, messages | 290 (267–614) | 16 | 133 (100–212) | 13 |  |
+| commit | 93 (89–223) | 3 | 53 (38–132) | 2 |  |
+| commit → status after it | 98 (92–188) | 7 | 45 (40–63) | 6 |  |
+| commit · amend | 93 (87–197) | 3 | 48 (35–87) | 2 |  |
+| undoCommit | 85 (80–147) | 4 | 38 (34–76) | 3 |  |
+| undoCommit → status after it | 94 (91–219) | 7 | 47 (40–71) | 6 |  |
+| reset · mixed, to HEAD | 74 (69–163) | 2 | 25 (21–33) | 1 |  |
+| branchCreate | 70 (61–178) | 2 | 15 (13–46) | 1 |  |
+| branchRename | 14 (12–25) | 1 | 15 (13–32) | 1 |  |
+| branchTrack | 67 (59–163) | 2 | 84 (62–163) | 2 |  |
+| branchDelete | 65 (59–155) | 2 | 75 (57–112) | 2 |  |
+| new branch → branchCreate with checkout, status | 183 (153–378) | 9 | 188 (152–229) | 9 |  |
+| checkout · a branch at the same commit | 92 (79–206) | 3 | 88 (79–123) | 3 |  |
+| checkout · a branch at the same commit → status after it | 107 (91–191) | 7 | 106 (89–142) | 7 |  |
+| checkout · a branch 51 commits away | 667 (498–763) | 9 | 715 (587–828) | 9 | 是 |
+| checkout · a branch 51 commits away → status after it | 132 (94–133) | 7 | 126 (118–149) | 7 |  |
+| tagCreate | 68 (65–97) | 2 | 82 (61–87) | 2 |  |
+| tagPush | 177 (172–194) | 2 | 192 (148–200) | 2 |  |
+| tagDelete · in origin | 60 (55–71) | 2 | 65 (52–70) | 2 |  |
+| tagDelete | 11 (10–18) | 1 | 12 (10–16) | 1 |  |
+| stashPush · everything, untracked too | 168 (144–190) | 1 | 182 (140–212) | 1 |  |
+| stashPush · everything, untracked too → status after it | 102 (85–118) | 7 | 41 (37–64) | 6 |  |
+| stashAction · pop | 208 (171–219) | 2 | 154 (126–160) | 1 |  |
+| stashAction · pop → status after it | 110 (89–122) | 7 | 53 (42–60) | 6 |  |
+| remoteEdit · add | 70 (58–77) | 2 | 13 (11–18) | 1 |  |
+| remoteEdit · remove | 67 (57–82) | 2 | 76 (59–99) | 2 |  |
+| setConfig | 65 (56–75) | 2 | 71 (57–95) | 2 |  |
+| worktreeAction · lock | 65 (58–82) | 2 | 74 (57–78) | 2 |  |
+| worktreeAction · unlock | 65 (55–80) | 2 | 76 (57–92) | 2 |  |
+| submoduleUpdate · no submodule | 159 (133–182) | 3 | 180 (139–209) | 3 |  |
+| fetch · nothing new | 118 (106–142) | 3 | 143 (106–165) | 3 |  |
+| pull · nothing new | 126 (112–163) | 3 | 147 (113–169) | 3 |  |
+| push · one commit | 244 (202–270) | 9 | 232 (183–275) | 7 |  |
+| merge · a branch 51 commits apart | 118 (100–318) | 2 | 112 (95–162) | 2 |  |
+| merge · a branch 51 commits apart → status after it | 105 (84–183) | 7 | 43 (36–53) | 6 |  |
+| rebase · one commit onto 51 | 109 (105–237) | 2 | 63 (53–79) | 1 |  |
+| cherryPick · one commit | 92 (76–149) | 2 | 98 (76–112) | 2 |  |
+| revert · one commit | 85 (73–121) | 2 | 26 (26–43) | 1 |  |
+| rebaseInteractive · the last commit reworded | 146 (127–219) | 2 | 135 (125–199) | 2 |  |
+| rewordInMemory | 155 (149–240) | 11 | 155 (144–236) | 11 |  |
+| status · in a merge with a conflict | 88 (87–126) | 7 | 43 (40–59) | 6 |  |
+| conflictOpen | 62 (59–93) | 6 | 68 (62–109) | 6 |  |
+| conflictResolve | 22 (21–33) | 2 | 24 (23–36) | 2 |  |
+| sequencer · abort a merge | 65 (62–76) | 2 | 18 (17–26) | 1 |  |
+| conflictAccept · theirs | 98 (95–206) | 5 | 58 (52–97) | 4 |  |
+| sequencer · continue a merge | 97 (90–170) | 2 | 54 (44–80) | 1 |  |
+| trust | 9 (7–33) | 0 | 11 (6–15) | 0 |  |
+| status · forced, trusted folder | 48 (44–74) | 6 | 47 (44–68) | 6 |  |
+
+**還超過 250 ms 的四列都是 git 自己的時間**（把引擎用的同一個指令單獨執行）：
+
+- blame（兩列，各 1 個行程）：`git blame -w` 單獨執行 320 ms（314–453，7 次），不帶 `-w` 是 261 ms。`--incremental` 的第一筆在 16.5 ms 就出來，所以要更快只能讓 pane 先顯示檔案內容、blame 逐段補上，這次沒做。同一個檔案再開一次是 6 ms（快取）。
+- 整張圖（1 個行程）：讀所有 ref 的 hash、parents、時間的 `git log --date-order`，單獨執行 431 ms（429–484，7 次）。它在首屏之後才載入，首屏是 60 ms。
+- 髒工作樹 checkout 到 51 個 commit 外的分支（9 個行程）：要 `stash push`、`switch`、`stash pop`，三個指令單獨執行是 253＋111＋264 ms，合計 600 ms（551–607，5 次）。checkout 到同一個 commit 上的分支是 88 ms。
+
+**這次改掉的**（每一項是一個 commit）：
+
+| 修改 | 量到的列 | 之前 → 之後 |
+| --- | --- | --- |
+| 信任掃描的答案在只有 index 變動時不重掃（見〈信任資料夾〉） | 寫入 index 之後的每個呼叫少一次掃描（約 50 ms）：unstage 一個檔案、discard、commit、revert、`tree` | 108 → 43、73 → 18、93 → 53、85 → 26、88 → 18 |
+| 同上，加上下面兩項 | commit（檢查、commit、status、messages） | 290（267–614）→ 133（100–212），16 → 13 個行程 |
+| 部分刷新的四個讀取並行 | 一個檔案改變後的 status；stage 一個檔案後的 status | 52 → 16；137 → 17 |
+| `commitChecks` 讀身分與行尾設定時和 status 並行 | `commitChecks` | 32 → 15 |
+| 篩選的 log 前三段不帶 `--date-order` | 一個檔案的歷史，前幾列 | 443（357–471）→ 129（104–156） |
+| watcher 在安靜之後的第一個事件只等 50 ms | 在外面改一個檔案後的 `changed` | 316（308–322）→ 66（62–72） |
+| push 只讀選項沒指定的部分，側欄的直接 push 不再自己先讀一次預覽 | push 一個 commit | 9 → 7 個行程；時間見下 |
+
+push 那一列在這張表是 244（202–270）→ 232（183–275），差距小於範圍。另外只跑這一部分 12 輪（load 18–29）：307（222–524）→ 260（208–443），12 輪裡 10 輪較快，配對差的中位數 54 ms；扣掉 `git push` 本身（140 與 129 ms）是 170（127–325）→ 127（104–275）。
+
+**讀表時要知道的兩件事**：
+
+- 信任掃描（`git yuzora-trust-scan`，50–80 ms）在 HEAD、refs、config 這類檔案變動後的第一個呼叫會重跑一次，檔案比 3 秒新時每個呼叫都跑。harness 在每次寫入後等超過 3 秒才計時下一列，所以前一列動過這些檔案的列（`branchTrack`、`branchDelete`、`tagCreate`、`setConfig`、`remoteEdit · remove`、`worktreeAction`、`cherryPick`、checkout、fetch、pull、push、`submoduleUpdate`）各含一次掃描（行程數裡的 1 個），也就是停一下再按的人會付的時間。兩邊都含，不影響比較。只動 index 的寫入之後已經沒有這一次。
+- `open` 與 attach 的範圍裡各有一次很長的（10.5 秒、3.7 秒，同一個行程，git 本身只有 17 與 82 ms）。原因在 macOS 的檔案事件服務：`open` 原本等 watch 啟動完才回覆，`sample` 看到那段時間停在 `watch::start` → `FSEventStreamStart` → `register_with_server`，同一個行程的三次 open 各等 1.4–3.2 秒。平常這個註冊不到 1 ms；從等待時間的間隔看，是別的行程的註冊排在前面時才慢（推論）。能重現的情況是旁邊有一個剛編好的 `cargo test -p yuzora-git` 在啟動它的幾十個 watch（留在 target 資料夾原地執行的測試執行檔，每個註冊要幾秒，同一個檔案複製到別處執行就不會）。這張表之後的兩項修改處理它，表裡的「之後」還沒有它們：
+  - `open` 把 watch 交給另一個執行緒啟動，最多等 100 ms（`WATCH_START`）。來得及就和以前一樣；來不及就先回覆，watch 啟動後把整個 repo 視為已變更（和閒置後重新啟動 watcher 的作法相同）。旁邊跑著剛編好的測試時，兩邊輪流各 12 次：`open` 超過 250 ms 的由 4 次（963、1781、4022、4386 ms）變成 0 次（最多 125 ms），attach 由 2 次（1133、1268 ms）變成 0 次（最多 242 ms）。旁邊沒有東西時各 32 次，`open` 是 14.0（10.7–19.9）與 14.9（9.7–23.4）ms，行程數相同。
+  - 閒置 2 分鐘放掉 watch 時，先從鎖裡取出再放。放掉 watch 也要問同一個服務（取樣到每次 674–1052 ms），原本是握著 repo 的 watch 鎖做的，而每個呼叫一開始都要拿這把鎖。這一項只有單元測試的數字（呼叫原本等 1.497 秒），App 裡沒有量到。
 
 ## A1–A12 完成度
 
