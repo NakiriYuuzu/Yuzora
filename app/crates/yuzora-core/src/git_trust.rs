@@ -2897,6 +2897,17 @@ mod tests {
         std::fs::write(&index, &bytes[..bytes.len() - 1]).unwrap();
         assert_eq!(scan(k, &top, &kernel_keeps_ctime), 1, "an index cut short");
         std::fs::remove_dir_all(&dir).unwrap();
+        // An index git won't read: an extension it must understand (a name
+        // not in capitals) and doesn't. The scan asks git, whose read fails.
+        let k = "kept-index-unknown";
+        let (dir, top, _git) = kept_repo(k);
+        let index = Path::new(&top).join(".git/index");
+        let bytes = std::fs::read(&index).unwrap();
+        let body = [&bytes[..bytes.len() - 20], b"abcd\0\0\0\x01x".as_slice()].concat();
+        std::fs::write(&index, [&body[..], &sha1(&body)].concat()).unwrap();
+        assert!(!std::process::Command::new("git").args(["-C", &top, "ls-files"]).output().unwrap().status.success(), "git read the index, so this test proves nothing");
+        assert_eq!(scan(k, &top, &kernel_keeps_ctime), 1, "an index with an extension git doesn't understand");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -2970,6 +2981,16 @@ mod tests {
         // 2 bytes early, the entry would end before `ZZZZ`, an extension up to
         // the checksum.
         assert_eq!(index_stands_alone(&entry(&[0x40, 1], b"\0\0ZZZZ\0\0\0\x09"), 20), Some(false), "extended flags");
+        // What git won't read doesn't read here either: an extension it must
+        // understand (a name not in capitals) and doesn't, an extended flag
+        // other than its two (intent to add, skip worktree).
+        assert_eq!(index_stands_alone(&with(b"abcd"), 20), None, "an extension git must understand and doesn't");
+        assert_eq!(index_stands_alone(&with(b"\0bcd"), 20), None);
+        assert_eq!(index_stands_alone(&with(b"ZZZZ"), 20), Some(true), "an extension git may skip");
+        assert_eq!(index_stands_alone(&entry(&[0x40, 1], b"\x60\0ZZZZ\0\0\0\x09"), 20), Some(false), "git's own extended flags");
+        for unknown in [[0x80u8, 0], [0x10, 0], [0, 1]] {
+            assert_eq!(index_stands_alone(&entry(&[0x40, 1], &[&unknown[..], b"ZZZZ\0\0\0\x09"].concat()), 20), None, "an extended flag git doesn't know");
+        }
         // Version 4: `ab` after `a` keeps the `a` (drops 0), one NUL after each.
         let v4 = [b"DIRC\0\0\0\x04\0\0\0\x02".as_slice(), &[0; 60], &[0, 1, 0], b"a\0", &[0; 60], &[0, 2, 0], b"b\0", b"link\0\0\0\x01x", &[0; 20]].concat();
         assert_eq!(index_stands_alone(&v4, 20), Some(false));
