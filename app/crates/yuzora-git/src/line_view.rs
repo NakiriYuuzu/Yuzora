@@ -443,4 +443,29 @@ mod tests {
         assert_eq!(red.palette.style("keyword").and_then(|s| s.color), parse_hex("#ff0000"));
         assert_eq!(red.removed, parse_hex("#ff000055").unwrap());
     }
+
+    /// A line is drawn as one text: its tabs four spaces, each span in the look's colour for its name, the rest in the rows'.
+    #[test]
+    fn a_line_is_one_text_its_spans_in_the_looks_colours() {
+        let red = serde_json::json!({"syntax": {"keyword": "#ff0000", "number": "#00ff00"}});
+        let text: Arc<str> = "\tlet a = 1; ".into();
+        let line = DiffLine {
+            tabs: text.match_indices('\t').map(|(at, _)| at).collect(),
+            text,
+            key: String::new(),
+            right: false,
+            line: 0,
+            spans: vec![(1..4, "keyword"), (9..10, "number"), (11..40, "keyword")],
+            look: look_of(Some(look(&red))),
+            marks: Vec::new(),
+            sel: None,
+        };
+        let base = TextStyle::default();
+        let (drawn, runs) = line.runs(&base);
+        assert_eq!(&*drawn, "    let a = 1; ");
+        let (lengths, colors): (Vec<usize>, Vec<Hsla>) = runs.iter().map(|r| (r.len, r.color)).unzip();
+        assert_eq!(lengths, [4, 3, 5, 1, 1, 1], "the tab, `let`, ` a = `, `1`, `;`, the space; a span past the line's end clipped to it");
+        let (k, n) = (parse_hex("#ff0000").unwrap(), parse_hex("#00ff00").unwrap());
+        assert_eq!(colors, [base.color, k, base.color, n, base.color, k]);
+    }
 }
