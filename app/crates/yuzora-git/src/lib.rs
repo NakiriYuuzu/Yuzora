@@ -97,8 +97,8 @@ export function diffOpen(repo: string, spec: { path: string; orig?: string | nul
 /** The rows of a loaded diff: layout side | unified, context lines (-1 all), whitespace none | trim | all. */
 export function diffView(id: number, options?: { layout?: string; context?: number; whitespace?: string }): Promise<any>;
 /** Stages whole hunks, or lines of hunks ({hunk: {del: [line], add: [line]}}). */
-/** The lines of a loaded diff named by runs `[side, start, end]` (side "l" or "r", lines `start` to `end` of it, 0-based, half open), as the file has them: only the line ends dropped, runs and lines joined by "\n". */
-export function diffText(id: number, runs: ["l" | "r", number, number][]): string;
+/** The lines of a loaded diff named by runs `[side, start, end]` (side "l" or "r", lines `start` to `end` of it, 0-based, half open), as the file has them: only the line ends dropped, runs and lines joined by "\n". `cut` [from, to]: of the first line only what is from `from` on, of the last only what is before `to` (byte offsets of the line as the rows have it). */
+export function diffText(id: number, runs: ["l" | "r", number, number][], cut?: [number, number]): string;
 /** One line of a loaded diff, its code coloured: props {text (the line as the file has it), diff, side "l" | "r", line (0-based), look (diffLook), marks?: [from, to][], sel?: [from, to]} (byte offsets; sel from below 0: from before the line, to past it: past its end). */
 export const DiffLine: { new(id: string, props: Record<string, unknown>): import("gpui-kit").NativeElement };
 /** The number DiffLine knows a look by: the theme's colours for code (by semantic name, as the editor's `syntax`), for removed and added text, and for the selection (#rrggbb or #rrggbbaa). */
@@ -312,6 +312,16 @@ fn runs(v: &Value) -> GitResult<Vec<(diffview::Side, usize, usize)>> {
         .collect()
 }
 
+/// Where a selection of characters begins in its first line and ends in its last, `[from, to]`: whole lines when it is
+/// left out (a place below 0 is the line's start, one past its end the end).
+fn cut(v: &Value) -> (usize, usize) {
+    let at = |v: &Value, or: usize| v.as_f64().map_or(or, |n| if n <= 0.0 { 0 } else { n.min(usize::MAX as f64) as usize });
+    match v.as_array() {
+        Some(c) if c.len() == 2 => (at(&c[0], 0), at(&c[1], usize::MAX)),
+        _ => (0, usize::MAX),
+    }
+}
+
 fn diff_fn(m: HostModule, name: &'static str, job: fn(&diffview::DiffSession, &diffview::Selection) -> GitResult<()>) -> HostModule {
     m.async_function(name, move |a| {
         let s = diffview::get(a.integer(0)? as u64).map_err(err)?;
@@ -425,7 +435,7 @@ pub fn host_module() -> HostModule {
     });
     m = m.function("diffText", |a| {
         let d = diffview::get(a.integer(0)? as u64).map_err(err)?;
-        Ok(HostValue::Str(d.lines_text(&runs(&arg(a, 1)).map_err(err)?)))
+        Ok(HostValue::Str(d.lines_text(&runs(&arg(a, 1)).map_err(err)?, cut(&arg(a, 2)))))
     });
     m = line_view::register(m);
     m = m.async_function("diffPatch", |a| {
@@ -652,6 +662,9 @@ mod tests {
         let id = HostValue::Number(d.id as f64);
         let text = |runs: Value| m.call("diffText", &HostArguments::new([id.clone(), to_host(&runs)]));
         assert_eq!(text(json!([["l", 0, 1], ["r", 1, 2]])).unwrap(), HostValue::Str("a\n\tB".into()), "runs of either side, in order");
+        let cut = |runs: Value, cut: Value| m.call("diffText", &HostArguments::new([id.clone(), to_host(&runs), to_host(&cut)]));
+        assert_eq!(cut(json!([["r", 0, 2]]), json!([1, 1])).unwrap(), HostValue::Str("\n\t".into()), "from after `a` to after the tab");
+        assert_eq!(cut(json!([["r", 1, 2]]), json!([-1, 1073741824])).unwrap(), HostValue::Str("\tB".into()), "from before the line to past its end: the line");
         for bad in [json!([["x", 0, 1]]), json!([["l", 0]]), json!([["l", "0", 1]]), json!("l"), json!([["l", -1, 1]])] {
             assert!(text(bad.clone()).is_err(), "{bad} is not a run");
         }

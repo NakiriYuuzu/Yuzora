@@ -6,6 +6,7 @@
 //! has that place: what is drawn, what a mark covers and where a press lands are the same text.
 //! A press is told back as a place in the line ([`hit`]) by the shaped text the last frame drew.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -137,23 +138,24 @@ struct Hits {
 
 const KEPT: usize = 4096;
 
-fn hits() -> &'static Mutex<Hits> {
-    static HITS: OnceLock<Mutex<Hits>> = OnceLock::new();
-    HITS.get_or_init(Default::default)
+thread_local! {
+    // Windows are drawn, and their scripts run, on the thread that drew them: a press is answered there. Tests run
+    // windows side by side, each on its own thread, with the same diff ids.
+    static HITS: RefCell<Hits> = RefCell::default();
 }
 
 fn remember(key: Key, drawn: Drawn) {
-    let mut h = hits().lock().unwrap();
-    if h.now.len() >= KEPT {
-        h.then = std::mem::take(&mut h.now);
-    }
-    h.now.insert(key, drawn);
+    HITS.with_borrow_mut(|h| {
+        if h.now.len() >= KEPT {
+            h.then = std::mem::take(&mut h.now);
+        }
+        h.now.insert(key, drawn);
+    });
 }
 
 fn drawn(diff: &str, right: bool, line: usize) -> Option<Drawn> {
-    let h = hits().lock().unwrap();
     let key = (diff.to_owned(), right, line);
-    h.now.get(&key).or_else(|| h.then.get(&key)).cloned()
+    HITS.with_borrow(|h| h.now.get(&key).or_else(|| h.then.get(&key)).cloned())
 }
 
 /// The place of line `line` (0-based) of a side of a diff that a press at `x` (window pixels) lands on, by the

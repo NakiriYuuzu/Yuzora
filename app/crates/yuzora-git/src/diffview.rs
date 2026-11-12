@@ -573,11 +573,14 @@ impl DiffSession {
         (diff::lines(self.left.as_deref().unwrap_or_default()), diff::lines(self.right.as_deref().unwrap_or_default()))
     }
 
-    /// The lines the pane's selection covers, as the file has them: each run is lines
+    /// The text the pane's selection covers, as the file has it: each run is lines
     /// `start..end` (0-based) of one side, taken in the order given and joined by `\n`. A line
     /// keeps its tabs, spaces and characters, and loses only its line end; where a run runs past
-    /// the side it stops at the side's last line. Nothing for a diff that shows no lines.
-    pub fn lines_text(&self, runs: &[(Side, usize, usize)]) -> String {
+    /// the side it stops at the side's last line. `cut` is where the selection begins in the first
+    /// line and ends in the last (byte offsets of the line as the rows have it, UTF-8 (lossy), on a
+    /// character's boundary or the one before; past the line's end, all of it): `(0, usize::MAX)` is
+    /// whole lines. Nothing for a diff that shows no lines.
+    pub fn lines_text(&self, runs: &[(Side, usize, usize)], cut: (usize, usize)) -> String {
         if self.binary || self.too_large {
             return String::new();
         }
@@ -589,6 +592,12 @@ impl DiffSession {
             for line in lines.get(start..end).unwrap_or_default() {
                 out.push(String::from_utf8_lossy(diff::strip_eol(line)).into_owned());
             }
+        }
+        if let Some(last) = out.last_mut() {
+            last.truncate(last.floor_char_boundary(cut.1.min(last.len())));
+        }
+        if let Some(first) = out.first_mut() {
+            first.drain(..first.floor_char_boundary(cut.0.min(first.len())));
         }
         out.join("\n")
     }
@@ -1287,29 +1296,48 @@ exec 'REAL' "$@"
         let text = "\tindent with a tab\n  trailing spaces  \n\n\u{6F22}\u{5B57}\u{FF21}\u{1F600}\ncrlf line\r\nlast line, no newline";
         s.write("f.txt", text);
         let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Unstaged).unwrap();
-        let right = |from, to| d.lines_text(&[(Side::Right, from, to)]);
+        let right = |from, to| d.lines_text(&[(Side::Right, from, to)], WHOLE);
         assert_eq!(right(0, 2), "\tindent with a tab\n  trailing spaces  ", "tab and trailing spaces kept");
         assert_eq!(right(1, 3), "  trailing spaces  \n", "an empty line is a line");
         assert_eq!(right(3, 4), "\u{6F22}\u{5B57}\u{FF21}\u{1F600}", "wide characters kept");
         assert_eq!(right(4, 5), "crlf line", "only the line end goes, the carriage return with it");
         assert_eq!(right(5, 6), "last line, no newline", "a last line with no newline gets none");
-        assert_eq!(d.lines_text(&[(Side::Left, 0, 1)]), "keep", "the left side is the index's text");
-        assert_eq!(d.lines_text(&[(Side::Right, 5, 6), (Side::Left, 0, 1)]), "last line, no newline\nkeep", "runs in the order given, either side");
+        assert_eq!(d.lines_text(&[(Side::Left, 0, 1)], WHOLE), "keep", "the left side is the index's text");
+        assert_eq!(d.lines_text(&[(Side::Right, 5, 6), (Side::Left, 0, 1)], WHOLE), "last line, no newline\nkeep", "runs in the order given, either side");
         assert_eq!(right(5, 99), "last line, no newline", "a run past the end stops at the last line");
         assert_eq!((right(99, 100), right(3, 3), right(4, 2)), (String::new(), String::new(), String::new()));
-        assert_eq!(d.lines_text(&[(Side::Right, 1, 1), (Side::Right, 0, 1)]), "\tindent with a tab", "a run of no lines adds no empty line");
-        assert_eq!(d.lines_text(&[]), "");
+        assert_eq!(d.lines_text(&[(Side::Right, 1, 1), (Side::Right, 0, 1)], WHOLE), "\tindent with a tab", "a run of no lines adds no empty line");
+        assert_eq!(d.lines_text(&[], WHOLE), "");
 
         s.commit("g.txt", "a\n", "g");
         std::fs::write(std::path::Path::new(s.root()).join("g.txt"), b"a\xffb\nsecond\n").unwrap();
         let g = DiffSession::load(s.repo.clone(), "g.txt".into(), None, Mode::Unstaged).unwrap();
-        assert_eq!(g.lines_text(&[(Side::Right, 0, 2)]), "a\u{FFFD}b\nsecond", "a byte that is not UTF-8 shows as the replacement character");
+        assert_eq!(g.lines_text(&[(Side::Right, 0, 2)], WHOLE), "a\u{FFFD}b\nsecond", "a byte that is not UTF-8 shows as the replacement character");
 
         s.write("bin.dat", "a\0b\n");
         let b = DiffSession::load(s.repo.clone(), "bin.dat".into(), None, Mode::Unstaged).unwrap();
-        assert_eq!(b.lines_text(&[(Side::Right, 0, 1)]), "", "a binary file shows no lines");
+        assert_eq!(b.lines_text(&[(Side::Right, 0, 1)], WHOLE), "", "a binary file shows no lines");
     }
 
+    /// Whole lines: from each line's start to past its end.
+    const WHOLE: (usize, usize) = (0, usize::MAX);
+
+    /// A selection of characters copies from where it begins in its first line to where it ends in its last, as the file
+    /// has them: the tab a tab, a wide character whole, the lines between whole.
+    #[test]
+    fn a_selection_of_characters_copies_from_its_first_place_to_its_last() {
+        let s = scratch();
+        s.commit("f.txt", "keep\n", "base");
+        s.write("f.txt", "\tlet a = 1;\n\u{6F22}\u{5B57} b\nlast\n");
+        let d = DiffSession::load(s.repo.clone(), "f.txt".into(), None, Mode::Unstaged).unwrap();
+        let run = [(Side::Right, 0, 3)];
+        assert_eq!(d.lines_text(&run, (1, 2)), "let a = 1;\n\u{6F22}\u{5B57} b\nla", "after the tab, to two bytes into the last line");
+        assert_eq!(d.lines_text(&run, (0, 0)), "\tlet a = 1;\n\u{6F22}\u{5B57} b\n", "to the last line's start: its line end is what ends it");
+        assert_eq!(d.lines_text(&[(Side::Right, 1, 2)], (3, 6)), "\u{5B57}", "one line, from one character to the next");
+        assert_eq!(d.lines_text(&[(Side::Right, 1, 2)], (4, 6)), "\u{5B57}", "a place inside a character is the one before it");
+        assert_eq!(d.lines_text(&[(Side::Right, 1, 2)], (5, 2)), "", "nothing between a place and one before it");
+        assert_eq!(d.lines_text(&[(Side::Right, 0, 1), (Side::Left, 0, 1)], (5, 2)), "a = 1;\nke", "runs of either side, cut at the first and the last");
+    }
 
     /// Two commits of `path`, and the first one's id: the patch of the second's diff applies to the first.
     fn two_texts(s: &crate::repo::testing::Scratch, path: &str, old: &str, new: &str) -> (String, String) {
