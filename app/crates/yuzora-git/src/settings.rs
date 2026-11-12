@@ -7,9 +7,23 @@ use std::path::PathBuf;
 
 pub const SECTION: &str = "git";
 
+/// Where [`keep_own_files_in`] put Yuzora's own files, if it did.
+static ELSEWHERE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Keeps Yuzora's own files in `dir` for the rest of the process (the first
+/// call decides). For the tests of a crate that runs this one's code: built
+/// as their dependency this crate is not under test, and would read and
+/// write the person's app home.
+pub fn keep_own_files_in(dir: PathBuf) {
+    let _ = ELSEWHERE.set(dir);
+}
+
 /// Yuzora's own files (settings, commit message history). Tests use a scratch
 /// folder so they never read or write the person's app home.
 pub fn own_dir() -> PathBuf {
+    if let Some(dir) = ELSEWHERE.get() {
+        return dir.clone();
+    }
     if cfg!(test) { std::env::temp_dir().join(format!("yuzora-git-tests-{}", std::process::id())) } else { yuzora_core::paths::yuzora_dir() }
 }
 

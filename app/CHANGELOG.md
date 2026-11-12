@@ -2,6 +2,22 @@
 
 <!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
 <!-- yuzora(L7): each Yuzora entry here has its Traditional Chinese twin in CHANGELOG.zh-TW.md: add a line to both. -->
+## [0.1.2] - 2026-11-13
+
+### New
+- **Git diff colors code as the editor does.** Side by side and unified, in light and dark themes. An open diff follows a theme switch.
+- **Git diff selects text by the character.** Drag from any character to any other, across lines, and Copy takes exactly that text, with its tabs kept. It used to select whole lines only. A drag that begins on the line numbers still selects whole lines. Picking lines by their numbers, the right-click menu and copying whole lines work as before.
+- Git diff, side by side: the empty half beside a line that only one side has takes that change's color, a shade lighter, as in JetBrains IDEs. It used to be gray.
+- Git diff: a change of whitespace alone, such as a tab for spaces or one more space, is marked inside the line. With Whitespace set to Trim or Ignore, the whitespace that setting ignores is not marked.
+- A file's tab shows the file's icon, the one the Files sidebar gives it, in place of its Space's badge. Tabs of terminals, agents and other tools keep the badge.
+- Git mode is faster. Staging, unstaging, discarding and committing no longer check the folder's Git settings again after each write of the index. Measured on one large repository on a Mac: a commit with its checks went from about 290 ms to about 130 ms, a file's history shows its first rows after about 130 ms where it took about 440 ms, and a change made outside Yuzora shows after about 65 ms where it took about 315 ms.
+
+### Fixed
+- With the Yuzora layout, a color theme other than Yuzora's own no longer shows a magenta line beside the sidebar, and the resource usage popover opens under those themes.
+- Git: a stash that includes untracked files takes them out of the work tree, and popping it brings them back. They used to stay where they were, so the pop refused to write over them and the stash was kept. Smart checkout stashes this way, and with an untracked file around it left a "yuzora: smart checkout of …" stash behind on every switch. "Keep index" on a stash keeps the index. It used to fail after the changes were already stashed.
+- Git: opening a repository no longer waits for seconds when macOS is slow to start watching the folder.
+- Git: the check a folder goes through before you trust it sees a submodule whose index entry has mode bits that git never writes. Such an index comes from outside git, for example from an unpacked archive.
+
 ## [0.1.1] - 2026-11-12
 
 ### New

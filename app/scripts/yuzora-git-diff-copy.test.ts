@@ -1,8 +1,8 @@
-// yuzora(v010): which lines of a Git diff a selection of rows covers (defaults/mods/yuzora-git-diff).
-// The rows are what the Rust side makes (`diffView`): a selection names rows, and the lines it covers
-// are worked out here as runs of one side's lines. The text of those lines (tabs, wide characters,
-// trailing spaces, a last line without a newline) is the Rust side's, in yuzora-git's own tests;
-// what the pane does with a click, a key and a menu is in lifecycle_tests.rs.
+// yuzora(v010): which lines of a Git diff a selection covers (defaults/mods/yuzora-git-diff).
+// The rows are what the Rust side makes (`diffView`): a selection names places in rows (a row, and a place in its
+// line), and the lines it covers are worked out here as runs of one side's lines, cut where it begins and ends. The
+// text of those lines (tabs, wide characters, trailing spaces, a last line without a newline) is the Rust side's, in
+// yuzora-git's own tests; what the pane does with a click, a drag, a key and a menu is in lifecycle_tests.rs.
 // Run: bun test scripts/yuzora-git-diff-copy.test.ts
 import { test, expect } from "bun:test";
 import { readFile } from "node:fs/promises";
@@ -10,18 +10,24 @@ import { readFile } from "node:fs/promises";
 const src = await readFile(new URL("../defaults/mods/yuzora-git-diff/main.js", import.meta.url), "utf8");
 
 type Row = Record<string, unknown>;
-type Mark = { side: "left" | "right" | "unified"; anchor: number; head: number } | null;
+type Place = { row: number; at: number };
+type Mark = { side: "left" | "right" | "unified"; anchor: Place; head: Place } | null;
 type Run = [string, number, number];
 
-const { copyRuns, touchedHunks, hunkRuns, press, covers } = (() => {
+const { copyRuns, touchedHunks, hunkRuns, covers, whole, reach, lines, cutOf, empty, EOL } = (() => {
   const body = src.replace(/^import [\s\S]*?;\n/gm, "").replace("export default class GitDiff", "class GitDiff");
-  return new Function("View", `${body}; return { copyRuns, touchedHunks, hunkRuns, press, covers };`)(class {});
+  return new Function("View", `${body}; return { copyRuns, touchedHunks, hunkRuns, covers, whole, reach, lines, cutOf, empty, EOL };`)(class {});
 })() as {
   copyRuns: (rows: Row[], mark: Mark) => Run[];
   touchedHunks: (rows: Row[], mark: Mark) => number[];
   hunkRuns: (view: { hunks: Row[] }, hunk: number) => Run[];
-  press: (mark: Mark, row: number, side: string, shift: boolean) => Mark;
   covers: (mark: Mark, row: number) => boolean;
+  whole: (row: number, side: string) => Mark;
+  reach: (mark: Mark, row: number) => Mark;
+  lines: (mark: Mark) => boolean;
+  cutOf: (rows: Row[], mark: Mark) => [number, number];
+  empty: (mark: Mark) => boolean;
+  EOL: number;
 };
 
 // Line numbers are 1-based in the rows; a run is 0-based, half open.
@@ -30,7 +36,13 @@ const changed = (h: number, l?: number, r?: number): Row => ({ k: "~", h, ...(l 
 const fold = (n: number): Row => ({ k: "fold", n });
 const gone = (h: number, l: number): Row => ({ k: "-", h, l, li: l - 1, t: "old" });
 const added = (h: number, r: number): Row => ({ k: "+", h, r, ri: r - 1, t: "new" });
-const sel = (side: "left" | "right" | "unified", anchor: number, head = anchor): Mark => ({ side, anchor, head });
+// Whole lines, from row `anchor`'s to row `head`'s (up the rows when `head` is above).
+const sel = (side: "left" | "right" | "unified", anchor: number, head = anchor): Mark => {
+  const down = head >= anchor;
+  return { side, anchor: { row: anchor, at: down ? -1 : EOL }, head: { row: head, at: down ? EOL : -1 } };
+};
+// Characters, from place `a` of row `ar` to place `h` of row `hr`.
+const chars = (side: "left" | "right" | "unified", ar: number, a: number, hr: number, h: number): Mark => ({ side, anchor: { row: ar, at: a }, head: { row: hr, at: h } });
 
 const side = [same(1, 1), changed(0, 2, 2), changed(0, 3), changed(0, undefined, 3), same(4, 4)];
 
@@ -78,6 +90,21 @@ test("no selection covers no lines, and a selection past the rows is cut at the 
   expect(copyRuns([], sel("left", 0, 3))).toEqual([]);
 });
 
+test("a selection that ends at a line's start has nothing of that line", () => {
+  const rows = [same(1, 1), same(2, 2), changed(0, 3, 3), same(4, 4)];
+  // From inside row 0's line to the start of row 2's: rows 0 and 1, and the line end before row 2.
+  const m = chars("left", 0, 2, 2, 0);
+  expect([0, 1, 2].map((i) => covers(m, i))).toEqual([true, true, false]);
+  expect(touchedHunks(rows, m)).toEqual([]);
+  // The copy still takes that line end: row 2's line, cut at its start.
+  expect(copyRuns(rows, m)).toEqual([["l", 0, 3]]);
+  expect(cutOf(rows, m)).toEqual([2, 0]);
+  // Made up the rows it is the same selection; a character into the line, the line is in it.
+  expect(touchedHunks(rows, chars("left", 2, 0, 0, 2))).toEqual([]);
+  expect(touchedHunks(rows, chars("left", 0, 2, 2, 1))).toEqual([0]);
+  expect(covers(chars("left", 0, 2, 2, 1), 2)).toBe(true);
+});
+
 test("a selection across hunks touches each hunk that has a selected line, once, in order", () => {
   const rows = [changed(0, 1, 1), same(2, 2), changed(1, 3, 3), changed(1, 4, 4), same(5, 5), changed(2, 6, 6)];
   expect(touchedHunks(rows, sel("left", 0, 5))).toEqual([0, 1, 2]);
@@ -100,12 +127,35 @@ test("a hunk's new lines are its right-hand range, none for a hunk that only del
   expect(hunkRuns(view, 2)).toEqual([]);
 });
 
-test("a press starts a selection on its row and side; with Shift it reaches there from where the selection began", () => {
-  expect(press(null, 3, "left", false)).toEqual(sel("left", 3));
-  expect(press(sel("right", 1), 4, "left", false)).toEqual(sel("left", 4));
-  expect(press(sel("right", 1), 4, "left", true)).toEqual(sel("right", 1, 4));
-  expect(press(sel("right", 1, 4), 0, "right", true)).toEqual(sel("right", 1, 0));
-  expect(press(null, 2, "unified", true)).toEqual(sel("unified", 2));
+test("a click selects its row's line whole; Shift reaches there by lines from the line the selection began on", () => {
+  expect(whole(3, "left")).toEqual(sel("left", 3));
+  expect(reach(sel("right", 1), 4)).toEqual(sel("right", 1, 4));
+  expect(reach(sel("right", 1, 4), 0)).toEqual(sel("right", 1, 0));
+  expect([sel("left", 3), sel("left", 4, 1)].map(lines)).toEqual([true, true]);
+  expect(lines(chars("left", 1, -1, 2, EOL))).toBe(true);
+  // From a line's first character (a drag): characters, though they are the same text.
+  expect(lines(chars("left", 1, 0, 2, EOL))).toBe(false);
+});
+
+test("whole lines are copied whole; characters are cut where the selection begins and where it ends", () => {
+  expect(cutOf(side, sel("left", 0, 4))).toEqual([0, EOL]);
+  expect(cutOf(side, sel("left", 4, 0))).toEqual([0, EOL]);
+  // From place 5 of row 1 to place 2 of row 4, either way: the left's lines 2 to 4.
+  for (const m of [chars("left", 1, 5, 4, 2), chars("left", 4, 2, 1, 5)]) {
+    expect([copyRuns(side, m), cutOf(side, m)]).toEqual([[["l", 1, 4]], [5, 2]]);
+  }
+  // Ending on a row with no line on its side (an added line, on the left): the last line copied goes to its end.
+  expect(cutOf(side, chars("left", 1, 5, 3, 2))).toEqual([5, EOL]);
+  // Beginning on one (a deleted line, on the right): the first line copied from its start.
+  expect(cutOf(side, chars("right", 2, 3, 4, 1))).toEqual([0, 1]);
+});
+
+test("a selection that ends where it began is of nothing; a click's line is not", () => {
+  expect(empty(chars("left", 1, 4, 1, 4))).toBe(true);
+  expect(empty(chars("left", 1, 4, 1, 5))).toBe(false);
+  expect(empty(chars("left", 1, 4, 2, 0))).toBe(false);
+  expect(empty(whole(1, "left"))).toBe(false);
+  expect(empty(null)).toBe(true);
 });
 
 test("a row is covered from the first row of the selection to the last, whichever way it was made", () => {

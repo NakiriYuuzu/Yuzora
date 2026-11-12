@@ -1,5 +1,8 @@
-//! Watching a local repo: the work tree and `.git`, debounced 300 ms
-//! (IntelliJ's `UpdateRequestsQueue`), turned into dirty scopes.
+//! Watching a local repo: the work tree and `.git`, turned into dirty
+//! scopes. A change after a quiet spell is passed on after [`FIRST`] (one
+//! save shows at once); the changes that follow it are gathered for
+//! [`DEBOUNCE`] (300 ms, IntelliJ's `UpdateRequestsQueue`), so a burst reads
+//! the status once at its start and then no more often than it did.
 //!
 //! - `index`, `HEAD`, refs, `packed-refs`, merge or rebase state, `config`:
 //!   everything is dirty and the refs moved (the log reloads);
@@ -25,17 +28,26 @@ use crate::status::{Scope, covers};
 
 /// IntelliJ's status delay.
 pub const DEBOUNCE: Duration = Duration::from_millis(300);
+/// The delay for a change with none passed on in the last [`DEBOUNCE`]:
+/// long enough for the few events of one save to arrive together.
+pub const FIRST: Duration = Duration::from_millis(50);
 const TICK: Duration = Duration::from_secs(1);
 
 /// A running watch; dropping it stops the thread.
 pub struct Watch {
     _watcher: notify::RecommendedWatcher,
     stop: Arc<AtomicBool>,
+    /// Letting it go takes this long more, as when the system's file-event
+    /// service is busy (tests).
+    #[cfg(test)]
+    pub letting_go: Duration,
 }
 
 impl Drop for Watch {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        #[cfg(test)]
+        std::thread::sleep(self.letting_go);
     }
 }
 
@@ -102,6 +114,8 @@ pub fn start(repo: &Arc<Repo>) -> bool {
     #[cfg(test)]
     starts().lock().unwrap().push((repo.id.clone(), std::thread::current().id()));
     #[cfg(test)]
+    std::thread::sleep(START_TAKES.with(|t| t.get()));
+    #[cfg(test)]
     if NO_WATCH.with(|n| n.get()) {
         return false;
     }
@@ -127,7 +141,12 @@ pub fn start(repo: &Arc<Repo>) -> bool {
     if spawned.is_err() {
         return false;
     }
-    *repo.watch.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watch { _watcher: watcher, stop });
+    *repo.watch.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watch {
+        _watcher: watcher,
+        stop,
+        #[cfg(test)]
+        letting_go: Duration::ZERO,
+    });
     true
 }
 
@@ -136,6 +155,9 @@ thread_local! {
     /// Watches started on this thread fail, as when the system has no
     /// watches left (tests).
     pub static NO_WATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Watches started on this thread take this long to start or fail, as
+    /// when the system's file-event service is busy (tests).
+    pub static START_TAKES: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
 }
 
 /// Which thread started each watch (tests).
@@ -154,6 +176,8 @@ pub fn started_on(id: &str) -> Option<std::thread::ThreadId> {
 fn run(repo: Weak<Repo>, rx: mpsc::Receiver<notify::Result<notify::Event>>, root: PathBuf, git_dirs: Vec<PathBuf>, stop: Arc<AtomicBool>) {
     let mut change = Change::default();
     let mut due: Option<Instant> = None;
+    // When changes were last passed on: the next ones within DEBOUNCE of it wait that long.
+    let mut passed: Option<Instant> = None;
     loop {
         if stop.load(Ordering::SeqCst) {
             return;
@@ -171,12 +195,12 @@ fn run(repo: Weak<Repo>, rx: mpsc::Receiver<notify::Result<notify::Event>>, root
                     classify(&mut change, p, &root, &git_dirs, &ignored);
                 }
                 if (change.all || !change.paths.is_empty()) && due.is_none() {
-                    due = Some(Instant::now() + DEBOUNCE);
+                    due = Some(Instant::now() + delay(passed));
                 }
             }
             Ok(Err(_)) => {
                 change.all = true;
-                due.get_or_insert_with(|| Instant::now() + DEBOUNCE);
+                due.get_or_insert_with(|| Instant::now() + delay(passed));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -189,6 +213,7 @@ fn run(repo: Weak<Repo>, rx: mpsc::Receiver<notify::Result<notify::Event>>, root
         }
         if due.is_some_and(|d| Instant::now() >= d) {
             due = None;
+            passed = Some(Instant::now());
             let c = std::mem::take(&mut change);
             if c.refs {
                 repo.invalidate_refs();
@@ -201,9 +226,21 @@ fn run(repo: Weak<Repo>, rx: mpsc::Receiver<notify::Result<notify::Event>>, root
     }
 }
 
+/// How long a change waits before it is passed on, given when the last ones were.
+fn delay(passed: Option<Instant>) -> Duration {
+    if passed.is_some_and(|t| t.elapsed() < DEBOUNCE) { DEBOUNCE } else { FIRST }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_after_a_quiet_spell_is_passed_on_sooner_than_one_in_a_burst() {
+        assert_eq!(delay(None), FIRST);
+        assert_eq!(delay(Some(Instant::now())), DEBOUNCE);
+        assert_eq!(delay(Instant::now().checked_sub(DEBOUNCE + Duration::from_millis(1))), FIRST);
+    }
 
     #[test]
     fn paths_sort_into_scopes() {

@@ -2,6 +2,50 @@
 
 <samp><a href="CHANGELOG.md">English</a> · 繁體中文</samp>
 
+## [0.1.2] - 2026-11-13
+
+Git diff 的程式碼有顏色了，可以逐字元選取文字，只有一側有的行與只改空白的地方也標得更清楚。Git 模式的反應變快。檔案的分頁顯示檔案自己的圖示。Yuzora 以外的顏色主題不再在側邊欄旁畫出洋紅色的線。
+
+> **升級前請先看。** macOS、Linux 與 Windows 上的 0.1.0 與 0.1.1 會自己更新到 0.1.2，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Windows 上的 beta 無法自己更新，Tauri 版（v0.0.19、0.1.0-beta.1）也不會提供 0.1.2，這兩種情況都請手動下載安裝程式。詳見下方〈安裝說明〉。
+
+### 新增
+
+- **Git diff 的程式碼照編輯器的規則上色。** 並排與合併檢視、深色與淺色主題都適用。切換主題時，開著的 diff 會跟著換色。
+- **Git diff 可以逐字元選取文字。** 從任一個字元拖到另一個字元，可以跨行，Copy 複製的就是選取的文字，tab 原樣保留。以前只能整行選取。從行號開始拖曳仍然選取整行。點行號挑行、右鍵選單與整行複製照舊。
+
+### 變更
+
+- Git diff 並排檢視：只有一側有的行，對面空白的那一半改用該變更的顏色，比變更行淡一階，和 JetBrains IDE 一樣。以前是灰色。
+- Git diff：只改空白的地方（例如 tab 換成空格、多一個空格）會在行內標出。Whitespace 設成 Trim 或 Ignore 時，該設定忽略的空白不標。
+- 檔案的分頁顯示檔案的圖示，和 Files 側欄給它的圖示相同，不再顯示 Space 的徽章。終端機、agent 與其他工具的分頁維持徽章。
+- Git 模式變快。暫存、取消暫存、捨棄與提交在每次寫入 index 之後，不再重新檢查資料夾的 Git 設定。在一台 Mac 上用一個大型 repo 量測：提交連同檢查從約 290 ms 降到約 130 ms，檔案歷史的前幾列從約 440 ms 降到約 130 ms，在 Yuzora 外面改的檔案從約 315 ms 降到約 65 ms 就顯示。
+
+### 修正
+
+- 使用 Yuzora layout 時，換成 Yuzora 以外的顏色主題，側邊欄旁不再出現洋紅色的線，資源用量 popover 也能正常打開。
+- Git：包含 untracked 檔案的 stash 會把它們從工作樹拿走，pop 時再放回來。以前檔案留在原地，pop 因為不能覆寫它們而失敗，stash 也留著。Smart checkout 用的就是這種 stash，所以只要有 untracked 檔案，每次切換分支都會留下一個「yuzora: smart checkout of …」的 stash。stash 的「Keep index」會保留 index。以前它在變更已經 stash 之後才失敗。
+- Git：macOS 啟動資料夾監看比較慢的時候，開啟 repo 不再跟著等上好幾秒。
+- Git：信任資料夾之前的檢查，現在看得到 index 項目帶有 git 自己不會寫出的 mode 位元的 submodule。這種 index 來自 git 以外，例如解開的壓縮檔。
+
+### 已知限制
+
+- Git：在大型 repo 上還有三個操作超過 250 ms，時間花在 git 本身。它們是 blame（約 330 ms）、在首屏之後載入整張分支圖（約 470 ms），以及帶著未提交的變更跨很多個 commit 切換分支（約 700 ms）。
+- Git diff：開啟非常大的檔案的 diff 會比 0.1.1 慢，因為上色要把兩側整份讀過。
+- Git diff 合併檢視：從一行第一個字元之前開始的選取，會連同該行的 − 或 + 標記一起畫上選取色。
+- 0.1.1 的已知限制仍然適用。
+
+### 安裝說明
+
+- 0.1.0 與 0.1.1 會自己更新到 0.1.2，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Yuzora 啟動 10 秒後檢查一次，之後每小時一次，下次重新啟動 Yuzora 時套用。
+- **Windows 上的 0.1.0 或 0.1.1：** 如果你是在 beta 上覆蓋安裝，之後還沒重新開機過，這次更新可能會先失敗一次：beta 版啟動的背景程式（herdr-core）還握著 Yuzora 的安裝資料夾。Settings › Updates 會說明這個原因。請重新開機，或在 Yuzora 以外的終端機執行 `hc server stop`（它會結束所有終端機與裡面執行的 agent，和重新開機的損失一樣），再重新啟動 Yuzora。
+- **Windows 上還在用 beta（0.1.0-beta.2 到 beta.4）的人：** beta 版在 Windows 上無法自動更新。它可能會顯示 `Herdr 0.1.2 is ready`，但按 Restart 不會安裝。請先完全關閉 Yuzora，再從這個 release 下載 `Yuzora-windows-x64-setup.exe`，直接執行覆蓋安裝（beta 還開著時，安裝程式可能無法取代它的檔案）。裝完請重新開機一次，原因同上一條。
+- Tauri 版（v0.0.19、0.1.0-beta.1）不會提供 0.1.2，請自行下載安裝。這是另一個 App，Tauri 版的設定與資料不會搬過來：資料庫連線、SSH 主機與設定要重新設定。Tauri 版的檔案原封不動，重新安裝 Tauri 版就能回去用。新 App 沒有 Browser、Companion 與 AgentZone，編輯器也沒有 LSP。Windows 的安裝程式會詢問是否移除舊版的全機安裝。
+- macOS App 僅支援 Apple Silicon，請下載 `Yuzora-macos-aarch64.dmg`。App 只有 ad-hoc 簽章，沒有 Apple Developer ID 簽章或公證，所以第一次開啟會被 Gatekeeper 擋下。到「系統設定 › 隱私權與安全性」按「強制打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。只對從本 repo Releases 下載的 DMG 這樣做。更新之後，macOS 可能會再詢問一次麥克風、相機或資料夾的存取權限。
+- Windows 的 `Yuzora-windows-x64-setup.exe` 是免系統管理員權限的個人安裝程式。Authenticode 尚未啟用，SmartScreen 可能出現警告，請點「其他資訊 › 仍要執行」。
+- Linux（實驗性）提供 `yuzora-0.1.2-linux-x86_64.tar.gz` 與 `yuzora-0.1.2-linux-aarch64.tar.gz`，解開其中一個後執行 `yuzora/install`。
+- 這個版本在實體 Mac 上驗收過。Windows 與 Linux 只有 CI runner 上的自動化檢查（Windows 是安裝、更新兩次與解除安裝，Linux 是執行 `install`），沒有人在實體的 Windows 或 Linux 機器上試過。
+- 需要 herdr-core 0.1.11 以上。沒有安裝時，第一次開啟的畫面會提供安裝。在其他機器上存檔需要兩邊的 herdr-core 都是 0.1.19 以上。
+
 ## [0.1.1] - 2026-11-12
 
 修正版。Git 的分支 popup 重新列出動作、分支與 tag，Pull 找得到了；設定多了 Database 頁，可以改列數上限；數量是 1 的時候大部分改用單數。0.1.1 是 Windows 上的 Yuzora 第一個自己安裝的更新。

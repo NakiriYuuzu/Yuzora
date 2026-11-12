@@ -431,8 +431,8 @@ export default class extends View {
 fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut TestAppContext) {
     let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
     let (from, to) = (
-        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify } from \"herdr\";\nimport { t, tokens, session } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, settings as gitSettings } from \"yuzora:git\";",
-        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify, session, t, tokens, open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, gitSettings } from \"fixture\";",
+        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify } from \"herdr\";\nimport { t, tokens, session } from \"yuzora:core\";\nimport { open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, DiffLine, diffLook, diffHit, settings as gitSettings } from \"yuzora:git\";",
+        "import { theme, props, shared, setShared, settings, run, panes, focused, closeOverlay, openOverlay, notify, session, t, tokens, open, changes, diffOpen, diffView, diffText, diffPatch, diffStage, diffUnstage, diffDiscard, DiffLine, diffLook, diffHit, gitSettings } from \"fixture\";",
     );
     assert_eq!(source.matches(from).count(), 1, "the diff mod no longer has: {from}");
     source = source.replacen(from, to, 1);
@@ -482,6 +482,7 @@ fn yuzora_diff_loads_again_only_for_changes_that_may_touch_its_file(cx: &mut Tes
         }
         module = module.function("t", |a| Ok(a.string(0)?.into()));
         module = module.function("session", |_| Ok("fixture-run".into()));
+        module = yuzora_git::line_view::register(module);
         let count = opened.clone();
         module = module.function("diffOpen", move |_| {
             count.set(count.get() + 1);
@@ -566,15 +567,15 @@ export default class Probed extends GitDiff {
     note("pick", side, index);
     super.toggleLine(h, side, index, cx);
   }
-  shade(th, left, side) {
-    const el = super.shade(th, left, side);
-    return this.probing ? el.id(`probe-shade-${side}`).on_size_change((s) => note("shade", side, s.width)) : el;
-  }
-
-  segments(segs, text, ...rest) {
+  // The probe row's line, in a box as wide as it that reports that width and where the pointer is over it, and a
+  // box that reports the selection over it (`shade`) when it appears.
+  text(r, side, k, look, marks, sel) {
+    const text = side === "l" ? r.lt ?? r.t : r.rt ?? r.t;
     built.n += 1 + text.length;
-    const el = super.segments(segs, text, ...rest), first = String.fromCodePoint(text.codePointAt(0));
-    return this.probing ? el.id(`probe-text-${first}`).on_size_change((s) => note("text", first, s.width)).on_mouse_move((e) => note("over", first, e.local_position.x)) : el;
+    const el = super.text(r, side, k, look, marks, sel), first = String.fromCodePoint(text.codePointAt(0));
+    if (!this.probing) return el;
+    return div().id(`probe-text-${first}`).h_full().on_size_change((s) => note("text", first, s.width)).on_mouse_move((e) => note("over", first, e.local_position.x))
+      .child(el).when(Boolean(sel), (box) => box.child(div().id(`probe-shade-${side}`).absolute().w(1).h(1).on_size_change(() => note("shade", side, sel))));
   }
   rowList(...rest) {
     return div().size_full().on_size_change((s) => note("list", s.height)).child(super.rowList(...rest));
@@ -631,7 +632,8 @@ export default class Probed extends GitDiff {
     note("work", (this.touched?.n ?? 0) - before, scanned.n - scan, built.n - made);
     note("range", this.lay?.reach ?? null);
     note("offset", this.lay?.sx ?? null, this.lay?.reach ?? null);
-    note("mark", this.mark ? [this.mark.side, this.mark.anchor, this.mark.head] : null);
+    note("mark", this.mark ? [this.mark.side, this.mark.anchor.row, this.mark.head.row] : null);
+    note("places", this.mark ? [this.mark.anchor.at, this.mark.head.at] : null);
     note("now", this.scroll ? this.scroll.offset() : null);
     root = root.on_mouse_down("left", (e, cx) => {
       if (e.position.y < 28) { if (this.view) this.relayout(cx); }
@@ -640,7 +642,7 @@ export default class Probed extends GitDiff {
     const v = this.view, pane = props().pane;
     if (v && v.rows.length && this.layout !== "unified") {
       this.probing = true;
-      const row = this.row(v.rows[0], 0, theme(), tokens().diff ?? {}, 0);
+      const row = this.row(v.rows[0], 0, theme(), tokens().diff ?? {}, this.look(theme(), tokens().diff ?? {}), 0);
       this.probing = false;
       root = root.child(div().absolute().top(300).left(0).w_full().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).child(row));
     }
@@ -674,13 +676,20 @@ struct Diff {
     left: Vec<String>,
     right: Vec<String>,
     stageable: bool,
+    /// The view of a real diff session (yuzora-git's), which the pane is given as it is, its lines copied by the session.
+    real: Option<Value>,
 }
 
 impl Diff {
     /// Rows only: a hunk when any row has one, the lines not needed.
     fn of(rows: Value) -> Self {
         let hunks = usize::from(rows.as_array().is_some_and(|r| r.iter().any(|r| r.get("h").is_some())));
-        Diff { rows, hunks: json!(vec![json!({}); hunks]), left: Vec::new(), right: Vec::new(), stageable: true }
+        Diff { rows, hunks: json!(vec![json!({}); hunks]), left: Vec::new(), right: Vec::new(), stageable: true, real: None }
+    }
+
+    /// A real session's `view`.
+    fn real(view: Value) -> Self {
+        Diff { real: Some(view), ..Diff::of(json!([])) }
     }
 
     fn files(mut self, left: &[&str], right: &[&str]) -> Self {
@@ -806,7 +815,7 @@ impl DiffPane {
     /// As [`Self::mount_with`], in a window `(wide, high)` big, the zoom set to `zoom` (see [`Self::zoomed`]).
     fn mount_at(cx: &mut TestAppContext, diff: Diff, pane: f32, (wide, high): (f32, f32), zoom: f32, shared: &Shared, props: Value) -> Self {
         use gpui::{px, size};
-        let Diff { rows, hunks, left, right, stageable } = diff;
+        let Diff { rows, hunks, left, right, stageable, real } = diff;
         cx.update(gpui_shell::init);
         let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-git-diff/main.js")).unwrap();
         let class = "export default class GitDiff extends View {";
@@ -815,7 +824,9 @@ impl DiffPane {
         let fixture = Fixture::new(&source);
         let notes = Rc::new(RefCell::new(Vec::<Value>::new()));
         let theme = json!({"background": "#101010", "foreground": "#e0e0e0", "border": "#303030", "raised": "#202020", "dim": "#808080", "muted": "#a0a0a0", "accent": "#4080ff", "selected": "#304050", "hover": "#282828", "ansi1": "#f08a8a", "ansi2": "#86d17a"});
-        let view = json!({"id": "d1", "rows": rows, "hunks": hunks, "stageable": stageable, "add": 3, "del": 0, "leftExists": true, "rightExists": true});
+        let session = real.is_some();
+        let view = real.unwrap_or_else(|| json!({"id": "d1", "rows": rows, "hunks": hunks, "stageable": stageable, "add": 3, "del": 0, "leftExists": true, "rightExists": true}));
+        let id = view["id"].clone();
         let mut herdr = HostModule::new("herdr");
         let opened_drops = ["drop", "cut_event", "cut_render", "cut_last", "cut_first", "cut_big", "stall_slice", "fail", "hold"]
             .iter()
@@ -859,7 +870,7 @@ impl DiffPane {
             Ok(HostValue::Null)
         });
         let mut git = HostModule::new("yuzora:git");
-        for (name, value) in [("open", json!({"id": "repo"})), ("diffOpen", json!({"id": "d1"})), ("settings", json!({}))] {
+        for (name, value) in [("open", json!({"id": "repo"})), ("diffOpen", json!({"id": id})), ("settings", json!({}))] {
             git = git.function(name, move |_| Ok(to_host(&value)));
         }
         let views = Rc::new(RefCell::new(std::collections::VecDeque::<Value>::new()));
@@ -869,15 +880,30 @@ impl DiffPane {
             git = git.function(name, |_| Ok(HostValue::Null));
         }
         git = git.async_function("changes", |_| Ok(std::future::pending::<gpui_shell::HostResult>()));
-        // As the Rust side answers: the lines of one side named by `[side, start, end)` runs, joined by `\n`.
+        // The lines are the real ones: drawn, measured and pressed on as the app does.
+        git = yuzora_git::line_view::register(git);
+        // As the Rust side answers: the lines of one side named by `[side, start, end)` runs, joined by `\n`, the first from
+        // where `cut` begins and the last to where it ends (whole lines without one).
         let told = notes.clone();
+        let real_git = session.then(yuzora_git::host_module);
         git = git.function("diffText", move |a| {
-            let runs = from_host(a.value(1)?);
-            told.borrow_mut().push(json!(["text", runs]));
-            let mut lines: Vec<&str> = Vec::new();
+            let (runs, cut) = (from_host(a.value(1)?), a.get(2).map(from_host).unwrap_or(Value::Null));
+            told.borrow_mut().push(json!(["text", runs, cut]));
+            if let Some(m) = &real_git {
+                return m.call("diffText", a);
+            }
+            let mut lines: Vec<String> = Vec::new();
             for run in runs.as_array().expect("runs are an array") {
                 let (side, from, to) = (run[0].as_str().unwrap(), run[1].as_u64().unwrap() as usize, run[2].as_u64().unwrap() as usize);
-                lines.extend(if side == "l" { &left } else { &right }[from..to].iter().map(String::as_str));
+                lines.extend(if side == "l" { &left } else { &right }[from..to].iter().cloned());
+            }
+            let place = |v: &Value, line: &str| v.as_f64().map_or(line.len(), |n| line.floor_char_boundary(n.max(0.) as usize));
+            if let (Some(c), false) = (cut.as_array(), lines.is_empty()) {
+                let last = lines.len() - 1;
+                let to = place(&c[1], &lines[last]);
+                lines[last].truncate(to);
+                let from = place(&c[0], &lines[0]);
+                lines[0].drain(..from);
             }
             Ok(HostValue::Str(lines.join("\n")))
         });
@@ -890,7 +916,7 @@ impl DiffPane {
         let core = HostModule::new("yuzora:core")
             .function("t", |a| Ok(a.string(0)?.into()))
             .function("session", |_| Ok("fixture-run".into()))
-            .function("tokens", |_| Ok(to_host(&json!({"diff": {"added": "#86d17a", "removed": "#f08a8a", "added_bg": "#103010", "removed_bg": "#301010"}}))));
+            .function("tokens", |_| Ok(to_host(&json!({"diff": {"added": "#86d17a", "removed": "#f08a8a", "added_bg": "#103010", "removed_bg": "#301010", "added_filler": "#0c200c", "removed_filler": "#200c0c"}}))));
         let calls = notes.clone();
         let laid = Rc::new(RefCell::new(Vec::<usize>::new()));
         let counted = laid.clone();
@@ -1053,13 +1079,13 @@ impl DiffPane {
 
     /// What the last frame painted of the unified rows: how far the lines are scrolled and how wide the rows are (their
     /// backgrounds are the widest quads there are, as wide as the box they scroll in, and start that far to the left), how
-    /// many rows are tinted (a quad the row's width less its numbers: 88px, and 2px more in the row of the current hunk,
-    /// which has a border), and how much room is left after the end of the line that ends in a highlighted word (the
-    /// window's width less where that word ends).
+    /// many rows are tinted (a quad in the selection's colour, the accent's wash), and how much room is left after the end
+    /// of the line that ends in a highlighted word (the window's width less where that word ends).
     fn unified_extent(&mut self) -> (f64, f64, usize, f64) {
         let scale = self.visual.update(|window, _| window.scale_factor());
-        // (where it starts, how wide, how far down)
-        let quads: Vec<(f64, f64, f64)> = self
+        let tinted = selection_coloured;
+        // (where it starts, how wide, how far down, whether it is the selection's)
+        let quads: Vec<(f64, f64, f64, bool)> = self
             .visual
             .update(|window, _| window.painted_quads())
             .into_iter()
@@ -1070,6 +1096,7 @@ impl DiffPane {
                     at(q.bounds.origin.x.as_f32()),
                     at(q.bounds.size.width.as_f32()),
                     at(q.bounds.origin.y.as_f32()),
+                    tinted(q.background.as_solid()),
                 )
             })
             .collect();
@@ -1079,13 +1106,10 @@ impl DiffPane {
             .filter(|q| q.1 >= widest - 0.5)
             .map(|q| q.0)
             .fold(f64::INFINITY, f64::min);
-        let tints = quads
-            .iter()
-            .filter(|q| q.1 > widest - 91. && q.1 < widest - 87.)
-            .count();
+        let tints = quads.iter().filter(|q| q.3).count();
         let word_end = quads
             .iter()
-            .filter(|q| q.2 >= COPY_HEADER && q.1 < 40.)
+            .filter(|q| q.2 >= COPY_HEADER && q.1 < 40. && !q.3)
             .map(|q| q.0 + q.1)
             .fold(f64::NEG_INFINITY, f64::max);
         (
@@ -1751,6 +1775,10 @@ fn row_y(i: usize) -> f64 {
 const TEXT_LEFT: f64 = 100.;
 /// In a 1200px pane the right side's text starts at 599.5 + 1 + 44 + 6.
 const TEXT_RIGHT: f64 = 680.;
+/// In the left side's indent, after its numbers (44) and before its text (50): the place before a line's first character.
+const TEXT_START: f64 = 47.;
+/// Inside the left side, past the end of a short line: the place after its last character.
+const PAST_LEFT: f64 = 560.;
 
 fn copy_pane(cx: &mut TestAppContext, diff: Diff, props: Value) -> DiffPane {
     let mut props = props.as_object().cloned().unwrap_or_default();
@@ -1763,7 +1791,7 @@ fn copy_pane(cx: &mut TestAppContext, diff: Diff, props: Value) -> DiffPane {
 fn side_diff() -> Diff {
     let rows = json!([
         {"k": "=", "l": 1, "r": 1, "t": "fn main() {"},
-        {"k": "~", "h": 0, "l": 2, "li": 1, "lt": "    let a = 1;", "r": 2, "ri": 1, "rt": "    let a = 10; // \u{6F22}\u{5B57}"},
+        {"k": "~", "h": 0, "l": 2, "li": 1, "lt": "\tlet a = 1;", "r": 2, "ri": 1, "rt": "\tlet a = 10; // \u{6F22}\u{5B57}"},
         {"k": "~", "h": 0, "l": 3, "li": 2, "lt": "    let b = 2;  "},
         {"k": "fold", "n": 3, "l": 4, "r": 3},
         {"k": "=", "l": 7, "r": 6, "t": "}"},
@@ -1780,7 +1808,7 @@ fn side_diff() -> Diff {
 fn unified_diff() -> Diff {
     let rows = json!([
         {"k": "=", "l": 1, "r": 1, "t": "keep"},
-        {"k": "-", "h": 0, "l": 2, "li": 1, "t": "    old one"},
+        {"k": "-", "h": 0, "l": 2, "li": 1, "t": "\told one"},
         {"k": "-", "h": 0, "l": 3, "li": 2, "t": "old two"},
         {"k": "+", "h": 0, "r": 2, "ri": 1, "t": "new one"},
         {"k": "fold", "n": 3, "l": 4, "r": 3},
@@ -2646,13 +2674,13 @@ fn yuzora_diff_in_unified_a_selection_takes_no_room_from_how_far_the_lines_scrol
     cx: &mut TestAppContext,
 ) {
     let long = format!("{}END", "w".repeat(297));
-    let ending = json!([{"t": "w".repeat(297), "h": false}, {"t": "END", "h": true}]);
+    let ending = json!([[297, 300]]);
     let rows = json!([
-        {"k": "-", "h": 0, "l": 1, "li": 0, "t": long, "s": ending},
+        {"k": "-", "h": 0, "l": 1, "li": 0, "t": long, "m": ending},
         {"k": "=", "l": 2, "r": 1, "t": "same"},
         {"k": "+", "h": 0, "r": 2, "ri": 1, "t": "new"},
         {"k": "-", "h": 0, "l": 3, "li": 2, "t": "old"},
-        {"k": "+", "h": 0, "r": 3, "ri": 2, "t": long, "s": ending},
+        {"k": "+", "h": 0, "r": 3, "ri": 2, "t": long, "m": ending},
     ]);
     let mut diff = Diff::of(rows).files(&[&long, "same", "old"], &["same", "new", &long]);
     diff.hunks = json!([{"index": 0, "a": [0, 1], "b": [1, 2]}]);
@@ -2709,6 +2737,49 @@ fn mark_of(pane: &DiffPane) -> Value {
         .map_or(Value::Null, |n| n[1].clone())
 }
 
+/// Whether a colour is `rgba`.
+fn coloured(c: Option<gpui::Hsla>, rgba: u32) -> bool {
+    let want: gpui::Hsla = gpui::rgba(rgba).into();
+    c.is_some_and(|c| (c.h - want.h).abs() < 1e-3 && (c.s - want.s).abs() < 1e-3 && (c.l - want.l).abs() < 1e-3 && (c.a - want.a).abs() < 1e-3)
+}
+
+/// Whether a colour is the selection's: the accent's wash.
+fn selection_coloured(c: Option<gpui::Hsla>) -> bool {
+    coloured(c, 0x4080ff44)
+}
+
+/// What the last frame painted in the selection's colour, each `(left, right, middle)` in the window's pixels.
+fn tints(pane: &mut DiffPane) -> Vec<(f64, f64, f64)> {
+    painted(pane, 0x4080ff44)
+}
+
+/// What the last frame painted in colour `rgba`, each `(left, right, middle)` in the window's pixels.
+fn painted(pane: &mut DiffPane, rgba: u32) -> Vec<(f64, f64, f64)> {
+    let scale = pane.visual.update(|window, _| window.scale_factor());
+    pane.visual
+        .update(|window, _| window.painted_quads())
+        .into_iter()
+        .filter(|q| coloured(q.background.as_solid(), rgba))
+        .map(|q| {
+            let at = |v: f32| (v / scale) as f64;
+            let (left, top) = (at(q.bounds.origin.x.as_f32()), at(q.bounds.origin.y.as_f32()));
+            (left, left + at(q.bounds.size.width.as_f32()), top + at(q.bounds.size.height.as_f32()) / 2.)
+        })
+        .collect()
+}
+
+/// Where place `at` of line `line` (0-based) of a side of diff `diff` was drawn, across the window.
+fn x_of(diff: &str, right: bool, line: usize, at: usize) -> f64 {
+    yuzora_git::line_view::x_at(diff, right, line, at).unwrap_or_else(|| panic!("line {line} of {diff} was not drawn")) as f64
+}
+
+/// Where in their lines the selection the last frame drew begins and ends, `[anchor, head]` (-1 before a line, 2^30 past it).
+fn places(pane: &DiffPane) -> Value {
+    pane.noted("places")
+        .last()
+        .map_or(Value::Null, |n| n[1].clone())
+}
+
 /// How far the list was scrolled when the last frame was built (a frame behind a wheel or a tick, and no key to ask for it).
 fn scrolled_in_frame(pane: &DiffPane) -> f64 {
     pane.noted("now")
@@ -2723,23 +2794,23 @@ fn selected(pane: &mut DiffPane) -> Option<Value> {
     Some(asked_for(pane))
 }
 
-// yuzora(v010-git-diff-fu): holding the button down and moving across rows selects them: the selection runs from the row pressed
-// to the row under the pointer, as it does by a click and a Shift-click, on the side that was pressed, and it is there while the
-// button is down as well as after it is let go. Up the list as well as down it; unified copies what it shows; a Shift press
-// reaches from the selection there is; the pointer coming back to the row it left from is that one row.
+// yuzora(v010-git-diff-fu): holding the button down and moving across rows selects them: the selection runs from the place
+// pressed to the place under the pointer, on the side that was pressed, and it is there while the button is down as well as
+// after it is let go. Up the list as well as down it; unified copies what it shows; a Shift press reaches from the selection
+// there is; the pointer coming back to the place it left from selects nothing.
 #[gpui::test]
 fn yuzora_diff_dragging_across_rows_selects_from_the_row_pressed_to_the_row_under_the_pointer(
     cx: &mut TestAppContext,
 ) {
     let mut pane = copy_pane(cx, side_diff(), json!({}));
-    pane.press(TEXT_LEFT, row_y(1), 1);
-    pane.drag(TEXT_LEFT, row_y(2));
+    pane.press(TEXT_START, row_y(1), 1);
+    pane.drag(PAST_LEFT, row_y(2));
     assert_eq!(
         mark_of(&pane),
         json!(["left", 1, 2]),
         "the left side's rows 2 and 3, with the button down"
     );
-    pane.release(TEXT_LEFT, row_y(2));
+    pane.release(PAST_LEFT, row_y(2));
     pane.hover(TEXT_LEFT, row_y(4));
     assert_eq!(
         mark_of(&pane),
@@ -2753,7 +2824,8 @@ fn yuzora_diff_dragging_across_rows_selects_from_the_row_pressed_to_the_row_unde
     );
     assert_eq!(
         pane.clipboard().as_deref(),
-        Some("\tlet a = 1;\n    let b = 2;  ")
+        Some("\tlet a = 1;\n    let b = 2;  "),
+        "from before the first line's first character to past the last one's last"
     );
     // Up, on the right: the row with no line there and the fold add none. The pointer on the left side does not change the side.
     pane.press(TEXT_RIGHT, row_y(4), 1);
@@ -2765,15 +2837,15 @@ fn yuzora_diff_dragging_across_rows_selects_from_the_row_pressed_to_the_row_unde
         Some(json!([["r", 1, 2], ["r", 5, 6]])),
         "the right side, from the last row up to the second"
     );
-    // Back to where it began: that row.
+    // Back to where it began: nothing, and the key is not the pane's.
     pane.press(TEXT_LEFT, row_y(1), 1);
     pane.drag(TEXT_LEFT, row_y(2));
     pane.drag(TEXT_LEFT, row_y(1));
     pane.release(TEXT_LEFT, row_y(1));
     assert_eq!(
         selected(&mut pane),
-        Some(json!([["l", 1, 2]])),
-        "the pointer back on the row it began on: that row"
+        None,
+        "the pointer back on the place it began on: nothing selected"
     );
     // Shift reaches from the row the selection began on, and the drag goes on moving the end.
     pane.click(TEXT_LEFT, row_y(1), false);
@@ -2788,7 +2860,8 @@ fn yuzora_diff_dragging_across_rows_selects_from_the_row_pressed_to_the_row_unde
     pane.close();
 
     let mut pane = copy_pane(cx, unified_diff(), json!({"layout": "unified"}));
-    pane.press(300., row_y(0), 1);
+    // Over the sign, before the text: the place before the first character.
+    pane.press(95., row_y(0), 1);
     pane.drag(300., row_y(3));
     pane.drag(300., row_y(5));
     pane.drag(300., row_y(12));
@@ -2807,21 +2880,163 @@ fn yuzora_diff_dragging_across_rows_selects_from_the_row_pressed_to_the_row_unde
     pane.close();
 }
 
-// yuzora(v010-git-diff-fu): a press that does not move, or moves inside its row, is the click it was: the row, and its hunk made
-// the current one. The numbers of a diff that can stage still pick the line, and a press on them dragged across rows selects
-// nothing and picks nothing; the same for a fold, the divider and the bar under the lines, which have their own drags.
+// yuzora(L2): side by side, the room beside a line only one side has is the colour of that change, softer than a line of it
+// (the tokens' fillers): beside a removed line the removed colour, beside an added one the added colour, across the side.
 #[gpui::test]
-fn yuzora_diff_a_press_that_stays_in_its_row_is_a_click_and_the_numbers_the_fold_and_the_divider_start_no_selection(
+fn yuzora_diff_the_room_beside_a_removed_or_an_added_line_takes_its_colour(cx: &mut TestAppContext) {
+    let rows = json!([
+        {"k": "~", "h": 0, "l": 1, "li": 0, "lt": "old", "r": 1, "ri": 0, "rt": "new"},
+        {"k": "~", "h": 0, "l": 2, "li": 1, "lt": "gone"},
+        {"k": "~", "h": 0, "r": 2, "ri": 1, "rt": "come"},
+    ]);
+    let mut pane = DiffPane::mount_at(cx, Diff::of(rows), 1200., (1200., 600.), 1., &Shared::default(), json!({}));
+    let on = |quads: Vec<(f64, f64, f64)>, row: usize| quads.into_iter().filter(|q| (q.2 - row_y(row)).abs() < 1.).map(|q| (q.0.round(), q.1.round())).collect::<Vec<_>>();
+    let (removed, added) = (painted(&mut pane, 0x200c0cff), painted(&mut pane, 0x0c200cff));
+    // The left side ends at 599.5, the right begins past the divider at 600.5 (rounded here).
+    assert_eq!(on(removed.clone(), 1), [(601., 1200.)], "the right side of the removed line's row");
+    assert_eq!(on(added.clone(), 2), [(0., 600.)], "the left side of the added line's row");
+    assert_eq!((on(removed, 0), on(added, 0)), (vec![], vec![]), "and not beside a line the other side has too");
+    assert!(painted(&mut pane, 0x202020ff).iter().all(|q| q.2 < COPY_HEADER), "no row is grey: {:?}", painted(&mut pane, 0x202020ff));
+    pane.close();
+}
+
+// yuzora(L2): a press on a character and a drag to a character of another line select what is between them: drawn from
+// where the press landed to the end of its line and from the next line's start to where the pointer is, copied by Cmd+C as
+// the file has it (the tab kept). A Shift-click then moves the end to the character clicked.
+#[gpui::test]
+fn yuzora_diff_a_drag_from_a_character_to_one_on_another_line_copies_exactly_what_is_between(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, side_diff(), json!({}));
+    // `\tlet a = 1;` from after `\tlet ` (5 bytes, the tab one); `    let b = 2;  ` to after `    let ` (8).
+    let (from, to) = (x_of("d1", false, 1, 5), x_of("d1", false, 2, 8));
+    pane.press(from, row_y(1), 1);
+    pane.drag(to, row_y(2));
+    pane.release(to, row_y(2));
+    assert_eq!((mark_of(&pane), places(&pane)), (json!(["left", 1, 2]), json!([5, 8])));
+    let near = |a: f64, b: f64| (a - b).abs() < 0.5;
+    let tinted = tints(&mut pane);
+    assert!(tinted.iter().any(|t| near(t.0, from) && near(t.2, row_y(1))), "the first line from the place pressed: {tinted:?}");
+    assert!(tinted.iter().any(|t| near(t.1, to) && near(t.2, row_y(2))), "the last to the place let go: {tinted:?}");
+    assert!(!tinted.iter().any(|t| near(t.2, row_y(0)) || near(t.2, row_y(3))), "and no other row: {tinted:?}");
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("a = 1;\n    let "));
+    assert_eq!(pane.noted("text").last(), Some(&json!(["text", [["l", 1, 3]], [5, 8]])), "the lines asked for, cut at the places");
+    pane.click(x_of("d1", false, 2, 4), row_y(2), true);
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("a = 1;\n    "), "Shift-click: to the character clicked");
+    pane.close();
+}
+
+// yuzora(L2): a drag begun on a line's number, where none is picked, selects whole lines, the row pressed and the row let
+// go of both, down the rows or up them: what a click there and a Shift-click on the other select.
+#[gpui::test]
+fn yuzora_diff_a_drag_along_the_line_numbers_selects_whole_lines_from_the_row_pressed_to_the_row_let_go_of(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, side_diff(), json!({}));
+    let numbers = 20.;
+    pane.press(numbers, row_y(0), 1);
+    pane.drag(numbers, row_y(2));
+    pane.release(numbers, row_y(2));
+    assert_eq!((mark_of(&pane), places(&pane)), (json!(["left", 0, 2]), json!([-1, 1 << 30])), "whole lines");
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("fn main() {\n\tlet a = 1;\n    let b = 2;  "));
+    pane.press(numbers, row_y(4), 1);
+    pane.drag(numbers, row_y(2));
+    pane.release(numbers, row_y(2));
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("    let b = 2;  \n}"), "up the rows: the row pressed is the last line copied");
+    pane.close();
+}
+
+// yuzora(L2): in unified a drag copies each row's line from the side it is shown from, cut where the drag began and ended.
+#[gpui::test]
+fn yuzora_diff_in_unified_a_drag_across_a_removed_and_an_added_line_copies_each_from_its_side(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, unified_diff(), json!({"layout": "unified"}));
+    // `old two` (the left's line 2) from after `old ` to `new one` (the right's line 1) to after `new`.
+    let (from, to) = (x_of("d1", false, 2, 4), x_of("d1", true, 1, 3));
+    pane.press(from, row_y(2), 1);
+    pane.drag(to, row_y(3));
+    pane.release(to, row_y(3));
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("two\nnew"));
+    assert_eq!(pane.noted("text").last(), Some(&json!(["text", [["l", 2, 3], ["r", 1, 2]], [4, 3]])));
+    pane.close();
+}
+
+// yuzora(L2): a real diff session (yuzora-git's, on a repo made here): its lines are coloured by the syntax it parsed, and a
+// drag across a line with a tab, Chinese and an emoji of several code points copies the session's own text.
+#[gpui::test]
+fn yuzora_diff_a_real_sessions_lines_are_styled_and_a_drag_copies_its_own_text(cx: &mut TestAppContext) {
+    use yuzora_git::diffview::{DiffSession, Mode, Side};
+    // yuzora-git is not under test here: its settings, trust list and hooks folder would be the person's own.
+    yuzora_git::settings::keep_own_files_in(std::env::temp_dir().join(format!("yuzora-git-in-app-tests-{}", std::process::id())));
+    assert!(yuzora_git::settings::own_dir().starts_with(std::env::temp_dir()), "the test would read the person's app home");
+    let dir = std::env::temp_dir().join(format!("yuzora-diff-real-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let git = |args: &[&str]| {
+        let mut cmd = std::process::Command::new("git");
+        let out = yuzora_core::spawn::no_window(&mut cmd).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).current_dir(&dir).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q"]);
+    std::fs::write(dir.join("main.rs"), "fn main() {\n\tlet a = 1;\n\tlet b = 2;\n}\n").unwrap();
+    git(&["add", "main.rs"]);
+    git(&["commit", "-q", "-m", "base"]);
+    let changed = "\tlet a = 10; // \u{6F22}\u{5B57} \u{1F9D1}\u{200D}\u{1F4BB}";
+    std::fs::write(dir.join("main.rs"), format!("fn main() {{\n{changed}\n\tlet b = 2;\n}}\n")).unwrap();
+    let repo = yuzora_git::repo::open(dir.to_str().unwrap(), None).unwrap();
+    let session = yuzora_git::diffview::keep(DiffSession::load(repo, "main.rs".into(), None, Mode::Unstaged).unwrap());
+    let view = session.view("side", -1, yuzora_git::diff::Whitespace::Exact);
+    let key = session.id.to_string();
+    assert_eq!(view["id"], json!(session.id));
+    let keyword = |side, k| session.line_spans(side, k).into_iter().filter(|(_, n)| *n == "keyword").map(|(r, _)| r).collect::<Vec<_>>();
+    assert_eq!((keyword(Side::Left, 1), keyword(Side::Right, 1), keyword(Side::Right, 2)), (vec![1..4], vec![1..4], vec![1..4]), "`let`, changed and not");
+
+    let mut pane = copy_pane(cx, Diff::real(view), json!({}));
+    let (from, to) = (x_of(&key, true, 1, 5), x_of(&key, true, 2, 6));
+    pane.press(from, row_y(1), 1);
+    pane.drag(to, row_y(2));
+    pane.release(to, row_y(2));
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some(&*format!("{}\n\tlet b", &changed[5..])));
+    // From before `漢` to past the emoji, the line's end: the characters whole.
+    let han = changed.find('\u{6F22}').unwrap();
+    let (from, to) = (x_of(&key, true, 1, han), x_of(&key, true, 1, changed.len()));
+    pane.press(from, row_y(1), 1);
+    pane.drag(to, row_y(1));
+    pane.release(to, row_y(1));
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some(&changed[han..]));
+    pane.close();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// yuzora(v010-git-diff-fu): a press that does not move (less than a drag) is the click it was: the row, and its hunk made the
+// current one; moved further, even inside its row, it selects the characters it crossed. The numbers of a diff that can stage
+// still pick the line, and a press on them dragged across rows selects nothing and picks nothing; the same for a fold, the
+// divider and the bar under the lines, which have their own drags.
+#[gpui::test]
+fn yuzora_diff_a_press_that_does_not_move_is_a_click_and_the_numbers_the_fold_and_the_divider_start_no_selection(
     cx: &mut TestAppContext,
 ) {
     let mut pane = copy_pane(cx, side_diff(), json!({}));
     pane.press(TEXT_LEFT, row_y(1), 1);
+    pane.drag(TEXT_LEFT + 2., row_y(1) + 1.);
+    pane.release(TEXT_LEFT + 2., row_y(1) + 1.);
+    assert_eq!(
+        (selected(&mut pane), places(&pane)),
+        (Some(json!([["l", 1, 2]])), json!([-1, 1073741824])),
+        "moved less than a drag inside the row: a click on it, its line whole"
+    );
+    // Moved further inside the row: a drag across its characters.
+    pane.press(TEXT_LEFT, row_y(1), 1);
     pane.drag(TEXT_LEFT + 30., row_y(1) + 4.);
     pane.release(TEXT_LEFT + 30., row_y(1) + 4.);
+    let [from, to] = [TEXT_LEFT, TEXT_LEFT + 30.].map(|x| yuzora_git::line_view::hit("d1", false, 1, x as f32).unwrap());
+    assert!(from < to, "{from} {to}");
     assert_eq!(
-        selected(&mut pane),
-        Some(json!([["l", 1, 2]])),
-        "moved inside the row: a click on it"
+        (selected(&mut pane), places(&pane)),
+        (Some(json!([["l", 1, 2]])), json!([from, to])),
+        "moved inside the row: the characters between, not a click"
     );
     // The numbers: the line is picked by a click (a stageable diff), and a drag from them picks and selects nothing.
     pane.click(TEXT_LEFT, row_y(0), false);
@@ -3431,14 +3646,14 @@ fn yuzora_diff_a_key_pressed_during_a_drag_copies_what_is_selected_and_ends_it(
     cx: &mut TestAppContext,
 ) {
     let mut pane = copy_pane(cx, numbered_diff(200, "line"), json!({}));
-    pane.press(TEXT_LEFT, row_y(3), 1);
-    pane.drag(TEXT_LEFT, row_y(5));
+    pane.press(TEXT_START, row_y(3), 1);
+    pane.drag(PAST_LEFT, row_y(5));
     assert_eq!(
         copied(&mut pane).as_deref(),
         Some("line 3\nline 4\nline 5"),
         "copied with the button down"
     );
-    pane.release(TEXT_LEFT, row_y(5));
+    pane.release(PAST_LEFT, row_y(5));
     pane.hover(TEXT_LEFT, row_y(9));
     assert_eq!(
         mark_of(&pane),
@@ -4016,9 +4231,8 @@ fn yuzora_diff_a_zoom_set_while_it_is_open_holds_from_the_next_frame(cx: &mut Te
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-// yuzora(v010): a zoom set while the diff is open measures its lines again: each piece of a line is rounded up to a pixel
-// of the window, and what a pixel is, in the unit the pane writes lengths in, is what the zoom makes it. A line of 40
-// pieces measured at zoom 2 is 20px short of what is drawn at zoom 1.
+// yuzora(v010): a zoom set while the diff is open measures its lines again: a line is rounded up to a pixel of the window,
+// and what a pixel is, in the unit the pane writes lengths in, is what the zoom makes it.
 #[gpui::test]
 fn yuzora_diff_a_zoom_set_while_it_is_open_measures_the_lines_again(cx: &mut TestAppContext) {
     if !alone("yuzora_diff_a_zoom_set_while_it_is_open_measures_the_lines_again") {
@@ -4132,14 +4346,13 @@ fn yuzora_diff_the_pointer_and_the_wheel_move_what_they_touch_at_every_zoom(cx: 
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// A diff whose widest lines are the first rows, 300 characters on each side and cut into pieces, and `rows` rows after
-/// them whose lines are short.
+/// A diff whose widest lines are the first rows, 300 characters on each side with every other piece of them marked, and
+/// `rows` rows after them whose lines are short.
 fn wide_lines_then(rows: usize) -> Value {
-    let widest = |letter: char| pieces_of(&[4, 7, 3, 9, 5, 8, 6], 300).into_iter().map(|n| letter.to_string().repeat(n)).collect::<Vec<_>>();
-    let cut = |letter: char| widest(letter).iter().enumerate().map(|(i, t)| json!({"t": t, "h": i % 2 == 1})).collect::<Vec<_>>();
+    let lengths = pieces_of(&[4, 7, 3, 9, 5, 8, 6], 300);
     let mut all = vec![];
     for _ in 0..3 {
-        all.push(json!({"k": "~", "h": 0, "l": 1, "li": 0, "lt": widest('a').concat(), "ls": cut('a'), "r": 1, "ri": 0, "rt": widest('b').concat(), "rs": cut('b')}));
+        all.push(json!({"k": "~", "h": 0, "l": 1, "li": 0, "lt": "a".repeat(300), "lm": marks_of(&lengths), "r": 1, "ri": 0, "rt": "b".repeat(300), "rm": marks_of(&lengths)}));
     }
     all.extend((0..rows).map(|i| json!({"k": "~", "h": 0, "l": i + 2, "li": i + 1, "lt": "a line of text", "r": i + 2, "ri": i + 1, "rt": "another line"})));
     Value::Array(all)
@@ -4221,7 +4434,7 @@ fn yuzora_diff_the_lines_are_measured_in_the_font_the_rows_are_drawn_in() {
         let mut failures = Vec::new();
         for (case, rows) in [
             ("a line", json!([text_row(Some(&"a".repeat(200)), Some("b"))])),
-            ("a line cut into pieces", Value::Array(vec![row_in_pieces('a', &pieces_of(&[4, 7, 3, 9, 5, 8, 6], 400)), text_row(Some(&"a".repeat(380)), Some("b"))])),
+            ("a line with words marked", Value::Array(vec![row_in_pieces('a', &pieces_of(&[4, 7, 3, 9, 5, 8, 6], 400)), text_row(Some(&"a".repeat(380)), Some("b"))])),
             ("a line in a script the table lists", json!([text_row(Some(&"\u{6f22}".repeat(100)), Some("b"))])),
         ] {
             let first = if case.contains("script") { "\u{6f22}" } else { "a" };
@@ -4237,12 +4450,24 @@ fn yuzora_diff_the_lines_are_measured_in_the_font_the_rows_are_drawn_in() {
     });
 }
 
-/// A changed row whose left line is cut into pieces of `lengths` characters of `letter`, the way the word diff cuts a
-/// line (every other piece is a change), each piece drawn on its own.
+/// A changed row whose left line is pieces of `lengths` characters of `letter`, every other piece marked as the word diff
+/// marks a change.
 fn row_in_pieces(letter: char, lengths: &[usize]) -> Value {
-    let pieces: Vec<Value> = lengths.iter().enumerate().map(|(i, n)| json!({"t": letter.to_string().repeat(*n), "h": i % 2 == 1})).collect();
-    let text: String = pieces.iter().map(|p| p["t"].as_str().unwrap()).collect();
-    json!({"k": "~", "h": 0, "l": 1, "li": 0, "lt": text, "ls": pieces, "r": 1, "ri": 0, "rt": "b"})
+    let text = letter.to_string().repeat(lengths.iter().sum());
+    json!({"k": "~", "h": 0, "l": 1, "li": 0, "lt": text, "lm": marks_of(lengths), "r": 1, "ri": 0, "rt": "b"})
+}
+
+/// The marks of pieces of `lengths` characters, every other one marked: `[[from, to]]`.
+fn marks_of(lengths: &[usize]) -> Value {
+    let mut at = 0;
+    let mut out = Vec::new();
+    for (i, n) in lengths.iter().enumerate() {
+        if i % 2 == 1 {
+            out.push(json!([at, at + n]));
+        }
+        at += n;
+    }
+    Value::Array(out)
 }
 
 /// Pieces of the lengths in `cycle`, one after the other, until they are `total` characters.
@@ -4259,10 +4484,9 @@ fn pieces_of(cycle: &[usize], total: usize) -> Vec<usize> {
     out
 }
 
-// yuzora(v010): a line is scrolled to its end as it is drawn, and a line the word diff cut into pieces is drawn a
-// piece at a time: each piece is as wide as its text, rounded up to a pixel. Working its width out as one piece fell
-// short by up to a pixel a piece (24px for 360 characters in 40 pieces, 88px for 1,000 in 200, 38px for a line of
-// JSON with 40 values changed), and the last characters of the line a change was made in could not be scrolled to.
+// yuzora(v010): a line is scrolled to its end as it is drawn, whatever the word diff marked in it. (When each marked word
+// was drawn as a text of its own, each was rounded up to a pixel, and a width worked out as one text fell short by up to a
+// pixel a piece; a line is one text now, and the marks are painted under it.)
 #[gpui::test]
 fn yuzora_diff_a_line_cut_into_pieces_is_scrolled_to_its_end_as_it_is_drawn(cx: &mut TestAppContext) {
     if !alone("yuzora_diff_a_line_cut_into_pieces_is_scrolled_to_its_end_as_it_is_drawn") {
@@ -4303,10 +4527,9 @@ impl Dice {
     }
 }
 
-// yuzora(v010): whatever the lines are cut into, the range ends where the widest one is drawn, which is not always the
-// one with the most characters (a piece takes up to a pixel more than its text) nor the one with the most pieces.
-// The widest drawn is the first row (the one the window can measure); the rest have more characters, more pieces, or
-// both, and the room left after it is the same whichever.
+// yuzora(v010): whatever is marked in the lines, the range ends where the widest one is drawn. The widest drawn is the
+// first row (the one the window can measure); the rest have as many characters or fewer, more marks or fewer, and the
+// room left after it is the same whichever.
 #[gpui::test]
 fn yuzora_diff_the_range_ends_where_the_widest_line_is_drawn_whatever_the_lines_are_cut_into(cx: &mut TestAppContext) {
     let mut dice = Dice(2463534242);
@@ -4323,8 +4546,8 @@ fn yuzora_diff_the_range_ends_where_the_widest_line_is_drawn_whatever_the_lines_
             }
             out
         };
-        // What a piece of `n` letters is drawn as wide as at zoom 1: 6.9 pixels a letter, rounded up.
-        let drawn = |pieces: &[usize]| pieces.iter().map(|n| (*n as f64 * 6.9).ceil()).sum::<f64>();
+        // What a line of these pieces is drawn as wide as at zoom 1: one text, 6.9 pixels a letter, rounded up.
+        let drawn = |pieces: &[usize]| (pieces.iter().sum::<usize>() as f64 * 6.9).ceil();
         let mut lines: Vec<Vec<usize>> = (0..2 + dice.below(5)).map(|_| cut(&mut dice)).collect();
         lines.sort_by(|a, b| drawn(b).total_cmp(&drawn(a)));
         let rows = Value::Array(lines.iter().map(|pieces| row_in_pieces('a', pieces)).collect());
@@ -4561,19 +4784,16 @@ fn yuzora_diff_a_line_longer_than_a_frame_is_laid_out_alone_and_scrolled_to_its_
     );
 }
 
-// yuzora(v010): a line drawn in many pieces (250 of 32 letters; each 32 * 6.9 = 220.8px, which the window rounds up to 221,
-// 55,250px in all) is laid out in one frame and the range ends where it does. The line is built as 250 elements in the
-// frame that lays it out, which the engine cuts off at 50 ms: this machine takes about 3 of them, and a frame that is
-// cut is built again smaller, but a line cannot be made smaller than itself. (The first version of this had 1,000 pieces
-// and expected 224px a piece, 7px a letter, and was 3,000px off.)
+// yuzora(v010): a long line with many words marked (8,000 letters, every other one of 250 pieces of 32 marked; one text,
+// about 8,000 * 6.9 = 55,200px) is laid out in one frame and the range ends where it does. The frame that lays it out is cut off
+// by the engine at 50 ms, and a frame that is cut is built again smaller, but a line cannot be made smaller than itself.
+// (When each marked word was drawn as a text of its own, it was 250 elements and 55,250px, each piece rounded up.)
 #[gpui::test]
 fn yuzora_diff_a_line_in_two_hundred_and_fifty_pieces_is_laid_out_in_a_frame_and_scrolled_to_its_end(
     cx: &mut TestAppContext,
 ) {
-    let mut rows: Vec<Value> = (0..100)
-        .map(|_| text_row(Some("a short line"), Some("b")))
-        .collect();
-    rows.push(row_in_pieces('a', &[32; 250]));
+    let mut rows = vec![row_in_pieces('a', &[32; 250])];
+    rows.extend((0..100).map(|_| text_row(Some("a short line"), Some("b"))));
     let pane = DiffPane::mount(cx, Value::Array(rows), 1200., &Shared::default());
     let (ranges, pending) = (pane.ranges(), pane.pending());
     let drawn = pane
@@ -4581,8 +4801,11 @@ fn yuzora_diff_a_line_in_two_hundred_and_fifty_pieces_is_laid_out_in_a_frame_and
         .iter()
         .filter(|(view, error)| view == "d1" && error.is_null())
         .count();
+    // As the window draws it (the probe row is the first): the test font adds its 6.9px a letter up in f32.
+    let line = pane.text_width("a");
     pane.close();
-    let wanted = 250. * (32. * 6.9_f64).ceil() + 6. + 12. - 555.5;
+    assert!((line - 8000. * 6.9).abs() < 8000. * 6.9 * 0.01, "the line is drawn {line}px wide");
+    let wanted = line + 6. + 12. - 555.5;
     assert!(
         drawn >= 2 && !pending,
         "drawn {drawn} times, and lines left to lay out: {pending}"
@@ -4634,16 +4857,13 @@ fn yuzora_diff_a_held_thumb_stays_under_the_pointer_when_the_range_changes(cx: &
     pane.close();
 }
 
-// yuzora(v010): the end of the right side's line is scrolled to when its line is the widest and cut into pieces (the left
-// side's lines are plainer and shorter): the pieces each side's lines are cut into are their own, and the half cell
-// each piece but the first may be rounded up by is counted for the right side's as for the left's.
+// yuzora(v010): the end of the right side's line is scrolled to when its line is the widest and has words marked (the left
+// side's lines are plainer and shorter): each side's lines are measured as that side draws them.
 #[gpui::test]
 fn yuzora_diff_the_right_sides_line_cut_into_pieces_is_scrolled_to_its_end(cx: &mut TestAppContext) {
-    let pieces: Vec<Value> = pieces_of(&[3], 360).iter().enumerate().map(|(i, n)| json!({"t": "b".repeat(*n), "h": i % 2 == 1})).collect();
-    let text: String = pieces.iter().map(|p| p["t"].as_str().unwrap()).collect();
     let rows = json!([
-        {"k": "~", "h": 0, "l": 1, "li": 0, "lt": "a".repeat(5), "r": 1, "ri": 0, "rt": text, "rs": pieces},
-        text_row(Some("a"), Some(&"b".repeat(362))),
+        {"k": "~", "h": 0, "l": 1, "li": 0, "lt": "a".repeat(5), "r": 1, "ri": 0, "rt": "b".repeat(362), "rm": marks_of(&pieces_of(&[3], 362))},
+        text_row(Some("a"), Some(&"b".repeat(360))),
     ]);
     let mut pane = DiffPane::mount(cx, rows, 1200., &Shared::default());
     let gap = pane.end_gap_right("b");
@@ -5318,7 +5538,7 @@ fn yuzora_diff_how_long_taking_a_diff_in_takes(cx: &mut TestAppContext) {
 fn git_sidebar_source(extra: &[(&str, &str)]) -> String {
     let mut source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods/yuzora-sidebar-git/main.js")).unwrap();
     let imports = (
-        "import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, shared, setShared, props, nextCommand } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, pushPreview, sequencer, fetch, trust, repos, settings as gitSettings } from \"yuzora:git\";",
+        "import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, shared, setShared, props, nextCommand } from \"herdr\";\nimport { t, tokens } from \"yuzora:core\";\nimport { open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, sequencer, fetch, trust, repos, settings as gitSettings } from \"yuzora:git\";",
         "import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, shared, setShared, props, nextCommand, t, tokens, open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, pushPreview, sequencer, fetch, trust, repos, gitSettings, note } from \"fixture\";",
     );
     for (from, to) in std::iter::once(imports).chain(extra.iter().copied()) {

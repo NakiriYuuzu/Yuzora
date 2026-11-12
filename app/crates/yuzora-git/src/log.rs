@@ -118,6 +118,13 @@ impl Filter {
 
     /// The revisions and options for `git log`.
     pub fn args(&self) -> Vec<String> {
+        self.args_in(true)
+    }
+
+    /// [`Filter::args`], with the rows in git's date order or, `ordered`
+    /// false, as git finds them: `--date-order` walks the whole filtered
+    /// history before the first row is printed.
+    fn args_in(&self, ordered: bool) -> Vec<String> {
         let mut a = Vec::new();
         if !self.hashes.is_empty() {
             a.push("--no-walk=unsorted".into());
@@ -150,7 +157,9 @@ impl Filter {
         }
         if self.keeps_graph() && self.hashes.is_empty() {
             a.push("--parents".into());
-            a.push("--date-order".into());
+            if ordered {
+                a.push("--date-order".into());
+            }
         }
         if !self.paths.is_empty() {
             if self.follow && self.paths.len() == 1 {
@@ -710,7 +719,12 @@ impl LogSession {
             if stage != usize::MAX {
                 cmd = cmd.arg(format!("--max-count={stage}"));
             }
-            let mut args = self.filter.args();
+            // The stages before the last are read as git finds them and put
+            // in order here, as the first block of the whole log is: git
+            // sorting them reads the whole filtered history first, and the
+            // first rows wait for it.
+            let whole = stage == usize::MAX;
+            let mut args = self.filter.args_in(whole);
             if !args.contains(&"--".to_string()) {
                 args.push("--".into());
             }
@@ -720,6 +734,9 @@ impl LogSession {
                 return Err(GitError::Failed { code: out.code, message: out.stderr_text().trim().to_owned() });
             }
             let done = commits.len() < stage;
+            if keeps && !whole {
+                commits = topo_sort(commits);
+            }
             if !keeps {
                 // A list: every row its own, no edges.
                 for c in &mut commits {
@@ -984,6 +1001,14 @@ mod tests {
         let b = Filter::from_json(&json!({ "branches": ["main"], "paths": ["a.txt"], "follow": true }));
         assert!(b.keeps_graph());
         assert!(b.args().contains(&"--follow".to_string()) && b.args().contains(&"--parents".to_string()));
+        // The stages before the last leave the order to the engine; a path
+        // named like the option stays.
+        assert!(b.args().contains(&"--date-order".to_string()));
+        let named = Filter::from_json(&json!({ "paths": ["--date-order"] }));
+        let early = named.args_in(false);
+        assert_eq!(early.iter().filter(|a| *a == "--date-order").count(), 1);
+        assert_eq!(&early[early.len() - 2..], ["--", "--date-order"]);
+        assert!(early.contains(&"--parents".to_string()));
         assert!(Filter::from_json(&json!({})).is_empty());
     }
 

@@ -455,19 +455,28 @@ test("the error of a stage that fails after the sidebar moved on is shown with t
   expect(s.frame().texts.join("\n")).toContain("index.lock exists");
 });
 
+test("a push from the sidebar is one call: the engine finds where the branch pushes to", async () => {
+  const s = world();
+  await s.settle();
+  s.frame().button("push")!.handlers.on_click({}, s.cx);
+  await flush();
+  expect(s.w.asks.pushPreview.length).toBe(0);
+  expect(s.pending("push").map((g) => g.args)).toEqual([[":/a", { autoUpdate: false }]]);
+});
+
 test("a push going on in one repo does not hold back the buttons of another", async () => {
   const s = world();
   await s.settle();
   s.frame().button("push")!.handlers.on_click({}, s.cx);
   await flush();
-  expect(s.pending("pushPreview").length).toBe(1);
+  expect(s.pending("push").length).toBe(1);
   s.go("/b");
   s.frame();
   await s.settle();
   expect(s.frame().button("push")!.handlers.on_click).toBeDefined();
   s.frame().button("push")!.handlers.on_click({}, s.cx);
   await flush();
-  expect(s.pending("pushPreview").map((g) => g.args[0]).sort()).toEqual([":/a", ":/b"]);
+  expect(s.pending("push").map((g) => g.args[0]).sort()).toEqual([":/a", ":/b"]);
 });
 
 test("a repo whose status cannot be read when it is shown again shows the error, not the list it had", async () => {
@@ -714,7 +723,7 @@ test("a repo whose push is going on, or whose commit waits on a question, is not
   s.frame().button("push")!.handlers.on_click({}, s.cx);
   await flush();
   await visit(s, 12, "busy");
-  await s.fail(s.pending("pushPreview")[0], new Error("rejected"));
+  await s.fail(s.pending("push")[0], new Error("rejected"));
   s.go("/a"); s.frame(); await s.settle();
   expect(s.frame().texts).toContain("Error: rejected");
 
@@ -905,7 +914,7 @@ test("a status read for an earlier visit that comes back after the repo was show
   s.frame().button("push")!.handlers.on_click({}, s.cx);
   await flush();
   s.go("/b"); s.frame(); await s.settle();
-  await s.fail(s.pending("pushPreview")[0], new Error("rejected"));
+  await s.fail(s.pending("push")[0], new Error("rejected"));
   const late = s.pending("status", (g) => g.args[0] === ":/a")[0];
   s.go("/a");
   const back = s.frame();
@@ -1075,7 +1084,7 @@ test("the failure of a push or a commit-and-push started in a repo is still ther
   p.frame().button("push")!.handlers.on_click({}, p.cx);
   await flush();
   p.go("/b"); p.frame(); await p.settle();
-  await p.fail(p.pending("pushPreview")[0], new Error("rejected"));
+  await p.fail(p.pending("push")[0], new Error("rejected"));
   await visit(p, 9, "pushfail");
   p.go("/a"); p.frame(); await p.settle();
   expect(p.frame().texts).toContain("Error: rejected");
@@ -1089,7 +1098,7 @@ test("the failure of a push or a commit-and-push started in a repo is still ther
   c.go("/b"); c.frame(); await c.settle();
   await c.answer(c.pending("commit")[0], { ok: true, output: "" });
   await c.settle();
-  await c.fail(c.pending("pushPreview")[0], new Error("! [rejected] main -> main (fetch first)"));
+  await c.fail(c.pending("push")[0], new Error("! [rejected] main -> main (fetch first)"));
   await c.settle();
   await visit(c, 9, "cpfail");
   c.go("/a"); c.frame(); await c.settle();
@@ -1101,12 +1110,11 @@ test("a failure that was seen and gone from the screen does not keep its repo fr
   await s.settle();
   s.frame().button("push")!.handlers.on_click({}, s.cx);
   await flush();
-  await s.fail(s.pending("pushPreview")[0], new Error("rejected"));
+  await s.fail(s.pending("push")[0], new Error("rejected"));
   await s.settle();
   expect(s.frame().texts).toContain("Error: rejected");
   s.frame().button("push")!.handlers.on_click({}, s.cx);
   await flush();
-  await s.answer(s.pending("pushPreview").at(-1)!, { upstream: "origin/main" });
   await s.answer(s.pending("push")[0], { ok: true, output: "" });
   await s.settle();
   await visit(s, 12, "cleared");

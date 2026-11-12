@@ -401,8 +401,16 @@ fn resolve(p: &Palette, overrides: &BTreeMap<String, String>) -> Theme {
     for (k, v) in overrides {
         t.insert(k.clone(), v.clone());
     }
+    // yuzora(L1): Yuzora's layout and mods draw their lines in `divider`; a theme that names none draws them as its border.
+    let border = t["border"].clone();
+    t.entry("divider".into()).or_insert(border);
     t
 }
+
+// yuzora(L1): every color name in use is one every theme has.
+#[cfg(test)]
+#[path = "yuzora/theme_names.rs"]
+mod yuzora_theme_names;
 
 /// settings.json: preferences used where a layout leaves its look unset.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

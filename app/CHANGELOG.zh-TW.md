@@ -1,6 +1,22 @@
 # Yuzora 更新說明
 
 <!-- yuzora(L7): CHANGELOG.md 裡 Yuzora 每一筆的繁體中文版，版本、### New／### Fixed 標題與項目數都要一樣（App 依標題判斷 Fixed）。這裡沒有的版本，App 會改顯示 CHANGELOG.md 的英文。 -->
+## [0.1.2] - 2026-11-13
+
+### New
+- **Git diff 的程式碼照編輯器的規則上色。** 並排與合併檢視、深色與淺色主題都適用。切換主題時，開著的 diff 會跟著換色。
+- **Git diff 可以逐字元選取文字。** 從任一個字元拖到另一個字元，可以跨行，Copy 複製的就是選取的文字，tab 原樣保留。以前只能整行選取。從行號開始拖曳仍然選取整行。點行號挑行、右鍵選單與整行複製照舊。
+- Git diff 並排檢視：只有一側有的行，對面空白的那一半改用該變更的顏色，比變更行淡一階，和 JetBrains IDE 一樣。以前是灰色。
+- Git diff：只改空白的地方（例如 tab 換成空格、多一個空格）會在行內標出。Whitespace 設成 Trim 或 Ignore 時，該設定忽略的空白不標。
+- 檔案的分頁顯示檔案的圖示，和 Files 側欄給它的圖示相同，不再顯示 Space 的徽章。終端機、agent 與其他工具的分頁維持徽章。
+- Git 模式變快。暫存、取消暫存、捨棄與提交在每次寫入 index 之後，不再重新檢查資料夾的 Git 設定。在一台 Mac 上用一個大型 repo 量測：提交連同檢查從約 290 ms 降到約 130 ms，檔案歷史的前幾列從約 440 ms 降到約 130 ms，在 Yuzora 外面改的檔案從約 315 ms 降到約 65 ms 就顯示。
+
+### Fixed
+- 使用 Yuzora layout 時，換成 Yuzora 以外的顏色主題，側邊欄旁不再出現洋紅色的線，資源用量 popover 也能正常打開。
+- Git：包含 untracked 檔案的 stash 會把它們從工作樹拿走，pop 時再放回來。以前檔案留在原地，pop 因為不能覆寫它們而失敗，stash 也留著。Smart checkout 用的就是這種 stash，所以只要有 untracked 檔案，每次切換分支都會留下一個「yuzora: smart checkout of …」的 stash。stash 的「Keep index」會保留 index。以前它在變更已經 stash 之後才失敗。
+- Git：macOS 啟動資料夾監看比較慢的時候，開啟 repo 不再跟著等上好幾秒。
+- Git：信任資料夾之前的檢查，現在看得到 index 項目帶有 git 自己不會寫出的 mode 位元的 submodule。這種 index 來自 git 以外，例如解開的壓縮檔。
+
 ## [0.1.1] - 2026-11-12
 
 ### New

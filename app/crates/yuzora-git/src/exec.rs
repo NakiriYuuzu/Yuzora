@@ -419,11 +419,48 @@ pub fn run_streaming(place: &Place, cmd: Git, sink: Option<&mut dyn FnMut(&[u8])
     if place.needs_git_check() {
         check_top(place, &cmd)?;
     }
+    #[cfg(test)]
+    let began = Instant::now();
     let out = if place.is_remote() { run_remote(place, &cmd, sink) } else { run_local(place, &cmd, sink) }?;
+    #[cfg(test)]
+    trace::note(place, &cmd, began);
     if let Some(g) = guarded {
         crate::trust::heard(g, &out);
     }
     Ok(out)
+}
+
+/// Every git a test has the engine run, with when and how long (the perf harness reads it: `perf.rs`).
+#[cfg(test)]
+pub mod trace {
+    use super::*;
+
+    pub struct Call {
+        pub program: String,
+        pub args: Vec<String>,
+        pub env: Vec<(String, String)>,
+        pub read: bool,
+        pub began: Instant,
+        pub took: Duration,
+    }
+
+    static CALLS: Mutex<Option<Vec<Call>>> = Mutex::new(None);
+
+    pub fn start() {
+        *CALLS.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
+    }
+
+    pub fn take() -> Vec<Call> {
+        CALLS.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default()
+    }
+
+    pub(super) fn note(place: &Place, cmd: &Git, began: Instant) {
+        if let Some(calls) = CALLS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            let args = base_args(cmd.kind).into_iter().chain(cmd.args.iter().cloned()).collect();
+            let env = environment(cmd.kind, false, &cmd.env).into_iter().chain(place.confine()).collect();
+            calls.push(Call { program: place.program(), args, env, read: cmd.kind == Kind::Read, began, took: began.elapsed() });
+        }
+    }
 }
 
 /// Asks git (`rev-parse --show-toplevel --absolute-git-dir`, the same folder and environment,

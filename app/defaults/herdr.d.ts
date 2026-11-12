@@ -282,6 +282,7 @@ export function placement(): {
  *  chrome (sidebars and bars), popover, raised, hover, selected, border, input, foreground,
  *  muted, dim, accent, accent_foreground, solid and solid_foreground (a primary button: ink on
  *  paper, paper on ink), selection, working, blocked, done, idle, unknown, ansi0..ansi15.
+ *  yuzora(L1): and divider (the lines between parts; a theme that names none gets its border).
  *  Light and dark themes name the same colors, so a mod that uses them follows both. */
 export function theme(): Record<string, string>;
 

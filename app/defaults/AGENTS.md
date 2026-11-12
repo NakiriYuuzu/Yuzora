@@ -1109,6 +1109,10 @@ with these differences.
   has no name for (diff colors, agent brand colors, Space badge colors, the
   agent states' shapes, sizes) come from `tokens()`, which gives a light theme
   its own text, diff and status colors.
+- `theme()` has one more color in Yuzora: `divider`, the 1px lines between
+  parts of the window (`layouts/yuzora.json` draws its dividers in it, softer
+  than `border`). Every theme has it: a theme that names no `divider` in its
+  `colors` gets its `border`.
 - Mods can import Yuzora's modules: `yuzora:core` (`t`, `tokens`,
   `panes`, `settingsPages`, `getSetting`, `setSetting`, `exec` with its own
   timeout and `on` machine) and `yuzora:shell`, `yuzora:git`, `yuzora:db`,
