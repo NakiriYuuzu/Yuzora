@@ -1,8 +1,6 @@
 const RELEASE_DOWNLOAD_BASE = "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/"
-// 0.1.0 is the first release with the NSIS installer; v0.0.19 (Latest until
-// 0.1.0 is) has only an MSI, so the link names the release itself. Once 0.1.0
-// is Latest, `${RELEASE_DOWNLOAD_BASE}Yuzora-windows-x64-setup.exe` is the same file.
-const WINDOWS_INSTALLER = "https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0/Yuzora-windows-x64-setup.exe"
+// Every stable release since 0.1.0 carries the NSIS installer under this fixed name.
+const WINDOWS_INSTALLER = `${RELEASE_DOWNLOAD_BASE}Yuzora-windows-x64-setup.exe`
 
 const DOWNLOADS = {
   macos: {

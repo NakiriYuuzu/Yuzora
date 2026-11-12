@@ -1,9 +1,9 @@
 /* global getComputedStyle, URLSearchParams, document, window, localStorage, matchMedia, IntersectionObserver, requestAnimationFrame, performance, fetch, setInterval, navigator */
 
-import { initDownloadExperience } from "./downloads.js?v=0.1.0";
+import { initDownloadExperience } from "./downloads.js?v=0.1.1";
 
 /* ============ i18n ============ */
-import { I18N } from "./i18n.js?v=0.1.0";
+import { I18N } from "./i18n.js?v=0.1.1";
 
 /* Mini palette 指令（真實功能，示意互動） */
 const MP_COMMANDS = [
