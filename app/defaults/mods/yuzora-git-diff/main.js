@@ -636,11 +636,12 @@ export default class GitDiff extends View {
     const changedRow = r.k === "~" || r.k === "-" || r.k === "+";
     const present = n !== undefined;
     const del = side === "l";
-    const bg = !changedRow || !present ? null : del ? d.removed_bg : d.added_bg;
+    // Beside a line the other side has alone, the room is that change's colour, softer: an added line's on the left.
+    const bg = !changedRow ? null : present ? (del ? d.removed_bg : d.added_bg) : del ? d.added_filler ?? th.raised : d.removed_filler ?? th.raised;
     const index = del ? r.li : r.ri;
     const picked = changedRow && present && this.sel[r.h]?.[del ? "del" : "add"]?.has(index);
     const canPick = changedRow && present && this.view.stageable;
-    return h_flex().w(0).flex_grow(grow).min_w(0).h_full().relative().when(Boolean(bg), (el) => el.bg(bg)).when(changedRow && !present, (el) => el.bg(th.raised))
+    return h_flex().w(0).flex_grow(grow).min_w(0).h_full().relative().when(Boolean(bg), (el) => el.bg(bg))
       .child(div().w(GUTTER).flex_none().h_full().pr(6).text_right().text_color(picked ? th.foreground : th.dim)
         .when(picked, (el) => el.bg(del ? d.removed ?? th.ansi1 : d.added ?? th.ansi2).text_color(th.background))
         .when(canPick, (el) => el.cursor_pointer().hover((s) => s.text_color(th.foreground)))

@@ -916,7 +916,7 @@ impl DiffPane {
         let core = HostModule::new("yuzora:core")
             .function("t", |a| Ok(a.string(0)?.into()))
             .function("session", |_| Ok("fixture-run".into()))
-            .function("tokens", |_| Ok(to_host(&json!({"diff": {"added": "#86d17a", "removed": "#f08a8a", "added_bg": "#103010", "removed_bg": "#301010"}}))));
+            .function("tokens", |_| Ok(to_host(&json!({"diff": {"added": "#86d17a", "removed": "#f08a8a", "added_bg": "#103010", "removed_bg": "#301010", "added_filler": "#0c200c", "removed_filler": "#200c0c"}}))));
         let calls = notes.clone();
         let laid = Rc::new(RefCell::new(Vec::<usize>::new()));
         let counted = laid.clone();
@@ -2737,19 +2737,29 @@ fn mark_of(pane: &DiffPane) -> Value {
         .map_or(Value::Null, |n| n[1].clone())
 }
 
+/// Whether a colour is `rgba`.
+fn coloured(c: Option<gpui::Hsla>, rgba: u32) -> bool {
+    let want: gpui::Hsla = gpui::rgba(rgba).into();
+    c.is_some_and(|c| (c.h - want.h).abs() < 1e-3 && (c.s - want.s).abs() < 1e-3 && (c.l - want.l).abs() < 1e-3 && (c.a - want.a).abs() < 1e-3)
+}
+
 /// Whether a colour is the selection's: the accent's wash.
 fn selection_coloured(c: Option<gpui::Hsla>) -> bool {
-    let wash: gpui::Hsla = gpui::rgba(0x4080ff44).into();
-    c.is_some_and(|c| (c.h - wash.h).abs() < 1e-3 && (c.s - wash.s).abs() < 1e-3 && (c.l - wash.l).abs() < 1e-3 && (c.a - wash.a).abs() < 1e-3)
+    coloured(c, 0x4080ff44)
 }
 
 /// What the last frame painted in the selection's colour, each `(left, right, middle)` in the window's pixels.
 fn tints(pane: &mut DiffPane) -> Vec<(f64, f64, f64)> {
+    painted(pane, 0x4080ff44)
+}
+
+/// What the last frame painted in colour `rgba`, each `(left, right, middle)` in the window's pixels.
+fn painted(pane: &mut DiffPane, rgba: u32) -> Vec<(f64, f64, f64)> {
     let scale = pane.visual.update(|window, _| window.scale_factor());
     pane.visual
         .update(|window, _| window.painted_quads())
         .into_iter()
-        .filter(|q| selection_coloured(q.background.as_solid()))
+        .filter(|q| coloured(q.background.as_solid(), rgba))
         .map(|q| {
             let at = |v: f32| (v / scale) as f64;
             let (left, top) = (at(q.bounds.origin.x.as_f32()), at(q.bounds.origin.y.as_f32()));
@@ -2867,6 +2877,26 @@ fn yuzora_diff_dragging_across_rows_selects_from_the_row_pressed_to_the_row_unde
         Some("keep\n\told one\nold two\nnew one\ntail"),
         "unified copies the lines as they are shown"
     );
+    pane.close();
+}
+
+// yuzora(L2): side by side, the room beside a line only one side has is the colour of that change, softer than a line of it
+// (the tokens' fillers): beside a removed line the removed colour, beside an added one the added colour, across the side.
+#[gpui::test]
+fn yuzora_diff_the_room_beside_a_removed_or_an_added_line_takes_its_colour(cx: &mut TestAppContext) {
+    let rows = json!([
+        {"k": "~", "h": 0, "l": 1, "li": 0, "lt": "old", "r": 1, "ri": 0, "rt": "new"},
+        {"k": "~", "h": 0, "l": 2, "li": 1, "lt": "gone"},
+        {"k": "~", "h": 0, "r": 2, "ri": 1, "rt": "come"},
+    ]);
+    let mut pane = DiffPane::mount_at(cx, Diff::of(rows), 1200., (1200., 600.), 1., &Shared::default(), json!({}));
+    let on = |quads: Vec<(f64, f64, f64)>, row: usize| quads.into_iter().filter(|q| (q.2 - row_y(row)).abs() < 1.).map(|q| (q.0.round(), q.1.round())).collect::<Vec<_>>();
+    let (removed, added) = (painted(&mut pane, 0x200c0cff), painted(&mut pane, 0x0c200cff));
+    // The left side ends at 599.5, the right begins past the divider at 600.5 (rounded here).
+    assert_eq!(on(removed.clone(), 1), [(601., 1200.)], "the right side of the removed line's row");
+    assert_eq!(on(added.clone(), 2), [(0., 600.)], "the left side of the added line's row");
+    assert_eq!((on(removed, 0), on(added, 0)), (vec![], vec![]), "and not beside a line the other side has too");
+    assert!(painted(&mut pane, 0x202020ff).iter().all(|q| q.2 < COPY_HEADER), "no row is grey: {:?}", painted(&mut pane, 0x202020ff));
     pane.close();
 }
 
