@@ -476,12 +476,18 @@ fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {
     if !kept {
         return full(repo);
     }
-    let st = parse_porcelain_v2(&whole(repo.run(cmd)?, cap)?);
-    let (ls, _) = untracked_cmd(cap).paths_or_all(&paths);
-    let out = whole(repo.run(ls)?, cap)?;
+    // As in `full`: the reads don't depend on each other, so they go side by
+    // side (after a stage or a discard, the list waits on this), and are
+    // judged in the order they used to run.
+    let (st, out, staged, unstaged) = std::thread::scope(|s| {
+        let out = crate::exec::spawn_scoped(s, || whole(repo.run(untracked_cmd(cap).paths_or_all(&paths).0)?, cap));
+        let staged = crate::exec::spawn_scoped(s, || numstat(repo, true, &paths));
+        let unstaged = crate::exec::spawn_scoped(s, || numstat(repo, false, &paths));
+        let st = repo.run(cmd).and_then(|o| whole(o, cap)).map(|o| parse_porcelain_v2(&o));
+        (st, joined(out), joined(staged), joined(unstaged))
+    });
+    let (st, out, staged, unstaged) = (st?, out?, staged?, unstaged?);
     let untracked: Vec<String> = split_z(&out).collect();
-    let staged = numstat(repo, true, &paths)?;
-    let unstaged = numstat(repo, false, &paths)?;
     let lines = count_untracked(repo, untracked.iter());
     let operation = crate::repo::operation(repo);
     let mut c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
