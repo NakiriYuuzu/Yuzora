@@ -882,6 +882,33 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         assert_eq!(snapshot(&s.repo)["unstaged"][0]["path"], "sub", "the cached clean gitlink stayed");
     }
 
+    // git tells a gitlink by the type bits of its mode, whatever the others
+    // are (an index made by hand may set them).
+    #[test]
+    fn a_gitlink_whose_mode_has_other_bits_is_still_a_gitlink() {
+        for mode in [0o160755u32, 0o360000] {
+            let s = scratch();
+            s.commit("a.txt", "1\n", "first");
+            s.write("sub/f.txt", "1\n");
+            s.git(&["-C", "sub", "init", "-q"]);
+            s.git(&["-C", "sub", "add", "f.txt"]);
+            s.git(&["-C", "sub", "-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false", "commit", "-qm", "s"]);
+            let head = s.git(&["-C", "sub", "rev-parse", "HEAD"]);
+            s.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{},sub", head.trim())]);
+            // The gitlink's mode, written over in the index file (git doesn't check the file's checksum as it reads).
+            let index = std::path::Path::new(s.root()).join(".git/index");
+            let mut bytes = std::fs::read(&index).unwrap();
+            let at: Vec<usize> = bytes.windows(4).enumerate().filter(|(_, w)| *w == 0o160000u32.to_be_bytes()).map(|(i, _)| i).collect();
+            assert_eq!(at.len(), 1, "one gitlink mode in the index");
+            bytes[at[0]..at[0] + 4].copy_from_slice(&mode.to_be_bytes());
+            std::fs::write(&index, bytes).unwrap();
+            assert!(s.git(&["ls-files", "-s", "sub"]).starts_with(&format!("{mode:06o} ")), "git doesn't read the mode as written");
+            assert!(s.git(&["status", "--porcelain=v2"]).lines().any(|l| l.split(' ').nth(2).is_some_and(|sub| sub.starts_with('S')) && l.ends_with(" sub")), "git doesn't take it for a submodule, so this test proves nothing");
+            refresh(&s.repo).unwrap();
+            assert_eq!(s.repo.status.lock().unwrap().gitlinks, Some(vec!["sub".to_string()]), "mode {mode:o}");
+        }
+    }
+
     #[test]
     fn a_gitlink_list_cut_short_isnt_taken_as_whole() {
         let s = scratch();

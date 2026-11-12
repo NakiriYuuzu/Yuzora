@@ -1362,6 +1362,34 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    // git tells a gitlink by the type bits of its mode (`S_ISGITLINK`),
+    // whatever the others are. git writes none; an index made by hand (one
+    // unpacked from an archive) may, and git still looks into the submodule.
+    #[cfg(unix)]
+    #[test]
+    fn a_gitlink_whose_mode_has_other_bits_counts_too() {
+        for (name, mode) in [("mode-perm", 0o160755u32), ("mode-high", 0o360000)] {
+            let (dir, top, git) = scratch_dir(name);
+            git("", &["init", "-q"]);
+            let mark = dir.join("ran");
+            let evil = evil_repo(&git, &top, "sub", &mark);
+            git("", &["update-index", "--add", "--cacheinfo", &format!("160000,{evil},sub")]);
+            // The only entry: its mode is 24 bytes into it, after the 12 of the header.
+            let index = Path::new(&top).join(".git/index");
+            let bytes = std::fs::read(&index).unwrap();
+            let mut body = bytes[..bytes.len() - 20].to_vec();
+            assert_eq!(body[36..40], 0o160000u32.to_be_bytes());
+            body[36..40].copy_from_slice(&mode.to_be_bytes());
+            std::fs::write(&index, [&body[..], &sha1(&body)].concat()).unwrap();
+            assert_eq!(git("", &["ls-files", "-s"]).split(' ').next(), Some(format!("{mode:06o}").as_str()), "{name}: git doesn't read the mode as written");
+            let file = dir.join("trusted.json");
+            assert_eq!(pending_from(&file, None, &top), Ok(vec!["sub: filter.evil.clean".to_string()]), "{name}");
+            assert!(!mark.exists(), "{name}: the scan ran the filter");
+            assert!(status_runs_the_filter(&top, &Path::new(&top).join("sub"), &mark), "{name}: status didn't run the submodule's filter, so this test proves nothing");
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
     /// A scratch folder for a test, with `git` run in a folder inside it.
     #[cfg(unix)]
     fn scratch_dir(name: &str) -> (PathBuf, String, impl Fn(&str, &[&str]) -> String) {
