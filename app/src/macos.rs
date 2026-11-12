@@ -8,16 +8,17 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(|_: &Settings, _| crate::mods::request(crate::mods::Request::Run { name: "app.settings".into(), args: serde_json::Value::Null }));
-    cx.set_menus([Menu::new("Herdr").items([
+    // yuzora(L1): the app menu names the app the person is in (macOS shows the bundle's name as its title either way).
+    cx.set_menus([Menu::new("Yuzora").items([
         MenuItem::action("Settings", Settings),
         MenuItem::separator(),
         MenuItem::os_submenu("Services", SystemMenuType::Services),
         MenuItem::separator(),
-        MenuItem::action("Hide Herdr", Hide),
+        MenuItem::action("Hide Yuzora", Hide), // yuzora(L1)
         MenuItem::action("Hide Others", HideOthers),
         MenuItem::action("Show All", ShowAll),
         MenuItem::separator(),
-        MenuItem::action("Quit Herdr", Quit),
+        MenuItem::action("Quit Yuzora", Quit), // yuzora(L1)
     ])]);
 }
 

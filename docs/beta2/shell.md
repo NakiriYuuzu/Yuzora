@@ -124,6 +124,8 @@ L1 讀的 key：
 | `app/defaults/frame/welcome/main.js` | 標題、說明中的 app 名稱改為 Yuzora；圖示改 `yuzora.png`；請 agent 讀的 AGENTS.md 改用 `appHome()` 組出實際路徑（`YUZORA_APP_HOME`／`XDG_CONFIG_HOME` 改過時也正確）；`panels()` 沒有設定時視為沒有 panel |
 | `app/defaults/frame/whatsnew/main.js` | 標題與圖示 |
 | `app/defaults/frame/feedback/main.js` | 送出後的感謝文字 |
+| `app/defaults/frame/palette/main.js` | 離開項目的標題改為「Quit Yuzora」（搜尋詞加 `herdr`，舊習慣還找得到）；另見上面「HERDR 工具」一節拿掉的「Next layout」 |
+| `app/src/macos.rs` | macOS 應用程式選單的 3 個字串：選單名稱、「Hide Yuzora」「Quit Yuzora」（原本是 Herdr）。守衛：`scripts/yuzora-brand.test.ts` |
 | `app/defaults/frame/welcome/yuzora.png` | 新檔：Yuzora 圖示（160px，由 `assets/icons/yuzora.png` 縮圖） |
 
 保留不改：welcome 的「從 Herdr TUI 搬設定」段落（指的是 Herdr TUI）、`Herdr 98`（layout 名稱）、`herdr-core`。settings frame 歸 L6。
