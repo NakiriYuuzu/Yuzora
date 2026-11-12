@@ -93,7 +93,7 @@ export default class GitDiff extends View {
     const s = gitSettings(), p = props() ?? {};
     // The popup of a right-click: what it offers, and nothing of the pane's own.
     this.offer = p.menu ?? null;
-    if (this.offer) { this.err = null; return; }
+    if (this.offer) return;
     // Kept from a modal: the view it had there.
     this.layout = (p.layout ?? s.diffMode) === "unified" ? "unified" : "side";
     this.whitespace = p.whitespace ?? s.diffIgnoreWhitespace ?? "none";
@@ -823,9 +823,12 @@ export default class GitDiff extends View {
   // The popup of a right-click. Each row puts its text on the clipboard and closes the popup; a failure stays in it.
   renderOffer(cx) {
     const th = theme(), m = this.offer, n = total(m.runs);
+    // A failure is said in a toast and the menu closes: the popup is as tall as its three rows (MENU_HEIGHT), so a
+    // line under them would be cut off and the click would seem to do nothing.
     const act = (cx, work) => cx.spawn(async (cx) => {
-      try { await work(cx); closeOverlay(props().overlay); }
-      catch (e) { this.err = String(e?.message ?? e); cx.notify(); }
+      try { await work(cx); }
+      catch (e) { notify({ title: t("copy.failed"), body: String(e?.message ?? e), level: "error" }); }
+      closeOverlay(props().overlay);
     });
     const row = (id, label, enabled, work) => div().id(id).h(MENU_ROW).px(10).flex().items_center().rounded(4).text_size(12)
       .text_color(enabled ? th.foreground : th.dim)
@@ -835,8 +838,7 @@ export default class GitDiff extends View {
       .child(row("copy", n === 1 ? t("menu.copy_one") : n ? t("menu.copy_other", { count: n }) : t("menu.copy"), n > 0,
         (cx) => clip(cx, diffText(m.id, m.runs), linesCopied(n))))
       .child(row("hunk", t("menu.hunk"), m.hunk.length > 0, (cx) => clip(cx, diffText(m.id, m.hunk), t("copied.hunk"))))
-      .child(row("patch", t("menu.patch"), m.hunks.length > 0, async (cx) => clip(cx, await diffPatch(m.id, m.hunks, m.whitespace), t("copied.patch"))))
-      .when(Boolean(this.err), (el) => el.child(div().px(10).py(4).text_size(11).text_color(th.ansi1).child(this.err)));
+      .child(row("patch", t("menu.patch"), m.hunks.length > 0, async (cx) => clip(cx, await diffPatch(m.id, m.hunks, m.whitespace), t("copied.patch"))));
   }
 
   // A frame that does not come back, not even by throwing, was cut off by the engine: it stays marked as begun.
