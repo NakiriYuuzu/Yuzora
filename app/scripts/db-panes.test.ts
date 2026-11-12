@@ -236,3 +236,10 @@ test("yuzora-db-table's Run with nothing typed leaves the read of the table goin
   expect(calls.cancel).toEqual([]);
   expect(quiet).toMatchObject({ jobId: 41, jobKind: "table", tab: "sql" });
 });
+
+test("yuzora-sidebar-database never writes a row count as 1000k", async () => {
+  const source = await readFile(new URL("../defaults/mods/yuzora-sidebar-database/main.js", import.meta.url), "utf8");
+  const short = new Function(`${/^function short\(n\) \{[\s\S]*?^\}/m.exec(source)![0]}\nreturn short;`)() as (n: number | null) => string;
+  expect([null, 999, 2104, 9999, 150499, 999499, 999500, 999999, 1000000, 1200000].map(short))
+    .toEqual(["", "999", "2.1k", "10k", "150k", "999k", "1M", "1M", "1M", "1.2M"]);
+});

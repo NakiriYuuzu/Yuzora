@@ -17,11 +17,11 @@ const BADGE = "yuzora.badge.database"; // live connections, null for none
 const ROW = 25;
 const OTHER_KINDS = ["function", "procedure", "sequence", "trigger", "index", "type", "other"];
 
-/** 2104 → "2.1k", 1200000 → "1.2M". */
+/** 2104 → "2.1k", 999500 → "1M" (what would round to 1000k), 1200000 → "1.2M". */
 function short(n) {
   if (n === null || n === undefined || n < 0) return "";
   if (n < 1000) return String(n);
-  if (n < 1e6) return `${(n / 1e3).toFixed(n < 1e4 ? 1 : 0).replace(/\.0$/, "")}k`;
+  if (n < 999500) return `${(n / 1e3).toFixed(n < 1e4 ? 1 : 0).replace(/\.0$/, "")}k`;
   return `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0).replace(/\.0$/, "")}M`;
 }
 
