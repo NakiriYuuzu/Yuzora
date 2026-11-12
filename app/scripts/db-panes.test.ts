@@ -203,6 +203,100 @@ test("yuzora-db-table asks about unwritten edits before the SQL goes ahead of a 
   expect(calls.query).toEqual([["c", null, "k", "COMMIT"]]);
 });
 
+// A pick in the sidebar reads another table in this pane, and the core stops the pane's older job for it.
+// An element as the bar builds it: the texts it was given and what a click on each id does.
+const drawn = () => {
+  const texts: string[] = [], clicks: Record<string, (e: unknown, cx: unknown) => void> = {};
+  const element = (): any => {
+    let id = "";
+    const self: any = new Proxy({}, {
+      get: (_t, prop) => (prop === "then" ? undefined : (...args: any[]) => {
+        if (prop === "id") id = args[0];
+        else if (prop === "child" && typeof args[0] === "string") texts.push(args[0]);
+        else if (prop === "on_click") clicks[id] = args[0];
+        else if (prop === "when" && args[0]) args[1](self);
+        return self;
+      }),
+    });
+    return self;
+  };
+  return { texts, clicks, element };
+};
+
+const pickOver = async (jobKind: "table" | "sql", state: "running" | "started" | "done" = "running") => {
+  const calls = { openTable: 0 };
+  const open = { key: "k", seq: 7, target: { connection: "c", database: null, schema: "public", name: "second", kind: "table" } };
+  const screen = drawn();
+  const Pane = await load("yuzora-db-table", "DbTable", never, {
+    t: (key: string, values?: { name?: string }) => (values?.name ? `${key}:${values.name}` : key),
+    div: screen.element,
+    h_flex: screen.element,
+    shared: () => open,
+    openTable: () => ++calls.openTable + 100,
+    tableInfo: never,
+    result: () => ({ edits: 0 }),
+  });
+  const pane = new Pane();
+  Object.assign(pane, {
+    key: "k", seq: 1, tab: "sql", shown: 0, jobId: 41, jobKind,
+    target: { connection: "c", database: null, schema: "public", name: "first", kind: "table" },
+    state: state === "started" ? null : { id: 41, running: state === "running", version: 1, elapsedMs: 0, error: null, cancelled: false, results: [{ id: 5 }] },
+  });
+  return { pane, calls, open, screen };
+};
+
+test("yuzora-db-table asks before a pick in the sidebar stops a statement of the person's own", async () => {
+  for (const state of ["running", "started"] as const) {
+    const { pane, calls } = await pickOver("sql", state);
+    pane.retarget(cx);
+    expect(calls.openTable).toBe(0);
+    expect(pane.target.name).toBe("first");
+    expect(pane.asking).toMatchObject({ name: "second" });
+    pane.asking.action(cx);
+    expect(calls.openTable).toBe(1);
+    expect(pane.target.name).toBe("second");
+  }
+});
+
+test("yuzora-db-table's bar over a running statement names the table picked, and each answer does what it says", async () => {
+  const { pane, calls, open, screen } = await pickOver("sql");
+  pane.retarget(cx);
+  expect(pane.askingBar({})).not.toBeNull();
+  expect(screen.texts).toEqual(["running_pick:second", "running_keep", "running_stop"]);
+  screen.clicks["keep-running"]({}, cx);
+  expect(pane.asking).toBeNull();
+  expect(calls.openTable).toBe(0);
+  expect(pane.target.name).toBe("first");
+
+  open.seq = 8;
+  pane.retarget(cx);
+  pane.askingBar({});
+  screen.clicks["stop-and-open"]({}, cx);
+  expect(pane.asking).toBeNull();
+  expect(calls.openTable).toBe(1);
+  expect(pane.target.name).toBe("second");
+});
+
+test("yuzora-db-table's bar goes away, and the pick with it, when the statement ends by itself", async () => {
+  const { pane, calls } = await pickOver("sql");
+  pane.retarget(cx);
+  pane.state = { ...pane.state, running: false };
+  expect(pane.askingBar({})).toBeNull();
+  expect(pane.asking).toBeNull();
+  expect(calls.openTable).toBe(0);
+  expect(pane.target.name).toBe("first");
+});
+
+test("yuzora-db-table reads a pick at once over its own read of a table, or a statement that is done", async () => {
+  for (const [kind, state] of [["table", "running"], ["sql", "done"]] as const) {
+    const { pane, calls } = await pickOver(kind, state);
+    pane.retarget(cx);
+    expect(pane.asking ?? null).toBeNull();
+    expect(calls.openTable).toBe(1);
+    expect(pane.target.name).toBe("second");
+  }
+});
+
 test("yuzora-db-table leaves the table's Refresh alone while the table is being read", async () => {
   const { pane, calls } = await busyPane("table");
   pane.tab = "data";

@@ -37,6 +37,7 @@ export default class DbTable extends View {
     this.infoJob = null;
     this.sql = "";
     this.confirm = null; // {count, action}: unsaved edits stand in the way of action
+    this.asking = null; // {name, action}: a statement of the person's own is still running where the sidebar's pick would be read
     this.handle = cx.focus_handle();
     cx.spawn(async (cx) => {
       for (;;) {
@@ -195,13 +196,40 @@ export default class DbTable extends View {
     const o = shared(OPEN);
     if (!o || o.key !== this.key || o.seq === this.seq) return;
     this.seq = o.seq;
-    this.guard(cx, (cx) => {
+    const go = (cx) => this.guard(cx, (cx) => {
       this.target = o.target;
       this.sql = "";
       this.tab = "data";
       this.load(cx);
     });
+    // Reading the pick stops the pane's job, and on SQL Server stopping a statement drops its connection and what its transaction did.
+    if (this.ownStatement()) this.asking = { name: o.target?.name ?? "", action: go };
+    else go(cx);
     cx.notify();
+  }
+
+  /** A statement the person ran in the SQL tab that has not finished (one just started has no state yet). */
+  ownStatement() {
+    return this.jobKind === "sql" && this.jobId !== null && (this.state?.running ?? true);
+  }
+
+  /** The sidebar's pick waits while the person's statement runs: let it finish, or stop it and open the pick. */
+  askingBar(th) {
+    const a = this.asking;
+    if (!this.ownStatement()) {
+      this.asking = null;
+      return null;
+    }
+    const button = (id, text, danger, onClick) => div().id(id).min_h(20).px(10).py(2).flex().flex_none().max_w("100%").items_center().rounded(4).text_size(11.5).cursor_pointer()
+      .hover((s) => s.opacity(0.88)).on_click(onClick)
+      .when(danger, (el) => el.border_1().border_color(th.input).text_color(th.blocked))
+      .when(!danger, (el) => el.bg(th.solid).text_color(th.solid_foreground).font_semibold())
+      .child(text);
+    return h_flex().min_h(30).flex_none().flex_wrap().px(12).py(4).gap_x(8).gap_y(4).items_center().bg(th.raised).text_size(12).border_b(1).border_color(th.divider ?? th.border)
+      .child(div().flex_auto().min_w(0).text_color(th.blocked).child(t("running_pick", { name: a.name })))
+      .child(h_flex().flex_none().flex_wrap().max_w("100%").gap(8).items_center()
+        .child(button("keep-running", t("running_keep"), false, (_e, cx) => { this.asking = null; cx.notify(); }))
+        .child(button("stop-and-open", t("running_stop"), true, (_e, cx) => { this.asking = null; a.action(cx); cx.notify(); })));
   }
 
   stopSaving(id) {
@@ -360,7 +388,7 @@ export default class DbTable extends View {
     if (!this.target) return root.child(div().p(16).text_size(12).text_color(th.dim).child(t("pick")));
     const conn = this.conn();
     const content = this.tab === "structure" ? this.structure(th) : this.tab === "sql" ? this.sqlTab(th) : this.data(th);
-    const confirm = this.confirm ? this.confirmBar(th) : null;
+    const confirm = this.asking ? this.askingBar(th) : this.confirm ? this.confirmBar(th) : null;
     return root.child(this.toolbar(th, conn)).when(Boolean(confirm), (el) => el.child(confirm)).child(content);
   }
 }

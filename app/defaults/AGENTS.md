@@ -1347,7 +1347,9 @@ with these differences.
   the statement (it asks first when the table has unsaved edits). A write-back
   that waits is not stopped by Run (it raises a bar with Keep waiting and
   Stop saving): press Stop saving. A statement of
-  the person's own that is still running has to be stopped with Stop. Then run
+  the person's own that is still running has to be stopped with Stop; picking
+  another table in the sidebar meanwhile raises a bar (Keep it running, or
+  Stop it and open) instead of stopping it unasked. Then run
   the table again. What the SQL tab has not committed is not in the table either. Tell
   the person this when a table will not load or save after they used the SQL
   tab.

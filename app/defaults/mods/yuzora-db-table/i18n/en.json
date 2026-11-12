@@ -2,6 +2,9 @@
   "title": "Table",
   "pick": "Pick a table or view in the Database sidebar.",
   "loading": "Loading…",
+  "running_pick": "A statement is still running. Opening {name} stops it.",
+  "running_keep": "Keep it running",
+  "running_stop": "Stop it and open",
   "tab": {
     "data": "Data",
     "structure": "Structure",
