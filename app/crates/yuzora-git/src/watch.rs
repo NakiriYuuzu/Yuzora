@@ -108,6 +108,8 @@ pub fn start(repo: &Arc<Repo>) -> bool {
     #[cfg(test)]
     starts().lock().unwrap().push((repo.id.clone(), std::thread::current().id()));
     #[cfg(test)]
+    std::thread::sleep(START_TAKES.with(|t| t.get()));
+    #[cfg(test)]
     if NO_WATCH.with(|n| n.get()) {
         return false;
     }
@@ -142,6 +144,9 @@ thread_local! {
     /// Watches started on this thread fail, as when the system has no
     /// watches left (tests).
     pub static NO_WATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Watches started on this thread take this long to start or fail, as
+    /// when the system's file-event service is busy (tests).
+    pub static START_TAKES: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
 }
 
 /// Which thread started each watch (tests).

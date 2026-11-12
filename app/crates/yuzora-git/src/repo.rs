@@ -21,6 +21,12 @@ pub const WAIT_LIMIT: Duration = Duration::from_secs(25);
 /// until the next call (views wait on `changed` all the time they are open).
 pub const IDLE: Duration = Duration::from_secs(120);
 
+/// How long an open waits for its watch to start. The system's file-event
+/// service answers within a millisecond as a rule, and takes seconds while
+/// the disk is busy (a build): a pane's first paint waits for the open, so
+/// past this the watch starts behind it.
+pub const WATCH_START: Duration = Duration::from_millis(100);
+
 /// How many generations' changes a repo keeps ([`Repo::changed_paths`]).
 pub const KEEP_CHANGES: usize = 256;
 
@@ -209,6 +215,34 @@ impl Repo {
                 self.unwatched.store(true, Ordering::SeqCst);
             }
         }
+    }
+
+    /// Starts the watch of a repo just opened, on its own thread, and waits
+    /// [`WATCH_START`] for it. Started by then, nothing went unseen. Started
+    /// later, the open has answered and views may have read: what changed
+    /// meanwhile counts as changed, as after an idle spell. True: in time.
+    fn watch_from_open(self: &Arc<Self>) -> bool {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let repo = self.clone();
+        // What the tests ask of watches started on the opening thread holds on this one.
+        #[cfg(test)]
+        let (no_watch, takes) = (crate::watch::NO_WATCH.with(|n| n.get()), crate::watch::START_TAKES.with(|t| t.get()));
+        let spawned = std::thread::Builder::new().name("yuzora-git-watch-start".into()).spawn(move || {
+            #[cfg(test)]
+            crate::watch::NO_WATCH.with(|n| n.set(no_watch));
+            #[cfg(test)]
+            crate::watch::START_TAKES.with(|t| t.set(takes));
+            repo.polled.store(!crate::watch::start(&repo), Ordering::SeqCst);
+            // Nobody waits any more: the open went on without the watch.
+            if tx.send(()).is_err() {
+                repo.invalidate_refs();
+            }
+        });
+        if spawned.is_err() {
+            // The next call starts it, as after an idle spell.
+            self.unwatched.store(true, Ordering::SeqCst);
+        }
+        rx.recv_timeout(WATCH_START).is_ok()
     }
 
     /// The watcher's tick: with no view calling or waiting for
@@ -532,7 +566,7 @@ pub fn open(cwd: &str, on: Option<&str>) -> GitResult<Arc<Repo>> {
     all.insert(id, repo.clone());
     drop(all);
     if !repo.place.is_remote() {
-        repo.polled.store(!crate::watch::start(&repo), Ordering::SeqCst);
+        repo.watch_from_open();
     }
     Ok(repo)
 }
@@ -974,9 +1008,8 @@ pub(crate) mod tests {
     fn a_repo_no_view_uses_stops_being_watched_until_one_does() {
         let s = scratch();
         s.commit("a.txt", "1\n", "first");
-        let r = open(s.root(), None).unwrap();
+        let r = open_watched(s.root());
         let watching = |r: &Repo| r.watch.lock().unwrap().is_some();
-        assert!(watching(&r));
         r.idle_after.store(100, Ordering::SeqCst);
         let until = Instant::now() + Duration::from_secs(5);
         while watching(&r) && Instant::now() < until {
@@ -989,6 +1022,19 @@ pub(crate) mod tests {
         let again = get(&r.id).unwrap();
         assert!(wait_until(|| watching(&again) && again.generation() > g));
         close(&r.id);
+    }
+
+    /// Opens the repo and waits for its watch: an open goes on without one
+    /// that is slow to start, and with every test starting one at once the
+    /// file-event service takes seconds.
+    fn open_watched(root: &str) -> Arc<Repo> {
+        let r = open(root, None).unwrap();
+        let until = Instant::now() + Duration::from_secs(60);
+        while r.watch.lock().unwrap().is_none() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(r.watch.lock().unwrap().is_some(), "the watch never started");
+        r
     }
 
     /// Lets the repo's watcher go as an idle repo's would.
@@ -1014,7 +1060,7 @@ pub(crate) mod tests {
     fn a_log_view_alone_brings_its_watcher_back_and_hears_commits() {
         let s = scratch();
         s.commit("a.txt", "1\n", "first");
-        let r = open(s.root(), None).unwrap();
+        let r = open_watched(s.root());
         release_now(&r);
         // Only the log pane looks at the repo: logWait in a loop, never repo::get.
         // A pane goes idle after its first load; during the load a wait can
@@ -1042,10 +1088,53 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_open_goes_on_without_a_watch_that_is_slow_to_start() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        // The file-event service is busy: it answers long after an open may wait.
+        // (It answers no here, so only this test moves the generations.)
+        crate::watch::NO_WATCH.with(|n| n.set(true));
+        crate::watch::START_TAKES.with(|t| t.set(Duration::from_millis(1500)));
+        let began = Instant::now();
+        let r = open(s.root(), None);
+        crate::watch::NO_WATCH.with(|n| n.set(false));
+        crate::watch::START_TAKES.with(|t| t.set(Duration::ZERO));
+        let (r, took) = (r.unwrap(), began.elapsed());
+        assert!(took < Duration::from_millis(1000), "the open waited {took:?} for its watch");
+        // A view reads meanwhile, and something changes with no watch to see it.
+        assert_eq!(crate::status::read(&r, false).unwrap()["counts"]["unstaged"], 0);
+        let (g, refs) = (r.generation(), r.refs_generation());
+        s.write("a.txt", "2\n");
+        assert_eq!(crate::status::read(&r, false).unwrap()["counts"]["unstaged"], 0, "read again with nothing said to have changed");
+        // The answer comes in the end, and what went unseen counts as changed.
+        assert!(wait_until(|| r.generation() > g && r.refs_generation() > refs), "nothing counted as changed");
+        assert_eq!(crate::status::read(&r, false).unwrap()["counts"]["unstaged"], 1);
+        close(&r.id);
+    }
+
+    #[test]
+    fn a_watch_that_answers_in_time_counts_nothing_as_changed() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        // No watch, so no event of the disk's moves the generations.
+        crate::watch::NO_WATCH.with(|n| n.set(true));
+        let r = open(s.root(), None).unwrap();
+        let (g, refs) = (r.generation(), r.refs_generation());
+        let in_time = r.watch_from_open();
+        crate::watch::NO_WATCH.with(|n| n.set(false));
+        // Not in time on a machine too loaded to start a thread: the other test's case.
+        if in_time {
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!((r.generation(), r.refs_generation()), (g, refs), "an answer in time counted everything as changed");
+        }
+        close(&r.id);
+    }
+
+    #[test]
     fn a_watcher_starts_again_off_the_calling_thread() {
         let s = scratch();
         s.commit("a.txt", "1\n", "first");
-        let r = open(s.root(), None).unwrap();
+        let r = open_watched(s.root());
         release_now(&r);
         // Calls arrive on the UI thread; walking a big work tree must not.
         let me = std::thread::current().id();
