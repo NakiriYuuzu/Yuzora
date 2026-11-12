@@ -4,7 +4,7 @@
 
 ## [0.1.1] - 2026-11-12
 
-修正版。Git 的分支 popup 重新列出動作、分支與 tag，Pull 與 Fetch 找得到了；設定多了 Database 頁，可以改列數上限；數量是 1 的時候改用單數。0.1.1 是 Windows 上的 Yuzora 第一個自己安裝的更新。
+修正版。Git 的分支 popup 重新列出動作、分支與 tag，Pull 找得到了；設定多了 Database 頁，可以改列數上限；數量是 1 的時候大部分改用單數。0.1.1 是 Windows 上的 Yuzora 第一個自己安裝的更新。
 
 > **升級前請先看。** macOS、Linux 與 Windows 上的 0.1.0 會自己更新到 0.1.1，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Windows 上的 beta 無法自己更新，Tauri 版（v0.0.19、0.1.0-beta.1）也不會提供 0.1.1，這兩種情況都請手動下載安裝程式。詳見下方〈安裝說明〉。
 
@@ -14,18 +14,19 @@
 
 ### 修正
 
-- Git：從 Git 側欄的分支按鈕打開的分支 popup，會列出動作（Update project、Pull…、Fetch、Push…、New branch… 等）以及分支與 tag。以前只看得到搜尋框。Pull 與 Fetch 沒有其他按鈕，所以完全按不到。清單比 popup 長的時候，在 popup 裡捲動。
+- Git：從 Git 側欄的分支按鈕打開的分支 popup，會列出動作（Update project、Pull…、Fetch、Push…、New branch… 等）以及分支與 tag。以前只看得到搜尋框。Pull 沒有其他按鈕，所以完全按不到。清單比 popup 長的時候，在 popup 裡捲動。
 - Git：在 Git 側欄的 repo 選擇器裡，還沒按方向鍵就按 Enter 時，不再丟掉你釘選的 repo。釘選的 repo 不在清單上時會這樣，可能是它讀不到，或清單在它之前就被截斷。現在選擇器會關閉，釘選保留。
 - Git diff：右鍵選單的某一項失敗時（例如複製沒有成功），選單會關閉，並用 toast 說明原因。以前錯誤畫在選單裡的一列，被 popup 的高度切掉。
 - 資料庫：pane 的 SQL 分頁還有你執行中的陳述式時，在側欄點另一張資料表會先詢問。可以讓它繼續執行，或停止它並開啟資料表。以前會不問就停止，在 SQL Server 上這會讓它的交易 rollback。
-- 更新：更新裝不上時，Settings › Updates 只在那一版還在等待安裝時說明原因。以前下載了更新的版本之後，舊的原因還留在頁面上。
+- 更新：更新裝不上時，Settings › Updates 只在那一版還在等待安裝時說明原因。以前下載了更新的版本之後，舊的原因還留在頁面上。啟動時的失敗，會算在之後 Yuzora 第一個找到的待安裝版本上。
 - macOS：應用程式選單的名稱是 Yuzora，項目是 Hide Yuzora 與 Quit Yuzora，命令面板是 Quit Yuzora。以前寫的是 Herdr。在命令面板輸入「herdr」仍然找得到這一項。
-- 數量是 1 的時候改用單數：狀態列的「1 pane · 1 Space」與「1 agent」、Git 的「1 change」與「1 commit to push」、Database 的「1 row affected」，以及「1 file has conflicts.」。
+- 數量是 1 的時候，大部分改用單數：狀態列的「1 pane · 1 Space」與「1 agent」、Git 的「1 change」與「1 commit to push」、Database 的「1 row affected」，以及各個 Git pane 提示裡的「1 file has conflicts.」。
 - 999,500 到 999,999 的數量不再寫成 `1000k`。Git 側欄的行數寫 `999k`，Database 側欄的列數寫 `1M`。
 
 ### 已知限制
 
-- Git：分支 popup 的清單用滾輪或觸控板捲動，不顯示捲軸，和 repo 選擇器一樣。
+- Git：分支 popup 的清單用滾輪或觸控板捲動，不顯示捲軸，和 repo 選擇器一樣。用上下方向鍵移動時，反白的列不會自動捲進畫面。
+- 還有三處數量是 1 時仍是複數：rebase 停下來時的「1 files have conflicts.」、Git 側欄提交檢查的「1 files still have conflicts.」，以及 merge pane 的「1 conflicted files」。
 - 0.1.0 的已知限制仍然適用。
 
 ### 安裝說明

@@ -4,7 +4,7 @@
 
 ## [0.1.1] - 2026-11-12
 
-A fix release. The Git branch popup lists its actions, branches and tags again, so Pull and Fetch can be reached. Settings has a Database page for the row limit. Counts of one are written in the singular. 0.1.1 is the first update that Yuzora on Windows installs by itself.
+A fix release. The Git branch popup lists its actions, branches and tags again, so Pull can be reached. Settings has a Database page for the row limit. Most counts of one are written in the singular. 0.1.1 is the first update that Yuzora on Windows installs by itself.
 
 > **Before you upgrade.** 0.1.0 updates to 0.1.1 by itself on macOS, Linux and Windows. So do beta.2 to beta.4 on macOS and Linux. On Windows, a beta can't update itself, and the Tauri app (v0.0.19 and 0.1.0-beta.1) doesn't offer 0.1.1. In both cases, download the installer by hand. See the installation notes below.
 
@@ -14,18 +14,19 @@ A fix release. The Git branch popup lists its actions, branches and tags again, 
 
 ### Fixed
 
-- Git: the branch popup, opened from the branch button in the Git sidebar, lists its actions (Update project, Pull…, Fetch, Push…, New branch… and the rest) and your branches and tags. It used to show only its search box. Pull and Fetch have no other button, so they couldn't be reached. A list longer than the popup scrolls inside it.
+- Git: the branch popup, opened from the branch button in the Git sidebar, lists its actions (Update project, Pull…, Fetch, Push…, New branch… and the rest) and your branches and tags. It used to show only its search box. Pull has no other button, so it couldn't be reached. A list longer than the popup scrolls inside it.
 - Git: in the Git sidebar's repository picker, pressing Enter before any arrow key no longer drops the repository you pinned when it isn't on the list, because it couldn't be read or the list was cut short before it. The picker closes and the pin stays.
 - Git diff: when a row of the right-click menu fails, as when the copy doesn't go through, the menu closes and a toast says why. The error used to be drawn in a row that the popup cut off.
 - Database: picking another table in the sidebar while a statement of yours is still running in the pane's SQL tab asks first. You can keep it running, or stop it and open the table. It used to be stopped without a question, and on SQL Server that rolls its transaction back.
-- Updates: when an update can't be installed, Settings › Updates says why only while that update is the one waiting. The reason used to stay on the page after a newer update was downloaded.
+- Updates: when an update can't be installed, Settings › Updates says why only while that update is the one waiting. The reason used to stay on the page after a newer update was downloaded. A failure at startup is tied to the first update Yuzora finds waiting after it.
 - macOS: the application menu is named Yuzora and says Hide Yuzora and Quit Yuzora, and the command palette says Quit Yuzora. They said Herdr. Typing "herdr" in the palette still finds the entry.
-- Counts of one are written in the singular: "1 pane · 1 Space" and "1 agent" in the status bar, "1 change" and "1 commit to push" in Git, "1 row affected" in Database, and "1 file has conflicts."
+- Most counts of one are written in the singular: "1 pane · 1 Space" and "1 agent" in the status bar, "1 change" and "1 commit to push" in Git, "1 row affected" in Database, and "1 file has conflicts." in the notes of the Git panes.
 - A count from 999,500 to 999,999 is no longer written `1000k`. The Git sidebar's line counts write `999k`, and the Database sidebar's row counts write `1M`.
 
 ### Known limitations
 
-- Git: the branch popup's list scrolls with the wheel or the trackpad and shows no scrollbar, like the repository picker.
+- Git: the branch popup's list scrolls with the wheel or the trackpad and shows no scrollbar, like the repository picker. The up and down arrow keys don't scroll the highlighted row into view.
+- Three counts of one still read as a plural: "1 files have conflicts." while a rebase is stopped, "1 files still have conflicts." in the Git sidebar's commit check, and "1 conflicted files" in the merge pane.
 - The known limitations of 0.1.0 still apply.
 
 ### Installation notes

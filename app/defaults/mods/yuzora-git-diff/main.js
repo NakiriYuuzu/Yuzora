@@ -820,7 +820,7 @@ export default class GitDiff extends View {
       .child(label);
   }
 
-  // The popup of a right-click. Each row puts its text on the clipboard and closes the popup; a failure stays in it.
+  // The popup of a right-click. Each row puts its text on the clipboard and closes the popup.
   renderOffer(cx) {
     const th = theme(), m = this.offer, n = total(m.runs);
     // A failure is said in a toast and the menu closes: the popup is as tall as its three rows (MENU_HEIGHT), so a
