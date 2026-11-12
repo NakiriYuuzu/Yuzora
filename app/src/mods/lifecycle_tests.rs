@@ -2926,6 +2926,26 @@ fn yuzora_diff_a_drag_from_a_character_to_one_on_another_line_copies_exactly_wha
     pane.close();
 }
 
+// yuzora(L2): a drag begun on a line's number, where none is picked, selects whole lines, the row pressed and the row let
+// go of both, down the rows or up them: what a click there and a Shift-click on the other select.
+#[gpui::test]
+fn yuzora_diff_a_drag_along_the_line_numbers_selects_whole_lines_from_the_row_pressed_to_the_row_let_go_of(cx: &mut TestAppContext) {
+    let mut pane = copy_pane(cx, side_diff(), json!({}));
+    let numbers = 20.;
+    pane.press(numbers, row_y(0), 1);
+    pane.drag(numbers, row_y(2));
+    pane.release(numbers, row_y(2));
+    assert_eq!((mark_of(&pane), places(&pane)), (json!(["left", 0, 2]), json!([-1, 1 << 30])), "whole lines");
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("fn main() {\n\tlet a = 1;\n    let b = 2;  "));
+    pane.press(numbers, row_y(4), 1);
+    pane.drag(numbers, row_y(2));
+    pane.release(numbers, row_y(2));
+    pane.keys("cmd-c");
+    assert_eq!(pane.clipboard().as_deref(), Some("    let b = 2;  \n}"), "up the rows: the row pressed is the last line copied");
+    pane.close();
+}
+
 // yuzora(L2): in unified a drag copies each row's line from the side it is shown from, cut where the drag began and ended.
 #[gpui::test]
 fn yuzora_diff_in_unified_a_drag_across_a_removed_and_an_added_line_copies_each_from_its_side(cx: &mut TestAppContext) {
@@ -2946,6 +2966,9 @@ fn yuzora_diff_in_unified_a_drag_across_a_removed_and_an_added_line_copies_each_
 #[gpui::test]
 fn yuzora_diff_a_real_sessions_lines_are_styled_and_a_drag_copies_its_own_text(cx: &mut TestAppContext) {
     use yuzora_git::diffview::{DiffSession, Mode, Side};
+    // yuzora-git is not under test here: its settings, trust list and hooks folder would be the person's own.
+    yuzora_git::settings::keep_own_files_in(std::env::temp_dir().join(format!("yuzora-git-in-app-tests-{}", std::process::id())));
+    assert!(yuzora_git::settings::own_dir().starts_with(std::env::temp_dir()), "the test would read the person's app home");
     let dir = std::env::temp_dir().join(format!("yuzora-diff-real-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
