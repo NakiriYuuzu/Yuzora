@@ -131,7 +131,7 @@ impl Bench {
     /// git as a terminal would run it, for the setup and for checking what a call did.
     fn git_in(&self, dir: &str, args: &[&str]) -> (bool, String) {
         // No index written just to refresh it: only what the harness means to change is changed.
-        let out = std::process::Command::new("git").args(args).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output().unwrap();
+        let out = yuzora_core::spawn::no_window(&mut std::process::Command::new("git")).args(args).current_dir(dir).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0").output().unwrap();
         (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr))
     }
 
@@ -211,7 +211,7 @@ impl Bench {
         (0..3)
             .map(|_| {
                 let began = Instant::now();
-                let _ = std::process::Command::new(&c.program).args(&c.args).envs(c.env.iter().cloned()).current_dir(&self.root).stdin(std::process::Stdio::null()).output();
+                let _ = yuzora_core::spawn::no_window(&mut std::process::Command::new(&c.program)).args(&c.args).envs(c.env.iter().cloned()).current_dir(&self.root).stdin(std::process::Stdio::null()).output();
                 ms(began.elapsed())
             })
             .fold(f64::MAX, f64::min)
