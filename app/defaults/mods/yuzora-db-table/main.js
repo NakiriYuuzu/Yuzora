@@ -16,6 +16,12 @@ const OPEN = "yuzora.db.open";
 const TAB_PANES = "yuzora.db.tabPanes";
 const TABS = ["data", "structure", "sql"];
 
+const affectedText = (n) => (n === 1 ? t("affected_one") : t("affected_other", { count: n }));
+const resultRowsText = (n, count) => (count === 1 ? t("result_rows_one", { n }) : t("result_rows_other", { n, count }));
+const unsavedText = (writing, count) => (writing
+  ? (count === 1 ? t("unsaved_writing_one") : t("unsaved_writing_other", { count }))
+  : (count === 1 ? t("unsaved_one") : t("unsaved_other", { count })));
+
 export default class DbTable extends View {
   init(_props, cx) {
     const p = props() ?? {};
@@ -226,7 +232,7 @@ export default class DbTable extends View {
     const leave = () => { this.confirm = null; };
     // The pane is as narrow as the dock leaves it: the question takes the lines it needs, and the answers wrap under it.
     return h_flex().min_h(30).flex_none().flex_wrap().px(12).py(4).gap_x(8).gap_y(4).items_center().bg(th.raised).text_size(12).border_b(1).border_color(th.divider ?? th.border)
-      .child(div().flex_auto().min_w(0).text_color(th.blocked).child(t(writing ? "unsaved_writing" : "unsaved", { count: now.edits })))
+      .child(div().flex_auto().min_w(0).text_color(th.blocked).child(unsavedText(writing, now.edits)))
       .child(h_flex().flex_none().flex_wrap().max_w("100%").gap(8).items_center()
         .child(button("keep-edits", t(writing ? "unsaved_wait" : "unsaved_keep"), false, (_e, cx) => { leave(); cx.notify(); }))
         .child(writing
@@ -277,7 +283,7 @@ export default class DbTable extends View {
     else if (st.error && !current?.columns) body = div().p(12).text_size(12).text_color(th.blocked).child(st.error);
     else if (current && current.columns === 0) {
       body = v_flex().p(12).gap(6).text_size(12)
-        .child(div().text_color(th.foreground).child(current.affected === null ? t("done") : t("affected", { count: current.affected })))
+        .child(div().text_color(th.foreground).child(current.affected === null ? t("done") : affectedText(current.affected)))
         .when(Boolean(current.error), (el) => el.child(div().text_color(th.blocked).child(current.error)))
         .child(div().text_color(th.dim).child(`${current.elapsedMs} ms`));
     } else {
@@ -288,7 +294,7 @@ export default class DbTable extends View {
         .children(results.map((r, i) => div().id(`res-${i}`).h(20).px(8).flex().items_center().rounded(4).text_size(11).cursor_pointer()
           .bg(i === this.shown ? th.selected : th.chrome).text_color(i === this.shown ? th.foreground : th.muted)
           .on_click((_e, cx) => { this.shown = i; cx.notify(); })
-          .child(r.columns ? t("result_rows", { n: i + 1, count: r.rows }) : t("result_affected", { n: i + 1, count: r.affected ?? 0 }))))
+          .child(r.columns ? resultRowsText(i + 1, r.rows) : t("result_affected", { n: i + 1, count: r.affected ?? 0 }))))
       : null;
     return v_flex().flex_1().min_h(0).child(strip).when(Boolean(chips), (el) => el.child(chips))
       .child(v_flex().flex_1().min_h(0).child(body))

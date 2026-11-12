@@ -11,6 +11,9 @@ import { t } from "yuzora:core";
 import { connections, databases, query, job, cancel, release, history, clearHistory, DataGrid, SqlEditor, editorText, setEditorText, editorAction } from "yuzora:db";
 import { gridColors } from "./ui.js";
 
+const affectedText = (n) => (n === 1 ? t("affected_one") : t("affected_other", { count: n }));
+const resultRowsText = (n, count) => (count === 1 ? t("result_rows_one", { n }) : t("result_rows_other", { n, count }));
+
 export default class DbQuery extends View {
   init(_props, cx) {
     const p = props() ?? {};
@@ -190,13 +193,13 @@ export default class DbQuery extends View {
       .children(results.map((r, i) => div().id(`res-${i}`).h(20).px(8).flex().flex_none().items_center().rounded(4).text_size(11).cursor_pointer()
         .bg(i === this.shown ? th.selected : th.background).text_color(r.error ? th.blocked : i === this.shown ? th.foreground : th.muted)
         .on_click((_e, cx) => { this.shown = i; cx.notify(); })
-        .child(r.columns ? t("result_rows", { n: i + 1, count: r.rows }) : t("result_affected", { n: i + 1, count: r.affected ?? 0 }))));
+        .child(r.columns ? resultRowsText(i + 1, r.rows) : t("result_affected", { n: i + 1, count: r.affected ?? 0 }))));
     let body;
     if (!current) {
       body = div().p(12).text_size(12).text_color(st.error ? th.blocked : th.dim).child(st.error ?? (st.running ? t("waiting") : t("no_results")));
     } else if (current.columns === 0) {
       body = v_flex().p(12).gap(6).text_size(12)
-        .child(div().child(current.affected === null ? t("done") : t("affected", { count: current.affected })))
+        .child(div().child(current.affected === null ? t("done") : affectedText(current.affected)))
         .when(Boolean(current.error), (el) => el.child(div().text_color(th.blocked).child(current.error)))
         .child(div().text_color(th.dim).child(`${current.elapsedMs} ms`));
     } else {

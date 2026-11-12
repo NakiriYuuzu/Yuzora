@@ -129,6 +129,22 @@ test("yuzora-db-table shows why the description could not be read", async () => 
   expect(pane.infoError).toBe("There is no table or view public.t");
 });
 
+for (const mod of ["yuzora-db-table", "yuzora-db-query"]) {
+  test(`${mod} counts one row, and one edited cell, in the singular`, async () => {
+    const source = await readFile(new URL(`../defaults/mods/${mod}/main.js`, import.meta.url), "utf8");
+    const helpers = source.slice(source.indexOf("const affectedText"), source.indexOf("export default class"));
+    const said = new Function("t", `${helpers}\nreturn { affectedText, resultRowsText, unsavedText: typeof unsavedText === "undefined" ? null : unsavedText };`)(
+      (key: string, values?: object) => [key, values ?? null]);
+    expect([0, 1, 2].map(said.affectedText)).toEqual([["affected_other", { count: 0 }], ["affected_one", null], ["affected_other", { count: 2 }]]);
+    expect([1, 2].map((count) => said.resultRowsText(3, count))).toEqual([["result_rows_one", { n: 3 }], ["result_rows_other", { n: 3, count: 2 }]]);
+    if (said.unsavedText) {
+      expect([1, 2].map((count) => said.unsavedText(false, count))).toEqual([["unsaved_one", null], ["unsaved_other", { count: 2 }]]);
+      expect([1, 2].map((count) => said.unsavedText(true, count))).toEqual([["unsaved_writing_one", null], ["unsaved_writing_other", { count: 2 }]]);
+    }
+    expect(source).not.toMatch(/t\("(affected|result_rows|unsaved|unsaved_writing)"/);
+  });
+}
+
 // Run in the SQL tab while the pane's own job goes on. A read of the table can be stuck behind a transaction this
 // very SQL would end, so Run goes ahead of it; a statement of the person's own is theirs to Stop.
 const never = () => new Promise<never>(() => {});
