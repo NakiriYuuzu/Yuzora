@@ -12,7 +12,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gpui::{
-    App, BorderStyle, Bounds, Element, ElementId, GlobalElementId, HighlightStyle, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, ShapedLine, SharedString, Style, TextAlign, TextRun, TextStyle, Window, fill, point, px, quad, relative, transparent_black,
+    App, BorderStyle, Bounds, Element, ElementId, GlobalElementId, HighlightStyle, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, ShapedLine, SharedString, Style, TextRun, TextStyle, UnderlineStyle, Window, fill, point, px, quad, relative, transparent_black, underline_y_offset,
 };
 use gpui_base::input::HighlightStyleResolver;
 use serde_json::Value;
@@ -31,6 +31,9 @@ const TAB: &str = "    ";
 /// removed and added text, and the selection.
 pub struct Look {
     palette: SyntaxPalette,
+    /// The palette's style of each name asked for: it looks a name up by each of its prefixes, and a line asks for each
+    /// of its spans every frame.
+    styles: Mutex<HashMap<&'static str, Option<HighlightStyle>>>,
     removed: Hsla,
     added: Hsla,
     selection: Hsla,
@@ -42,10 +45,15 @@ impl Look {
         let overrides = v.get("syntax").and_then(Value::as_object).map(|o| o.iter().filter_map(|(k, c)| Some((k.clone(), parse_hex(c.as_str()?)?))).collect::<Vec<_>>()).unwrap_or_default();
         Look {
             palette: SyntaxPalette::one_dark().with_overrides(overrides),
+            styles: Mutex::default(),
             removed: color("removed", 0xf08a8a55),
             added: color("added", 0x86d17a55),
             selection: color("selection", 0x4080ff44),
         }
+    }
+
+    fn style(&self, name: &'static str) -> Option<HighlightStyle> {
+        *self.styles.lock().unwrap().entry(name).or_insert_with(|| self.palette.style(name))
     }
 }
 
@@ -235,18 +243,34 @@ pub fn element(props: &HostValue) -> DiffLine {
     DiffLine { key: diff_key(diff), text, tabs, right, line, spans, look, marks, sel }
 }
 
+/// A styled part of a line as it is drawn: where (in the drawn text), its colour, and its underline if it has one.
+#[derive(Clone, Debug, PartialEq)]
+struct Paint {
+    at: Range<usize>,
+    color: Hsla,
+    underline: Option<UnderlineStyle>,
+}
+
 impl DiffLine {
-    /// The text as it is drawn, and its runs: the rows' style, and over it each span's style in the look.
-    fn runs(&self, base: &TextStyle) -> (SharedString, Vec<TextRun>) {
+    /// The text as it is drawn, the runs it is shaped in and the styled parts it is painted with (in order, apart). It
+    /// is shaped as one run of the rows' style, cut only where a span's style changes the font (a comment's slant): a
+    /// run for each colour would cut the line into as many pieces for the platform to shape, and each such line would
+    /// be shaped again whenever it comes into view. The colours are given to the glyphs as they are painted.
+    fn runs(&self, base: &TextStyle) -> (SharedString, Vec<TextRun>, Vec<Paint>) {
         let drawn: SharedString = if self.tabs.is_empty() { self.text.to_string().into() } else { self.text.replace('\t', TAB).into() };
         let len = self.text.len();
-        let mut runs = Vec::new();
+        let (mut runs, mut paints) = (Vec::<TextRun>::new(), Vec::new());
         let mut push = |from: usize, to: usize, style: Option<HighlightStyle>| {
-            let n = shown(&self.tabs, to) - shown(&self.tabs, from);
-            runs.push(match style {
-                Some(s) => base.clone().highlight(s).to_run(n),
-                None => base.to_run(n),
-            });
+            let at = shown(&self.tabs, from)..shown(&self.tabs, to);
+            let slant = style.filter(|s| s.font_weight.is_some() || s.font_style.is_some());
+            let font = slant.map_or_else(|| base.font(), |s| base.clone().highlight(HighlightStyle { font_weight: s.font_weight, font_style: s.font_style, ..Default::default() }).font());
+            match runs.last_mut() {
+                Some(run) if run.font == font => run.len += at.len(),
+                _ => runs.push(TextRun { font, ..base.to_run(at.len()) }),
+            }
+            if let Some(s) = style.filter(|s| s.color.is_some() || s.underline.is_some()) {
+                paints.push(Paint { at, color: s.color.unwrap_or(base.color), underline: s.underline });
+            }
         };
         let mut at = 0;
         for (r, name) in &self.spans {
@@ -257,13 +281,13 @@ impl DiffLine {
             if from > at {
                 push(at, from, None);
             }
-            push(from, to, self.look.palette.style(name));
+            push(from, to, self.look.style(name));
             at = to;
         }
         if at < len {
             push(at, len, None);
         }
-        (drawn, runs)
+        (drawn, runs, paints)
     }
 
     fn x(&self, shaped: &ShapedLine, left: Pixels, at: usize) -> Pixels {
@@ -271,10 +295,46 @@ impl DiffLine {
     }
 }
 
-/// What a line's layout leaves for its paint: the shaped text and the height of a line of it.
+/// What a line's layout leaves for its paint: the shaped text, the height of a line of it, the rows' colour and the
+/// styled parts.
 pub struct Shaped {
     shaped: ShapedLine,
     line_height: Pixels,
+    color: Hsla,
+    paints: Vec<Paint>,
+}
+
+/// Paints the glyphs of `shaped` with the line's top left at `origin`, as gpui paints a line: each glyph in the colour
+/// of the part it is in (`color` elsewhere), then the underlines; a glyph outside what is shown is not painted.
+fn paint_text(shaped: &ShapedLine, origin: Point<Pixels>, line_height: Pixels, color: Hsla, paints: &[Paint], window: &mut Window, cx: &App) {
+    let (ascent, descent, font_size) = (shaped.ascent, shaped.descent, shaped.font_size);
+    let baseline = (line_height - ascent - descent) / 2. + ascent;
+    let clip = window.content_mask().bounds;
+    window.paint_layer(Bounds { origin, size: gpui::size(shaped.width, line_height) }, |window| {
+        for run in &shaped.runs {
+            let glyph = cx.text_system().bounding_box(run.font_id, font_size).size;
+            for g in &run.glyphs {
+                let at = point(origin.x + g.position.x, origin.y);
+                if !(Bounds { origin: at, size: glyph }).intersects(&clip) {
+                    continue;
+                }
+                let at = at + point(px(0.), baseline + g.position.y);
+                let color = paint_at(paints, g.index).map_or(color, |p| p.color);
+                let _ = if g.is_emoji { window.paint_emoji_with_color(at, run.font_id, g.id, font_size, color) } else { window.paint_glyph(at, run.font_id, g.id, font_size, color) };
+            }
+        }
+        for p in paints {
+            if let Some(u) = p.underline {
+                let (x0, x1) = (shaped.x_for_index(p.at.start), shaped.x_for_index(p.at.end));
+                window.paint_underline(point(origin.x + x0, origin.y + underline_y_offset(line_height, ascent, descent)), x1 - x0, &UnderlineStyle { color: Some(u.color.unwrap_or(p.color)), ..u });
+            }
+        }
+    });
+}
+
+/// The styled part a place of the drawn text is in.
+fn paint_at(paints: &[Paint], at: usize) -> Option<&Paint> {
+    paints.get(paints.partition_point(|p| p.at.end <= at)).filter(|p| p.at.start <= at)
 }
 
 impl IntoElement for DiffLine {
@@ -303,19 +363,19 @@ impl Element for DiffLine {
         let base = window.text_style();
         let font_size = base.font_size.to_pixels(window.rem_size());
         let line_height = window.pixel_snap(base.line_height.to_pixels(font_size.into(), window.rem_size()));
-        let (drawn, runs) = self.runs(&base);
+        let (drawn, runs, paints) = self.runs(&base);
         let shaped = window.text_system().shape_line(drawn, font_size, &runs, None);
         let mut style = Style::default();
         style.size.width = shaped.width.ceil().into();
         style.size.height = relative(1.).into();
         style.flex_shrink = 0.;
-        (window.request_layout(style, [], cx), Shaped { shaped, line_height })
+        (window.request_layout(style, [], cx), Shaped { shaped, line_height, color: base.color, paints })
     }
 
     fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Shaped, _: &mut Window, _: &mut App) {}
 
     fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, state: &mut Shaped, _: &mut (), window: &mut Window, cx: &mut App) {
-        let Shaped { shaped, line_height } = state;
+        let Shaped { shaped, line_height, color: text, paints } = state;
         let clip = window.content_mask().bounds;
         let left = bounds.left();
         let top = bounds.top() + ((bounds.size.height - *line_height) * 0.5).max(px(0.));
@@ -332,7 +392,7 @@ impl Element for DiffLine {
             let (x0, x1) = (self.x(shaped, left, m.start), self.x(shaped, left, m.end));
             window.paint_quad(quad(Bounds::from_corners(point(x0, top), point(x1, top + *line_height)), radius, color, px(0.), transparent_black(), BorderStyle::default()));
         }
-        let _ = shaped.paint(point(left, top), *line_height, TextAlign::Left, None, window, cx);
+        paint_text(shaped, point(left, top), *line_height, *text, paints, window, cx);
         if bounds.intersects(&clip) {
             remember((self.key.clone(), self.right, self.line), Drawn { left, shaped: shaped.clone(), text: self.text.clone(), tabs: self.tabs.clone() });
         }
@@ -463,11 +523,32 @@ mod tests {
             sel: None,
         };
         let base = TextStyle::default();
-        let (drawn, runs) = line.runs(&base);
+        let (drawn, runs, paints) = line.runs(&base);
         assert_eq!(&*drawn, "    let a = 1; ");
-        let (lengths, colors): (Vec<usize>, Vec<Hsla>) = runs.iter().map(|r| (r.len, r.color)).unzip();
-        assert_eq!(lengths, [4, 3, 5, 1, 1, 1], "the tab, `let`, ` a = `, `1`, `;`, the space; a span past the line's end clipped to it");
+        assert_eq!(runs.iter().map(|r| (r.len, r.color)).collect::<Vec<_>>(), [(15, base.color)], "shaped as one run, in one colour");
         let (k, n) = (parse_hex("#ff0000").unwrap(), parse_hex("#00ff00").unwrap());
-        assert_eq!(colors, [base.color, k, base.color, n, base.color, k]);
+        let parts: Vec<_> = paints.iter().map(|p| (p.at.clone(), p.color)).collect();
+        assert_eq!(parts, [(4..7, k), (12..13, n), (14..15, k)], "`let` after the tab drawn four wide, `1`, and the span past the line's end clipped to it");
+        assert_eq!((paint_at(&paints, 3), paint_at(&paints, 6).map(|p| p.color), paint_at(&paints, 7)), (None, Some(k), None));
+    }
+
+    /// A comment is slanted, as in the editor: the line is shaped in two fonts, and only there is it cut.
+    #[test]
+    fn a_line_is_shaped_in_runs_only_where_its_font_changes() {
+        let text: Arc<str> = "let a = 1; // one".into();
+        let line = DiffLine {
+            tabs: Arc::from([]),
+            text,
+            key: String::new(),
+            right: false,
+            line: 0,
+            spans: vec![(0..3, "keyword"), (8..9, "number"), (11..17, "comment")],
+            look: look_of(None),
+            marks: Vec::new(),
+            sel: None,
+        };
+        let (_, runs, paints) = line.runs(&TextStyle::default());
+        assert_eq!(runs.iter().map(|r| (r.len, r.font.style)).collect::<Vec<_>>(), [(11, gpui::FontStyle::Normal), (6, gpui::FontStyle::Italic)]);
+        assert_eq!(paints.len(), 3);
     }
 }
