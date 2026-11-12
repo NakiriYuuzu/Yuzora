@@ -254,7 +254,11 @@ impl Repo {
             return false;
         }
         self.unwatched.store(true, Ordering::SeqCst);
-        *w = None;
+        // Let go outside the lock: the system's file-event service can take
+        // seconds over it, and every call takes this lock ([`Repo::used`]).
+        let gone = w.take();
+        drop(w);
+        drop(gone);
         true
     }
 
@@ -1127,6 +1131,28 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(50));
             assert_eq!((r.generation(), r.refs_generation()), (g, refs), "an answer in time counted everything as changed");
         }
+        close(&r.id);
+    }
+
+    #[test]
+    fn a_call_isnt_kept_waiting_while_an_idle_watch_is_let_go() {
+        let s = scratch();
+        s.commit("a.txt", "1\n", "first");
+        let r = open_watched(s.root());
+        // The file-event service is busy: letting the watch go takes a second and a half.
+        r.watch.lock().unwrap().as_mut().unwrap().letting_go = Duration::from_millis(1500);
+        r.idle_after.store(100, Ordering::SeqCst);
+        let until = Instant::now() + Duration::from_secs(5);
+        while !r.unwatched.load(Ordering::SeqCst) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(r.unwatched.load(Ordering::SeqCst), "not released");
+        r.idle_after.store(IDLE.as_millis() as u64, Ordering::SeqCst);
+        // A view calls while the watch is on its way out (calls arrive on the UI thread).
+        let began = Instant::now();
+        get(&r.id).unwrap();
+        let took = began.elapsed();
+        assert!(took < Duration::from_millis(1000), "the call waited {took:?} for the watch to go");
         close(&r.id);
     }
 

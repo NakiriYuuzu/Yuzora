@@ -37,11 +37,17 @@ const TICK: Duration = Duration::from_secs(1);
 pub struct Watch {
     _watcher: notify::RecommendedWatcher,
     stop: Arc<AtomicBool>,
+    /// Letting it go takes this long more, as when the system's file-event
+    /// service is busy (tests).
+    #[cfg(test)]
+    pub letting_go: Duration,
 }
 
 impl Drop for Watch {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        #[cfg(test)]
+        std::thread::sleep(self.letting_go);
     }
 }
 
@@ -135,7 +141,12 @@ pub fn start(repo: &Arc<Repo>) -> bool {
     if spawned.is_err() {
         return false;
     }
-    *repo.watch.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watch { _watcher: watcher, stop });
+    *repo.watch.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watch {
+        _watcher: watcher,
+        stop,
+        #[cfg(test)]
+        letting_go: Duration::ZERO,
+    });
     true
 }
 
