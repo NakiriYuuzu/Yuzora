@@ -80,7 +80,7 @@ const baseName = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p
 
 const ROW = 24, HEAD = 26, ACTION = 22, ACTION_ALL = 84, LIST_PAD = 6, PICK_ROW = 26, PICK_MAX = 358;
 // Line counts of six digits would not fit the narrowest sidebar next to the buttons: 150000 reads 150k.
-const count = (n) => (n < 100000 ? String(n) : n < 1000000 ? `${Math.round(n / 1000)}k` : "999k+");
+const count = (n) => (n < 100000 ? String(n) : n < 1000000 ? `${Math.floor(n / 1000)}k` : "999k+");
 const SECTIONS = ["conflicts", "staged", "unstaged"];
 
 // What the Git mode keeps of one repo: the status last read, the commit being written, and what an action there has

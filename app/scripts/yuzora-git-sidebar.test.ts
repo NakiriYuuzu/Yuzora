@@ -1158,3 +1158,13 @@ test("Cancel on the checks' warnings, then Commit anyway from the same frame, do
   expect(s.w.asks.commit).toEqual([]);
   expect(s.w.asks.commitChecks.length).toBe(1);
 });
+
+test("a count of lines past 100,000 is cut to thousands and never reads 1000k", async () => {
+  const s = world();
+  const big = [[99999, "+99999"], [150499, "+150k"], [999499, "+999k"], [999500, "+999k"], [999999, "+999k"], [1000000, "+999k+"]] as const;
+  const unstaged = big.map(([add], i) => ({ ...file(`f${i}.txt`), add }));
+  s.w.status["/a"] = { unstaged, counts: { staged: 0, unstaged: unstaged.length, untracked: 0, conflicts: 0, total: unstaged.length } };
+  await s.settle();
+  const shown = s.frame().nodes.filter((n) => n.id === "add").map((n) => n.texts[0]);
+  expect(shown).toEqual(big.map(([, text]) => text));
+});
