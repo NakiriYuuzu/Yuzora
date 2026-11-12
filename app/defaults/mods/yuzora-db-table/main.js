@@ -16,6 +16,12 @@ const OPEN = "yuzora.db.open";
 const TAB_PANES = "yuzora.db.tabPanes";
 const TABS = ["data", "structure", "sql"];
 
+const affectedText = (n) => (n === 1 ? t("affected_one") : t("affected_other", { count: n }));
+const resultRowsText = (n, count) => (count === 1 ? t("result_rows_one", { n }) : t("result_rows_other", { n, count }));
+const unsavedText = (writing, count) => (writing
+  ? (count === 1 ? t("unsaved_writing_one") : t("unsaved_writing_other", { count }))
+  : (count === 1 ? t("unsaved_one") : t("unsaved_other", { count })));
+
 export default class DbTable extends View {
   init(_props, cx) {
     const p = props() ?? {};
@@ -31,6 +37,7 @@ export default class DbTable extends View {
     this.infoJob = null;
     this.sql = "";
     this.confirm = null; // {count, action}: unsaved edits stand in the way of action
+    this.asking = null; // {name, action}: a statement of the person's own is still running where the sidebar's pick would be read
     this.handle = cx.focus_handle();
     cx.spawn(async (cx) => {
       for (;;) {
@@ -189,13 +196,40 @@ export default class DbTable extends View {
     const o = shared(OPEN);
     if (!o || o.key !== this.key || o.seq === this.seq) return;
     this.seq = o.seq;
-    this.guard(cx, (cx) => {
+    const go = (cx) => this.guard(cx, (cx) => {
       this.target = o.target;
       this.sql = "";
       this.tab = "data";
       this.load(cx);
     });
+    // Reading the pick stops the pane's job, and on SQL Server stopping a statement drops its connection and what its transaction did.
+    if (this.ownStatement()) this.asking = { name: o.target?.name ?? "", action: go };
+    else go(cx);
     cx.notify();
+  }
+
+  /** A statement the person ran in the SQL tab that has not finished (one just started has no state yet). */
+  ownStatement() {
+    return this.jobKind === "sql" && this.jobId !== null && (this.state?.running ?? true);
+  }
+
+  /** The sidebar's pick waits while the person's statement runs: let it finish, or stop it and open the pick. */
+  askingBar(th) {
+    const a = this.asking;
+    if (!this.ownStatement()) {
+      this.asking = null;
+      return null;
+    }
+    const button = (id, text, danger, onClick) => div().id(id).min_h(20).px(10).py(2).flex().flex_none().max_w("100%").items_center().rounded(4).text_size(11.5).cursor_pointer()
+      .hover((s) => s.opacity(0.88)).on_click(onClick)
+      .when(danger, (el) => el.border_1().border_color(th.input).text_color(th.blocked))
+      .when(!danger, (el) => el.bg(th.solid).text_color(th.solid_foreground).font_semibold())
+      .child(text);
+    return h_flex().min_h(30).flex_none().flex_wrap().px(12).py(4).gap_x(8).gap_y(4).items_center().bg(th.raised).text_size(12).border_b(1).border_color(th.divider ?? th.border)
+      .child(div().flex_auto().min_w(0).text_color(th.blocked).child(t("running_pick", { name: a.name })))
+      .child(h_flex().flex_none().flex_wrap().max_w("100%").gap(8).items_center()
+        .child(button("keep-running", t("running_keep"), false, (_e, cx) => { this.asking = null; cx.notify(); }))
+        .child(button("stop-and-open", t("running_stop"), true, (_e, cx) => { this.asking = null; a.action(cx); cx.notify(); })));
   }
 
   stopSaving(id) {
@@ -226,7 +260,7 @@ export default class DbTable extends View {
     const leave = () => { this.confirm = null; };
     // The pane is as narrow as the dock leaves it: the question takes the lines it needs, and the answers wrap under it.
     return h_flex().min_h(30).flex_none().flex_wrap().px(12).py(4).gap_x(8).gap_y(4).items_center().bg(th.raised).text_size(12).border_b(1).border_color(th.divider ?? th.border)
-      .child(div().flex_auto().min_w(0).text_color(th.blocked).child(t(writing ? "unsaved_writing" : "unsaved", { count: now.edits })))
+      .child(div().flex_auto().min_w(0).text_color(th.blocked).child(unsavedText(writing, now.edits)))
       .child(h_flex().flex_none().flex_wrap().max_w("100%").gap(8).items_center()
         .child(button("keep-edits", t(writing ? "unsaved_wait" : "unsaved_keep"), false, (_e, cx) => { leave(); cx.notify(); }))
         .child(writing
@@ -277,7 +311,7 @@ export default class DbTable extends View {
     else if (st.error && !current?.columns) body = div().p(12).text_size(12).text_color(th.blocked).child(st.error);
     else if (current && current.columns === 0) {
       body = v_flex().p(12).gap(6).text_size(12)
-        .child(div().text_color(th.foreground).child(current.affected === null ? t("done") : t("affected", { count: current.affected })))
+        .child(div().text_color(th.foreground).child(current.affected === null ? t("done") : affectedText(current.affected)))
         .when(Boolean(current.error), (el) => el.child(div().text_color(th.blocked).child(current.error)))
         .child(div().text_color(th.dim).child(`${current.elapsedMs} ms`));
     } else {
@@ -288,7 +322,7 @@ export default class DbTable extends View {
         .children(results.map((r, i) => div().id(`res-${i}`).h(20).px(8).flex().items_center().rounded(4).text_size(11).cursor_pointer()
           .bg(i === this.shown ? th.selected : th.chrome).text_color(i === this.shown ? th.foreground : th.muted)
           .on_click((_e, cx) => { this.shown = i; cx.notify(); })
-          .child(r.columns ? t("result_rows", { n: i + 1, count: r.rows }) : t("result_affected", { n: i + 1, count: r.affected ?? 0 }))))
+          .child(r.columns ? resultRowsText(i + 1, r.rows) : t("result_affected", { n: i + 1, count: r.affected ?? 0 }))))
       : null;
     return v_flex().flex_1().min_h(0).child(strip).when(Boolean(chips), (el) => el.child(chips))
       .child(v_flex().flex_1().min_h(0).child(body))
@@ -354,7 +388,7 @@ export default class DbTable extends View {
     if (!this.target) return root.child(div().p(16).text_size(12).text_color(th.dim).child(t("pick")));
     const conn = this.conn();
     const content = this.tab === "structure" ? this.structure(th) : this.tab === "sql" ? this.sqlTab(th) : this.data(th);
-    const confirm = this.confirm ? this.confirmBar(th) : null;
+    const confirm = this.asking ? this.askingBar(th) : this.confirm ? this.confirmBar(th) : null;
     return root.child(this.toolbar(th, conn)).when(Boolean(confirm), (el) => el.child(confirm)).child(content);
   }
 }

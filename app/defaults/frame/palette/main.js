@@ -58,7 +58,7 @@ const NAMED = [
   ["app.zoom_in", {}, "App", "Zoom in", "bigger font size"],
   ["app.zoom_out", {}, "App", "Zoom out", "smaller font size"],
   ["app.zoom_reset", {}, "App", "Reset zoom", "font size"],
-  ["app.quit", {}, "App", "Quit Herdr", "exit"],
+  ["app.quit", {}, "App", "Quit Yuzora", "exit herdr"], // yuzora(L1): the app's name; "herdr" still finds it
   ...["graphite", "ink", "moss", "atom-one-dark"].map((n) => ["app.theme", { name: n }, "App", `Theme: ${n.replace(/-/g, " ")}`, "colors look"]),
 ];
 

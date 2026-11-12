@@ -129,6 +129,22 @@ test("yuzora-db-table shows why the description could not be read", async () => 
   expect(pane.infoError).toBe("There is no table or view public.t");
 });
 
+for (const mod of ["yuzora-db-table", "yuzora-db-query"]) {
+  test(`${mod} counts one row, and one edited cell, in the singular`, async () => {
+    const source = await readFile(new URL(`../defaults/mods/${mod}/main.js`, import.meta.url), "utf8");
+    const helpers = source.slice(source.indexOf("const affectedText"), source.indexOf("export default class"));
+    const said = new Function("t", `${helpers}\nreturn { affectedText, resultRowsText, unsavedText: typeof unsavedText === "undefined" ? null : unsavedText };`)(
+      (key: string, values?: object) => [key, values ?? null]);
+    expect([0, 1, 2].map(said.affectedText)).toEqual([["affected_other", { count: 0 }], ["affected_one", null], ["affected_other", { count: 2 }]]);
+    expect([1, 2].map((count) => said.resultRowsText(3, count))).toEqual([["result_rows_one", { n: 3 }], ["result_rows_other", { n: 3, count: 2 }]]);
+    if (said.unsavedText) {
+      expect([1, 2].map((count) => said.unsavedText(false, count))).toEqual([["unsaved_one", null], ["unsaved_other", { count: 2 }]]);
+      expect([1, 2].map((count) => said.unsavedText(true, count))).toEqual([["unsaved_writing_one", null], ["unsaved_writing_other", { count: 2 }]]);
+    }
+    expect(source).not.toMatch(/t\("(affected|result_rows|unsaved|unsaved_writing)"/);
+  });
+}
+
 // Run in the SQL tab while the pane's own job goes on. A read of the table can be stuck behind a transaction this
 // very SQL would end, so Run goes ahead of it; a statement of the person's own is theirs to Stop.
 const never = () => new Promise<never>(() => {});
@@ -187,6 +203,100 @@ test("yuzora-db-table asks about unwritten edits before the SQL goes ahead of a 
   expect(calls.query).toEqual([["c", null, "k", "COMMIT"]]);
 });
 
+// A pick in the sidebar reads another table in this pane, and the core stops the pane's older job for it.
+// An element as the bar builds it: the texts it was given and what a click on each id does.
+const drawn = () => {
+  const texts: string[] = [], clicks: Record<string, (e: unknown, cx: unknown) => void> = {};
+  const element = (): any => {
+    let id = "";
+    const self: any = new Proxy({}, {
+      get: (_t, prop) => (prop === "then" ? undefined : (...args: any[]) => {
+        if (prop === "id") id = args[0];
+        else if (prop === "child" && typeof args[0] === "string") texts.push(args[0]);
+        else if (prop === "on_click") clicks[id] = args[0];
+        else if (prop === "when" && args[0]) args[1](self);
+        return self;
+      }),
+    });
+    return self;
+  };
+  return { texts, clicks, element };
+};
+
+const pickOver = async (jobKind: "table" | "sql", state: "running" | "started" | "done" = "running") => {
+  const calls = { openTable: 0 };
+  const open = { key: "k", seq: 7, target: { connection: "c", database: null, schema: "public", name: "second", kind: "table" } };
+  const screen = drawn();
+  const Pane = await load("yuzora-db-table", "DbTable", never, {
+    t: (key: string, values?: { name?: string }) => (values?.name ? `${key}:${values.name}` : key),
+    div: screen.element,
+    h_flex: screen.element,
+    shared: () => open,
+    openTable: () => ++calls.openTable + 100,
+    tableInfo: never,
+    result: () => ({ edits: 0 }),
+  });
+  const pane = new Pane();
+  Object.assign(pane, {
+    key: "k", seq: 1, tab: "sql", shown: 0, jobId: 41, jobKind,
+    target: { connection: "c", database: null, schema: "public", name: "first", kind: "table" },
+    state: state === "started" ? null : { id: 41, running: state === "running", version: 1, elapsedMs: 0, error: null, cancelled: false, results: [{ id: 5 }] },
+  });
+  return { pane, calls, open, screen };
+};
+
+test("yuzora-db-table asks before a pick in the sidebar stops a statement of the person's own", async () => {
+  for (const state of ["running", "started"] as const) {
+    const { pane, calls } = await pickOver("sql", state);
+    pane.retarget(cx);
+    expect(calls.openTable).toBe(0);
+    expect(pane.target.name).toBe("first");
+    expect(pane.asking).toMatchObject({ name: "second" });
+    pane.asking.action(cx);
+    expect(calls.openTable).toBe(1);
+    expect(pane.target.name).toBe("second");
+  }
+});
+
+test("yuzora-db-table's bar over a running statement names the table picked, and each answer does what it says", async () => {
+  const { pane, calls, open, screen } = await pickOver("sql");
+  pane.retarget(cx);
+  expect(pane.askingBar({})).not.toBeNull();
+  expect(screen.texts).toEqual(["running_pick:second", "running_keep", "running_stop"]);
+  screen.clicks["keep-running"]({}, cx);
+  expect(pane.asking).toBeNull();
+  expect(calls.openTable).toBe(0);
+  expect(pane.target.name).toBe("first");
+
+  open.seq = 8;
+  pane.retarget(cx);
+  pane.askingBar({});
+  screen.clicks["stop-and-open"]({}, cx);
+  expect(pane.asking).toBeNull();
+  expect(calls.openTable).toBe(1);
+  expect(pane.target.name).toBe("second");
+});
+
+test("yuzora-db-table's bar goes away, and the pick with it, when the statement ends by itself", async () => {
+  const { pane, calls } = await pickOver("sql");
+  pane.retarget(cx);
+  pane.state = { ...pane.state, running: false };
+  expect(pane.askingBar({})).toBeNull();
+  expect(pane.asking).toBeNull();
+  expect(calls.openTable).toBe(0);
+  expect(pane.target.name).toBe("first");
+});
+
+test("yuzora-db-table reads a pick at once over its own read of a table, or a statement that is done", async () => {
+  for (const [kind, state] of [["table", "running"], ["sql", "done"]] as const) {
+    const { pane, calls } = await pickOver(kind, state);
+    pane.retarget(cx);
+    expect(pane.asking ?? null).toBeNull();
+    expect(calls.openTable).toBe(1);
+    expect(pane.target.name).toBe("second");
+  }
+});
+
 test("yuzora-db-table leaves the table's Refresh alone while the table is being read", async () => {
   const { pane, calls } = await busyPane("table");
   pane.tab = "data";
@@ -235,4 +345,11 @@ test("yuzora-db-table's Run with nothing typed leaves the read of the table goin
   expect(calls.query).toEqual([]);
   expect(calls.cancel).toEqual([]);
   expect(quiet).toMatchObject({ jobId: 41, jobKind: "table", tab: "sql" });
+});
+
+test("yuzora-sidebar-database never writes a row count as 1000k", async () => {
+  const source = await readFile(new URL("../defaults/mods/yuzora-sidebar-database/main.js", import.meta.url), "utf8");
+  const short = new Function(`${/^function short\(n\) \{[\s\S]*?^\}/m.exec(source)![0]}\nreturn short;`)() as (n: number | null) => string;
+  expect([null, 999, 2104, 9999, 150499, 999499, 999500, 999999, 1000000, 1200000].map(short))
+    .toEqual(["", "999", "2.1k", "10k", "150k", "999k", "1M", "1M", "1M", "1.2M"]);
 });

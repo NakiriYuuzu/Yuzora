@@ -35,3 +35,20 @@ test("Enter after it loaded picks the row the keys are on, or follows the focus 
   f.key("enter", list);
   expect(f.log).toEqual([null]);
 });
+
+test("Enter with a pinned repo the list doesn't have closes the picker and leaves the pin, until ↑↓ chose a row", () => {
+  for (const [found, rows] of [[{ repos: [], error: "offline" }, []], [{ repos: list, truncated: true }, list]] as const) {
+    const w = world(found, true, "/r/pinned-elsewhere");
+    w.key("enter", rows as any[]);
+    expect(w.log).toEqual([]);
+    expect(w.closed).toEqual([1]);
+  }
+  const chosen = world({ repos: [], error: "offline" }, true, "/r/pinned-elsewhere");
+  chosen.key("down", []);
+  chosen.key("enter", []);
+  expect(chosen.log).toEqual([null]);
+  const moved = world({ repos: list, truncated: true }, true, "/r/pinned-elsewhere");
+  moved.key("down", list);
+  moved.key("enter", list);
+  expect(moved.log).toEqual(["/r/a"]);
+});

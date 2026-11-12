@@ -92,6 +92,7 @@
 
 - 資料夾沒有被動過（`rename(root → .old)` 沒成功就什麼都沒搬；第二步失敗會 rollback）。暫存的 `Yuzora.new` 與收據留著。
 - **原因的全文放在「設定 › Updates」**（`update::status()["app"]["failure"]`，設定畫面在 status 變動時重畫）：app 那一列下面一段可換行的文字，標題「The update could not be installed」，內文是下面的說明。只要暫存的更新還在，它就在；交換成功（程式隨即重開）或暫存的更新被丟掉就消失。啟動時（`apply_on_startup`）交換失敗、10 秒後的檢查又看到暫存的版本時，不必按任何東西，設定頁就看得到。
+  - 原因跟著「失敗當下在等的那個版本」（`SwapFailure.of`）：之後每小時的檢查若暫存了更新的版本，那個版本還沒試過交換，設定頁不再顯示上一個版本的原因（#261 審查 r2 的 P2-2 情境 A）；按 Restart 再失敗就記成新版本的。啟動時的交換失敗當下還不知道版本，算在之後第一個看到在等的版本上。暫存損壞被丟掉但 `READY` 沒清的情況（情境 B）沒有處理。Windows 上沒有實機驗證這一項，只有單元測試（`a_swap_failure_is_kept_for_as_long_as_the_update_waits_and_has_a_toast`）。
 - 按右下角更新提示的「Restart」（或設定頁的「Restart to update」，`app.update`）：開一個 toast：標題 `Yuzora could not install the update`，內文 `Install folder in use. Click for steps.`（非「被佔用」的失敗：`Click for the reason and what to do.`），30 秒才消失、一次只一個，點下去開「設定 › Updates」。toast 的標題與內文各只有一行（`mods/toast` 截成一行、340 px），所以全文放不進去；之前把整段 283 字放在內文，視窗裡只看得到開頭一行（審查 P1）。`yuzora do app.update`（CLI）仍回傳全文。
 - 說明全文（被佔用）：`Yuzora could not install the update because another program is using its install folder. Close any terminal opened in that folder. If you came from a beta, restart your PC once. Then choose Restart again, or download the installer from https://github.com/NakiriYuuzu/Yuzora/releases.`（其他錯誤：`Yuzora could not install the update: <系統訊息>. Choose Restart to try again, or download the installer from …`）。網址是文字，不能點（mod 沒有開網址的函式）；列為之後的改善。
 - 關閉視窗時（`on_app_quit`）失敗只記 log（`update: cannot move … aside: …`）；視窗不在，沒有地方顯示，下次啟動時照上面再來一次。
@@ -259,7 +260,7 @@ bun app/scripts/yuzora/manifest.ts tauri dist        # 缺任何一個 .sig 就�
 2. **簽章只發生在 `sign` job。** 只有它讀 `TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`；打包與 PR workflow 不讀。寫 release 的 job 不 checkout、不執行 repo 裡的程式；執行 repo 程式的 job 只有讀取權限。
 3. **分階段、可停、可重跑。** 重跑時，release 上已有同名同內容的檔案就略過，同名不同內容就失敗（絕不覆蓋）。
 4. **不刪 tag、不改寫已發布的舊 release。** tag 是 annotated tag，由 `draft` 階段用 API 建在被驗收的 commit 上。
-5. 0.1.0 **不附 `latest.json`**（不自動升級 v0.0.19／beta.1 的 Tauri 使用者），manifest **不列 `windows-x86_64`**（beta.2 至 beta.4 的 Windows 自我更新一定失敗；Windows 的 archive 與安裝檔仍照常上傳）。0.1.1 起 Windows 照常列（每一版發布前都要決定這一列：一旦某一版列出 Windows，還沒手動升級的 beta Windows 使用者就會看到按不過去的更新提示）。哪個版本不列哪些 target 由 repo 裡的表決定：`app/scripts/yuzora/manifest.ts` 的 `UNLISTED_TARGETS`（以完整版本字串為 key，沒有那一列就全部列出）。`plan` 讀它來寫 manifest，`verify-manifest` job 再自己讀它算出該有的 target 清單，用 `--targets` 逐一比對（多列或少列都會失敗）；dispatch 沒有任何輸入可以改這件事，所以漏打參數不會列出 Windows。要改就改表、過 review。
+5. 0.1.0 **不附 `latest.json`**（不自動升級 v0.0.19／beta.1 的 Tauri 使用者），manifest **不列 `windows-x86_64`**（beta.2 至 beta.4 的 Windows 自我更新一定失敗；Windows 的 archive 與安裝檔仍照常上傳）。0.1.1 起 Windows 照常列（每一版發布前都要決定這一列：一旦某一版列出 Windows，還沒手動升級的 beta Windows 使用者就會看到按不過去的更新提示）。0.1.1 照這個預設列出 Windows（表裡沒有 `0.1.1` 這一列）：它是 Windows 上 0.1.0 的第一次自動更新，release notes 的〈安裝說明〉寫了 beta 會看到什麼、以及從 beta 覆蓋安裝後沒重新開機時第一次會失敗。哪個版本不列哪些 target 由 repo 裡的表決定：`app/scripts/yuzora/manifest.ts` 的 `UNLISTED_TARGETS`（以完整版本字串為 key，沒有那一列就全部列出）。`plan` 讀它來寫 manifest，`verify-manifest` job 再自己讀它算出該有的 target 清單，用 `--targets` 逐一比對（多列或少列都會失敗）；dispatch 沒有任何輸入可以改這件事，所以漏打參數不會列出 Windows。要改就改表、過 review。
 6. 根目錄 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 等 Tauri 版本字串維持 `0.1.0-beta.1`。改它們會讓 `release.yml` 想發布 Tauri 版；`release.yml` 已加守衛（`app/Cargo.toml` 存在就在建 tag 前失敗），但不要依賴守衛。
 
 ### 6.2 階段
@@ -404,7 +405,7 @@ env -i HOME=$T/home USER=$USER TMPDIR=$T/tmp TERM=xterm-256color LANG=en_US.UTF-
 - 這個變更（`fix(site): the Windows download is v0.1.0's setup.exe`）把 Windows 連結釘在 `releases/download/v0.1.0/Yuzora-windows-x64-setup.exe`，因為 `releases/latest/download/Yuzora-windows-x64.msi` 在 Latest 切到 v0.1.0 之後會 404（0.1.0 沒有 MSI）。釘死的連結在 v0.1.0 公開之後才有效，**所以它必須在 `publish` 之後、`latest` 之前進 main**：進得太早，v0.1.0 還沒公開的這段時間 Windows 按鈕是 404（官網現在的 `.msi` 連結指向 v0.0.19，還是好的）；進得太晚（`latest` 之後才部署），從 Latest 切換到 Pages 部署完成這段時間是 404。照這個順序沒有空窗。
 - 做法：它在另一個分支 `claude/v010-site-download`（從發布基礎建設的某個中間 commit 長出來，再加兩個官網 commit；基礎建設後來的 commit 不在這個分支裡），不在 integration → main 的合併裡。基礎建設合併進 main 之後，這個分支對 `main` 開 PR 的差異只剩那兩個 commit。`publish` 之後合併它、等 Pages 部署完成（`gh run list --workflow "Deploy Pages" --limit 1`），再 dispatch `latest`。
 - 做完驗證：`curl -sL -r 0-0 -o /dev/null -w '%{http_code}\n' https://github.com/NakiriYuuzu/Yuzora/releases/download/v0.1.0/Yuzora-windows-x64-setup.exe` 要回 200 或 206（用 GET 取一個位元組；簽名過的下載網址 HEAD 會被拒）。
-- `latest` 之後要把 `site/downloads.js` 改回 `${RELEASE_DOWNLOAD_BASE}Yuzora-windows-x64-setup.exe`（同一個檔案，拿掉釘死）：不改的話，發布 0.1.1 之後官網的 Windows 按鈕仍然給 0.1.0。#209 的官網重設計（動到同樣的檔案）合併時要保留 Windows 這個連結。
+- 0.1.1 的發布準備已把 `site/downloads.js` 與 `site/index.html` 改回 `releases/latest/download/Yuzora-windows-x64-setup.exe`（同一個檔案，拿掉釘死；Latest 是 v0.1.0 時它已經回 206），之後每個 Stable 都帶這個固定檔名，官網不必再跟著版本改。`app/scripts/yuzora/workflows.test.ts` 守著：官網連結只能用 `releases/latest/download/` 底下、Stable 會上傳的固定檔名。#209 的官網重設計（動到同樣的檔案）合併時要保留 Windows 這個連結。
 
 **8. `manifest`**
 

@@ -2,6 +2,9 @@
   "title": "Table",
   "pick": "Pick a table or view in the Database sidebar.",
   "loading": "Loading…",
+  "running_pick": "A statement is still running. Opening {name} stops it.",
+  "running_keep": "Keep it running",
+  "running_stop": "Stop it and open",
   "tab": {
     "data": "Data",
     "structure": "Structure",
@@ -16,8 +19,10 @@
   "sql_over_read": "The table is still being read. Run stops that read, then runs this SQL.",
   "sql_busy": "A statement is still running. Stop it first, then run again.",
   "done": "Done",
-  "affected": "{count} rows affected",
-  "result_rows": "Result {n} · {count} rows",
+  "affected_one": "1 row affected",
+  "affected_other": "{count} rows affected",
+  "result_rows_one": "Result {n} · 1 row",
+  "result_rows_other": "Result {n} · {count} rows",
   "result_affected": "Result {n} · {count} affected",
   "structure": {
     "columns": "Columns · {count}",
@@ -29,10 +34,12 @@
     "default": "Default",
     "key": "Key"
   },
-  "unsaved": "{count} edited cells aren't written back yet",
+  "unsaved_one": "1 edited cell isn't written back yet",
+  "unsaved_other": "{count} edited cells aren't written back yet",
   "unsaved_drop": "Discard and go on",
   "unsaved_keep": "Keep editing",
-  "unsaved_writing": "{count} edited cells are being written right now",
+  "unsaved_writing_one": "1 edited cell is being written right now",
+  "unsaved_writing_other": "{count} edited cells are being written right now",
   "unsaved_wait": "Keep waiting",
   "unsaved_stop": "Stop saving"
 }

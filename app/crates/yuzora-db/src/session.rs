@@ -30,13 +30,37 @@ pub const META: &str = "meta";
 
 /// Rows kept per result before the query is stopped (`db.maxRows` overrides).
 pub const DEFAULT_MAX_ROWS: usize = 100_000;
+/// What `db.maxRows` is kept within, whoever wrote it.
+pub const MAX_ROWS_RANGE: (usize, usize) = (100, 5_000_000);
 
 pub fn max_rows() -> usize {
-    yuzora_core::settings::section(config::SECTION)
+    max_rows_of(&yuzora_core::settings::section(config::SECTION))
+}
+
+fn max_rows_of(section: &serde_json::Value) -> usize {
+    section
         .get("maxRows")
         .and_then(serde_json::Value::as_u64)
-        .map(|n| (n as usize).clamp(100, 5_000_000))
+        .map(|n| (n as usize).clamp(MAX_ROWS_RANGE.0, MAX_ROWS_RANGE.1))
         .unwrap_or(DEFAULT_MAX_ROWS)
+}
+
+/// The `db` section with `maxRows` set (within its range) and everything else, the saved connections first of all, as it was.
+fn with_max_rows(mut section: serde_json::Value, rows: f64) -> serde_json::Value {
+    if !section.is_object() {
+        section = serde_json::json!({});
+    }
+    let rows = if rows.is_finite() { rows.round().clamp(MAX_ROWS_RANGE.0 as f64, MAX_ROWS_RANGE.1 as f64) as usize } else { DEFAULT_MAX_ROWS };
+    section["maxRows"] = serde_json::json!(rows);
+    section
+}
+
+/// Sets `db.maxRows` for the queries and table reads started from now on; says what was stored.
+pub fn set_max_rows(rows: f64) -> std::io::Result<usize> {
+    let section = with_max_rows(yuzora_core::settings::section(config::SECTION), rows);
+    let stored = max_rows_of(&section);
+    yuzora_core::settings::set_section(config::SECTION, section)?;
+    Ok(stored)
 }
 
 // ---------------------------------------------------------------- status
@@ -1241,6 +1265,23 @@ async fn stop_work<W>(work: W, signal: impl std::future::Future<Output = ()>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setting_the_row_limit_keeps_the_saved_connections_and_stays_within_its_range() {
+        let saved = serde_json::json!({
+            "connections": [{ "id": "c1", "name": "pg", "engine": "postgres" }, { "engine": "one this version can't read" }],
+            "somethingElse": true,
+        });
+        let set = with_max_rows(saved.clone(), 250_000.0);
+        assert_eq!(set["connections"], saved["connections"]);
+        assert_eq!(set["somethingElse"], true);
+        assert_eq!(max_rows_of(&set), 250_000);
+        for (asked, stored) in [(1.0, 100), (99.4, 100), (1e12, 5_000_000), (-5.0, 100), (2_000.6, 2_001), (f64::NAN, DEFAULT_MAX_ROWS)] {
+            assert_eq!(max_rows_of(&with_max_rows(saved.clone(), asked)), stored, "{asked}");
+        }
+        assert_eq!(max_rows_of(&with_max_rows(serde_json::Value::Null, 300.0)), 300, "no section yet");
+        assert_eq!(max_rows_of(&saved), DEFAULT_MAX_ROWS, "unset");
+    }
 
     #[test]
     fn a_tables_rows_are_loading_until_known_and_a_querys_are_read_only() {

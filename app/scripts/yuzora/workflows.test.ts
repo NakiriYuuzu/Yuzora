@@ -69,14 +69,13 @@ describe("the release workflow's contract is run by the PR that changes the work
 describe("the website's download links", () => {
   const downloads = readFileSync(join(WORKFLOWS, "../../site/downloads.js"), "utf8");
 
-  test("name files a stable release carries: the macOS one by the fixed name, the Windows one by the release", () => {
-    const carried = uploadPlan("0.1.0").map((p) => p.dest);
+  test("name files a stable release carries, each by its fixed name under the latest release", () => {
+    const carried = uploadPlan("0.1.1").map((p) => p.dest);
     expect(downloads).toContain("releases/latest/download/");
-    expect(downloads).toContain("Yuzora-macos-aarch64.dmg");
-    expect(carried).toContain("Yuzora-macos-aarch64.dmg");
-    const windows = downloads.match(/releases\/download\/v0\.1\.0\/(Yuzora-[\w.-]+)"/)?.[1];
-    expect(windows).toBe("Yuzora-windows-x64-setup.exe");
-    expect(carried).toContain(windows!);
+    expect(downloads).not.toMatch(/releases\/download\/v/);
+    const named = [...downloads.matchAll(/\$\{RELEASE_DOWNLOAD_BASE\}(Yuzora-[\w.-]+)`/g)].map((m) => m[1]);
+    expect(named).toEqual(["Yuzora-windows-x64-setup.exe", "Yuzora-macos-aarch64.dmg"]);
+    for (const name of named) expect(carried).toContain(name);
     // No MSI: 0.1.0 ships an NSIS installer only.
     expect(downloads).not.toContain(".msi");
   });

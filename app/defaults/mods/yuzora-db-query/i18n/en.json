@@ -20,7 +20,9 @@
   "waiting": "Waiting for results…",
   "no_results": "No results",
   "done": "Done",
-  "affected": "{count} rows affected",
-  "result_rows": "Result {n} · {count} rows",
+  "affected_one": "1 row affected",
+  "affected_other": "{count} rows affected",
+  "result_rows_one": "Result {n} · 1 row",
+  "result_rows_other": "Result {n} · {count} rows",
   "result_affected": "Result {n} · {count} affected"
 }

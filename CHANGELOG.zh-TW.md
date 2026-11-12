@@ -2,6 +2,45 @@
 
 <samp><a href="CHANGELOG.md">English</a> · 繁體中文</samp>
 
+## [0.1.1] - 2026-11-12
+
+修正版。Git 的分支 popup 重新列出動作、分支與 tag，Pull 找得到了；設定多了 Database 頁，可以改列數上限；數量是 1 的時候大部分改用單數。0.1.1 是 Windows 上的 Yuzora 第一個自己安裝的更新。
+
+> **升級前請先看。** macOS、Linux 與 Windows 上的 0.1.0 會自己更新到 0.1.1，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Windows 上的 beta 無法自己更新，Tauri 版（v0.0.19、0.1.0-beta.1）也不會提供 0.1.1，這兩種情況都請手動下載安裝程式。詳見下方〈安裝說明〉。
+
+### 新增
+
+- **Settings › Database 可以設定每個結果保留幾列。** 查詢或讀取資料表時，讀到這個列數就停止。預設是 100,000，可以設成 100 到 5,000,000。下一次查詢或讀取資料表時套用新的值。以前要自己改 `settings.json`。
+
+### 修正
+
+- Git：從 Git 側欄的分支按鈕打開的分支 popup，會列出動作（Update project、Pull…、Fetch、Push…、New branch… 等）以及分支與 tag。以前只看得到搜尋框。Pull 沒有其他按鈕，所以完全按不到。清單比 popup 長的時候，在 popup 裡捲動。
+- Git：在 Git 側欄的 repo 選擇器裡，還沒按方向鍵就按 Enter 時，不再丟掉你釘選的 repo。釘選的 repo 不在清單上時會這樣，可能是它讀不到，或清單在它之前就被截斷。現在選擇器會關閉，釘選保留。
+- Git diff：右鍵選單的某一項失敗時（例如複製沒有成功），選單會關閉，並用 toast 說明原因。以前錯誤畫在選單裡的一列，被 popup 的高度切掉。
+- 資料庫：pane 的 SQL 分頁還有你執行中的陳述式時，在側欄點另一張資料表會先詢問。可以讓它繼續執行，或停止它並開啟資料表。以前會不問就停止，在 SQL Server 上這會讓它的交易 rollback。
+- 更新：更新裝不上時，Settings › Updates 只在那一版還在等待安裝時說明原因。以前下載了更新的版本之後，舊的原因還留在頁面上。啟動時的失敗，會算在之後 Yuzora 第一個找到的待安裝版本上。
+- macOS：應用程式選單的名稱是 Yuzora，項目是 Hide Yuzora 與 Quit Yuzora，命令面板是 Quit Yuzora。以前寫的是 Herdr。在命令面板輸入「herdr」仍然找得到這一項。
+- 數量是 1 的時候，大部分改用單數：狀態列的「1 pane · 1 Space」與「1 agent」、Git 的「1 change」與「1 commit to push」、Database 的「1 row affected」，以及各個 Git pane 提示裡的「1 file has conflicts.」。
+- 999,500 到 999,999 的數量不再寫成 `1000k`。Git 側欄的行數寫 `999k`，Database 側欄的列數寫 `1M`。
+
+### 已知限制
+
+- Git：分支 popup 的清單用滾輪或觸控板捲動，不顯示捲軸，和 repo 選擇器一樣。用上下方向鍵移動時，反白的列不會自動捲進畫面。
+- 還有三處數量是 1 時仍是複數：rebase 停下來時的「1 files have conflicts.」、Git 側欄提交檢查的「1 files still have conflicts.」，以及 merge pane 的「1 conflicted files」。
+- 0.1.0 的已知限制仍然適用。
+
+### 安裝說明
+
+- 0.1.0 會自己更新到 0.1.1，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Yuzora 啟動 10 秒後檢查一次，之後每小時一次，下次重新啟動 Yuzora 時套用。
+- **Windows 上的 0.1.0：** 這是 Yuzora 在 Windows 上第一個自己安裝的更新。如果你是在 beta 上覆蓋安裝 0.1.0，之後還沒重新開機過，這次更新可能會先失敗一次：beta 版啟動的背景程式（herdr-core）還握著 Yuzora 的安裝資料夾。Settings › Updates 會說明這個原因。請重新開機，或在 Yuzora 以外的終端機執行 `hc server stop`（它會結束所有終端機與裡面執行的 agent，和重新開機的損失一樣），再重新啟動 Yuzora。
+- **Windows 上還在用 beta（0.1.0-beta.2 到 beta.4）的人：** beta 版在 Windows 上無法自動更新。它可能會顯示 `Herdr 0.1.1 is ready`，但按 Restart 不會安裝。請先完全關閉 Yuzora，再從這個 release 下載 `Yuzora-windows-x64-setup.exe`，直接執行覆蓋安裝（beta 還開著時，安裝程式可能無法取代它的檔案）。裝完請重新開機一次，原因同上一條。
+- Tauri 版（v0.0.19、0.1.0-beta.1）不會提供 0.1.1，請自行下載安裝。這是另一個 App，Tauri 版的設定與資料不會搬過來：資料庫連線、SSH 主機與設定要重新設定。Tauri 版的檔案原封不動，重新安裝 Tauri 版就能回去用。新 App 沒有 Browser、Companion 與 AgentZone，編輯器也沒有 LSP。Windows 的安裝程式會詢問是否移除舊版的全機安裝。
+- macOS App 僅支援 Apple Silicon，請下載 `Yuzora-macos-aarch64.dmg`。App 只有 ad-hoc 簽章，沒有 Apple Developer ID 簽章或公證，所以第一次開啟會被 Gatekeeper 擋下。到「系統設定 › 隱私權與安全性」按「強制打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。只對從本 repo Releases 下載的 DMG 這樣做。更新之後，macOS 可能會再詢問一次麥克風、相機或資料夾的存取權限。
+- Windows 的 `Yuzora-windows-x64-setup.exe` 是免系統管理員權限的個人安裝程式。Authenticode 尚未啟用，SmartScreen 可能出現警告，請點「其他資訊 › 仍要執行」。
+- Linux（實驗性）提供 `yuzora-0.1.1-linux-x86_64.tar.gz` 與 `yuzora-0.1.1-linux-aarch64.tar.gz`，解開其中一個後執行 `yuzora/install`。
+- 這個版本在實體 Mac 上驗收過。Windows 與 Linux 只有 CI runner 上的自動化檢查（Windows 是安裝、更新兩次與解除安裝，Linux 是執行 `install`），沒有人在實體的 Windows 或 Linux 機器上試過，所以 Windows 上從 0.1.0 更新到 0.1.1 只在 CI runner 上跑過。
+- 需要 herdr-core 0.1.11 以上。沒有安裝時，第一次開啟的畫面會提供安裝。在其他機器上存檔需要兩邊的 herdr-core 都是 0.1.19 以上。
+
 ## [0.1.0] - 2026-11-12
 
 以 herdr-app 為基底的新 Yuzora 第一個正式版。Files 可以在其他機器上編輯、新增與重新命名檔案，開檔改開在自己的 tab；Git 切換專案更快，diff 左右各半、可以複製；Database 的資料表編輯可以存檔；對話框、popup 與 toast 會淡入。從 0.1.0 起，Windows 上的 Yuzora 會自己更新。

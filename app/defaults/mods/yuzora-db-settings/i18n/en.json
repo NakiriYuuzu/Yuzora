@@ -1,0 +1,8 @@
+{
+  "settings.title": "Database",
+  "error": "Could not save: {error}",
+  "group.results": "Results",
+  "s.maxRows": "Rows kept per result",
+  "s.maxRows.desc": "A query or a table read stops once it has this many rows ({min} to {max}; {default} unless you change it). The next one you run uses it.",
+  "reset": "Reset"
+}

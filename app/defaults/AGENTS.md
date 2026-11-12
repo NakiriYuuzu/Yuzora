@@ -1288,7 +1288,9 @@ with these differences.
 - Databases (PostgreSQL, SQL Server, SQLite) live in the right
   dock's `yuzora-sidebar-database` mode. Saved connections are the `db` section of
   `yuzora/settings.json` (`connections`, and `maxRows`, the most rows a result
-  keeps: 100000 by default). Passwords are in the system's credential store,
+  keeps: 100000 by default). The person changes `maxRows` under Settings ›
+  Database; a mod changes it with `setRowLimit(rows)` from `yuzora:db`, which
+  rewrites only that key. Passwords are in the system's credential store,
   never in that file; don't write one there. Query history is
   `yuzora/db-history.json` (statements only).
 - Open a table or a query for the person with `pane.split` or `tab.new`:
@@ -1347,7 +1349,9 @@ with these differences.
   the statement (it asks first when the table has unsaved edits). A write-back
   that waits is not stopped by Run (it raises a bar with Keep waiting and
   Stop saving): press Stop saving. A statement of
-  the person's own that is still running has to be stopped with Stop. Then run
+  the person's own that is still running has to be stopped with Stop; picking
+  another table in the sidebar meanwhile raises a bar (Keep it running, or
+  Stop it and open) instead of stopping it unasked. Then run
   the table again. What the SQL tab has not committed is not in the table either. Tell
   the person this when a table will not load or save after they used the SQL
   tab.

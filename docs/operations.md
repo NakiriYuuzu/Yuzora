@@ -84,7 +84,7 @@ Required CI checks：
 | Companion gateway | `.github/workflows/companion.yml` | 手動 dispatch；`src-tauri/companion/**`、`src-tauri/companion-net/**`、`src-tauri/host/**`、tiberius vendor 或自身變更的 pull request（無 push 觸發，也不是 required check） | Gateway 三平台 fmt、clippy `-D warnings`、tests 與原生 TLS 依賴拒絕檢查；cargo-deny／cargo-audit；Companion 網路 sidecar 三平台 `gofmt -l`（須無輸出）、`go vet`、`go test`、固定版本的 `govulncheck`（fail-closed） |
 | Pages    | `.github/workflows/deploy-pages.yml` | 成功的 `main` push `CI` workflow；手動 dispatch 也須通過 exact-SHA CI 查證 | 安裝依賴、產生官網角色與中英文 SEO 頁面、建置 Demo 至 `site/demo/`，再將完整 `site/` 部署到 GitHub Pages |
 
-Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。0.1.0 的 Windows 連結要改成固定指向 `releases/download/v0.1.0/Yuzora-windows-x64-setup.exe`（0.1.0 沒有 MSI；0.1.0 成為 Latest 之前，Latest 是只有 MSI 的 v0.0.19）。這個變更在另一個 PR，進 main 的時機是 `publish` 之後、`latest` 之前，見 `docs/beta2/release.md` §6.3 第 7 步。
+Release 與 Pages 的 workflow trigger 互相獨立，但產品頁下載連結使用 `releases/latest/download/...`：發布新的 Latest Release 會立即改變產品頁實際下載內容，即使 Pages 沒有重新部署。Windows 連結是 `releases/latest/download/Yuzora-windows-x64-setup.exe`：0.1.0 起每個 Stable 都帶這個固定檔名（0.1.0 發布時曾暫時釘在 `releases/download/v0.1.0/…`，因為當時的 Latest 是只有 MSI 的 v0.0.19；0.1.1 的發布準備已改回，經過見 `docs/beta2/release.md` §6.3 第 7 步）。
 
 Pages 由成功的 `main` push `CI` workflow 觸發，部署 job 會以 `workflow_run.head_sha` checkout，並透過 Actions API 再驗證同一 SHA 的成功 CI；手動 dispatch 也必須通過相同 exact-SHA 查證。不得把其他 SHA 的 CI 綠燈視為部署來源已驗證。
 

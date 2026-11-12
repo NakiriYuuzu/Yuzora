@@ -80,7 +80,7 @@ const baseName = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p
 
 const ROW = 24, HEAD = 26, ACTION = 22, ACTION_ALL = 84, LIST_PAD = 6, PICK_ROW = 26, PICK_MAX = 358;
 // Line counts of six digits would not fit the narrowest sidebar next to the buttons: 150000 reads 150k.
-const count = (n) => (n < 100000 ? String(n) : n < 1000000 ? `${Math.round(n / 1000)}k` : "999k+");
+const count = (n) => (n < 100000 ? String(n) : n < 1000000 ? `${Math.floor(n / 1000)}k` : "999k+");
 const SECTIONS = ["conflicts", "staged", "unstaged"];
 
 // What the Git mode keeps of one repo: the status last read, the commit being written, and what an action there has
@@ -101,6 +101,8 @@ const rowKey = (v, it) => `${v.key}|${it.head ? `h:${it.section}` : `${it.sectio
 const holds = (v) => Boolean(v.busy || v.warnings || v.note?.tone === "error" || v.draft.amend || v.draft.author.trim() || (v.draft.text.trim() && v.draft.text !== v.history.template));
 // What an arrival throws when the place it was for was left while it waited.
 const MOVED = Symbol("moved");
+
+const conflictsText = (n) => (n === 1 ? t("conflicts_one") : t("conflicts_other", { count: n }));
 
 export default class SidebarGit extends View {
   init(_props, cx) {
@@ -344,7 +346,12 @@ export default class SidebarGit extends View {
     if (e.key === "escape") closeOverlay(props()?.overlay);
     else if (e.key === "down") this.hi = (at + 1) % n;
     else if (e.key === "up") this.hi = (at - 1 + n) % n;
-    else if (e.key === "enter") { if (this.found) this.pick(at ? list[at - 1].root : null); }
+    else if (e.key === "enter") {
+      if (!this.found) return;
+      // The pinned repo is not on the list (it could not be read, or was cut short): Enter before any ↑↓ picked nothing, and leaves the pin.
+      if (this.hi == null && this.picker.pinned && !at) closeOverlay(props()?.overlay);
+      else this.pick(at ? list[at - 1].root : null);
+    }
     else return;
     cx.stop_propagation(); cx.notify();
   }
@@ -409,7 +416,7 @@ export default class SidebarGit extends View {
       const sync = `${b.ahead ? ` ↑${b.ahead}` : ""}${b.behind ? ` ↓${b.behind}` : ""}`;
       const op = st.operation.kind && st.operation.kind !== "none" ? ` · ${t(`op.${st.operation.kind}`)}` : "";
       status = {
-        text: `⎇ ${name}${sync}${op} · ${n ? t("status.changes", { count: n }) : t("status.clean")}`,
+        text: `⎇ ${name}${sync}${op} · ${n === 1 ? t("status.changes_one") : n ? t("status.changes_other", { count: n }) : t("status.clean")}`,
         tone: st.conflicts.length ? "blocked" : v.busy || op ? "working" : n ? "accent" : "muted",
       };
     }
@@ -435,7 +442,7 @@ export default class SidebarGit extends View {
       try {
         const out = await work(v.repo);
         if (out && out.ok === false) v.note = { tone: "error", text: out.output || t("failed") };
-        else if (out?.conflicts?.length) v.note = { tone: "warning", text: t("conflicts", { count: out.conflicts.length }) };
+        else if (out?.conflicts?.length) v.note = { tone: "warning", text: conflictsText(out.conflicts.length) };
       } catch (e) { v.note = { tone: "error", text: String(e) }; }
       finally { v.busy = null; await this.reload(cx, v); }
     });

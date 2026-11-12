@@ -71,6 +71,8 @@ fn keeps_given(settings: &serde_json::Value, running: &str, version: &str) -> bo
 struct SwapFailure {
     busy: bool,
     error: String,
+    /// The update that was waiting when it failed; none yet for a swap that failed as the app started.
+    of: Option<String>,
 }
 
 impl SwapFailure {
@@ -89,21 +91,32 @@ fn failure_slot() -> std::sync::MutexGuard<'static, Option<SwapFailure>> {
 
 /// `swap` (src/update.rs) could not move the folders: keeps why, for "Restart" and Settings › Updates.
 pub fn note_swap_failure(e: &std::io::Error) {
+    note_swap_failure_of(crate::update::ready(), e);
+}
+
+fn note_swap_failure_of(of: Option<String>, e: &std::io::Error) {
     *failure_slot() = Some(SwapFailure {
         busy: cfg!(windows) && busy_code(e.raw_os_error()),
         error: e.to_string(),
+        of,
     });
 }
 
-/// The failure of the last swap, in words, for as long as an update waits (`waiting`). A later swap that works
-/// ends the process; a staged update that is dropped leaves nothing to explain.
-fn current(waiting: bool) -> Option<String> {
-    failure_slot().as_ref().filter(|_| waiting).map(SwapFailure::text)
+/// The failure of the last swap, in words, for as long as the update it was for waits (`waiting`: the version waiting
+/// now). A later swap that works ends the process; a staged update that is dropped leaves nothing to explain; and a
+/// newer update staged since has not been tried, so what stopped the one before it is not said of it.
+fn current(waiting: Option<&str>) -> Option<String> {
+    let waiting = waiting?;
+    let mut slot = failure_slot();
+    let failure = slot.as_mut()?;
+    // A swap that failed as the app started had no version to name: it was for the first one found waiting.
+    let of = failure.of.get_or_insert_with(|| waiting.to_owned());
+    (of == waiting).then(|| failure.text())
 }
 
 /// What the person is told while an update waits and its swap failed: Settings › Updates shows it (`update::status`).
 pub fn swap_failure() -> Option<String> {
-    current(crate::update::ready().is_some())
+    current(crate::update::ready().as_deref())
 }
 
 /// What `app.update` says when `apply` returned false: the swap's failure if it had one, else that nothing is waiting.
@@ -389,20 +402,37 @@ mod tests {
 
     #[test]
     fn a_swap_failure_is_kept_for_as_long_as_the_update_waits_and_has_a_toast() {
-        assert_eq!(current(true), None, "nothing failed yet");
-        note_swap_failure(&std::io::Error::other("no"));
-        let said = current(true).expect("said while the update waits");
+        assert_eq!(current(Some("0.1.1")), None, "nothing failed yet");
+        note_swap_failure_of(Some("0.1.1".into()), &std::io::Error::other("no"));
+        let said = current(Some("0.1.1")).expect("said while the update waits");
         assert!(said.contains("could not install the update"), "{said}");
         assert_eq!(
-            current(true).as_deref(),
+            current(Some("0.1.1")).as_deref(),
             Some(said.as_str()),
             "Restart again, or Settings, say it again"
         );
         assert_eq!(
-            current(false),
+            current(None),
             None,
             "an update that is no longer waiting has nothing to explain"
         );
+        assert_eq!(
+            current(Some("0.1.2")),
+            None,
+            "a newer update staged since has not been tried: the older one's failure is not its"
+        );
+        assert_eq!(
+            current(Some("0.1.1")).as_deref(),
+            Some(said.as_str()),
+            "asking about the newer one did not forget it"
+        );
+        note_swap_failure_of(None, &std::io::Error::other("no"));
+        assert_eq!(
+            current(Some("0.1.1")).as_deref(),
+            Some(said.as_str()),
+            "a swap that failed as the app started is for the update found waiting first"
+        );
+        assert_eq!(current(Some("0.1.2")), None, "and not for one staged after it");
         assert_eq!(
             apply_failure(),
             "no update is ready yet",

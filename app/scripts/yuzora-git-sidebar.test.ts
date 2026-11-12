@@ -170,6 +170,18 @@ function world(settings: object = {}, props: any = null) {
   return { w, view, cx, frame, aim, press, type, tick, go, settle, pending, answer, fail, badge, submit, pin };
 }
 
+test("the status bar's line counts one change in the singular and more in the plural", async () => {
+  const s = world();
+  s.go("/b");
+  await s.settle();
+  s.frame();
+  expect(s.w.shared.get("yuzora.status.git").text).toBe("⎇ main · status.changes_other");
+  s.w.status["/b"] = { staged: [], unstaged: [file("x.txt")], counts: { staged: 0, unstaged: 1, untracked: 0, conflicts: 0, total: 1 }, generation: 2 };
+  s.go("/a"); s.frame(); await s.settle();
+  s.go("/b"); s.frame(); await s.settle(); s.frame();
+  expect(s.w.shared.get("yuzora.status.git").text).toBe("⎇ main · status.changes_one");
+});
+
 test("a new place is followed in the next frame, without waiting for the sidebar's timer", async () => {
   const s = world();
   await s.settle();
@@ -1157,4 +1169,14 @@ test("Cancel on the checks' warnings, then Commit anyway from the same frame, do
   await flush();
   expect(s.w.asks.commit).toEqual([]);
   expect(s.w.asks.commitChecks.length).toBe(1);
+});
+
+test("a count of lines past 100,000 is cut to thousands and never reads 1000k", async () => {
+  const s = world();
+  const big = [[99999, "+99999"], [150499, "+150k"], [999499, "+999k"], [999500, "+999k"], [999999, "+999k"], [1000000, "+999k+"]] as const;
+  const unstaged = big.map(([add], i) => ({ ...file(`f${i}.txt`), add }));
+  s.w.status["/a"] = { unstaged, counts: { staged: 0, unstaged: unstaged.length, untracked: 0, conflicts: 0, total: unstaged.length } };
+  await s.settle();
+  const shown = s.frame().nodes.filter((n) => n.id === "add").map((n) => n.texts[0]);
+  expect(shown).toEqual(big.map(([, text]) => text));
 });

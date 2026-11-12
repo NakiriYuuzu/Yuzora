@@ -94,6 +94,10 @@ export function version(): string;
 export function engines(): { id: Engine; label: string; defaultPort: number | null }[];
 /** Saved connections with what the sidebar shows (`target`) and their live status. */
 export function connections(): (Connection & { target: string; label: string; status: ConnectionStatus })[];
+/** Rows kept per result before a query or a table read is stopped (`db.maxRows`), and the range it is kept within. */
+export function rowLimit(): { value: number; min: number; max: number; default: number };
+/** Sets it, kept within the range, for what starts from now on; the saved connections are left as they are. Returns what was stored. */
+export function setRowLimit(rows: number): number;
 /** Adds (no id) or replaces a connection. `password`: set it, or leave the stored one when null. */
 export function saveConnection(config: Partial<Connection>, password?: string | null): Promise<Connection>;
 export function deleteConnection(id: string): Promise<null>;
@@ -192,6 +196,11 @@ fn connections_json() -> HostValue {
     to_host(&Value::Array(list))
 }
 
+fn row_limit_json(value: usize) -> HostValue {
+    let (min, max) = session::MAX_ROWS_RANGE;
+    to_host(&json!({ "value": value, "min": min, "max": max, "default": session::DEFAULT_MAX_ROWS }))
+}
+
 /// The `yuzora:db` module.
 pub fn host_module() -> HostModule {
     HostModule::new(NAME)
@@ -205,6 +214,11 @@ pub fn host_module() -> HostModule {
             Ok(to_host(&Value::Array(list)))
         })
         .function("connections", |_| Ok(connections_json()))
+        .function("rowLimit", |_| Ok(row_limit_json(session::max_rows())))
+        .function("setRowLimit", |a| {
+            let rows = a.get(0).and_then(HostValue::as_number).ok_or_else(|| host_error("setRowLimit needs a number of rows"))?;
+            session::set_max_rows(rows).map(|stored| HostValue::Number(stored as f64)).map_err(|e| host_error(e.to_string()))
+        })
         .async_function("saveConnection", |a| {
             let config = connection_config(a, 0)?;
             let password = a.get(1).and_then(HostValue::as_str).map(str::to_owned);
@@ -351,6 +365,13 @@ mod tests {
         let v = from_host(&m.call("engines", &HostArguments::new([])).unwrap());
         assert_eq!(v[0], json!({ "id": "postgres", "label": "PostgreSQL", "defaultPort": 5432 }));
         assert_eq!(v[2]["defaultPort"], Value::Null);
+    }
+
+    #[test]
+    fn the_row_limit_comes_with_the_range_a_settings_page_keeps_it_in() {
+        assert_eq!(from_host(&row_limit_json(250_000)), json!({ "value": 250_000, "min": 100, "max": 5_000_000, "default": 100_000 }));
+        let m = host_module();
+        assert!(m.call("setRowLimit", &HostArguments::new([HostValue::Str("many".into())])).is_err(), "not a number");
     }
 
     #[test]

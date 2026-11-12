@@ -14,7 +14,7 @@ beta.2 的資料庫功能：連線管理、右側模式 schema 樹、資料表 p
 | 原生元件 | `src/grid.rs`、`src/editor.rs` | `DataGrid`（GPUI `uniform_list`）、`SqlEditor`（gpui-base Editor＋SQL 上色） |
 | 設定與憑證 | `src/config.rs`、`src/history.rs` | Yuzora settings 的 `db` section、keyring namespace `db`、查詢歷史 |
 | 執行環境 | `src/runtime.rs` | crate 自己的 tokio runtime（2 個 worker）；HostModule 的 async 函式把工作丟過去，用 oneshot 拿結果 |
-| mods | `app/defaults/mods/yuzora-sidebar-database`、`yuzora-db-connection`、`yuzora-db-table`、`yuzora-db-query` | 右側模式、連線對話框、資料表 pane、SQL pane |
+| mods | `app/defaults/mods/yuzora-sidebar-database`、`yuzora-db-connection`、`yuzora-db-table`、`yuzora-db-query`、`yuzora-db-settings` | 右側模式、連線對話框、資料表 pane、SQL pane、設定頁 |
 
 gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。tokio-postgres、tiberius 都需要 tokio reactor，所以 crate 自帶 runtime，`runtime::run` 把 future 丟過去，回傳一個 `Send` 的 future 給 HostModule。
 
@@ -70,7 +70,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 每個「停止」只停它旁邊標示的那件事。工作的停止（工具列）只取消工作當下正在跑的那句：讀列時是資料表的連線（`{owner}:table`），count 時是 count 的連線（`Job.serving`；借資料表連線的 count 是請它自己放手，`Stop::Count`），讀完之後不再碰資料表的連線，因為那上面可能正在寫回。寫回的停止（footer）只結束那次寫回。SQL 分頁的查詢在自己的連線上，有自己的語句和自己的 Stop；工作仍是一個 pane 一個（`new_job` 先 `supersede`），所以在 SQL 分頁按 Run，會取消同一個 pane 還在讀的資料表或還在算的 count，並取代它的結果集。寫回不是工作：它在等列鎖時 SQL 分頁照常執行，兩邊的 Stop 互不影響（`postgres_a_sql_tab_statement_and_a_waiting_write_back_are_stopped_apart`、`mssql_a_sql_tab_statement_and_a_waiting_write_back_are_stopped_apart`）。
 - 連線還在建立時按「停止」也有效：引擎先把自己的取消機制準備好，然後在每個 statement 執行前檢查工作是否已經停止（`RowSink::cancelled`）。所以 UPDATE、DELETE 這類不回傳列的語句，不會在回報取消之後才執行。
 - 讀取是串流的：引擎每 512 列（`engine::BATCH`）交給 `RowSink` 一次，grid 立即重畫，不等整個查詢結束。
-- 上限 `db.maxRows`（預設 100,000，可設 100～5,000,000）。真的有列放不下時才停止讀取並標成 truncated（剛好等於上限不算）；開表會多讀一列（`LIMIT maxRows + 1`）來判斷。
+- 上限 `db.maxRows`（預設 100,000，可設 100～5,000,000）。設定 › Database（`yuzora-db-settings`）可以改：值經 `yuzora:db` 的 `setRowLimit` 寫入（`session::set_max_rows`），它讀出整個 `db` section、只換 `maxRows` 再寫回，讀到的連線清單原樣寫回（`setting_the_row_limit_keeps_the_saved_connections_and_stays_within_its_range`）。讀與寫之間沒有跨呼叫的鎖（`settings::WRITE` 只保護寫入那一步），和 `config::store` 存連線時一樣：同一瞬間另一條執行緒正在存連線的話，後寫的那一方會蓋掉先寫的，已知、未處理；不從 JS 用 `setSetting("db", …)` 寫，那會覆寫整個 section。下一次查詢或開表就用新值，不必重啟。真的有列放不下時才停止讀取並標成 truncated（剛好等於上限不算）；開表會多讀一列（`LIMIT maxRows + 1`）來判斷。
 - 排序在用戶端，只排已讀進來的列（排的是檢視的索引，不搬資料）。整數與數字文字逐位精確比較，不經過 f64，所以超過 2^53 的 bigint 和高精度 numeric 也排得對。NaN 排在所有數字之後（和 PostgreSQL 一樣）。PostgreSQL 的 money 依數值排序：只把數字之間的 `.`、`,` 當分隔，所以 `$1,234.56`、`1.234,56 €`、`￥1,234` 都會正確排序。查詢還在串流時就排序，之後到的列也會依排序併入。被截斷的結果要完整排序，請在 SQL 加 `ORDER BY`。
 - 開表時另外跑一次 `COUNT(*)`（MSSQL 是 `COUNT_BIG`），狀態列顯示「X 列 · 顯示 a–b · N ms」。
 
@@ -96,6 +96,7 @@ gpui-shell 的 async 函式跑在 GPUI 的 background executor，不是 tokio。
 - 清空儲存格：型別沒有「空」這個值的，清空就是 NULL（`model::clears_to_null`）；格子在寫回之前就顯示 NULL，不是等寫回之後才變。數字、布林、日期與時間、uuid、json、inet 等（SQL Server：`bit`、`tinyint`～`bigint`、`real`、`float`、`decimal`、`money`、`date`、`time`、`datetime`、`datetime2`、`smalldatetime`、`datetimeoffset`、`uniqueidentifier`；PostgreSQL：`int2`～`int8`、`float4`、`float8`、`numeric`、`money`、`oid`、`bool`、`date`、`time`、`timetz`、`timestamp`、`timestamptz`、`interval`、`uuid`、`inet`、`cidr`、`macaddr`、`json`、`jsonb`）都是這樣；文字型別（`char`／`varchar`／`nvarchar`／`text` 等）仍然寫成空字串。欄位不允許 NULL 時由伺服器回它的錯誤，不改寫成別的值。以前 SQL Server 把清空的日期寫成 `1900-01-01`、數字寫成 `0`（伺服器對空字串的轉換），PostgreSQL 的非文字型別則是被伺服器拒絕。SQLite 沒有型別，行為不變。
 - 編輯框只有一行：含換行的文字和二進位值不能在表格內編輯（底部會說明），請在 SQL 分頁用 `UPDATE`。
 - 有未寫回的修改時，換表、重新整理或執行 SQL 會先在 pane 頂端詢問「繼續編輯」或「捨棄並繼續」。問句和按鈕會依 pane 寬度換行，兩個選項都在 pane 內。修改正在寫回時（`ResultSummary.writing`）不提供「捨棄」：寫回已經送出，修改可能照樣寫進資料庫，說「捨棄」會讓人以為沒有寫；改問「繼續等待」或「停止儲存」（`stopWrite`，修改保留，之後可以再按「捨棄並繼續」）。問的當下的修改已經寫完或被捨棄時，這一列自己消失，不會自己繼續換表。
+- SQL 分頁自己執行的語句還在跑時，從側欄換表也先在 pane 頂端詢問（`asking`、`askingBar`）：「Keep it running」留在原表讓語句跑完，「Stop it and open」才讀新表。讀新表會讓 core 停掉這個 pane 的舊工作，在 SQL Server 上停止等於丟掉連線、回滾它開著的交易，所以不替使用者決定。pane 自己的讀表、或已經結束的語句不詢問；語句在詢問期間自己結束時，詢問列消失、不換表（和未寫回修改的詢問列相同）。剛啟動、還沒有狀態的語句也算在跑。測試：`scripts/db-panes.test.ts` 的 `asks before a pick in the sidebar stops a statement of the person's own`。
 - 寫回期間又改的儲存格保留為待寫回，不會被當成已寫入。寫回還沒結束時再按一次寫回會被拒絕（`edit.writing`），所以同一批修改不會寫兩次。
 - 寫回只送到讀取這些列時的連線設定。表打開之後，如果已存的連線改成連到別處（另一台伺服器、另一個資料庫或另一個檔案），寫回會被拒絕（`edit.connection_changed`），修改仍保留為待寫回；重新整理資料表後再編輯。判斷方式和存檔時是否重連相同（`ConnectionConfig::connects_like`），在連線前後各檢查一次。
 - 資料表的連線上有尚未結束的交易時，不會寫回（`edit.open_transaction`），修改仍保留為待寫回。這條連線只有 app 自己下語句，SQL 分頁的 `BEGIN` 在另一條連線上、到不了這裡，所以這一關現在是後盾：擋的是登入或伺服器預設替這條連線開的交易，以及 trigger 之類留下來的。原因是 PostgreSQL 會忽略寫回的 BEGIN，寫回的 COMMIT 會連那個交易裡別人的修改一起提交；SQL Server 的巢狀 COMMIT 只會把計數減一，之後那個交易一 ROLLBACK，寫回就跟著消失。判斷方式：PostgreSQL 看 `now() = statement_timestamp()`，SQL Server 看 `@@TRANCOUNT`，SQLite 看 autocommit。訊息說：資料表的連線上還開著一個交易、什麼都沒寫、這個 app 沒有開它（trigger 或伺服器自己的設定開的）；要關閉這個資料表再開一次：那會結束這條連線，伺服器把交易回滾。不叫人 COMMIT 或 ROLLBACK，也不叫人去 SQL 分頁收尾：那不是同一條連線，使用者沒有辦法在這條連線上下語句（`a_refusal_for_an_open_transaction_asks_only_what_a_person_can_do_on_the_tables_connection`）。
@@ -236,5 +237,4 @@ YUZORA_DATABASE_TEST_ENGINES=postgres,mssql YUZORA_PERF_KEEP=1 \
 ## 後續整合
 
 - L4：#190 提供 `yuzora_ssh::tunnel::open(TunnelSpec::new(ssh_host, host, port))`，回傳的 `Tunnel` 在 drop 時關閉。合併後，L3 在 `session::spec_for` 開 tunnel、把 `ConnectSpec::endpoint` 設成 `127.0.0.1:local_port`，並讓 `Tunnel` 跟連線池的那條連線同生命週期，然後拿掉 `refuse_tunnel`。兩個引擎驗證憑證時都已經用設定的 host，不用 endpoint，所以經過 tunnel 時 verify-full 不受影響。
-- L6：`db.maxRows` 的設定頁（目前只能手改 `settings.json`）。
 - L1：狀態列讀 `yuzora.status.db`，模式列讀 `yuzora.badge.database`。pane 標題目前顯示 mod 名稱（`yuzora-db-table`），應改成資料表或查詢名稱。

@@ -14,6 +14,11 @@ export const LANES = ["shell", "git", "db", "database", "ssh", "files", "setting
 const TONES = ["muted", "working", "blocked", "done", "accent"];
 const STATUS = "mods/yuzora-sidebar-workspace/status";
 
+const panesText = (n) => (n === 1 ? t("panes_one") : t("panes_other", { count: n }));
+const spacesText = (n) => (n === 1 ? t("spaces_one") : t("spaces_other", { count: n }));
+const agentsText = (n) => (n === 1 ? t("agents_one") : t("agents_other", { count: n }));
+const needsText = (n) => (n === 1 ? t("needs_one") : t("needs_other", { count: n }));
+
 // Spaces' badges (initial and kept color). The colors live in shared state; a Space seen the
 // first time gets one and it's written back, so every mod and every restart agree.
 const COLORS = "yuzora.space.colors";
@@ -124,13 +129,13 @@ export default class Statusbar extends View {
     const palette = shortcut("app.palette");
     return h_flex().id("root").size_full().min_w(0).px(10).gap(14).items_center().bg(th.chrome).border_t(1).border_color(th.divider ?? th.border)
       .text_size(11.5).text_color(th.muted)
-      .child(item("panes").child(t("summary", { panes: ps.length, spaces: sp.length })))
+      .child(item("panes").child(`${panesText(ps.length)} · ${spacesText(sp.length)}`))
       .child(item("agents").child(svg(`${STATUS}/${working ? "working" : "idle"}.svg`).size(8).text_color(working ? tk.status.working.mark : th.dim))
-        .child(t("agents", { count: list.length })))
+        .child(agentsText(list.length)))
       .when(waiting.length > 0, (el) => el.child(item("needs").cursor_pointer().text_color(tk.status.blocked.color)
         .on_click(() => run("pane.focus", { pane: waiting[0].pane }))
         .child(svg(`${STATUS}/blocked.svg`).size(9).text_color(tk.status.blocked.mark))
-        .child(t("needs", { count: waiting.length }))))
+        .child(needsText(waiting.length))))
       .when(Boolean(branch), (el) => el.child(item("branch").min_w(0).cursor_pointer().hover((s) => s.text_color(th.foreground))
         .tooltip(t("branch.open"))
         .on_click(() => this.openGit())

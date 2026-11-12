@@ -117,6 +117,8 @@ function menuItems(m) {
   return { items, height: MENU_HEAD + items.length * MENU + (groups.length - 1) * 9 + 14 };
 }
 
+const conflictsText = (n) => (n === 1 ? t("conflicts_one") : t("conflicts_other", { count: n }));
+
 export default class GitLog extends View {
   init(_props, cx) {
     this.p = props() ?? _props ?? {};
@@ -681,7 +683,7 @@ export default class GitLog extends View {
         const out = await work(repo, cx);
         if (out?.conflicts?.length) {
           openMerge(repo);
-          notify({ title: t("conflicts", { count: out.conflicts.length }), level: "warning", timeout: 4000 });
+          notify({ title: conflictsText(out.conflicts.length), level: "warning", timeout: 4000 });
           return this.closeMenu();
         }
         if (out && out.ok === false) throw new Error(out.output || t("failed"));

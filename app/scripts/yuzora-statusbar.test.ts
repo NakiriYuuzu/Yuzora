@@ -22,10 +22,10 @@ const deep: any = new Proxy({}, { get: () => deep });
 type Ask = { cwd: string; on: string | null; resolve: (v: any) => void; reject: (e: any) => void; done: boolean };
 
 function world() {
-  const w = { cwd: "/a", active: true, now: 1_000_000, asks: [] as Ask[], timers: [] as { ms: number; fn: (cx: any) => void }[] };
+  const w = { cwd: "/a", active: true, now: 1_000_000, agents: [] as { status: string; pane?: string }[], extra: [] as string[], asks: [] as Ask[], timers: [] as { ms: number; fn: (cx: any) => void }[] };
   const stubs: Record<string, any> = {
     View: class {}, div: () => builder, svg: () => builder, h_flex: () => builder,
-    spaces: () => [{ id: "s1", machine: null }], agents: () => [], panes: () => [{ pane: "p1", cwd: w.cwd, branch: "pane-branch" }], machines: () => [],
+    spaces: () => [{ id: "s1", machine: null }, ...w.extra.map((id) => ({ id, machine: null }))], agents: () => w.agents, panes: () => [{ pane: "p1", cwd: w.cwd, branch: "pane-branch" }, ...w.extra.map((pane) => ({ pane, cwd: w.cwd }))], machines: () => [],
     focused: () => ({ space: "s1", pane: "p1", cwd: w.cwd, terminal: null }), updates: () => null, keys: () => [], window: () => ({ active: w.active, platform: "macos" }),
     theme: () => deep, run() {}, shared: () => null, setShared() {}, layout: () => null,
     t: (k: string) => k, tokens: () => deep,
@@ -125,4 +125,21 @@ test("a failed ask leaves the folder with no counts and is not repeated by drawi
   await flush();
   expect(s.frame()).toContain("pane-branch");
   expect(s.w.asks.length).toBe(1);
+});
+
+test("one pane, one Space, one agent and one waiting are counted in the singular, any other number in the plural", () => {
+  const s = world();
+  s.w.agents = [{ status: "blocked", pane: "p1" }];
+  const one = s.frame();
+  expect(one).toContain("panes_one · spaces_one");
+  expect(one).toContain("agents_one");
+  expect(one).toContain("needs_one");
+  s.w.extra = ["p2"];
+  s.w.agents = [{ status: "blocked", pane: "p1" }, { status: "blocked", pane: "p2" }];
+  const two = s.frame();
+  expect(two).toContain("panes_other · spaces_other");
+  expect(two).toContain("agents_other");
+  expect(two).toContain("needs_other");
+  s.w.agents = [];
+  expect(s.frame()).toContain("agents_other");
 });

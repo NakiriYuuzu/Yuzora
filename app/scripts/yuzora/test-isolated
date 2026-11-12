@@ -1,0 +1,50 @@
+#!/bin/bash
+# yuzora: `cargo test` for app/ with nothing of the person's within reach. Some
+# tests write the app home, start herdr-core through `hc`, or register a launchd
+# job; run plainly they do that to the real ~/.config/yuzora, the real core and
+# the real launchd. Here they get a throwaway HOME and XDG folders, an `hc` that
+# fails, no HERDR_* or HC_* variables, and the launchd test is skipped.
+#
+#   scripts/yuzora/test-isolated [cargo test args...] [-- test binary args...]
+#   scripts/yuzora/test-isolated -p yuzora-files
+#   scripts/yuzora/test-isolated -p herdr-app mods:: -- --test-threads=1
+#
+# CARGO_TARGET_DIR is the caller's (see docs/beta2/lanes.md for the slots). The
+# build runs first, on its own: a vendor/ghostty copied without its .git needs
+# GIT_CEILING_DIRECTORIES to build, and yuzora-git's tests fail with it set.
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")/../.." && pwd)
+real=$HOME
+cargo_args=() test_args=()
+while [[ $# -gt 0 ]]; do
+  if [[ $1 == -- ]]; then shift; test_args=("$@"); break; fi
+  cargo_args+=("$1"); shift
+done
+
+# ghostty-sys rebuilds whenever ZIG changes, so it is set for the build and the tests alike.
+if [[ -z ${ZIG:-} && -x $real/.local/zig-0.16.0/zig ]]; then export ZIG=$real/.local/zig-0.16.0/zig; fi
+export RUSTUP_HOME=${RUSTUP_HOME:-$real/.rustup} CARGO_HOME=${CARGO_HOME:-$real/.cargo}
+profile=(--config 'profile.dev.package."*".opt-level=0')
+
+cd "$here"
+ceiling=()
+[[ -e vendor/ghostty/.git ]] || ceiling=(GIT_CEILING_DIRECTORIES="$here/vendor")
+env ${ceiling[@]+"${ceiling[@]}"} cargo test --locked "${profile[@]}" ${cargo_args[@]+"${cargo_args[@]}"} --no-run
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin" "$tmp/home"
+printf '#!/bin/sh\nexit 1\n' > "$tmp/bin/hc"
+chmod +x "$tmp/bin/hc"
+
+unset_vars=()
+while IFS='=' read -r name _; do
+  case $name in HERDR_*|HC_*|YUZORA_APP_HOME|GIT_CEILING_DIRECTORIES) unset_vars+=(-u "$name") ;; esac
+done < <(env)
+
+env ${unset_vars[@]+"${unset_vars[@]}"} \
+  HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" XDG_STATE_HOME="$tmp/home/.state" XDG_RUNTIME_DIR="$tmp/home/.run" \
+  PATH="$tmp/bin:$CARGO_HOME/bin:$PATH" \
+  cargo test --locked "${profile[@]}" ${cargo_args[@]+"${cargo_args[@]}"} -- \
+  --skip checker_job_waits_for_demand_and_runs_once ${test_args[@]+"${test_args[@]}"}
