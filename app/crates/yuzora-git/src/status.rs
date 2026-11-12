@@ -431,10 +431,17 @@ fn full(repo: &Repo) -> GitResult<()> {
 fn gitlinks(repo: &Repo, cap: usize) -> Option<Vec<String>> {
     // `<mode> <oid> <stage>\t<path>\0`
     let index = repo.run(Git::read(["ls-files", "-s", "-z"]).max_output(cap + 1)).ok().filter(|o| o.ok() && o.stdout.len() <= cap)?.stdout;
-    let mut links: Vec<String> = split_z(&index).filter_map(|e| e.strip_prefix("160000 ").and_then(|e| e.split_once('\t')).map(|(_, p)| p.to_owned())).collect();
+    let mut links: Vec<String> = split_z(&index).filter_map(|e| e.split_once(' ').filter(|(mode, _)| is_gitlink(mode)).and_then(|(_, e)| e.split_once('\t')).map(|(_, p)| p.to_owned())).collect();
     // A conflict lists a path once per stage.
     links.dedup();
     Some(links)
+}
+
+/// Whether a mode as `ls-files -s` prints it (octal) is a gitlink's: by its
+/// type bits, as git tells one (`S_ISGITLINK`), whatever the others are (an
+/// index made by hand may set them).
+fn is_gitlink(mode: &str) -> bool {
+    u32::from_str_radix(mode, 8).is_ok_and(|m| m & 0o170000 == 0o160000)
 }
 
 fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {
@@ -469,12 +476,18 @@ fn partial(repo: &Repo, mut paths: Vec<String>) -> GitResult<()> {
     if !kept {
         return full(repo);
     }
-    let st = parse_porcelain_v2(&whole(repo.run(cmd)?, cap)?);
-    let (ls, _) = untracked_cmd(cap).paths_or_all(&paths);
-    let out = whole(repo.run(ls)?, cap)?;
+    // As in `full`: the reads don't depend on each other, so they go side by
+    // side (after a stage or a discard, the list waits on this), and are
+    // judged in the order they used to run.
+    let (st, out, staged, unstaged) = std::thread::scope(|s| {
+        let out = crate::exec::spawn_scoped(s, || whole(repo.run(untracked_cmd(cap).paths_or_all(&paths).0)?, cap));
+        let staged = crate::exec::spawn_scoped(s, || numstat(repo, true, &paths));
+        let unstaged = crate::exec::spawn_scoped(s, || numstat(repo, false, &paths));
+        let st = repo.run(cmd).and_then(|o| whole(o, cap)).map(|o| parse_porcelain_v2(&o));
+        (st, joined(out), joined(staged), joined(unstaged))
+    });
+    let (st, out, staged, unstaged) = (st?, out?, staged?, unstaged?);
     let untracked: Vec<String> = split_z(&out).collect();
-    let staged = numstat(repo, true, &paths)?;
-    let unstaged = numstat(repo, false, &paths)?;
     let lines = count_untracked(repo, untracked.iter());
     let operation = crate::repo::operation(repo);
     let mut c = repo.status.lock().unwrap_or_else(|e| e.into_inner());
@@ -880,6 +893,33 @@ u UU N... 100644 100644 100644 100644 a b c conflict.txt\0\
         s.repo.invalidate(Scope::Paths(vec!["sub/f.txt".into()]));
         refresh(&s.repo).unwrap();
         assert_eq!(snapshot(&s.repo)["unstaged"][0]["path"], "sub", "the cached clean gitlink stayed");
+    }
+
+    // git tells a gitlink by the type bits of its mode, whatever the others
+    // are (an index made by hand may set them).
+    #[test]
+    fn a_gitlink_whose_mode_has_other_bits_is_still_a_gitlink() {
+        for mode in [0o160755u32, 0o360000] {
+            let s = scratch();
+            s.commit("a.txt", "1\n", "first");
+            s.write("sub/f.txt", "1\n");
+            s.git(&["-C", "sub", "init", "-q"]);
+            s.git(&["-C", "sub", "add", "f.txt"]);
+            s.git(&["-C", "sub", "-c", "user.name=a", "-c", "user.email=a@b", "-c", "commit.gpgSign=false", "commit", "-qm", "s"]);
+            let head = s.git(&["-C", "sub", "rev-parse", "HEAD"]);
+            s.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{},sub", head.trim())]);
+            // The gitlink's mode, written over in the index file (git doesn't check the file's checksum as it reads).
+            let index = std::path::Path::new(s.root()).join(".git/index");
+            let mut bytes = std::fs::read(&index).unwrap();
+            let at: Vec<usize> = bytes.windows(4).enumerate().filter(|(_, w)| *w == 0o160000u32.to_be_bytes()).map(|(i, _)| i).collect();
+            assert_eq!(at.len(), 1, "one gitlink mode in the index");
+            bytes[at[0]..at[0] + 4].copy_from_slice(&mode.to_be_bytes());
+            std::fs::write(&index, bytes).unwrap();
+            assert!(s.git(&["ls-files", "-s", "sub"]).starts_with(&format!("{mode:06o} ")), "git doesn't read the mode as written");
+            assert!(s.git(&["status", "--porcelain=v2"]).lines().any(|l| l.split(' ').nth(2).is_some_and(|sub| sub.starts_with('S')) && l.ends_with(" sub")), "git doesn't take it for a submodule, so this test proves nothing");
+            refresh(&s.repo).unwrap();
+            assert_eq!(s.repo.status.lock().unwrap().gitlinks, Some(vec!["sub".to_string()]), "mode {mode:o}");
+        }
     }
 
     #[test]

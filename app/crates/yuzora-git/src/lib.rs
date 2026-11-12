@@ -24,6 +24,8 @@ pub mod log;
 pub mod lru;
 pub mod merge;
 pub mod ops;
+#[cfg(test)]
+mod perf;
 pub mod rebase;
 pub mod repo;
 pub mod repos;

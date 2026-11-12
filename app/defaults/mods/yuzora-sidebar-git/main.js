@@ -5,7 +5,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, InputState, Input, v_virtual_list, Scrollbar } from "gpui-base";
 import { spaces, panes, focused, theme, run, openOverlay, closeOverlay, notify, shared, setShared, props, nextCommand } from "herdr";
 import { t, tokens } from "yuzora:core";
-import { open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, pushPreview, sequencer, fetch, trust, repos, settings as gitSettings } from "yuzora:git";
+import { open, status, changed, stage, unstage, discard, commitChecks, commit, messages, push, sequencer, fetch, trust, repos, settings as gitSettings } from "yuzora:git";
 
 // Which pane an opener reuses. panes() lists the panes of every space and pane.focus selects
 // the space of the pane it is given, so a pane is only looked for among the tabs of the shown
@@ -523,10 +523,8 @@ export default class SidebarGit extends View {
       openOverlay({ mod: "yuzora-git-push", kind: "dialog", width: 520, height: 460, props: { cwd: repo.root, on: repo.machine } });
       return;
     }
-    this.act(cx, "push", async (r) => {
-      const preview = await pushPreview(r.id);
-      return push(r.id, { setUpstream: !preview.upstream, autoUpdate: Boolean(gitSettings().autoUpdateOnReject) });
-    }, v);
+    // The engine finds where the branch pushes to, and sets the upstream of a branch that has none.
+    this.act(cx, "push", (r) => push(r.id, { autoUpdate: Boolean(gitSettings().autoUpdateOnReject) }), v);
   }
 
   toggleAmend(cx, v) {
