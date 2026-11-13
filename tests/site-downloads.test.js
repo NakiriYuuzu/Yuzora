@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import process from "node:process"
 
-import { describe, expect, it, vi } from "vitest"
+import "./site-dom.js"
+import { describe, expect, it, vi } from "bun:test"
 
 import {
   applyDownloadTarget,
@@ -137,17 +138,17 @@ describe("GitHub Pages platform download selection", () => {
     expect(document.querySelector("#primary-download")?.getAttribute("href")).toBe(
       "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-macos-aarch64.dmg",
     )
-    expect(document.querySelector("[data-platform-download='macos']")).toHaveClass(
-      "is-recommended",
-    )
+    expect(
+      document.querySelector("[data-platform-download='macos']").classList.contains("is-recommended"),
+    ).toBe(true)
     expect(
       document.querySelector("[data-platform-download='macos']")?.getAttribute("aria-current"),
     ).toBe("true")
-    expect(document.querySelector("[data-platform-download='windows']")).not.toHaveClass(
-      "is-recommended",
-    )
-    expect(document.querySelector("[data-device-message='macos']")).not.toHaveAttribute("hidden")
-    expect(document.querySelector("[data-device-message='unknown']")).toHaveAttribute("hidden")
+    expect(
+      document.querySelector("[data-platform-download='windows']").classList.contains("is-recommended"),
+    ).toBe(false)
+    expect(document.querySelector("[data-device-message='macos']").hasAttribute("hidden")).toBe(false)
+    expect(document.querySelector("[data-device-message='unknown']").hasAttribute("hidden")).toBe(true)
   })
 
   it("initializes the download experience from the browser navigator", async () => {
@@ -165,7 +166,7 @@ describe("GitHub Pages platform download selection", () => {
     expect(document.querySelector("#primary-download")?.getAttribute("href")).toBe(
       "https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe",
     )
-    expect(document.querySelector("[data-device-message='windows']")).not.toHaveAttribute("hidden")
+    expect(document.querySelector("[data-device-message='windows']").hasAttribute("hidden")).toBe(false)
   })
 
   it("wires the published Pages markup to the platform-aware download flow", async () => {

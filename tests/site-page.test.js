@@ -4,7 +4,8 @@ import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import process from "node:process"
 
-import { describe, expect, it } from "vitest"
+import "./site-dom.js"
+import { describe, expect, it } from "bun:test"
 import { I18N } from "../site/i18n.js"
 
 const root = process.cwd()

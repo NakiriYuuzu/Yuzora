@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Yuzora：給 CLI coding agents 的原生工作區（ADE）。**v0.1.0-beta.2 開發中**：以 herdr-app（Rust＋GPUI＋libghostty＋QuickJS mods）為基底，放在 `app/`，把 Git、資料庫、SSH／SFTP、Files 與編輯器、設定、mods／templates 內建進去。`src-tauri/`＋`src/`（Tauri 2＋React 19）是 v0.1.0-beta.1 以前的版本，保留為移植來源直到 beta.2 發布。GitHub：`NakiriYuuzu/Yuzora`。
+Yuzora：給 CLI coding agents 的原生工作區（ADE）。**v0.1.0-beta.2 開發中**：以 herdr-app（Rust＋GPUI＋libghostty＋QuickJS mods）為基底，放在 `app/`，把 Git、資料庫、SSH／SFTP、Files 與編輯器、設定、mods／templates 內建進去。v0.1.0-beta.1 以前的 Tauri 2＋React 19 版已從 repo 移除，原始碼在 git 歷史（tag `v0.1.2`）。GitHub：`NakiriYuuzu/Yuzora`。
 
-各 agent 共用的規則（beta.2 架構與目錄地圖、Release 平台支援、shadcn first、Rust 建置目錄重用、Agent skills）只寫在 AGENTS.md，這裡直接匯入；本檔只放 Claude 補充內容。
+各 agent 共用的規則（beta.2 架構與目錄地圖、Release 平台支援、Rust 建置目錄重用、Agent skills）只寫在 AGENTS.md，這裡直接匯入；本檔只放 Claude 補充內容。
 
 @AGENTS.md
 
@@ -28,26 +28,16 @@ scripts/yuzora/sync-check            # subtree pull 之後的上游同步檢查�
 
 上游 herdr-app 的其他工具（`scripts/sandbox`、`bun scripts/docs.ts check`、`justfile`）見 `app/AGENTS.md`。
 
-Tauri app（根目錄，bun；beta.1 以前的版本，也負責官網 `site/` 的測試與 Pages 建置）：
+官網與根目錄（bun）：
 
 ```bash
-bun run tauri:dev        # 桌面 app（Vite dev server 固定 port 1420）
-bun run test             # vitest 全跑；單檔：bun run test src/lib/paths.test.ts
-bun run lint             # eslint
-bun run typecheck        # @typescript/native（TS7 tsgo）跑兩份 tsconfig，非一般 tsc
-bun run build            # typecheck + vite build
+bun install
+bun run lint             # eslint：site/*.js、scripts/*.mjs、tests/*.js
+bun run site:seo         # 由 site/index.html 與 site/i18n.js 產生 site/en/ 與 site/sitemap.xml
+bun run test             # bun test：tests/ 底下的官網、CHANGELOG 與 site-remotion 版本測試
 ```
 
-Tauri Rust（於 `src-tauri/`；根 workspace 不含 `app/`）：
-
-```bash
-cargo check --locked --all-targets
-cargo test --locked
-cargo fmt --package yuzora -- --check
-ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.json
-```
-
-根目錄的 eslint、vitest、vite 都排除 `app/`；`app/scripts/*.test.ts` 是 bun test，由 app 自己跑。
+`app/scripts/*.test.ts` 也是 bun test，由 app 自己跑（`cd app && bun test scripts`）。
 
 ## beta.2 架構
 
@@ -62,24 +52,23 @@ ruby ../.github/scripts/verify-clippy-baseline.rb ../.github/clippy-baseline.jso
 - **與官方 Herdr 共用 core**：終端機、machines、templates 共用；收養來的終端機在任一邊關閉都會在 core 結束。細節與已決定的取捨見 `docs/beta2/herdr-compat.md`。
 - **mod 限制**：mod 的 `exec` 上限 30 秒／8 MiB、`readTextFile` 1 MiB、`writeTextFile` 只能寫 app home。DB 連線、SSH session、大量資料都要在 Rust 層做；遠端用 `yuzora_core::remote`（`hc exec --on`，可自訂 timeout）。
 
-## Tauri app 架構（beta.1 以前，移植來源）
+## Tauri 版（已移除）
 
-- IPC：React ←→ `src/lib/ipc.ts`／`herdrIpc.ts` ←→ `src-tauri/src/lib.rs` 註冊的 `#[tauri::command]`；Rust 側一個 service 一個 module（`db_*`、`ssh_service`、`sftp_*`、`git_*`、`fs_service`⋯），是 beta.2 L2–L5 的移植來源。
-- vendored patches：`src-tauri/vendor/{russh,russh-sftp,tiberius}-*-yuzora`（beta.2 已複製到 `app/vendor/`）。
-- React UI 不可重用，beta.2 全部用 GPUI＋mods 重寫。不參考既往 GRILL-ME tickets。
+v0.1.0-beta.1 以前的 Tauri 2＋React 版不在 repo 裡。要對照舊實作時讀 git 歷史（例如 `git show v0.1.2:src-tauri/src/lib.rs`）；React UI 不可重用，也不參考既往 GRILL-ME tickets。`app/vendor/` 的 russh／russh-sftp／tiberius patches 是從那一版複製過來的。
 
 ## 測試慣例
 
 - app：Rust 測試 inline 或 `<module>/tests.rs`、整合測試 `app/tests/*.rs`；每個 `yuzora-*` crate 自帶單元測試。`tests/notices.rs` 守 `THIRD-PARTY-NOTICES` 與 `Cargo.lock` 一致；`update_notes` 測試要求 `app/CHANGELOG.md` 第一筆版本等於 `0.1.0-beta.2`。
 - `mods::lifecycle_tests::close_starts_native_work_before_releasing_the_copy` 在平行執行時偶爾失敗（上游既有），單獨重跑可過。
 - 本機 `scripts/test_distribution.py` 若裝有 `/Applications/Herdr.app`，installer 測試會判成 reinstall 而失敗；CI 不受影響。
-- Tauri app：Vitest node／jsdom projects，`src/test/nodeTests.json` allowlist；Rust `lib.rs` 的 `command_inventory_tests` 守護 shutdown 順序。
+- 官網與根目錄：`bun run test`。`tests/site-*.test.js` 先 import `tests/site-dom.js` 取得 jsdom 的 `DOMParser` 與 `document`，並讀 `site:seo` 產生的 `site/en/`、`site/sitemap.xml`，所以先跑 `bun run site:seo`；`tests/changelog.test.js` 守兩份根目錄 CHANGELOG 的版本與項目對應；`tests/site-remotion.test.js` 守 `site-remotion/package.json` 的 Remotion 套件同版本。`bun run lint` 是官網 JS 唯一的靜態檢查（測試只把 `site/app.js` 當文字讀）。
 
 ## CI 守門
 
 - `app-package.yml`：改到打包相關路徑的 PR／push 與手動觸發；macOS、Windows、Linux x64／arm64 四平台打包並以使用者的方式安裝檢查，固定狀態名稱 `App (package)`。不建 tag、不發布、不讀 secret。
 - `app-ci.yml`：base 為 `beta2/integration`、改到 `app/**` 的 PR；ubuntu-22.04＋macos-15 建置與 `cargo test --locked`；macOS 另跑 yuzora crates、`check-mods`（check 需要視窗伺服器）與 shot_pixels，Linux 另跑 packaging 與文件檢查；另有一個 windows-2022 job 只跑 `cfg(windows)` 的 console 視窗測試（`yuzora-core spawn::`、`yuzora-git exec::`、`yuzora-files fsops::tests::run_starts`；整個 workspace 的測試在 Windows 上有既有的失敗，不跑），也納入 aggregator。固定狀態名稱 `App (build · test)`。只有 push 到 `beta2/integration` 會存 cache。
-- `ci.yml`（Tauri）：只改 `app/**`、`docs/beta2/**` 的 PR 不觸發；改到 `site/`、`tests/site-*.js`、README 等的 PR 會跑（官網測試在 vitest 裡）。frontend checks 與 test shards 平行，`Frontend (lint · typecheck · test · build)` aggregator；三平台 `cargo check`＋macOS fmt／clippy／`cargo test`＋Linux 資料庫 integration。**Clippy 是 exact baseline**（`.github/clippy-baseline.json`），warning 新增、消失、搬移都會 fail。
+- `site.yml`：改到 `site/**`、`tests/*.js`、`scripts/generate-site-pages.mjs`、`site-remotion/package.json`、`eslint.config.js`、根目錄兩份 CHANGELOG、`package.json`、`bun.lock` 的 PR 與 push 到 `main`。`Site (test)` 跑 `bun run lint`、`site:seo` 與 `bun run test`；push 到 `main`（或從 `main` 手動 dispatch）時，同一次建置的 `site/` 由 `Deploy Pages` job 部署到 GitHub Pages。
+- `app-ci.yml`、`app-package.yml`、`site.yml` 都有路徑條件，`app-release.yml` 只能手動 dispatch：沒有任何一個 check 會在每個 PR 上出現，設定 required check 前先確認這點。
 
 ## 慣例與路徑
 

@@ -1,4 +1,4 @@
-// Tokens 1:1 對齊 app 本體 src/styles.css（light theme）
+// Tokens 1:1 對齊 Tauri 版 app 的樣式（light theme；src/styles.css，tag v0.1.2）
 import { loadFont as loadHanken } from "@remotion/google-fonts/HankenGrotesk";
 import { loadFont as loadMono } from "@remotion/google-fonts/JetBrainsMono";
 import { loadFont as loadNotoTC } from "@remotion/google-fonts/NotoSansTC";

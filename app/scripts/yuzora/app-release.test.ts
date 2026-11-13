@@ -164,7 +164,7 @@ describe("who can do what", () => {
   test("the checks of the manifest use the app's own code, and nothing trusts a test key", () => {
     const verify = runs(workflow.jobs["verify-manifest"]);
     expect(verify).toContain("cd app/scripts/yuzora/verify-manifest");
-    // The repository's cargo config sends builds to src-tauri/target: the binary is run from its own.
+    // app/.cargo/config.toml sends builds to app/target: the binary is run from its own.
     expect(verify).toContain('cargo build --locked --release --target-dir "$PWD/target"');
     const calls = verify.split("\n").filter((line) => line.includes('"$verify"'));
     expect(calls).toHaveLength(2);

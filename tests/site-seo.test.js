@@ -3,7 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { URL } from "node:url";
 import process from "node:process";
-import { describe, expect, it } from "vitest";
+import "./site-dom.js";
+import { describe, expect, it } from "bun:test";
 import { I18N } from "../site/i18n.js";
 
 const site = resolve(process.cwd(), "site");

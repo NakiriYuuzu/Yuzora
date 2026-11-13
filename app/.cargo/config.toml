@@ -1,6 +1,5 @@
-# yuzora: the repository root's .cargo/config.toml points cargo at
-# src-tauri/target for the Tauri workspace. The herdr-based app is its own
-# workspace and builds into app/target (relative to this .cargo directory's
-# parent). CARGO_TARGET_DIR still wins, as AGENTS.md asks for worktrees.
+# yuzora: every cargo build started under app/ goes to app/target (relative to
+# this .cargo directory's parent), the standalone crates under scripts/
+# included. CARGO_TARGET_DIR still wins, as AGENTS.md asks for worktrees.
 [build]
 target-dir = "target"

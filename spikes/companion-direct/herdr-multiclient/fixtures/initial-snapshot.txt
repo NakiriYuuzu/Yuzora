@@ -1,3 +1,0 @@
-$ isolated-herdr.sh --session companion-spike api snapshot --json
-exit=2
-usage: herdr api snapshot

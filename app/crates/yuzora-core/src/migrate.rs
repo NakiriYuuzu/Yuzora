@@ -38,7 +38,7 @@ use std::sync::Mutex;
 pub const STATE_FILE: &str = "migrations.json";
 /// The Tauri app's identifier: its data folders are named for it.
 pub const TAURI_ID: &str = "dev.yuuzu.yuzora";
-/// beta.1's DB password service (src-tauri/src/db_credentials.rs).
+/// beta.1's DB password service (src-tauri/src/db_credentials.rs at v0.1.0-beta.1).
 pub const DB_SERVICE: &str = "io.yuzora.database";
 /// A file larger than this isn't something beta.1 wrote.
 const MAX_FILE: u64 = 8 * 1024 * 1024;
@@ -448,7 +448,7 @@ mod tests {
         dir
     }
 
-    /// beta.1's files as the Tauri app wrote them (src-tauri/src/db_profiles.rs).
+    /// beta.1's files as the Tauri app wrote them (src-tauri/src/db_profiles.rs at v0.1.0-beta.1).
     fn beta1(root: &Path, secrets: MemoryLegacy) -> Beta1 {
         let data = root.join("data");
         let dot = root.join("dot");

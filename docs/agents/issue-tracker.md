@@ -2,7 +2,7 @@
 
 Issues and PRDs for this repo live in GitHub Issues under `NakiriYuuzu/Yuzora`. Use the `gh` CLI or the connected GitHub tools for operations.
 
-Implementation lifecycle（Issue → Branch → Commit → Pull Request → Merge）見 [`pull-request-workflow.md`](pull-request-workflow.md)；Release、Updater 與 Pages 操作見 [`../operations.md`](../operations.md)。
+Implementation lifecycle（Issue → Branch → Commit → Pull Request → Merge）見 [`pull-request-workflow.md`](pull-request-workflow.md)；App 的發布與更新見 [`../beta2/release.md`](../beta2/release.md)，官網（Pages）見 [`../operations.md`](../operations.md)。
 
 ## Conventions
 

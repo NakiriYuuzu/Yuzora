@@ -10,9 +10,8 @@
 
 <br />
 
-[![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
-[![App CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/app-ci.yml?branch=beta2/integration&style=flat-square&label=beta.2%20app&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/app-ci.yml)
-![Version](https://img.shields.io/badge/version-0.1.0--beta.1-86b81f?style=flat-square&labelColor=1b1a17)
+[![App CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/app-ci.yml?branch=main&style=flat-square&label=app&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/app-ci.yml)
+[![Version](https://img.shields.io/github/v/release/NakiriYuuzu/Yuzora?style=flat-square&label=version&color=86b81f&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/releases/latest)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux%20%28experimental%29-57534b?style=flat-square&labelColor=1b1a17)
 
 <samp>English · <a href="README.zh-TW.md">繁體中文</a> · <a href="https://github.yuuzu.net/Yuzora/en/">Website</a></samp>
@@ -23,8 +22,8 @@
 
 > **v0.1.0 is the first stable release of the new Yuzora.** Yuzora is now a native app built on
 > [herdr-app](https://github.com/herdrdev/herdr-app) (Rust · GPUI · libghostty · QuickJS mods), in [`app/`](app/).
-> v0.1.0-beta.1 and older are the Tauri app in `src-tauri/` and `src/`, kept in the repository as a porting
-> source. Architecture: [docs/beta2/architecture.md](docs/beta2/architecture.md).
+> v0.1.0-beta.1 and older were a Tauri app; its source left the repository after v0.1.2 and stays in the git
+> history (tag `v0.1.2`). Architecture: [docs/beta2/architecture.md](docs/beta2/architecture.md).
 
 Yuzora runs your CLI coding agents (Claude Code, Codex, Pi and the other agents herdr recognizes) in herdr-core
 terminals that keep running when the window closes, and puts Git, files, databases and SSH / SFTP next to them in
@@ -117,17 +116,14 @@ scripts/yuzora/package         # release build and this platform's installer, in
   `HC_SESSION`, see [docs/beta2/lanes.md](docs/beta2/lanes.md)). On macOS, `scripts/yuzora/bundle-macos <dir>` wraps
   the binary as `Yuzora.app`.
 
-The Tauri app (v0.1.0-beta.1 and older) still builds from the repository root:
+The website in `site/` and the two changelogs have their own tests at the repository root:
 
 ```bash
 bun install
-bun run tauri:dev    # desktop app (dev server :1420)
-bun run test         # vitest
-bun run build        # typecheck + frontend build
-cargo check --locked --all-targets
+bun run lint         # eslint on the site's scripts
+bun run site:seo     # site/en/ and site/sitemap.xml
+bun run test         # bun test
 ```
-
-Its release steps are in [docs/operations.md](docs/operations.md).
 
 ## Repository
 
@@ -140,7 +136,6 @@ Its release steps are in [docs/operations.md](docs/operations.md).
 | `app/defaults/layouts/yuzora.json`, `themes/yuzora-{dark,light}.json`, `yuzora/tokens.json` | Default layout, themes and design tokens |
 | `app/scripts/yuzora/`, `app/distribution/yuzora/` | Packaging, update manifest, upstream sync check |
 | [`docs/beta2/`](docs/beta2/) | Architecture, lanes, the design of each area, evidence screenshots |
-| `src-tauri/`, `src/` | Tauri app (v0.1.0-beta.1 and older), porting source |
 | `site/`, `site-remotion/` | Website (GitHub Pages, deployed from `main`) and its video sources |
 
 ## In detail
