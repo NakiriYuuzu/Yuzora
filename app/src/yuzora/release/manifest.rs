@@ -30,7 +30,7 @@ pub const SCHEMA: u64 = 1;
 
 /// Minisign public keys (the key line) whose manifests the app accepts.
 /// The release key, `742456BCCDC22A24`, is the one the Tauri app (0.1.0-beta.1
-/// and older) already trusts for its updates (src-tauri/tauri.conf.json). A
+/// and older) already trusts for its updates (src-tauri/tauri.conf.json at v0.1.0-beta.1). A
 /// new key ships here, in an update signed with the old one, before
 /// releases are signed with it (docs/beta2/release.md, "Keys").
 pub const TRUSTED_KEYS: &[&str] = &["RWQkKsLNvFYkdJ+BHNkJQTGVWAT+niNUk3v7Oy+hNXgeDn7tpkby/0QZ"];

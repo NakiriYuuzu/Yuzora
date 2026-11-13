@@ -1,6 +1,6 @@
 # L8 效能監控（資源用量）
 
-lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popover 移植到 beta.2，放在**視窗最右下角**（狀態列最右端，指令面板快捷鍵的右邊）。點 chip 往上展開明細，右緣對齊。beta.1 的程式（`src-tauri/src/perf_service.rs`、`src/state/perfStore.ts`、`src/workbench/PerfBridge.tsx`、`ResourceUsagePopover.tsx`）只當移植來源。架構規則見 [architecture.md](architecture.md)，lane 流程見 [lanes.md](lanes.md)。
+lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popover 移植到 beta.2，放在**視窗最右下角**（狀態列最右端，指令面板快捷鍵的右邊）。點 chip 往上展開明細，右緣對齊。beta.1 的程式（`src-tauri/src/perf_service.rs`、`src/state/perfStore.ts`、`src/workbench/PerfBridge.tsx`、`ResourceUsagePopover.tsx`）是移植來源，已從 repo 移除（見 tag `v0.1.2`）。架構規則見 [architecture.md](architecture.md)，lane 流程見 [lanes.md](lanes.md)。
 
 ## 範圍與檔案
 

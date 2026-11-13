@@ -2,10 +2,10 @@
 
 ## beta.2 架構（`app/`）
 
-v0.1.0-beta.2 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust＋GPUI＋libghostty＋QuickJS mods）為基底，用 `git subtree` 放在 `app/`。`src-tauri/` 與 `src/`（Tauri 2＋React）是 v0.1.0-beta.1 以前的版本，保留為移植來源直到 beta.2 發布：不刪，也不當設計依據。
+v0.1.0-beta.2 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust＋GPUI＋libghostty＋QuickJS mods）為基底，用 `git subtree` 放在 `app/`。v0.1.0-beta.1 以前的 Tauri 2＋React 版（`src-tauri/`、`src/`）已從 repo 移除，原始碼留在 git 歷史：最後一版在 tag `v0.1.2`，beta.1 當時的樣子在 `v0.1.0-beta.1`。它不是設計依據。
 
 - 架構決策（ADR）：`docs/beta2/architecture.md`。lane 範圍、目錄所有權、共用檔規則與流程：`docs/beta2/lanes.md`。各功能的設計與限制：`docs/beta2/<lane>.md`（shell、git、db、ssh、files、settings、release、perf、herdr-compat）。研究資料：`docs/beta2/research/`。
-- `app/` 是獨立的 Cargo workspace（root `Cargo.toml` 將它 exclude），有自己的 `Cargo.lock` 與 target（`app/target`）。版本 `0.1.0-beta.2`，app 與所有 `yuzora-*` crate 共用。Cargo package 與執行檔維持上游名稱 `herdr-app`，打包後才叫 `Yuzora.app`／`yuzora`。
+- `app/` 是獨立的 Cargo workspace，有自己的 `Cargo.lock` 與 target（`app/target`）。版本 `0.1.0-beta.2`，app 與所有 `yuzora-*` crate 共用。Cargo package 與執行檔維持上游名稱 `herdr-app`，打包後才叫 `Yuzora.app`／`yuzora`。
 - **三層**：herdr 殼（上游 `app/src`、上游 mods 與 frame）→ Yuzora Rust 原生層（`app/crates/yuzora-*`，各提供 gpui-shell `HostModule`：async 函式與原生元件，JS 以 `import … from "yuzora:<name>"` 使用）→ Yuzora JS mods（`app/defaults/mods/yuzora-*`，組合側欄模式與 tool pane，使用者可 `mod.clone` 後修改）。
 - herdr-core（`hc`）執行終端機與 machines，app 只畫畫面；遠端 Space 的 Git、Files 等走 `hc exec --on <machine>`（`yuzora_core::remote`）。
 - 對上游檔只做最少改動，並以 `// yuzora:`（lane 用 `// yuzora(L<n>):`）註記。能新增檔案就不改上游檔。
@@ -25,6 +25,7 @@ v0.1.0-beta.2 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust＋GP
 | `app/vendor/` | 上游 vendored crates、ghostty submodule、Yuzora 的 russh／russh-sftp／tiberius patches |
 | `app/scripts/yuzora/` | `check-mods`（在複本上跑 `herdr-app check`）、`bundle-macos`（本機包成 `Yuzora.app`）、`package`／`mac-dmg`（發布用安裝檔）、`manifest.ts`（更新 manifest）、`sync-check`（上游同步檢查） |
 | `app/distribution/yuzora/` | 各平台打包範本：macOS `Info.plist`、Windows NSIS（`yuzora.nsi`）、Linux `install` 與桌面檔 |
+| `site/`、`tests/`、`.github/workflows/site.yml` | 官網（GitHub Pages）、它的 lint、測試與部署；`tests/changelog.test.js` 守兩份根目錄 CHANGELOG 的對應；`tests/database/` 是 app 資料庫測試的容器設定 |
 | `.github/workflows/app-ci.yml`、`app-package.yml` | app 的 CI（base 為 `beta2/integration` 的 PR，Linux＋macOS，另有一個只跑 console 視窗測試的 Windows job）與四平台打包檢查（不建 tag、不發布） |
 
 ### 建置與測試
@@ -44,7 +45,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 - 不要直接對 `app/defaults/mods/` 執行 `herdr-app check`：它會寫入 `gpui-kit.d.ts`、`jsconfig.json`，`build.rs` 會把它們打包進 app。
 - `app/Cargo.lock` 有變動就要重產 `app/THIRD-PARTY-NOTICES`（cargo-about 0.9.3，`bun scripts/notices.ts`），否則 `tests/notices.rs` 失敗。
 - `app/CHANGELOG.md` 第一筆必須是目前版本（`update_notes` 測試），App 會把它當成這一版的「新功能」說明。
-- 根目錄的 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁體中文）一起改：版本標題、段落與項目要一一對應，未發布的版本英文寫 `Unreleased`、中文寫 `未發布`（`scripts/release-notes.test.ts` 會比對）。GitHub Release 內文由兩份的同版本段落組成，繁體中文在前。
+- 根目錄的 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁體中文）一起改：版本標題、段落與項目要一一對應，未發布的版本英文寫 `Unreleased`、中文寫 `未發布`（`tests/changelog.test.js` 會比對，在根目錄跑 `bun run test`）。GitHub Release 內文由兩份的同版本段落組成，繁體中文在前。
 - 實機執行一律用暫存 `YUZORA_APP_HOME` 與隔離的 `HC_SESSION`／`XDG_STATE_HOME`，並先清掉所有 `HERDR_*`、`HC_*` 環境變數，不得碰使用者真實的 Herdr、herdr-core 或 Yuzora 資料。Yuzora 不讀 `HERDR_APP_HOME`。完整指令見 `docs/beta2/lanes.md`。
 - 要用 computer-use 或瀏覽器自動化做 GUI 驗收前，先取得使用者明確同意；優先用 `herdr-app status`／`shot`／`check` 留證。
 
@@ -124,7 +125,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 - 更新：`app/src/yuzora/release/`（通道、manifest 簽章驗證、CLI 連結）。beta build（版本帶 `-`）只自動更新到 Stable，不管 `update.channel`（`docs/beta2/release.md` §3）。上游 `app/src/update.rs`、`app/src/main.rs` 只有標了 `// yuzora(L7):` 的接點，其餘照上游。
 - manifest：`bun app/scripts/yuzora/manifest.ts yuzora|tauri <dist>`；測試在 `app/` 下 `bun test scripts/yuzora/`。
 - **私鑰永遠不進 repo；PR 與打包 workflow 不讀任何 signing secret**。簽章只在發布步驟。不新增、不放寬任何安全例外。
-- `.github/workflows/app-package.yml` 只產 artifacts，不建 tag 或 release，不改 `release.yml`。
+- `.github/workflows/app-package.yml` 只產 artifacts，不建 tag 或 release。
 - 本機測完整更新流程：debug build 加 `YUZORA_UPDATE_URL=<仿 GitHub 路徑的測試伺服器>` 與 `YUZORA_UPDATE_TEST_KEY=<一次性公鑰>`（測試金鑰只有 debug build 會讀；`YUZORA_UPDATE_URL` 任何 build 都會讀，但簽章一樣只認信任的金鑰），一律在 lanes.md 的隔離環境下跑。
 - beta.1 資料遷移：`yuzora_core::migrate`。beta.1 的資料只讀不寫；各 lane 實作自己的 `Importer`。
 - App 內的更新說明有兩份：`app/CHANGELOG.md`（英文）與 `app/CHANGELOG.zh-TW.md`（繁中，只放 Yuzora 的段落）。每筆條目兩份都要加。測試只檢查三項：第一段是目前版本（兩份都是）、中文有的版本英文也要有、同一版本兩份的日期與 spotlight 一致且各標題下的項目數相同；條目文字是否對應要自己核對（`docs/beta2/release.md` §3）。
@@ -155,40 +156,22 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 ## Release platform support
 
 - 從 v0.0.9 起，macOS App 僅支援 Apple Silicon（M 系列）。候選版與正式版使用 `aarch64-apple-darwin`，不得重新加入 Intel／universal App 安裝包或 `darwin-x86_64` updater entry。beta.2 的更新 archive（`yuzora-<version>-macos-aarch64.tar.gz`）與 `yuzora-update.json` 也只有 `macos-aarch64`，不得加入 `macos-x86_64` 或 universal target。
-- macOS 固定下載檔名為 `Yuzora-macos-aarch64.dmg`；更新發布流程時須同步核對官網、README、`docs/operations.md` 與 updater metadata。
-- 遠端 Host 保留 `macos-x86_64` 與 `macos-aarch64`；App 停止 Intel 支援不代表移除既有 Intel macOS 遠端工作區。
+- macOS 固定下載檔名為 `Yuzora-macos-aarch64.dmg`；更新發布流程時須同步核對官網、README、`docs/beta2/release.md` 與 updater metadata。
 - 已發布的舊版 Intel／universal artifacts 保持不可變，不重寫舊版 release 或 tag。
-- macOS 發布不使用 Apple Developer ID 簽章／公證；Stable 仍須用 release 金鑰簽章（Tauri 版簽 updater artifacts，`app/` 版簽 `yuzora-update.json`）。Tauri 版正式 build 不可使用會一併停用 updater 簽章的 `--no-sign`；README 與 release notes 須說明 Gatekeeper 提示。
+- macOS 發布不使用 Apple Developer ID 簽章／公證；Stable 仍須用 release 金鑰簽 `yuzora-update.json`；README 與 release notes 須說明 Gatekeeper 提示。
 - beta.2（`app/`）起：
   - Windows 改用 per-user NSIS 安裝程式，固定下載檔名 `Yuzora-windows-x64-setup.exe`，不再出 MSI；Linux 另有 x86_64／aarch64 的 `yuzora-<version>-linux-<arch>.tar.gz`（沒有固定別名）。固定下載別名只上傳到 Stable release，Beta 只有版本化檔名（`docs/beta2/release.md` §6）。
   - Stable 與 Beta 的更新 manifest（`yuzora-update.json`）都必須以 release 金鑰（minisign，key id `742456BCCDC22A24`，與 Tauri updater 同一把）簽章，App 驗不過就不更新；帶 beta.1 升級的 `latest.json` 照樣要 Tauri updater 簽章（beta.2 至 beta.4 與 0.1.0 Stable 都不附 `latest.json`，0.0.x 與 beta.1 的使用者手動下載）。
   - PR 與打包 workflow（`app-package.yml`）不讀任何 signing secret，簽章只在 `app-release.yml` 以 dispatch 啟動的 `sign` job（沒有 push 觸發；dispatch 需要 repository 的 Actions 寫入權限；`yuzora-release` environment 的 required reviewers 是它的人工閘門，金鑰本身是 repository 層級 secret）；私鑰永遠不進 repo。
   - macOS 只做 ad-hoc 簽章（`codesign --sign -`），Windows 沒有 Authenticode；README 與 release notes 須說明 Gatekeeper 與 SmartScreen 提示。
 
-## UI components — shadcn first（Tauri／React app）
-
-本節只適用 `src/` 的 React UI；beta.2 的 `app/` 用 GPUI 與 herdr mods，沒有 shadcn。
-
-All UI components **must** prefer [shadcn/ui](https://ui.shadcn.com) (this project: `radix-nova`, alias `@/components/ui`).
-
-Rules:
-
-1. Before writing a custom component, check the shadcn registry / docs (`bunx --bun shadcn@latest search`, `docs <name>`).
-2. If shadcn provides the component, install or reuse it from `src/components/ui/` and compose it. Do **not** reimplement buttons, dialogs, menus, scroll areas, tabs, inputs, etc.
-3. Custom UI is allowed **only** when the shadcn registry has no suitable component (or the need is domain-specific chrome that is not a generic primitive). Document why in the PR / change notes when inventing a new primitive.
-4. App-owned scrollable surfaces use `ScrollArea` from `@/components/ui/scroll-area`. Do not use bare `overflow-auto` / `overflow-y-auto` / `overflow-x-auto` as the scrollbar UI for content lists and reading panes.
-5. Exceptions that keep native / library overflow (not ScrollArea): structural `overflow-hidden` clipping, text truncate, native `<textarea>`, CodeMirror `.cm-scroller` / merge hosts, xterm viewports, iframe / native child webview documents, and intentional hidden-overflow chrome (e.g. tab strips with keyboard-only overflow navigation).
-
 ## Rust 建置目錄重用
 
-repo 有兩個 Cargo workspace，各自一份 `Cargo.lock` 與 target：
-
-- 根目錄 workspace：`src-tauri`（app）、`src-tauri/host`（host）與 `src-tauri/companion`（gateway），共用根 `.cargo/config.toml` 設定的 `src-tauri/target`（`companion:prepare` 另用其下的 `src-tauri/target/companion`）。
-- `app/` workspace（beta.2）：`app/.cargo/config.toml` 設定的 `app/target`。
+repo 的 Cargo 建置都在 `app/` 底下：`app/` workspace，以及 `app/scripts/yuzora/verify-manifest` 這個自成 workspace 的小工具。`app/.cargo/config.toml` 把在 `app/` 底下啟動的建置都放到 `app/target`。
 
 一份完整的 target 從數 GB 到上百 GB 都有可能。過去每條 lane、每輪實驗都各開一個 `CARGO_TARGET_DIR`，曾經累積超過 450 GB，把磁碟塞滿。
 
-- 主 checkout（`yuzora/`）使用上述預設 target，不另外設定 `CARGO_TARGET_DIR`。
+- 主 checkout（`yuzora/`）使用 `app/target`，不另外設定 `CARGO_TARGET_DIR`。
 - 不在主 checkout 的建置，包括 `../.yuzora-lanes/<lane>` worktree、`.claude/worktrees/` 底下的 session worktree、`output/` 底下的原始碼快照，一律重用固定的 slot。不得以 lane 或 experiment 名稱建立新的 target：
 
   ```bash

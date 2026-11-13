@@ -39,7 +39,7 @@ beta.2 的 SSH 主機、SFTP 雙欄傳輸、tunnel 與已知主機。Rust 原生
 6. **非互動連線（給其他 lane 的 tunnel）不問人。** 主機金鑰未信任或需要密碼時立即失敗（`host-key-unknown`、`needs-input`；keyboard-interactive 不送空白答案，免得被算成一次登入失敗），訊息請使用者先從 SSH 模式連一次。這避免 L3 的資料庫連線卡在一個沒人看得到的問題上。
 7. **續傳以 `.part` 檔大小為準**（同 `sftp reget`／`reput`）：傳輸寫到 `<目的>.part`，完成才 rename；失敗或取消後，重試（或同一個傳輸再來一次）會從 `.part` 的大小接續，UI 顯示「續傳」。`.part` 比來源大時重新開始。目標已存在時（SFTP v3 的 rename 不能覆蓋），舊檔先改名成 `<目的>.yuzora-old`，rename 成功才刪、失敗就改回來，所以失敗不會讓主機上少一個檔。同一來源到同一目的地的傳輸還在排隊或進行時，再排一次會回傳原本的 id（雙擊、重複拖放不會兩個人寫同一個 `.part`）。資料夾裡指向資料夾的 symlink 不跟隨（同 `sftp get -R`），指向檔案的照樣傳。已知限制：`.part` 不分是不是 Yuzora 留下的，別的程式留下同名 `.part` 也會被接續。
 8. **主機與使用者名稱擋掉 shell 字元。** 跟 OpenSSH 一樣，profile、`dest:` 目的地與 ProxyCommand 展開的 `%h`／`%r` 不得含空白、控制字元、`'"$\;&<>|(){}` 與反引號，也不得以 `-` 開頭；`sshArgv` 一律在目的地前加 `--`。開啟遠端檔的本機複本放在 app home 的 `yuzora/tmp/ssh/edit/`，不放共用的 `/tmp`。
-9. **russh 用 `ring` 而非預設的 `aws-lc-rs`**：`ring` 已在 app 的 lock 中，且不需要 cmake。`rsa` feature 保留（RSA 金鑰與只有 RSA 的主機）；其 RUSTSEC-2023-0071 已在 root `deny.toml`／`.cargo/audit.toml` 以「app: russh rsa」接受，本 lane 沒有新增任何例外。app workspace 目前沒有 cargo-deny／audit 關卡。
+9. **russh 用 `ring` 而非預設的 `aws-lc-rs`**：`ring` 已在 app 的 lock 中，且不需要 cmake。`rsa` feature 保留（RSA 金鑰與只有 RSA 的主機）；其 RUSTSEC-2023-0071 原本在 Tauri 版的 root `deny.toml`／`.cargo/audit.toml` 以「app: russh rsa」接受（兩個檔已隨 Tauri 版移除），本 lane 沒有新增任何例外。app workspace 目前沒有 cargo-deny／audit 關卡。
 
 ## `yuzora:ssh`（JS）
 

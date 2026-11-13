@@ -28,7 +28,7 @@ SetCompressor /SOLID lzma
 !define ID "dev.yuuzu.yuzora"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${ID}"
 !define POWERSHELL "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
-; The Tauri app's MSI (0.0.18 to 0.1.0-beta.1), src-tauri/src/nsis_migration.rs.
+; The Tauri app's MSI (0.0.18 to 0.1.0-beta.1), src-tauri/src/nsis_migration.rs at v0.1.0-beta.1.
 !define TAURI_UPGRADE_CODE "{A5829978-F7B9-5882-B5BB-B8521FCEBF5F}"
 
 Name "${APP}"

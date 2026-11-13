@@ -173,7 +173,7 @@ app 本體與 default mods 也會自己在使用者的資料夾跑 git，這些�
 | `app/defaults/AGENTS.md` 給使用者 mod 的範例 | `branch --show-current` | 白名單 |
 | `app/vendor/gpui-kit/crates/shell/src/dependencies.rs` | mod 的 git 依賴（clone、fetch） | 不在使用者資料夾，在 `~/.gpui-shell/cache/dependencies` |
 | `yuzora-git` 的 `exec.rs`、`yuzora-core` 的 `git_trust.rs` | | `yuzora:git` 的單一入口與信任掃描本身 |
-| `src-tauri/` | | 凍結的移植來源，beta.2 不出貨 |
+| `src-tauri/` | | 已從 repo 移除（v0.1.2 之後），原始碼在 git 歷史 |
 
 其他命中都是測試。`yuzora-statusbar`、`yuzora-modebar`、`yuzora-settings-general` 裡的 `"git"` 是模式名稱，不跑 git。
 
