@@ -46,9 +46,13 @@ describe("crawlable bilingual product pages", () => {
       expect(page.querySelector('meta[name="description"]').content).toBe(I18N[lang]["meta.description"]);
       for (const selector of ['meta[property="og:image"]', 'meta[name="twitter:image"]']) {
         const url = page.querySelector(selector).content;
-        expect(url).toBe(`${base}assets/ade-herdr-runtime-${lang === "en" ? "en" : "zh"}.png`);
+        expect(url).toBe(`${base}assets/yuzora-workspace-${lang === "en" ? "en" : "zh"}.png`);
         expect(existsSync(resolve(site, url.slice(base.length)))).toBe(true);
       }
+      const preview = readFileSync(resolve(site, page.querySelector('meta[property="og:image"]').content.slice(base.length)));
+      expect([preview.readUInt32BE(16), preview.readUInt32BE(20)].map(String)).toEqual(
+        ["og:image:width", "og:image:height"].map((name) => page.querySelector(`meta[property="${name}"]`).content),
+      );
       expect(page.querySelector('meta[name="twitter:card"]').content).toBe("summary_large_image");
       const schema = JSON.parse(page.querySelector('script[type="application/ld+json"]').textContent);
       expect(schema).toMatchObject({ "@type": "SoftwareApplication", name: "Yuzora", url: canonical });
@@ -74,11 +78,6 @@ describe("crawlable bilingual product pages", () => {
           }
         }
       }
-      for (const link of page.querySelectorAll("[data-demo-link]")) {
-        const demo = new URL(link.getAttribute("href"), canonical);
-        expect(demo.pathname).toBe("/Yuzora/demo/");
-        if (lang === "en") expect(demo.searchParams.get("lang")).toBe("en");
-      }
       for (const image of page.querySelectorAll("img[data-imgstem]")) {
         expect(image.getAttribute("src")).toContain(`-${lang === "en" ? "en" : "zh"}.png`);
       }
@@ -95,10 +94,5 @@ describe("crawlable bilingual product pages", () => {
         .toEqual([["zh-Hant", base], ["en", `${base}en/`], ["x-default", base]]);
     }
     expect(sitemap.querySelector("lastmod")).toBeNull();
-  });
-
-  it("keeps the sample-data demo out of search results while allowing its links to be followed", () => {
-    const demo = parse(readFileSync(resolve(site, "demo/index.html"), "utf8"));
-    expect(demo.querySelector('meta[name="robots"]').content).toBe("noindex, follow");
   });
 });

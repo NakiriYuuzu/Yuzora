@@ -136,7 +136,7 @@ bun run test         # bun test
 | `app/defaults/layouts/yuzora.json`, `themes/yuzora-{dark,light}.json`, `yuzora/tokens.json` | Default layout, themes and design tokens |
 | `app/scripts/yuzora/`, `app/distribution/yuzora/` | Packaging, update manifest, upstream sync check |
 | [`docs/beta2/`](docs/beta2/) | Architecture, lanes, the design of each area, evidence screenshots |
-| `site/`, `site-remotion/` | Website (GitHub Pages, deployed from `main`) and its video sources |
+| `site/` | Website (GitHub Pages, deployed from `main`) |
 
 ## In detail
 

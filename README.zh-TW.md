@@ -129,7 +129,7 @@ bun run test         # bun test
 | `app/defaults/layouts/yuzora.json`、`themes/yuzora-{dark,light}.json`、`yuzora/tokens.json` | 預設 layout、主題與設計 tokens |
 | `app/scripts/yuzora/`、`app/distribution/yuzora/` | 打包、更新 manifest、上游同步檢查 |
 | [`docs/beta2/`](docs/beta2/) | 架構、lanes、各功能的設計文件與實機截圖 |
-| `site/`、`site-remotion/` | 官方網站（GitHub Pages，從 `main` 部署）與影片原始碼 |
+| `site/` | 官方網站（GitHub Pages，從 `main` 部署） |
 
 ## 功能細節
 

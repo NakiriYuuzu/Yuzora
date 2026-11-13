@@ -1,6 +1,5 @@
-# The website in site/, the two changelogs and site-remotion's dependency
-# versions: lint and tests on every change to them, and the GitHub Pages
-# deployment from main. The pages a push to main publishes are the ones its
+# The website in site/ and the two changelogs: lint and tests on every change
+# to them, and the GitHub Pages deployment from main. The pages a push to main publishes are the ones its
 # tests just read, built once.
 #
 # site/en/ and site/sitemap.xml are generated here (site:seo); everything else
@@ -14,7 +13,6 @@ on:
       - 'site/**'
       - 'tests/*.js'
       - 'scripts/generate-site-pages.mjs'
-      - 'site-remotion/package.json'
       - 'eslint.config.js'
       - 'CHANGELOG.md'
       - 'CHANGELOG.zh-TW.md'
