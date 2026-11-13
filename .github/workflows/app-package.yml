@@ -4,14 +4,12 @@
 # docs/beta2/release.md.
 #
 # Artifacts only. Nothing here creates a tag or a release, touches main, or
-# reads a signing secret: the update manifest comes out unsigned, and
-# release.yml (the Tauri app's, which publishes on every push to main) is not
-# involved. Publishing beta.2 is a separate step the maintainer authorizes.
+# reads a signing secret: the update manifest comes out unsigned. Publishing
+# is a separate step the maintainer authorizes (app-release.yml).
 #
-# No build cache: the repository's caches are already past GitHub's 10 GB,
-# and release targets for four platforms would push out the ones app-ci.yml
-# and the Tauri workflows restore. A cold release build is the price; it
-# runs only when packaging changes, after merges, or by hand.
+# No build cache: release targets for four platforms would push out the ones
+# app-ci.yml restores. A cold release build is the price; it runs only when
+# packaging changes, after merges, or by hand.
 name: App package
 
 on:

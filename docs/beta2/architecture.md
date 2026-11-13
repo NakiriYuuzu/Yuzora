@@ -1,7 +1,7 @@
 # Yuzora v0.1.0-beta.2 架構（ADR）
 
 - 狀態：Accepted（L0 基底，2026-11-02）
-- 範圍：`app/`（herdr-app fork）與它在本 repo 的建置、CI、文件。`src-tauri/` 與 React 前端保留為移植來源，不在此 ADR 內。
+- 範圍：`app/`（herdr-app fork）與它在本 repo 的建置、CI、文件。v0.1.0-beta.1 以前的 Tauri 版（`src-tauri/` 與 React 前端）不在此 ADR 內，已在 v0.1.2 之後從 repo 移除。
 - 來源：總指揮整理的 `.yuzora-lanes/beta2-research/decisions.md`。之後以本檔為準。
 - 各 lane 的範圍、目錄所有權與工作流程見 [lanes.md](lanes.md)。
 
@@ -165,7 +165,7 @@ mod 在自己的 `mod.json` 宣告，不需要任何人去改共用清單：
 | `app/scripts/yuzora/` | L0（打包相關歸 L7） | `bundle-macos`、`check-mods` |
 | `.github/workflows/app-ci.yml` | L0／總指揮 | app 的 CI |
 | `docs/beta2/` | 總指揮；`docs/beta2/<lane>.md` 歸各 lane | |
-| `src-tauri/`、`src/`（React） | 凍結 | 只當移植來源，beta.2 不刪 |
+| `src-tauri/`、`src/`（React） | 已移除 | v0.1.2 之後從 repo 移除，原始碼在 git 歷史（tag `v0.1.2`） |
 
 ## 上游同步流程
 

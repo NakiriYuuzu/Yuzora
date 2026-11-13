@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- seo:start -->
 <title>Yuzora — AI 程式開發工作區｜macOS 與 Windows</title>
-<meta name="description" content="Yuzora 是 macOS 與 Windows 的開源 AI 程式開發工作區，整合 HERDR 終端機、Git、SSH、WSL、資料庫與 HTML 預覽，集中使用你的 coding agents。">
+<meta name="description" content="Yuzora 是 macOS 與 Windows 的開源 AI 程式開發工作區：以 herdr-app 打造的原生 App，agent 跑在 herdr-core 終端機，Git、檔案與編輯器、資料庫與 SSH／SFTP 就在旁邊。">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <link rel="canonical" href="https://github.yuuzu.net/Yuzora/">
 <link rel="alternate" hreflang="zh-Hant" href="https://github.yuuzu.net/Yuzora/">
@@ -17,17 +17,17 @@
 <meta property="og:locale" content="zh_TW">
 <meta property="og:locale:alternate" content="en_US">
 <meta property="og:title" content="Yuzora — AI 程式開發工作區｜macOS 與 Windows">
-<meta property="og:description" content="在 macOS 與 Windows 集中使用 AI coding agents。HERDR 終端機、Git、SSH、WSL、資料庫與 HTML 預覽，一個 Yuzora 工作區。">
-<meta property="og:image" content="https://github.yuuzu.net/Yuzora/assets/ade-herdr-runtime-zh.png">
-<meta property="og:image:width" content="1440">
-<meta property="og:image:height" content="960">
-<meta property="og:image:alt" content="Yuzora 主工作面：Space rail、named Sessions、Agents 與 HERDR terminal pages">
+<meta property="og:description" content="在 macOS 與 Windows 集中使用 AI coding agents。herdr-core 終端機、Git、檔案與編輯器、資料庫與 SSH／SFTP，一個原生的 Yuzora 工作區。">
+<meta property="og:image" content="https://github.yuuzu.net/Yuzora/assets/yuzora-workspace-zh.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="1025">
+<meta property="og:image:alt" content="Yuzora 工作區：側欄列出 Spaces 與 agent 狀態，同一個 tab 裡分割出 agent 終端機、Git diff 與資料表">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Yuzora — AI 程式開發工作區｜macOS 與 Windows">
-<meta name="twitter:description" content="在 macOS 與 Windows 集中使用 AI coding agents。HERDR 終端機、Git、SSH、WSL、資料庫與 HTML 預覽，一個 Yuzora 工作區。">
-<meta name="twitter:image" content="https://github.yuuzu.net/Yuzora/assets/ade-herdr-runtime-zh.png">
-<meta name="twitter:image:alt" content="Yuzora 主工作面：Space rail、named Sessions、Agents 與 HERDR terminal pages">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","@id":"https://github.yuuzu.net/Yuzora/#application","name":"Yuzora","url":"https://github.yuuzu.net/Yuzora/","description":"Yuzora 是 macOS 與 Windows 的開源 AI 程式開發工作區，整合 HERDR 終端機、Git、SSH、WSL、資料庫與 HTML 預覽，集中使用你的 coding agents。","applicationCategory":"DeveloperApplication","operatingSystem":["macOS (Apple Silicon)","Windows (x64)"],"inLanguage":["zh-Hant","en"],"image":"https://github.yuuzu.net/Yuzora/assets/ade-herdr-runtime-zh.png","screenshot":"https://github.yuuzu.net/Yuzora/assets/ade-herdr-runtime-zh.png","downloadUrl":"https://github.yuuzu.net/Yuzora/#download","sameAs":"https://github.com/NakiriYuuzu/Yuzora","author":{"@type":"Person","name":"NakiriYuuzu","url":"https://github.com/NakiriYuuzu"}}</script>
+<meta name="twitter:description" content="在 macOS 與 Windows 集中使用 AI coding agents。herdr-core 終端機、Git、檔案與編輯器、資料庫與 SSH／SFTP，一個原生的 Yuzora 工作區。">
+<meta name="twitter:image" content="https://github.yuuzu.net/Yuzora/assets/yuzora-workspace-zh.png">
+<meta name="twitter:image:alt" content="Yuzora 工作區：側欄列出 Spaces 與 agent 狀態，同一個 tab 裡分割出 agent 終端機、Git diff 與資料表">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","@id":"https://github.yuuzu.net/Yuzora/#application","name":"Yuzora","url":"https://github.yuuzu.net/Yuzora/","description":"Yuzora 是 macOS 與 Windows 的開源 AI 程式開發工作區：以 herdr-app 打造的原生 App，agent 跑在 herdr-core 終端機，Git、檔案與編輯器、資料庫與 SSH／SFTP 就在旁邊。","applicationCategory":"DeveloperApplication","operatingSystem":["macOS (Apple Silicon)","Windows (x64)"],"inLanguage":["zh-Hant","en"],"image":"https://github.yuuzu.net/Yuzora/assets/yuzora-workspace-zh.png","screenshot":"https://github.yuuzu.net/Yuzora/assets/yuzora-workspace-zh.png","downloadUrl":"https://github.yuuzu.net/Yuzora/#download","sameAs":"https://github.com/NakiriYuuzu/Yuzora","author":{"@type":"Person","name":"NakiriYuuzu","url":"https://github.com/NakiriYuuzu"}}</script>
 <!-- seo:end -->
 <meta name="theme-color" content="#ffffff">
 <link rel="icon" type="image/svg+xml" href="assets/brand/yuzora-mark.svg">
@@ -36,7 +36,6 @@
 <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
 <script>(function(){try{var t=localStorage.getItem("yuzora-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 <link rel="stylesheet" href="./styles.css">
-  <link rel="stylesheet" href="assets/brand/companions.css">
 </head>
 <body>
 <!-- brand-symbols:start -->
@@ -93,7 +92,6 @@
   <div class="nav-links">
     <a data-nav data-spy="features" href="#features" data-i18n="nav.features">功能</a>
     <a data-nav data-spy="boundary" href="#boundary" data-i18n="nav.boundary">邊界</a>
-    <a data-nav data-spy="demo" href="#demo" data-i18n="nav.demo">試用 Demo</a>
     <a data-nav data-spy="brand" href="#brand" data-i18n="nav.brand">品牌</a>
     <a data-nav href="https://github.com/NakiriYuuzu/Yuzora" target="_blank" rel="noopener">GitHub</a>
     <a class="lang-toggle" id="lang-toggle" href="./en/" lang="en" hreflang="en" aria-label="Read in English">EN</a>
@@ -115,12 +113,12 @@
 <!-- Hero -->
 <header class="hero" id="top">
   <div class="shell">
-    <p class="kicker hero-load" id="hero-kicker" data-i18n="hero.kicker">開源桌面 ADE · HERDR RUNTIME</p>
+    <p class="kicker hero-load" id="hero-kicker" data-i18n="hero.kicker">開源原生 ADE · HERDR-CORE</p>
     <h1 class="hero-load">
       <span data-i18n="hero.h1a">Yuzora，AI 開發工作區。</span><br>
-      <span data-i18n="hero.h1b">直接運轉在 </span><em class="accent" data-i18n="hero.h1acc">HERDR</em><span data-i18n="hero.h1c">。</span>
+      <span data-i18n="hero.h1b">直接運轉在 </span><em class="accent" data-i18n="hero.h1acc">herdr-core</em><span data-i18n="hero.h1c">。</span>
     </h1>
-    <p class="lede hero-load" data-i18n="hero.sub">在 macOS 與 Windows 使用 Claude Code、Codex、Pi 等 CLI coding agents。Yuzora 整合 HERDR 終端機、程式編輯器、Git、SSH／SFTP、WSL、資料庫與 HTML 預覽，讓專案與 agent 工作集中在同一處。</p>
+    <p class="lede hero-load" data-i18n="hero.sub">使用 Claude Code、Codex、Pi 等 CLI coding agents。Yuzora 是以 herdr-app 打造的原生 App：agent 跑在 herdr-core 終端機，關掉視窗也會繼續；Git、檔案與編輯器、資料庫、SSH／SFTP 就在旁邊，同一個視窗裡。</p>
     <div class="cta-row hero-load">
       <a class="btn-primary" id="primary-download" href="#download" aria-describedby="download-device-note">
         <span data-i18n="hero.cta">下載 Yuzora</span>
@@ -135,14 +133,14 @@
     <p class="device-note hero-load" id="download-device-note" data-status="unknown" aria-live="polite"><span data-device-message="macos" data-i18n="dl.device.macos" hidden>已辨識：macOS · 安裝檔僅適用 Apple Silicon</span><span data-device-message="windows" data-i18n="dl.device.windows" hidden>已辨識：Windows · x64</span><span data-device-message="unsupported" data-i18n="dl.device.unsupported" hidden>僅支援 macOS 與 Windows 桌面裝置</span><span data-device-message="unsupported-architecture" data-i18n="dl.device.unsupportedArchitecture" hidden>此裝置架構尚未提供安裝檔</span><span data-device-message="unknown" data-i18n="dl.device.unknown">請從下方選擇你的平台</span></p>
   </div>
   <div class="hero-stage hero-load" id="hero-stage">
-    <span class="float-wrap tag-1"><span class="float-tag" data-depth="18"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 4 8.5l8 4.5 8-4.5L12 4Z"/><path d="M4 13l8 4.5 8-4.5"/></svg>named Sessions</span></span>
-    <span class="float-wrap tag-2"><span class="float-tag" data-depth="30"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 10a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6"/><path d="M10.3 19.5a2 2 0 0 0 3.4 0"/></svg>Attention</span></span>
-    <span class="float-wrap tag-3"><span class="float-tag" data-depth="26"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l4-5-4-5"/><path d="M11 17h9"/></svg>BSP terminal</span></span>
+    <span class="float-wrap tag-1"><span class="float-tag" data-depth="18"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 4 8.5l8 4.5 8-4.5L12 4Z"/><path d="M4 13l8 4.5 8-4.5"/></svg>Spaces × Agents</span></span>
+    <span class="float-wrap tag-2"><span class="float-tag" data-depth="30"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 10a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6"/><path d="M10.3 19.5a2 2 0 0 0 3.4 0"/></svg>Needs attention</span></span>
+    <span class="float-wrap tag-3"><span class="float-tag" data-depth="26"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l4-5-4-5"/><path d="M11 17h9"/></svg>Mixed splits</span></span>
     <span class="float-wrap tag-4"><span class="float-tag" data-depth="20"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9l3 3-3 3M12 15h5"/></svg>SSH · SFTP</span></span>
     <div class="hero-shot-wrap">
-      <img class="hero-shot" id="hero-shot" data-imgstem="ade-herdr-runtime"
-           src="assets/ade-herdr-runtime-zh.png" width="1440" height="960" fetchpriority="high"
-           alt="Yuzora 主工作面：Space rail、named Sessions、Agents 與 HERDR terminal pages" data-i18n-alt="hero.alt">
+      <img class="hero-shot" id="hero-shot" data-imgstem="yuzora-workspace"
+           src="assets/yuzora-workspace-zh.png" width="1600" height="1025" fetchpriority="high"
+           alt="Yuzora 工作區：側欄列出 Spaces 與 agent 狀態，同一個 tab 裡分割出 agent 終端機、Git diff 與資料表" data-i18n-alt="hero.alt">
     </div>
   </div>
   <div class="hero-base"></div>
@@ -151,7 +149,7 @@
 <!-- Stack strip -->
 <div class="stack-strip">
   <p class="strip-label" data-i18n="strip.label">以開源技術打造</p>
-  <div class="marquee" aria-label="Tauri, React, Rust, TypeScript, Bun, PostgreSQL, SQLite, Git">
+  <div class="marquee" aria-label="Rust, Ghostty, Zig, JavaScript, PostgreSQL, SQLite, Git, Markdown">
     <div class="marquee-track" id="marquee-track" aria-hidden="true"></div>
   </div>
 </div>
@@ -166,17 +164,17 @@
       <article class="loop-card reveal">
         <span class="loop-num">1</span>
         <h3 data-i18n="loop.s1t">開一個 Space</h3>
-        <p data-i18n="loop.s1d">掛上專案 checkout 或 linked worktree，Space rail 上一格就位。</p>
+        <p data-i18n="loop.s1d">選一個資料夾，在這台電腦或 SSH 連到的機器上都可以。Space 以資料夾命名，終端機從那裡開始。</p>
       </article>
       <article class="loop-card reveal" style="--d: 0.09s">
         <span class="loop-num">2</span>
-        <h3 data-i18n="loop.s2t">命名 Session，派出 Agents</h3>
-        <p data-i18n="loop.s2d">agents 直接跑在 HERDR terminal 上，同一個 Session 集中收納。</p>
+        <h3 data-i18n="loop.s2t">派出 Agents</h3>
+        <p data-i18n="loop.s2d">agent 跑在 herdr-core 的終端機；用「＋ 新增 pane」把 agent、終端機與工具放進同一個 tab。</p>
       </article>
       <article class="loop-card reveal" style="--d: 0.18s">
         <span class="loop-num">3</span>
-        <h3 data-i18n="loop.s3t">盯著 Attention 就好</h3>
-        <p data-i18n="loop.s3d">需要介入的事自己浮上來，處理完就回到主線。</p>
+        <h3 data-i18n="loop.s3t">盯著「需要注意」就好</h3>
+        <p data-i18n="loop.s3d">agent 需要回覆時，側欄、tab 與 pane 邊框都會轉成琥珀色；處理完就回到主線。</p>
       </article>
     </div>
   </div>
@@ -189,45 +187,48 @@
       <h2 data-i18n="show.h2">整條開發動線，收進同一個工作面</h2>
     </div>
     <figure class="showcase-main reveal">
-      <video muted loop playsinline preload="metadata"
-             data-vstem="ade-herdr" data-poster-stem="ade-herdr-runtime"
-             poster="assets/ade-herdr-runtime-zh.png"
-             aria-label="Yuzora 的 Spaces、Sessions、Agents 與 HERDR 終端工作面" data-i18n-aria-label="media.adeHerdr">
-        <source src="assets/ade-herdr-zh.mp4" type="video/mp4">
-      </video>
+      <img data-imgstem="feature-spaces-agents" src="assets/feature-spaces-agents-zh.png"
+           width="1600" height="1025" loading="lazy"
+           alt="Yuzora 的 Spaces × Agents：側欄列出三個 Space 的 agent 與狀態，agent 終端機旁分割出 Git diff" data-i18n-alt="media.spacesAgents">
       <figcaption class="showcase-caption">
-        <h3 data-i18n="show.mainT">Spaces × Sessions × Agents</h3>
-        <p data-i18n="show.mainD">Space rail、named Sessions、Attention 與 BSP terminal pages 同屏運轉；每個 Yuzora page 對應一個 HERDR tab。</p>
+        <h3 data-i18n="show.mainT">Spaces × Agents</h3>
+        <p data-i18n="show.mainD">側欄依機器 → Space → worktree → agent 排列，每個 agent 的狀態同時以顏色與形狀表示；需要回覆的會集中在「需要注意」。</p>
       </figcaption>
     </figure>
 
-    <div class="split reveal">
+    <div class="split reverse reveal">
       <div class="split-copy">
-        <h3 data-i18n="show.remoteT">資料與主題，都在同一個工作面</h3>
-        <p data-i18n="show.remoteD">瀏覽資料表、執行 SQL 並查看結果。示範介面使用範例資料，也能即時切換深淺模式與主題色。</p>
+        <h3 data-i18n="show.filesT">檔案與編輯器，跟著 agent 走</h3>
+        <p data-i18n="show.filesD">檔案樹跟著目前 pane 的 repo，帶 Git 標記；編輯器以 tree-sitter 為 14 種語言上色、存檔前檢查衝突，有 agent 在改同一個檔案時會提示；Markdown 邊打邊預覽，圖片與 SVG 也能直接看。</p>
       </div>
       <div class="split-media">
-        <video muted loop playsinline preload="metadata"
-               data-vstem="remote-db" data-poster-stem="remote-db"
-               poster="assets/remote-db-zh.png"
-               aria-label="Yuzora 的資料庫查詢、結果與主題設定" data-i18n-aria-label="media.remoteDb">
-          <source src="assets/remote-db-zh.mp4" type="video/mp4">
-        </video>
+        <img data-imgstem="feature-files" src="assets/feature-files-zh.png"
+             width="1600" height="1025" loading="lazy"
+             alt="Yuzora 的檔案模式：側欄是帶 Git 標記的 repo 檔案樹，agent 終端機旁分割出程式碼編輯器與 Markdown 預覽" data-i18n-alt="media.files">
+      </div>
+    </div>
+
+    <div class="split reveal">
+      <div class="split-copy">
+        <h3 data-i18n="show.remoteT">資料庫，就在 agent 旁邊</h3>
+        <p data-i18n="show.remoteD">PostgreSQL、SQL Server 與 SQLite：瀏覽 schema、看資料表與結構、執行 SQL，修改儲存格後在單一交易內寫回。</p>
+      </div>
+      <div class="split-media">
+        <img data-imgstem="feature-database" src="assets/feature-database-zh.png"
+             width="1600" height="1025" loading="lazy"
+             alt="Yuzora 的資料庫：側欄列出 SQLite 連線與 schema 樹，資料表 pane 顯示 orders 的資料" data-i18n-alt="media.database">
       </div>
     </div>
 
     <div class="split reverse reveal">
       <div class="split-copy">
-        <h3 data-i18n="show.gitT">終端機與 git 同步呼吸</h3>
-        <p data-i18n="show.gitD">在整合與並排 diff 之間切換，逐行檢視變更，再回到終端機查看專案狀態。</p>
+        <h3 data-i18n="show.gitT">以 IntelliJ 為基準的 Git</h3>
+        <p data-i18n="show.gitD">在側欄暫存與 commit，diff 可以逐塊、逐行暫存；提交紀錄與分支圖、三方合併、互動式 rebase 都在同一個工作面。</p>
       </div>
       <div class="split-media">
-        <video muted loop playsinline preload="metadata"
-               data-vstem="terminal-git" data-poster-stem="terminal-git"
-               poster="assets/terminal-git-zh.png"
-               aria-label="Yuzora 的終端機與 Git 工作面" data-i18n-aria-label="media.terminalGit">
-          <source src="assets/terminal-git-zh.mp4" type="video/mp4">
-        </video>
+        <img data-imgstem="feature-git" src="assets/feature-git-zh.png"
+             width="1600" height="1025" loading="lazy"
+             alt="Yuzora 的 Git：側欄列出已暫存與未暫存的變更和 commit 區，提交紀錄 pane 顯示分支圖、分支與 tag" data-i18n-alt="media.git">
         <div class="git-tail reveal" aria-hidden="true">
           <svg viewBox="0 0 100 84" preserveAspectRatio="none">
             <path class="gt-draw" pathLength="1" d="M50 4 V84" stroke="#86b81f" vector-effect="non-scaling-stroke"/>
@@ -270,32 +271,32 @@
     <div class="bento-grid">
       <article class="bento-card bento-a reveal">
         <h3>Command Palette</h3>
-        <p data-i18n="bento.aD">搜尋或執行命令，鍵盤不離手。往下打幾個字試試。</p>
+        <p data-i18n="bento.aD">⇧⌘P 搜尋或執行命令，鍵盤不離手。往下打幾個字試試。</p>
         <div class="mini-palette">
           <div class="mp-bar">
             <input class="mp-input" id="mp-input" type="text"
                    placeholder="搜尋或執行命令" data-i18n-placeholder="bento.aPh"
                    aria-label="搜尋示範命令" data-i18n-aria-label="palette.search">
-            <kbd>⌘K</kbd>
+            <kbd>⇧⌘P</kbd>
           </div>
           <ul class="mp-list" id="mp-list"></ul>
         </div>
       </article>
       <article class="bento-card bento-b reveal" style="--d: 0.07s">
-        <h3 data-i18n="bento.bT">編輯器與搜尋</h3>
-        <p data-i18n="bento.bD">CodeMirror 6 分頁編輯、左右分割、語法上色與工作區文字搜尋。</p>
+        <h3 data-i18n="bento.bT">檔案與編輯器</h3>
+        <p data-i18n="bento.bD">帶 Git 標記的檔案樹、檔名與內容搜尋、tree-sitter 上色的編輯器，以及 Markdown 預覽。</p>
       </article>
       <article class="bento-card bento-c reveal" style="--d: 0.05s">
-        <h3 data-i18n="bento.cT">內嵌瀏覽器</h3>
-        <p data-i18n="bento.cD">預覽本機、WSL 或 SSH 工作區的 HTML，開啟網站與執行中的服務，選取元素並複製上下文交給 AI 修改。</p>
+        <h3 data-i18n="bento.cT">Mods 與模板</h3>
+        <p data-i18n="bento.cD">Yuzora 的介面就是 herdr mods，複製後就能改；herdr-core 的 agent 模板在設定裡編輯、啟動。</p>
       </article>
       <article class="bento-card bento-d reveal" style="--d: 0.12s">
-        <h3 data-i18n="bento.dT">自動更新</h3>
-        <p data-i18n="bento.dD">新版本從 GitHub Releases 自動送達。</p>
+        <h3 data-i18n="bento.dT">簽章更新</h3>
+        <p data-i18n="bento.dD">新版本從 GitHub Releases 送達；更新清單的簽章與每個檔案的 SHA-256 都驗過才安裝。</p>
       </article>
       <article class="bento-card bento-e reveal" style="--d: 0.19s">
         <h3 data-i18n="bento.eT">雙語介面</h3>
-        <p data-i18n="bento.eD">繁體中文與英文，整個 app 一鍵切換。這個網頁也是。</p>
+        <p data-i18n="bento.eD">繁體中文與英文，預設跟隨系統，在設定裡切換後整個 app 立即換上。這個網頁也是。</p>
         <button class="lang-demo" id="lang-demo" data-i18n="bento.eBtn">換成 English</button>
       </article>
     </div>
@@ -306,14 +307,14 @@
 <section class="boundary" id="boundary">
   <div class="shell">
     <h2 class="statement reveal">
-      <span data-i18n="bound.h2a">介面是投影，</span><em class="accent" data-i18n="bound.h2b">runtime 是權威</em><span data-i18n="bound.h2c">。</span>
+      <span data-i18n="bound.h2a">介面只負責畫面，</span><em class="accent" data-i18n="bound.h2b">herdr-core 負責執行</em><span data-i18n="bound.h2c">。</span>
     </h2>
-    <p class="explain reveal" data-i18n="bound.p">ADE surface 負責呈現與指令；狀態、終端與 agents 一律活在 HERDR runtime。關掉視窗，工作照跑；重開視窗，一切接得回來。</p>
+    <p class="explain reveal" data-i18n="bound.p">Yuzora 負責畫面與指令；終端機、agents 與 machines 都在 herdr-core。關掉視窗，工作照跑；重開視窗，一切接得回來。</p>
 
     <div class="flow-diagram reveal" aria-hidden="true">
       <div class="flow-node">
-        <span class="fn-name">ADE surface</span>
-        <span class="fn-role" data-i18n="bound.c1d">呈現與指令</span>
+        <span class="fn-name">Yuzora</span>
+        <span class="fn-role" data-i18n="bound.c1d">畫面與指令</span>
       </div>
       <div class="flow-lines">
         <div class="flow-lane cmd">
@@ -328,30 +329,29 @@
         </div>
       </div>
       <div class="flow-node runtime">
-        <span class="fn-name">HERDR runtime</span>
-        <span class="fn-role" data-i18n="bound.c2d">狀態與執行</span>
+        <span class="fn-name">herdr-core</span>
+        <span class="fn-role" data-i18n="bound.c2d">終端機與執行</span>
       </div>
     </div>
 
     <div class="boundary-cols reveal">
       <div class="boundary-col">
-        <h3>ADE surface</h3>
-        <p data-i18n="bound.c1d2">呈現與指令，關掉也不影響工作</p>
+        <h3>Yuzora</h3>
+        <p data-i18n="bound.c1d2">畫面與指令，關掉也不影響工作</p>
       </div>
       <div class="boundary-col">
-        <h3>HERDR runtime</h3>
-        <p data-i18n="bound.c2d2">狀態、終端與 agents 的唯一權威</p>
+        <h3>herdr-core</h3>
+        <p data-i18n="bound.c2d2">終端機、agents 與 machines 都在這裡</p>
       </div>
       <div class="boundary-col">
-        <h3 data-i18n="bound.c3t">明確邊界</h3>
-        <p data-i18n="bound.c3d">typed IPC，mutation 依 capability 把關</p>
+        <h3 data-i18n="bound.c3t">可以改的介面</h3>
+        <p data-i18n="bound.c3d">側欄與工具 pane 都是 JS mods，Rust 原生層負責 Git、資料庫與 SSH 等重活</p>
       </div>
     </div>
   </div>
 </section>
 
 <!-- Brand identity -->
-<section id="demo" class="demo-section"><div class="shell"><div class="demo-intro"><div><p class="demo-eyebrow">MEET YOUR NEXT WORKSPACE</p><h2 data-i18n="demo.title">先玩一下，再一起開工。</h2><p data-i18n="demo.description">打開檔案、試試 Git diff、跑一段示範 SQL，或幫工作面換個顏色。你的 Space 夥伴也在等你。</p><a class="btn btn-primary" href="demo/" data-demo-link data-i18n="demo.open">開啟互動 Demo ↗</a><p class="demo-note" data-i18n="demo.note">使用範例資料，操作只保留在此瀏覽器分頁。</p></div><div id="site-companions" aria-hidden="true"><!-- companions:start --><div class="site-companion"><span class="space-character-art" style="--character-blink-duration:4.401501207207368s;--character-blink-phase:-3.336649023626926s;--character-look-duration:12.51736999424357s;--character-look-phase:-3.6674940466515915s;--character-body-duration:6.869317202938212s;--character-body-phase:-8.602958755083932s;--character-body-animation:character-bob" data-shell="box" data-face="curious" data-detail="patch" data-portrait="false" data-motion="true" aria-hidden="true"><span class="space-character-body"><span class="space-character-pattern"></span><svg class="space-character-face" viewBox="0 0 80 80" fill="none" focusable="false"><g class="character-gaze"><g class="character-blink"><g fill="currentColor"><ellipse cx="29" cy="43" rx="3.2" ry="6.5" transform="rotate(-8 29 43)"></ellipse><ellipse cx="51" cy="41" rx="3.2" ry="6.5" transform="rotate(-8 51 41)"></ellipse></g></g><g class="character-mouth" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M37 53q3 4 6 0"></path></g></g></svg></span></span></div><div class="site-companion"><span class="space-character-art" style="--character-blink-duration:4.253253033032688s;--character-blink-phase:-2.7765920499649894s;--character-look-duration:9.062925230095793s;--character-look-phase:-12.748543461941496s;--character-body-duration:6.24044767373632s;--character-body-phase:-6.468095298332014s;--character-body-animation:character-bob" data-shell="cloud" data-face="smile" data-detail="freckles" data-portrait="false" data-motion="true" aria-hidden="true"><span class="space-character-body"><span class="space-character-pattern"></span><svg class="space-character-face" viewBox="0 0 80 80" fill="none" focusable="false"><g class="character-gaze"><g class="character-blink"><g stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><path d="M24 44q5-9 10 0M46 44q5-9 10 0"></path></g></g><g class="character-mouth" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M35 52q5 7 10 0"></path></g></g></svg></span></span></div><div class="site-companion"><span class="space-character-art" style="--character-blink-duration:6.173419864408075s;--character-blink-phase:-0.8014015624836364s;--character-look-duration:14.856757718634135s;--character-look-phase:-0.00033060231952375396s;--character-body-duration:5.983865458527507s;--character-body-phase:-7.869601313781411s;--character-body-animation:character-sway" data-shell="round" data-face="sleepy" data-detail="none" data-portrait="false" data-motion="true" aria-hidden="true"><span class="space-character-body"><span class="space-character-pattern"></span><svg class="space-character-face" viewBox="0 0 80 80" fill="none" focusable="false"><g class="character-gaze"><g class="character-blink"><g stroke="currentColor" stroke-width="3.5" stroke-linecap="round"><path d="m25 42 9 1m12 0 9-1"></path></g></g><g class="character-mouth" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><ellipse cx="40" cy="54" rx="2.5" ry="1.5"></ellipse></g></g></svg></span></span></div><!-- companions:end --></div></div><button class="demo-preview" id="demo-launch" type="button" aria-label="載入互動 Demo / Load interactive demo"><img src="assets/ade-herdr-runtime-zh.png" data-imgstem="ade-herdr-runtime" alt="Yuzora interactive demo" loading="lazy"><span data-i18n="demo.load">點一下，進入你的示範工作面 →</span></button><div id="demo-frame-host"></div></div></section>
 
 <section class="brand-section" id="brand" aria-labelledby="brand-title">
   <div class="shell">
@@ -419,15 +419,16 @@
         <a class="dl-card" style="--d: 0.16s" data-platform-download="windows" href="https://github.com/NakiriYuuzu/Yuzora/releases/latest/download/Yuzora-windows-x64-setup.exe">
           <span class="dl-badge" data-recommended-badge hidden><span data-i18n="dl.recommended">適合此裝置</span></span>
           <span class="os">Windows</span>
-          <span class="desc" data-i18n="dl.winD">x64 安裝程式</span>
+          <span class="desc" data-i18n="dl.winD">x64 安裝程式，不需要系統管理員權限</span>
           <span class="get">
             <span data-i18n="dl.winBtn">下載 .exe</span>
             <span class="arrow-dot" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 8h11M9 3.5 13.5 8 9 12.5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
           </span>
         </a>
       </div>
+      <p class="finale-gatekeeper" data-i18n="dl.gatekeeper">macOS 版沒有 Apple 公證：第一次開啟時，到「系統設定 › 隱私權與安全性」按「仍要打開」。</p>
       <div class="finale-notes">
-        <span data-i18n-html="dl.build">想自己建置：<code>bun install</code>，然後 <code>bun run tauri:build</code>。</span>
+        <span data-i18n-html="dl.build">想自己建置：<code>git submodule update --init app/vendor/ghostty</code>，再到 <code>app/</code> 執行 <code>cargo build</code>（需要 Rust 與 Zig 0.16）。</span>
         <a href="https://github.com/NakiriYuuzu/Yuzora/releases" target="_blank" rel="noopener" data-i18n="dl.all">所有版本與更新紀錄</a>
       </div>
     </div>
@@ -444,7 +445,7 @@
           <svg class="brand-nav-mark" viewBox="0 0 256 256" aria-hidden="true"><use href="#yuzora-mark"/></svg>
           Yuzora
         </div>
-        <p class="footer-tag" data-i18n="foot.tag">ADE × HERDR，開源的桌面工作面。</p>
+        <p class="footer-tag" data-i18n="foot.tag">以 herdr-core 為核心的開源 ADE。</p>
       </div>
       <nav class="footer-links" aria-label="頁尾連結" data-i18n-aria-label="a11y.footerNav">
         <a href="#brand" data-i18n="nav.brand">品牌</a>

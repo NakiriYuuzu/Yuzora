@@ -10,9 +10,8 @@
 
 <br />
 
-[![CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/ci.yml?style=flat-square&label=CI&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/ci.yml)
-[![App CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/app-ci.yml?branch=beta2/integration&style=flat-square&label=beta.2%20app&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/app-ci.yml)
-![Version](https://img.shields.io/badge/version-0.1.0--beta.1-86b81f?style=flat-square&labelColor=1b1a17)
+[![App CI](https://img.shields.io/github/actions/workflow/status/NakiriYuuzu/Yuzora/app-ci.yml?branch=main&style=flat-square&label=app&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/actions/workflows/app-ci.yml)
+[![Version](https://img.shields.io/github/v/release/NakiriYuuzu/Yuzora?style=flat-square&label=version&color=86b81f&labelColor=1b1a17)](https://github.com/NakiriYuuzu/Yuzora/releases/latest)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux%20%28experimental%29-57534b?style=flat-square&labelColor=1b1a17)
 
 <samp><a href="README.md">English</a> · 繁體中文 · <a href="https://github.yuuzu.net/Yuzora/">官方網站</a></samp>
@@ -23,7 +22,7 @@
 
 > **v0.1.0 是新 Yuzora 的第一個正式版。** Yuzora 改以 [herdr-app](https://github.com/herdrdev/herdr-app)
 > （Rust · GPUI · libghostty · QuickJS mods）為基底，成為原生 App，程式在 [`app/`](app/)。
-> v0.1.0-beta.1 以前的版本是 `src-tauri/` 與 `src/` 的 Tauri App，保留在 repo 裡當移植來源。
+> v0.1.0-beta.1 以前的版本是 Tauri App，原始碼在 v0.1.2 之後從 repo 移除，留在 git 歷史（tag `v0.1.2`）。
 > 架構見 [docs/beta2/architecture.md](docs/beta2/architecture.md)。
 
 Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認得的 agent）跑在 herdr-core 的終端機裡，
@@ -110,17 +109,14 @@ scripts/yuzora/package         # release build，並在 dist/ 產生這個平台
 - 不要讓開發中的 build 讀寫你自己的資料：給它暫存的 app home 與 core session（`YUZORA_APP_HOME`、`HC_SESSION`，見
   [docs/beta2/lanes.md](docs/beta2/lanes.md)）。macOS 上可用 `scripts/yuzora/bundle-macos <dir>` 包成 `Yuzora.app`。
 
-Tauri App（v0.1.0-beta.1 以前）仍可在 repo 根目錄建置：
+官方網站（`site/`）與兩份 CHANGELOG 的測試在 repo 根目錄：
 
 ```bash
 bun install
-bun run tauri:dev    # 桌面 App（dev server :1420）
-bun run test         # vitest
-bun run build        # typecheck＋前端建置
-cargo check --locked --all-targets
+bun run lint         # 官網腳本的 eslint
+bun run site:seo     # site/en/ 與 site/sitemap.xml
+bun run test         # bun test
 ```
-
-它的發布步驟見 [docs/operations.md](docs/operations.md)。
 
 ## Repo 結構
 
@@ -133,8 +129,7 @@ cargo check --locked --all-targets
 | `app/defaults/layouts/yuzora.json`、`themes/yuzora-{dark,light}.json`、`yuzora/tokens.json` | 預設 layout、主題與設計 tokens |
 | `app/scripts/yuzora/`、`app/distribution/yuzora/` | 打包、更新 manifest、上游同步檢查 |
 | [`docs/beta2/`](docs/beta2/) | 架構、lanes、各功能的設計文件與實機截圖 |
-| `src-tauri/`、`src/` | Tauri App（v0.1.0-beta.1 以前），移植來源 |
-| `site/`、`site-remotion/` | 官方網站（GitHub Pages，從 `main` 部署）與影片原始碼 |
+| `site/` | 官方網站（GitHub Pages，從 `main` 部署） |
 
 ## 功能細節
 

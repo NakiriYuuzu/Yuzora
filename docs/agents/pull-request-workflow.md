@@ -1,6 +1,6 @@
 # Issue、Branch、Commit 與 Pull Request 工作流程
 
-本文件定義 Yuzora 的一般工程變更如何從 GitHub Issue 進入 `main`。部署、Release、Updater 與 Pages 的操作細節見 [`docs/operations.md`](../operations.md)。
+本文件定義 Yuzora 的一般工程變更如何從 GitHub Issue 進入 `main`。App 的打包、發布與更新見 [`docs/beta2/release.md`](../beta2/release.md)，官網（Pages）見 [`docs/operations.md`](../operations.md)。
 
 Issue tracker 與 triage label 規則分別見：
 
@@ -182,9 +182,8 @@ Closes #<issue-number>
 
 ## Verification
 
-- `bun run test ...`
-- `bun run typecheck`
-- `cargo test ...`
+- `cargo test --locked ...`（在 `app/`）
+- `bun test scripts`（在 `app/`）或根目錄 `bun run test`
 - 人工平台／GUI 證據
 
 ## Risk and rollback
@@ -206,9 +205,8 @@ Closes #<issue-number>
 - Diff 中每一行都能追溯到 Issue 或必要測試。
 - 沒有 debug log、臨時檔、generated secret 或本機路徑。
 - 沒有意外修改 lockfile、格式或無關檔案。
-- 新增 UI 文字已同步 `en` 與 `zh-TW`。
-- IPC 修改維持 React → `src/lib/ipc.ts` → Tauri command 邊界。
-- 新增 Tauri command 已正確註冊，且 shutdown／inventory tests 未被破壞。
+- 新增 UI 文字已加進該 mod 的 `i18n/en.json`（介面只有英文）。
+- 新增或修改 `yuzora:*` 函式時，`DECLARATIONS` 已同步。
 - Tests 先驗證使用者行為或 regression，不只驗證實作細節。
 - PR body 的 commands 與證據是實際執行結果，不是預計執行項目。
 - Known limitations 與未完成工作已明確列出。
@@ -282,15 +280,12 @@ Merge 後刪除已完成的短期 branch；release tag 與長期維護 branch �
 
 ## 11. Release PR 的額外規則
 
-Release PR 除了一般 PR gate，還必須符合 [`docs/operations.md`](../operations.md)：
+Release PR 除了一般 PR gate，還必須符合 [`docs/beta2/release.md`](../beta2/release.md) 的發布步驟：
 
-- 三份 version 與根目錄 `Cargo.lock` 一致。
-- `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁體中文）都有對應版本的使用者說明，兩份的版本、段落與項目一一對應（`scripts/release-notes.test.ts` 會比對）。
-- Release／updater contract checks 通過。
+- `app/CHANGELOG.md` 與 `app/CHANGELOG.zh-TW.md` 的第一筆是這次的版本。
+- 根目錄 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁體中文）都有對應版本的使用者說明，兩份的版本、段落與項目一一對應（`tests/changelog.test.js` 會比對）。
 - Tag 尚未存在。
-- Merge 後 exact `main` commit 的完整 CI 通過，才可建立 tag。
-- Tag push 與 `main` push 分開，Release workflow 不得與尚未完成的 CI 競速。
-- Draft assets、`latest.json`、signatures 與 macOS／Windows 兩個支援桌面平台的 smoke test 完成後才 Publish。
+- 發布由 `app-release.yml` 以通過的 `App package` run 為來源，分階段手動 dispatch，不重建。
 
 Release workflow、signing key、updater public key 或 stable endpoint 的變更，視為 supply-chain sensitive review。
 

@@ -1,3 +1,0 @@
-$ isolated-herdr.sh --session companion-spike server reload-config
-exit=0
-{"id":"cli:server:reload-config","result":{"diagnostics":[],"status":"applied","type":"config_reload"}}

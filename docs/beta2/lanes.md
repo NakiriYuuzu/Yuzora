@@ -74,7 +74,7 @@ L0 建好基底後，L1–L10 從 `beta2/integration` 各開一條分支並行�
 
 - `app/CHANGELOG.md` 第一筆必須是 `0.1.0-beta.2`（`update_notes` 測試）。各 lane 在該筆底下加自己的條目即可，不要新增版本標題。
 - App 內的更新說明（App 只顯示英文）分成兩份：英文在 `app/CHANGELOG.md`，繁體中文在 `app/CHANGELOG.zh-TW.md`（只收 Yuzora 的版本，#206 起）。lane 加條目時兩個檔各加一行，英文進 `app/CHANGELOG.md`、繁中進 `app/CHANGELOG.zh-TW.md`（繁中檔 App 不顯示，只是文件）；段落標題兩個檔一律用英文 `### New`／`### Fixed`。細節見 [release.md](release.md)（L7 負責）。
-- 根目錄的 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁中）是 GitHub Release 的內文，由 L10 維護，兩份的版本、段落與項目要一一對應（`scripts/release-notes.test.ts` 會比對）。
+- 根目錄的 `CHANGELOG.md`（英文）與 `CHANGELOG.zh-TW.md`（繁中）是 GitHub Release 的內文，由 L10 維護，兩份的版本、段落與項目要一一對應（`tests/changelog.test.js` 會比對）。
 
 ## 分支與 PR 流程
 
@@ -129,4 +129,4 @@ env -i HOME="$HOME" USER="$USER" TMPDIR="$TMPDIR" TERM=xterm-256color LANG=en_US
 
 ## CI
 
-`.github/workflows/app-ci.yml` 對 base 為 `beta2/integration`、改到 `app/**`（或資料庫 fixture `tests/database/**`）的 PR，在 Linux（ubuntu-22.04）與 macOS（macos-15，aarch64）執行建置與 `cargo test --locked`（Linux 上 `shipped_initial_descriptions` 會以 headless 渲染每個內建 mod）。macOS 另跑 yuzora crates 測試、`scripts/yuzora/check-mods`（check 會開隱藏視窗，需要視窗伺服器）與 shot_pixels；Linux 另跑 packaging 與文件檢查；windows-2022 另有一個 job 只跑 `cfg(windows)` 的 console 視窗測試（`yuzora-core spawn::`、`yuzora-git exec::`、`yuzora-files fsops::tests::run_starts`，`--test-threads=1`；整個 workspace 的測試在 Windows 上有既有的失敗，不跑），也納入 aggregator。另有 `database-integration` job（Linux，起 PostgreSQL 與 SQL Server fixture 跑 `yuzora-db`，見 [db.md](db.md)「CI 驗什麼」），同樣納入 aggregator。固定的狀態名稱是 `App (build · test)`。只改 `app/**` 與 `docs/beta2/**` 的 PR 不會觸發 Tauri 的 `ci.yml`。
+`.github/workflows/app-ci.yml` 對 base 為 `beta2/integration`、改到 `app/**`（或資料庫 fixture `tests/database/**`）的 PR，在 Linux（ubuntu-22.04）與 macOS（macos-15，aarch64）執行建置與 `cargo test --locked`（Linux 上 `shipped_initial_descriptions` 會以 headless 渲染每個內建 mod）。macOS 另跑 yuzora crates 測試、`scripts/yuzora/check-mods`（check 會開隱藏視窗，需要視窗伺服器）與 shot_pixels；Linux 另跑 packaging 與文件檢查；windows-2022 另有一個 job 只跑 `cfg(windows)` 的 console 視窗測試（`yuzora-core spawn::`、`yuzora-git exec::`、`yuzora-files fsops::tests::run_starts`，`--test-threads=1`；整個 workspace 的測試在 Windows 上有既有的失敗，不跑），也納入 aggregator。另有 `database-integration` job（Linux，起 PostgreSQL 與 SQL Server fixture 跑 `yuzora-db`，見 [db.md](db.md)「CI 驗什麼」），同樣納入 aggregator。固定的狀態名稱是 `App (build · test)`。

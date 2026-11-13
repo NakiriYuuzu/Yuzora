@@ -1,7 +1,7 @@
 # Yuzora v0.1.0-beta.2: build and test the herdr-based app in app/ (its own
 # Cargo workspace, lock and target). Steps follow upstream's
-# app/.github/workflows/ci.yml on the two platforms beta.2 starts with; the
-# Tauri app keeps ci.yml. See docs/beta2/architecture.md.
+# app/.github/workflows/ci.yml on the two platforms beta.2 starts with. See
+# docs/beta2/architecture.md.
 #
 # Caches: only pushes to main or beta2/integration save them, so PR caches
 # can't evict the ones every PR restores. GitHub lets a run restore the caches
@@ -225,8 +225,8 @@ jobs:
         run: 'cargo test --locked --config ''profile.dev.package."*".opt-level=0'' -p yuzora-core -p yuzora-git -p yuzora-files fsops::tests::run_starts -- --test-threads=1'
 
   # The PostgreSQL and SQL Server tests of yuzora-db skip without a fixture, which
-  # the jobs above don't have. This one starts the fixtures ci.yml's database job
-  # uses (tests/database/docker-compose.yml) and requires both engines: a test
+  # the jobs above don't have. This one starts the fixtures in
+  # tests/database/docker-compose.yml and requires both engines: a test
   # whose engine isn't selected fails instead of skipping (tests/common). The
   # #[ignore]d performance runs stay out.
   database-integration:
