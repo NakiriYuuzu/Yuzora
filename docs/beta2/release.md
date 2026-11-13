@@ -508,6 +508,36 @@ L0 PR #187 最後一次成功的執行（run 41480446879）：
   3. `app-ci.yml` 的 Windows 只有一個 job（`windows-console`），只跑 `cfg(windows)` 的 console 視窗測試（`yuzora-core spawn::`、`yuzora-git exec::`、`yuzora-files fsops::tests::run_starts`），其餘 Windows 只在 `app-package.yml` 建置；建議發布前與大型合併後手動跑一次 `app-package.yml`。
 - `app-package.yml` 刻意**不用快取**：四個平台的 release target 很大，會擠掉其他快取；它只在打包相關變更時跑。
 
+### `app-ci.yml` 重新量測（2026-11-13）
+
+上面的評估是 L0 時做的，當時測試只要 16 秒。到 v0.1.2，測試本身成了最長的一段：成功的 PR run 43273786690 裡，macOS job 983 秒中有 633 秒在兩個測試步驟（其中約 142 秒是重編，見下面第 2 點），Linux job 888 秒中有 615 秒。`herdr-app` 的單元測試執行檔（主要是 `mods::render_tests`）在 Linux 要 529 秒、macOS 340 秒。
+
+在一次性的分支上以六個冷建置 job 量測（run 43350453178，沒有任何 cache；「測試」是 app 自己的 `cargo test`，Linux 含所有 crate，macOS 只含 `herdr-app`）：
+
+| runner | 相依套件 | 冷建置 | `target/` | 壓縮後 | `herdr-app` 單元測試 | 測試 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Linux | opt-level 0、debug 1（原設定） | 478 秒 | 14.1 GiB | 2.85 GiB | 367 秒 | 445 秒 |
+| Linux | opt-level 1、debug 0 | 887 秒 | 3.5 GiB | 0.96 GiB | 92 秒 | 156 秒 |
+| Linux | opt-level 2、debug 0（採用） | 693 秒 | 3.65 GiB | 1.01 GiB | 49 秒 | 102 秒 |
+| Linux | opt-level 2、debug 1 | 1212 秒 | 15.6 GiB | 3.23 GiB | 108 秒 | 180 秒 |
+| macOS | opt-level 0、debug 1（原設定） | 547 秒 | 5.4 GiB | 1.33 GiB | 293 秒 | 297 秒 |
+| macOS | opt-level 2、debug 0（採用） | 1057 秒 | 3.0 GiB | 0.87 GiB | 83 秒 | 86 秒 |
+
+每個設定只量一次，runner 之間有差異（同一個設定的測試在其他 run 是 337 到 615 秒），所以只看量級。opt-level 2、debug 1 那一格有一個測試失敗（`yuzora-git` 的 `a_log_view_alone_brings_its_watcher_back_and_hears_commits`，等檔案監看的通知），其餘五格全過；沒有重跑確認它是不是偶發。
+
+量到的三件事與對應的改動：
+
+1. **測試的時間花在相依套件裡。** render 測試執行的是 QuickJS 與 gpui 的程式，它們以 opt-level 0 編譯時慢 3 到 7 倍。改成照 workspace 的 dev profile（opt-level 2）建置、不帶 debug info。冷建置多 215 秒（Linux）到 510 秒（macOS），只在 cache 沒命中時付；測試每次都跑。Windows job 的測試只要十幾秒，維持 opt-level 0。
+2. **`-p` 讓 cache 用不上。** Cargo 依命令列選到的套件解析相依套件的 features。macOS 的「Yuzora crates」步驟用 `-p yuzora-*`，每次重編 gpui 等 18 個 crate（約 142 秒）；資料庫 job 用 `-p yuzora-db`，每次重編 217 個 crate（126 到 156 秒）。兩處都改成 workspace 的預設選取，再用 `--lib`、`--bins`、`--test <名稱>` 指名要跑的目標。本機驗證：整個 workspace 建好之後，這兩種選取都重編 0 個 crate。
+3. **cache 太大，而且會互相擠掉。** 存下來的 Linux cache 是 6.68 GiB，同設定的乾淨建置只有 2.85 GiB：沒命中時先還原舊 cache 再建置、再存，舊的產物就一直被帶著。repo 的 cache 總量在 9 GiB 上下，macOS 的 cache 每次存完幾小時內就被 GitHub 淘汰，所以 macOS 一直是冷建置。改動：
+   - 會存 cache 的 run（push）不還原舊 cache（`RESTORE_OLDER`），存下來的是一次乾淨建置。PR 只讀，找不到完全相同的 key 時仍可從舊的開始。
+   - key 的前綴改成 `app-ci-v2-`，舊的 opt-level 0 產物不會被還原進來。
+   - `prune-caches` job 在每次 push 之後，把每種 cache 在該分支上較舊的幾份刪掉，只留最新的。它是唯一有 `actions: write` 的 job，不 checkout、不執行 repo 的程式。
+
+預期（還沒有在 `main` 上量到，cache 要等合併後第一次 push 才會存）：cache 命中時還原約 1 GiB 而不是 6.7 GiB，Linux 的測試從 6 到 10 分鐘降到 2 分鐘上下，macOS job 從 16 分鐘降到 8 到 9 分鐘。版本號在 cache key 裡（`app/Cargo.toml`、`app/Cargo.lock`），所以每次發版後 `main` 的那次 push 會冷建置（macOS 約 18 分鐘）；它不擋任何 PR。
+
+`app-package.yml` 仍然不用 cache：它的產物就是發布的安裝檔，每次從乾淨的狀態建置。
+
 ## 9. 需同步的項目
 
 原本由總指揮在 beta.2 正式發布前收斂的清單；下面標「已套用」的在 v0.1.0 發布基礎建設一併處理了，其餘待 release-prep：

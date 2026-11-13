@@ -34,6 +34,41 @@ describe("caches", () => {
     expect(text.match(/if: env\.SAVE_CACHES == 'true' && steps\.cache\.outputs\.cache-hit != 'true'/g)).toHaveLength(4);
   });
 
+  test("one job drops the caches a save replaced: it alone may write to Actions, only on a push, and it runs nothing from the repository", () => {
+    const ci = load("app-ci.yml");
+    const writers = Object.keys(ci.jobs).filter((name) => ci.jobs[name].permissions?.actions === "write");
+    expect(writers).toEqual(["prune-caches"]);
+    const prune = ci.jobs["prune-caches"];
+    expect(prune.if).toContain("github.event_name == 'push'");
+    expect(prune.steps.filter((step: any) => step.uses)).toEqual([]);
+    // Every cache a job saves: one per platform of the matrix, and the Windows job's.
+    const prefix = (job: string) => ci.jobs[job].steps.find((step: any) => step.id === "cache").with.key.split("${{")[0];
+    const saved = ci.jobs["platform-tests"].strategy.matrix.include.map((m: any) => `${prefix("platform-tests")}${m.platform}-`);
+    for (const name of [...saved, prefix("windows-console")]) expect(prune.steps[0].run).toContain(name);
+    expect(ci.jobs.app.needs).not.toContain("prune-caches");
+  });
+
+  test("a run that saves starts from no older cache, so what it saves is one build and not every build before it", () => {
+    const ci = load("app-ci.yml");
+    expect(ci.env.RESTORE_OLDER).toBe("${{ github.event_name != 'push' }}");
+    for (const job of ["platform-tests", "windows-console"]) {
+      const restore = ci.jobs[job].steps.find((step: any) => step.id === "cache");
+      expect(restore.with["restore-keys"], job).toStartWith("${{ env.RESTORE_OLDER == 'true' && ");
+    }
+  });
+
+  test("the jobs on the workspace's cache build what it holds: no -p (Cargo would resolve other features) and no other profile", () => {
+    const ci = load("app-ci.yml");
+    for (const job of ["platform-tests", "database-integration"]) {
+      const runs = ci.jobs[job].steps.map((step: any) => step.run ?? "").filter((run: string) => run.includes("cargo test") && !run.includes("--manifest-path"));
+      expect(runs.length, job).toBeGreaterThan(1);
+      for (const run of runs) {
+        expect(run, job).not.toMatch(/\s-p\s|--package/);
+        expect(run, job).not.toContain("opt-level");
+      }
+    }
+  });
+
   test("app-package.yml uses none: its release targets would push out the others", () => {
     expect(readFileSync(join(WORKFLOWS, "app-package.yml"), "utf8")).not.toMatch(/uses: actions\/cache/);
   });

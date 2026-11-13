@@ -9,8 +9,18 @@
 # push to main needs main's own: integration's are no use there. The first
 # main push builds cold and saves; after that main and the PRs aimed at it
 # hit. Both branches save only while both are in use, and only on an exact-key
-# miss (the key is the dependencies, not the sources). setup-zig caches
-# separately.
+# miss (the key is the dependencies, not the sources). A run that will save
+# restores nothing older (RESTORE_OLDER): what it saves is one clean build,
+# not that build on top of every earlier one. setup-zig caches separately.
+#
+# Dependencies build as the workspace's dev profile has them (opt-level 2),
+# without debug info: the build is paid on a cache miss, the tests on every
+# run, and most of the tests' time is spent inside QuickJS and gpui. Measured
+# cold on the runners (2026-11-13; docs/beta2/release.md §8 has the table):
+# Linux at opt-level 0 with debug info built in 478 s, tested in 445 s and left
+# a 14.1 GiB target/ (2.9 GiB compressed); this way 693 s, 102 s and 3.7 GiB
+# (1.0 GiB). macOS: 547 s and 297 s for the app's own tests before, 1057 s and
+# 86 s now.
 name: App CI
 
 on:
@@ -38,10 +48,13 @@ env:
   RUST_TOOLCHAIN: 1.95.0
   # In the cache key: ghostty-sys can't tell when Zig changes.
   ZIG_VERSION: 0.16.0
-  CARGO_PROFILE_DEV_DEBUG: "1"
-  CARGO_PROFILE_TEST_DEBUG: "1"
+  # A panic still names its file and line; only backtrace frames lose theirs.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
   SAVE_CACHES: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta2/integration') }}
+  # The runs that only read may start from an older cache when the exact one is missing.
+  RESTORE_OLDER: ${{ github.event_name != 'push' }}
 
 jobs:
   platform-tests:
@@ -82,8 +95,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             app/target
-          key: app-ci-v1-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', 'app/crates/ghostty-sys/**', '.github/workflows/app-ci.yml') }}
-          restore-keys: app-ci-v1-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-
+          key: app-ci-v2-${{ matrix.platform }}-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', 'app/crates/ghostty-sys/**', '.github/workflows/app-ci.yml') }}
+          restore-keys: ${{ env.RESTORE_OLDER == 'true' && format('app-ci-v2-{0}-{1}-zig{2}-', matrix.platform, env.RUST_TOOLCHAIN, env.ZIG_VERSION) || '' }}
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         timeout-minutes: 10
@@ -97,7 +110,7 @@ jobs:
       - name: Keep unchanged sources fresh
         run: scripts/ci-sources restore
       - name: Build tests
-        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --no-run
+        run: cargo test --locked --no-run
       - name: Note the sources the cache was built from
         if: env.SAVE_CACHES == 'true' && steps.cache.outputs.cache-hit != 'true'
         run: scripts/ci-sources record
@@ -107,34 +120,31 @@ jobs:
         with:
           path: *cache-paths
           key: ${{ steps.cache.outputs.cache-primary-key }}
+      # Off Linux: every target but shot_pixels (run natively below), each by
+      # name. Not by -p: Cargo resolves the dependencies' features for the
+      # packages it is given, so `-p yuzora-*` could not use the build above and
+      # compiled gpui and seventeen more crates again on every run.
       - name: Tests
         run: |
           only=()
           if [ "$RUNNER_OS" != Linux ]; then
-            for t in tests/*.rs; do
+            only=(--lib --bins)
+            for t in tests/*.rs crates/*/tests/*.rs; do
               name=$(basename "$t" .rs)
               [ "$name" = shot_pixels ] || only+=(--test "$name")
             done
-            only+=(--bins)
           fi
           threads=()
           if [ "$RUNNER_OS" = Linux ]; then
             threads=(-- --test-threads 4)
           fi
-          cargo test --locked --config 'profile.dev.package."*".opt-level=0' "${only[@]}" "${threads[@]}"
-      # The run above narrows to the app's own targets off Linux.
-      - name: Yuzora crates
-        if: runner.os != 'Linux'
-        run: |
-          pkgs=()
-          for c in crates/yuzora-*; do pkgs+=(-p "$(basename "$c")"); done
-          cargo test --locked --config 'profile.dev.package."*".opt-level=0' "${pkgs[@]}"
+          cargo test --locked "${only[@]}" "${threads[@]}"
       - name: Screenshot pixels
         if: runner.os == 'macOS'
         timeout-minutes: 5
         env:
           HERDR_SHOT_NATIVE_TEST: "1"
-        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' --test shot_pixels
+        run: cargo test --locked --test shot_pixels
       # check opens a hidden window, which needs a window server. On Linux the
       # tests above render every shipped mod headless (shipped_initial_descriptions).
       - name: Yuzora mods
@@ -190,11 +200,12 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             app/target
-          key: app-ci-v1-windows-console-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', '.github/workflows/app-ci.yml') }}
-          restore-keys: app-ci-v1-windows-console-${{ env.RUST_TOOLCHAIN }}-
+          key: app-ci-v2-windows-console-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', '.github/workflows/app-ci.yml') }}
+          restore-keys: ${{ env.RESTORE_OLDER == 'true' && format('app-ci-v2-windows-console-{0}-', env.RUST_TOOLCHAIN) || '' }}
       # Like platform-tests: one build for every step (the same packages, so the
-      # vendored crates are built once), dependencies at opt-level 0, and
-      # sources whose content is unchanged kept fresh for Cargo.
+      # vendored crates are built once) and sources whose content is unchanged
+      # kept fresh for Cargo. Unlike it, dependencies at opt-level 0: these
+      # tests take seconds, so here the shorter build is the whole gain.
       - name: Keep unchanged sources fresh
         run: scripts/ci-sources restore
       - name: Build tests
@@ -253,7 +264,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       # The linux-x86_64 cache platform-tests saves, restored and never saved
-      # from here: this job builds one crate of it.
+      # from here: this job links a few test targets out of it.
       - name: Restore build cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -262,8 +273,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             app/target
-          key: app-ci-v1-linux-x86_64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', 'app/crates/ghostty-sys/**', '.github/workflows/app-ci.yml') }}
-          restore-keys: app-ci-v1-linux-x86_64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-
+          key: app-ci-v2-linux-x86_64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-${{ hashFiles('app/Cargo.lock', 'app/Cargo.toml', 'app/vendor/**', 'app/crates/ghostty-sys/**', '.github/workflows/app-ci.yml') }}
+          restore-keys: app-ci-v2-linux-x86_64-${{ env.RUST_TOOLCHAIN }}-zig${{ env.ZIG_VERSION }}-
       - name: Linux build dependencies
         timeout-minutes: 10
         run: |
@@ -275,8 +286,16 @@ jobs:
             libvulkan-dev mesa-vulkan-drivers libfontconfig-dev libfreetype-dev
       - name: Keep unchanged sources fresh
         run: scripts/ci-sources restore
+      # yuzora-db's integration tests by name, on the selection platform-tests
+      # builds with. `-p yuzora-db` resolves the dependencies' features for that
+      # crate alone: nothing in the cache fit and 217 crates were compiled here.
+      # Its unit tests reach no engine and run in platform-tests.
       - name: Build tests
-        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' -p yuzora-db --no-run
+        run: |
+          only=()
+          for t in crates/yuzora-db/tests/*.rs; do only+=(--test "$(basename "$t" .rs)"); done
+          echo "DB_TESTS=${only[*]}" >> "$GITHUB_ENV"
+          cargo test --locked "${only[@]}" --no-run
       - name: Start PostgreSQL and MSSQL fixtures
         working-directory: .
         run: docker compose -f tests/database/docker-compose.yml --profile mssql up -d --wait
@@ -285,7 +304,7 @@ jobs:
           # Fixture-only credential shared with tests/database/docker-compose.yml.
           # It is not a production secret.
           YUZORA_P8_DATABASE_PASSWORD: "Yuzora-P8-Only-2026!"
-        run: cargo test --locked --config 'profile.dev.package."*".opt-level=0' -p yuzora-db --no-fail-fast
+        run: cargo test --locked $DB_TESTS --no-fail-fast
       - name: Dump database fixture logs on failure
         if: failure()
         working-directory: .
@@ -294,6 +313,31 @@ jobs:
         if: always()
         working-directory: .
         run: docker compose -f tests/database/docker-compose.yml --profile mssql down -v
+
+  # GitHub keeps 10 GB of caches for the whole repository and evicts the least
+  # recently used once a save goes over. A new key (a dependency or the
+  # version changed) leaves the cache it replaces behind, and two generations
+  # do not fit: the macOS cache was gone within hours of each save, so macOS
+  # built cold and saved again. After a push, each prefix keeps its newest
+  # cache on that branch and the older ones go.
+  prune-caches:
+    name: App caches (drop the replaced ones)
+    needs: [platform-tests, windows-console]
+    if: ${{ !cancelled() && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Keep the newest cache of each kind
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for prefix in app-ci-v2-linux-x86_64- app-ci-v2-macos-aarch64- app-ci-v2-windows-console-; do
+            gh cache list --ref "$GITHUB_REF" --key "$prefix" --sort created_at --order desc --limit 100 --json id --jq '.[1:][].id' \
+              | xargs -r -n 1 gh cache delete
+          done
 
   # One stable name for every platform.
   app:

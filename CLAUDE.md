@@ -66,7 +66,7 @@ v0.1.0-beta.1 以前的 Tauri 2＋React 版不在 repo 裡。要對照舊實作�
 ## CI 守門
 
 - `app-package.yml`：改到打包相關路徑的 PR／push 與手動觸發；macOS、Windows、Linux x64／arm64 四平台打包並以使用者的方式安裝檢查，固定狀態名稱 `App (package)`。不建 tag、不發布、不讀 secret。
-- `app-ci.yml`：base 為 `beta2/integration`、改到 `app/**` 的 PR；ubuntu-22.04＋macos-15 建置與 `cargo test --locked`；macOS 另跑 yuzora crates、`check-mods`（check 需要視窗伺服器）與 shot_pixels，Linux 另跑 packaging 與文件檢查；另有一個 windows-2022 job 只跑 `cfg(windows)` 的 console 視窗測試（`yuzora-core spawn::`、`yuzora-git exec::`、`yuzora-files fsops::tests::run_starts`；整個 workspace 的測試在 Windows 上有既有的失敗，不跑），也納入 aggregator。固定狀態名稱 `App (build · test)`。只有 push 到 `beta2/integration` 會存 cache。
+- `app-ci.yml`：base 為 `beta2/integration`、改到 `app/**` 的 PR；ubuntu-22.04＋macos-15 建置與 `cargo test --locked`；macOS 另跑 `check-mods`（check 需要視窗伺服器）與 shot_pixels，Linux 另跑 packaging 與文件檢查；另有一個 windows-2022 job 只跑 `cfg(windows)` 的 console 視窗測試（`yuzora-core spawn::`、`yuzora-git exec::`、`yuzora-files fsops::tests::run_starts`；整個 workspace 的測試在 Windows 上有既有的失敗，不跑），也納入 aggregator。固定狀態名稱 `App (build · test)`。只有 push 到 `beta2/integration` 會存 cache。
 - `site.yml`：改到 `site/**`、`tests/*.js`、`scripts/generate-site-pages.mjs`、`eslint.config.js`、根目錄兩份 CHANGELOG、`package.json`、`bun.lock` 的 PR 與 push 到 `main`。`Site (test)` 跑 `bun run lint`、`site:seo` 與 `bun run test`；push 到 `main`（或從 `main` 手動 dispatch）時，同一次建置的 `site/` 由 `Deploy Pages` job 部署到 GitHub Pages。
 - `app-ci.yml`、`app-package.yml`、`site.yml` 都有路徑條件，`app-release.yml` 只能手動 dispatch：沒有任何一個 check 會在每個 PR 上出現，設定 required check 前先確認這點。
 
