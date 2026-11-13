@@ -106,8 +106,8 @@ xim-ctext = { path = "vendor/xim-ctext" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 # Our copy: a flex item's min-content was measured even when unused (HERDR:).
 taffy = { path = "vendor/taffy" }
-# yuzora: Yuzora's own patches (each has a README.yuzora.md). Unused until a
-# lane crate depends on the crate.
+# yuzora: Yuzora's own patches, copied from src-tauri/vendor (each has a
+# README.yuzora.md). Unused until a lane crate depends on the crate.
 # Keep pending channel-open cancellation safe.
 russh = { path = "vendor/russh-0.62.7-yuzora" }
 # Close a directory handle when a listing fails or is dropped.
