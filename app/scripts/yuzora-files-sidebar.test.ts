@@ -1072,6 +1072,26 @@ test("an item from the popup is done once, though the sidebar of another window 
   expect(toasts(s)).toEqual([]);
 });
 
+test("an item from the popup that waits more than a few seconds for the sidebar to be drawn is not done", async () => {
+  for (const label of ["menu.duplicate", "menu.trash"]) {
+    const s = await sidebarAt("lab");
+    s.pressRight(s.frame(), A_ROW);
+    s.popup(s.world.menus.at(-1).props.menu).click(label);
+    // The Files mode is hidden for a while: the sidebar draws, and so answers, only when it is shown again.
+    s.world.shared.set(CLOCK, s.world.shared.get(CLOCK) + 5_001);
+    s.frame();
+    s.tasks();
+    expect(makes(s)).toEqual([]);
+    expect(s.world.shared.get("yuzora.files.request").taken).toBe(true);
+    // Answered in time, the next one is done.
+    s.pressRight(s.frame(), A_ROW);
+    s.popup(s.world.menus.at(-1).props.menu).click(label);
+    s.frame();
+    s.tasks();
+    expect(makes(s).map(args => args[0])).toEqual([label === "menu.trash" ? "trash" : "copy"]);
+  }
+});
+
 const item = (s: Awaited<ReturnType<typeof sidebarAt>>, row: number, label: string) => {
   s.pressRight(s.frame(), row);
   return s.menuItems(s.world.menus.at(-1).props.menu).find((i: any) => i?.label === label);

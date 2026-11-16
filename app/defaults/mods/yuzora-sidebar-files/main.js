@@ -18,6 +18,9 @@ const PER_FOLDER = 2000, ROWS = 20000;
 const REQUEST = "yuzora.files.request", REFRESH = "yuzora.files.refresh";
 // What Copy put aside, { on, path, seq }: the host's clipboard holds text only.
 const CLIPBOARD = "yuzora.files.clipboard";
+// A sidebar answers only while it is drawn: with the Files mode hidden, a request would wait and run when it is
+// shown again. A copy or a move to the trash that late would come as a surprise; after this long it is not done.
+const LATE_MS = 5000;
 // How long a click waits to learn that the file is still there; after that it opens, and the pane says what is wrong.
 const CHECK_MS = 1500;
 
@@ -255,6 +258,7 @@ export default class FilesSidebar extends View {
     const now = shared(REQUEST);
     if (now?.seq !== req.seq || now.taken) return;
     setShared(REQUEST, { ...now, taken: true });
+    if (Date.now() - req.seq > LATE_MS) return;
     if (req.action === "copy") copyInto(req.from, req.into, req.on);
     else trashIt(req.path, req.on);
   }
