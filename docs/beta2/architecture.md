@@ -172,9 +172,14 @@ mod 在自己的 `mod.json` 宣告，不需要任何人去改共用清單：
 由總指揮或指定 session 在自己的分支執行，以 PR（merge commit）併入 `beta2/integration`：
 
 ```bash
-git subtree pull --prefix=app https://github.com/herdrdev/herdr-app.git master --squash
-git submodule update --init app/vendor/ghostty
+app/scripts/yuzora/sync-pull v0.1.16   # 上游的 tag；也可以給 branch 或 commit
 ```
+
+`sync-pull` 做三件事：
+
+- `git subtree pull --prefix=app https://github.com/herdrdev/herdr-app.git <ref> --squash`，再更新 ghostty submodule。
+- 解掉上游每次發版都會帶來的衝突（規則在 `app/scripts/yuzora/sync-resolve.ts`）：`app/Cargo.toml` 與 `app/Cargo.lock` 的套件版本保留 Yuzora 的、`app/CHANGELOG.md` 頂端把 Yuzora 的條目排在上游新條目之前、`app/THIRD-PARTY-NOTICES` 在裝有 cargo-about 0.9.3 時重產（見 lanes.md）。
+- 沒有其他衝突就完成 merge commit。還有衝突時結束碼是 3 並列出檔案：解完後 `git commit --no-edit`。
 
 同步後檢查：
 
@@ -183,8 +188,9 @@ git submodule update --init app/vendor/ghostty
 3. `app/.gitmodules` 與 root `.gitmodules` 的 ghostty URL 一致。
 4. `app/Cargo.lock` 有變動時，重產 `app/THIRD-PARTY-NOTICES`（見 lanes.md）。
 5. 跑完整的 app 測試（`cargo test --locked`、`bun test scripts`，後者含守護 L2c 信任閘門的 `yuzora-trust-mods.test.ts`）與 `scripts/yuzora/check-mods`。上游新增的 telemetry、feedback、更新等外連端點要補上 D3 的開關。
+6. Yuzora 另寫一份的檔（`app-ci.yml`、`app-package.yml`、`app/scripts/yuzora/package`、`app/distribution/yuzora/*` 等）：上游對應的檔有變動時，merge 不會衝突，要自己對照。對照表在 `sync-check` 裡。
 
-subtree pull commit 之後執行 `app/scripts/yuzora/sync-check`，會依序做上面五項，並擋下只用 `HERDR_APP_HOME` 隔離的測試。加 `--quick` 不跑 cargo test 與 check-mods（bun 測試只要約 2 秒，仍會跑）。說明見 [herdr-compat.md](herdr-compat.md) C2。
+merge commit 之後執行 `app/scripts/yuzora/sync-check`，會依序做上面六項，並擋下只用 `HERDR_APP_HOME` 隔離的測試。加 `--quick` 不跑 cargo test 與 check-mods（bun 測試只要約 2 秒，仍會跑）。說明見 [herdr-compat.md](herdr-compat.md) C2。
 
 ## 合併規則
 

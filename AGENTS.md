@@ -8,8 +8,8 @@ v0.1.0-beta.2 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust＋GP
 - `app/` 是獨立的 Cargo workspace，有自己的 `Cargo.lock` 與 target（`app/target`）。版本 `0.1.0-beta.2`，app 與所有 `yuzora-*` crate 共用。Cargo package 與執行檔維持上游名稱 `herdr-app`，打包後才叫 `Yuzora.app`／`yuzora`。
 - **三層**：herdr 殼（上游 `app/src`、上游 mods 與 frame）→ Yuzora Rust 原生層（`app/crates/yuzora-*`，各提供 gpui-shell `HostModule`：async 函式與原生元件，JS 以 `import … from "yuzora:<name>"` 使用）→ Yuzora JS mods（`app/defaults/mods/yuzora-*`，組合側欄模式與 tool pane，使用者可 `mod.clone` 後修改）。
 - herdr-core（`hc`）執行終端機與 machines，app 只畫畫面；遠端 Space 的 Git、Files 等走 `hc exec --on <machine>`（`yuzora_core::remote`）。
-- 對上游檔只做最少改動，並以 `// yuzora:`（lane 用 `// yuzora(L<n>):`）註記。能新增檔案就不改上游檔。
-- 上游同步：`git subtree pull --prefix=app https://github.com/herdrdev/herdr-app.git master --squash`，commit 後跑 `app/scripts/yuzora/sync-check`。L0 PR 與上游同步 PR 必須用 merge commit 合併，否則會弄丟 subtree metadata。
+- 對上游檔只做最少改動，並以 `// yuzora:`（lane 用 `// yuzora(L<n>):`）註記。能新增檔案就不改上游檔。測試也一樣：Yuzora 的測試放自己的檔，再掛進上游的測試模組（例如 `app/src/window/yuzora_*_tests.rs` 由 `window.rs` 的 `include!` 帶入）；加在上游測試檔裡，每次同步都會和上游新增的測試衝突。
+- 上游同步：`app/scripts/yuzora/sync-pull <上游 tag>`（`git subtree pull --squash` 加上每次發版固定衝突的解法），merge commit 之後跑 `app/scripts/yuzora/sync-check`。L0 PR 與上游同步 PR 必須用 merge commit 合併，否則會弄丟 subtree metadata。
 - `app/AGENTS.md` 是上游給 herdr-app 開發者的指南（建置、測試、隔離執行），在 `app/` 內工作時一併遵守；它的 commit 規則（例如不加 AI co-author）只適用於向上游貢獻。`app/defaults/AGENTS.md` 是寫進使用者 app home、給使用者 agent 讀的操作指南。
 
 ### 目錄地圖
@@ -23,7 +23,7 @@ v0.1.0-beta.2 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust＋GP
 | `app/defaults/layouts/yuzora.json` | 新安裝的預設 layout（248px 側欄＋5 模式 stack＋右側 tab 區與狀態列） |
 | `app/defaults/themes/yuzora-{dark,light}.json`、`app/defaults/yuzora/tokens.json` | 深淺兩套 theme 色名與 theme 沒有的設計 tokens（`light` 區塊是淺色覆寫值） |
 | `app/vendor/` | 上游 vendored crates、ghostty submodule、Yuzora 的 russh／russh-sftp／tiberius patches |
-| `app/scripts/yuzora/` | `check-mods`（在複本上跑 `herdr-app check`）、`bundle-macos`（本機包成 `Yuzora.app`）、`package`／`mac-dmg`（發布用安裝檔）、`manifest.ts`（更新 manifest）、`sync-check`（上游同步檢查） |
+| `app/scripts/yuzora/` | `check-mods`（在複本上跑 `herdr-app check`）、`bundle-macos`（本機包成 `Yuzora.app`）、`package`／`mac-dmg`（發布用安裝檔）、`manifest.ts`（更新 manifest）、`sync-pull`／`sync-resolve.ts`（上游同步與固定衝突的解法）、`sync-check`（上游同步檢查） |
 | `app/distribution/yuzora/` | 各平台打包範本：macOS `Info.plist`、Windows NSIS（`yuzora.nsi`）、Linux `install` 與桌面檔 |
 | `site/`、`tests/`、`.github/workflows/site.yml` | 官網（GitHub Pages）、它的 lint、測試與部署；`tests/changelog.test.js` 守兩份根目錄 CHANGELOG 的對應；`tests/database/` 是 app 資料庫測試的容器設定 |
 | `.github/workflows/app-ci.yml`、`app-package.yml` | app 的 CI（base 為 `beta2/integration` 的 PR，Linux＋macOS，另有一個只跑 console 視窗測試的 Windows job）與四平台打包檢查（不建 tag、不發布） |
@@ -144,7 +144,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 #### L9 Herdr 相容與上游同步
 
 - 文件：`docs/beta2/herdr-compat.md`（Yuzora 與官方 Herdr.app 共用 herdr-core 時的盤點、已修項目與 2026-11-03 使用者決定的取捨）。
-- 上游同步：照 `docs/beta2/architecture.md`「上游同步流程」做 `git subtree pull`，commit 後跑 `app/scripts/yuzora/sync-check`（`--quick` 不跑 cargo test）。同步 PR 一律 merge commit。
+- 上游同步：照 `docs/beta2/architecture.md`「上游同步流程」跑 `app/scripts/yuzora/sync-pull <tag>`，merge commit 之後跑 `app/scripts/yuzora/sync-check`（`--quick` 不跑 cargo test）。同步 PR 一律 merge commit。
 - Yuzora 只讀 `YUZORA_APP_HOME`，不讀 `HERDR_APP_HOME`。上游測試若只設 `HERDR_APP_HOME`，會在真實的 `~/.config/yuzora` 開 app home，要補上 `YUZORA_APP_HOME`（sync-check 會擋）。
 - 和 Herdr.app 一起實測：
   - 兩邊用同一組 `env -i`、`HC_SESSION`、XDG 目錄；Herdr.app 另外設 `HERDR_APP_HOME`、`HERDR_TELEMETRY=0`、`HERDR_RELEASES_URL=http://127.0.0.1:9`（擋掉自我更新）。
