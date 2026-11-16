@@ -2509,33 +2509,80 @@ exec mv -n -- "$from" "$to""#,
         }
     }
 
+    /// Someone who may rename in `into` puts a link to a folder of the person's at the name just made
+    /// (one holding an entry of the copy's name, a file or a folder, or an empty one), or that folder
+    /// itself: nothing in it is changed or cleared, its mode either.
     #[test]
     fn a_scratch_folder_swapped_for_a_link_is_neither_changed_nor_cleared() {
         let d = tempfile::tempdir().unwrap();
         let victim = d.path().join("victim");
-        fs::create_dir_all(victim.join("c")).unwrap();
-        fs::write(victim.join("c/keep"), "keep").unwrap();
-        fs::set_permissions(&victim, fs::Permissions::from_mode(0o755)).unwrap();
         let src = put(d.path(), "a.txt", b"a");
         let into = tempfile::tempdir().unwrap();
         let dir = into.path().to_string_lossy().into_owned();
-        // Someone who may rename in `into` puts a link to a folder of the person's at the name just made.
+        // The copy's name is the scratch folder's, after its prefix.
         let (_bin, path) = shimmed(&[(
             "mkdir",
-            "case $2 in */.yuzora-save-*) ln -s \"$VICTIM\" \"$2\"; exit 0 ;; esac\nexec mkdir \"$@\"",
+            "case $2 in */.yuzora-save-*)\n\
+             id=${2##*.yuzora-save-}\n\
+             case $ID in file) : > \"$VICTIM/$id\" ;; folder) mkdir \"$VICTIM/$id\" && echo f > \"$VICTIM/$id/f\" ;; esac\n\
+             if [ -n \"$MOVE\" ]; then mv \"$VICTIM\" \"$2\"; else ln -s \"$VICTIM\" \"$2\"; fi\n\
+             exit 0 ;;\n\
+             esac\n\
+             exec mkdir \"$@\"",
         )]);
+        let hex = |n: &String| n.len() == 32 && n.bytes().all(|b| b.is_ascii_hexdigit());
         for shell in shells() {
-            let env = [("PATH", path.as_str()), ("VICTIM", victim.to_str().unwrap())];
-            let got = copy_under(&shell, &env, &Act::Copy(&src, &dir, &[]));
-            assert!(
-                matches!(&got, Err(Problem::Failed(why)) if why.contains("is not the folder just made")),
-                "{shell:?}: {got:?}"
-            );
-            assert_eq!(mode(&victim), 0o755, "{shell:?}");
-            assert_eq!(names(&victim), ["c"], "{shell:?}");
-            assert_eq!(fs::read(victim.join("c/keep")).unwrap(), b"keep", "{shell:?}");
-            for link in names(into.path()) {
-                fs::remove_file(into.path().join(link)).unwrap();
+            for (id, full, moved) in [
+                ("file", true, ""),
+                ("folder", true, ""),
+                ("", false, ""),
+                ("folder", true, "1"),
+            ] {
+                let case = format!("{shell:?} {id} {full} {moved}");
+                fs::create_dir(&victim).unwrap();
+                if full {
+                    fs::create_dir(victim.join("c")).unwrap();
+                    fs::write(victim.join("c/keep"), "keep").unwrap();
+                }
+                fs::set_permissions(&victim, fs::Permissions::from_mode(0o755)).unwrap();
+                let env = [
+                    ("PATH", path.as_str()),
+                    ("VICTIM", victim.to_str().unwrap()),
+                    ("ID", id),
+                    ("MOVE", moved),
+                ];
+                let got = copy_under(&shell, &env, &Act::Copy(&src, &dir, &[]));
+                assert!(
+                    matches!(&got, Err(Problem::Failed(why)) if why.contains("is not the folder just made")),
+                    "{case}: {got:?}"
+                );
+                let there = names(into.path());
+                let now = if moved.is_empty() {
+                    victim.clone()
+                } else {
+                    into.path().join(&there[0])
+                };
+                assert_eq!(mode(&now), 0o755, "{case}");
+                let held = names(&now);
+                let mine: Vec<&String> = held.iter().filter(|n| hex(n)).collect();
+                assert_eq!(held.len(), usize::from(full) * 2, "{case}: {held:?}");
+                if full {
+                    assert_eq!(fs::read(now.join("c/keep")).unwrap(), b"keep", "{case}");
+                    let kept = now.join(mine[0]);
+                    let what = if id == "file" { kept } else { kept.join("f") };
+                    assert!(what.is_file(), "{case}: {what:?}");
+                }
+                for entry in there {
+                    let entry = into.path().join(entry);
+                    if entry.is_symlink() {
+                        fs::remove_file(entry).unwrap();
+                    } else {
+                        fs::remove_dir_all(entry).unwrap();
+                    }
+                }
+                if victim.exists() {
+                    fs::remove_dir_all(&victim).unwrap();
+                }
             }
         }
     }
