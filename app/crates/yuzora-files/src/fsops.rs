@@ -1453,14 +1453,16 @@ mod anchored {
         /// a link, at its name.
         pub(super) fn make(into: &str) -> Result<Self, Problem> {
             let failed = |e: io::Error| Problem::Failed(e.to_string());
-            let parent = Dir::open(Path::new(into)).map_err(failed)?;
-            let name = OsString::from(format!("{SCRATCH_PREFIX}{}", scratch_id()));
-            parent.mkdir(&name, 0o700).map_err(|e| match e.kind() {
+            // A folder that cannot be entered cannot be changed either.
+            let refused = |e: io::Error| match e.kind() {
                 io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
                     Problem::FolderNotWritable
                 }
                 _ => failed(e),
-            })?;
+            };
+            let parent = Dir::open(Path::new(into)).map_err(refused)?;
+            let name = OsString::from(format!("{SCRATCH_PREFIX}{}", scratch_id()));
+            parent.mkdir(&name, 0o700).map_err(refused)?;
             let not_made = Problem::Failed(format!(
                 "{} is not the folder just made",
                 join(into, &name.to_string_lossy())
@@ -1735,12 +1737,26 @@ mod anchored {
 
     impl Dir {
         const FLAGS: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+        /// Search access only: names are looked up, made, renamed and removed through it, all the
+        /// `*at` calls allow, but it cannot be listed.
+        #[cfg(target_os = "macos")]
+        const SEARCH: libc::c_int = libc::O_SEARCH | libc::O_CLOEXEC;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        const SEARCH: libc::c_int = libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC;
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
+        const SEARCH: libc::c_int = Self::FLAGS;
 
-        /// The folder at `path`, a link to one followed.
+        /// The folder at `path`, a link to one followed, to work in by name: one the person may enter
+        /// but not read (another account's Drop Box, 0333) is opened too.
         fn open(path: &Path) -> io::Result<Self> {
             let path = c_name(path.as_os_str())?;
             // SAFETY: a NUL-terminated path that outlives the call.
-            Self::own(unsafe { libc::open(path.as_ptr(), Self::FLAGS) })
+            let open = |flags| Self::own(unsafe { libc::open(path.as_ptr(), flags) });
+            match open(Self::SEARCH) {
+                // A system without search-only opens may refuse the flag: read access, as before.
+                Err(e) if e.raw_os_error() == Some(libc::EINVAL) => open(Self::FLAGS),
+                opened => opened,
+            }
         }
 
         /// The folder `name` in this one; a link is refused.
@@ -4102,6 +4118,44 @@ mod tests {
         assert!(e.contains("Permission denied"), "{e}");
         assert!(held_in(&p(&d, "into")).is_empty());
         std::fs::set_permissions(p(&d, "sealed"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A folder the person may write and enter but not read (0333, like another account's Drop Box)
+    /// takes a paste of a file and of a folder from a folder they may only enter (0311). A folder they
+    /// may not enter (0600) cannot be changed, and says so.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_goes_into_a_folder_that_cannot_be_read_from_one_that_can_only_be_entered() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(p(&d, "src/box")).unwrap();
+        put(&d, "src/a.txt", b"mine");
+        put(&d, "src/box/b.txt", b"boxed");
+        std::fs::create_dir(p(&d, "drop")).unwrap();
+        std::fs::create_dir(p(&d, "shut")).unwrap();
+        let set = |rel: &str, mode| {
+            std::fs::set_permissions(p(&d, rel), std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        for (rel, mode) in [("src", 0o311), ("drop", 0o333), ("shut", 0o600)] {
+            set(rel, mode);
+        }
+        let file = copy(&p(&d, "src/a.txt"), &p(&d, "drop"), None, &[]);
+        let folder = copy(&p(&d, "src/box"), &p(&d, "drop"), None, &[]);
+        let shut = copy(&p(&d, "src/a.txt"), &p(&d, "shut"), None, &[]);
+        for rel in ["src", "drop", "shut"] {
+            set(rel, 0o755);
+        }
+        assert_eq!(file, Ok(p(&d, "drop/a.txt")));
+        assert_eq!(folder, Ok(p(&d, "drop/box")));
+        assert_eq!(held_in(&p(&d, "drop")), ["a.txt", "box"]);
+        assert_eq!(read_bytes(&p(&d, "drop/a.txt")), b"mine");
+        assert_eq!(read_bytes(&p(&d, "drop/box/b.txt")), b"boxed");
+        let shut = shut.unwrap_err();
+        assert!(shut.contains("you may not change"), "{shut}");
+        assert!(held_in(&p(&d, "shut")).is_empty());
     }
 
     #[cfg(unix)]
