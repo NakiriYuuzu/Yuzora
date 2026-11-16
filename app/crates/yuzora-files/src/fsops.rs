@@ -3737,6 +3737,68 @@ mod tests {
         }
     }
 
+    /// Someone who may rename in a shared folder moves the scratch folder aside and renames one of
+    /// the person's own folders there to its name; the copy then fails (a pipe in what is copied, or
+    /// the free name open in a document). Its cleanup takes nothing from the person's folder, not
+    /// even an empty one, and takes away what the copy made in the folder it opened.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_copy_clears_nothing_in_a_folder_of_the_persons_swapped_in_at_its_scratch_name() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for (fails_at, empty) in [("copy", false), ("rename", false), ("rename", true)] {
+            let why = format!("fails at the {fails_at}, the folder empty: {empty}");
+            let d = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(p(&d, "shared/docs")).unwrap();
+            if !empty {
+                put(&d, "shared/docs/notes.txt", b"mine");
+                std::fs::create_dir(p(&d, "shared/docs/sealed")).unwrap();
+                put(&d, "shared/docs/sealed/kept", b"kept");
+                std::fs::set_permissions(
+                    p(&d, "shared/docs/sealed"),
+                    std::fs::Permissions::from_mode(0o555),
+                )
+                .unwrap();
+            }
+            std::fs::create_dir(p(&d, "box")).unwrap();
+            put(&d, "box/note", b"n");
+            if fails_at == "copy" {
+                let fifo = std::ffi::CString::new(p(&d, "box/pipe")).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+            }
+            let into = p(&d, "shared");
+            let scratch = anchored::Scratch::make(&into).unwrap();
+            let at = Path::new(&into).join(&scratch.name);
+            std::fs::rename(&at, p(&d, "aside")).unwrap();
+            std::fs::rename(p(&d, "shared/docs"), &at).unwrap();
+            let held = if fails_at == "rename" {
+                vec!["box".to_owned()]
+            } else {
+                Vec::new()
+            };
+            let placed = scratch
+                .fill(Path::new(&p(&d, "box")), "box")
+                .and_then(|()| scratch.place("box", &into, true, &held));
+            scratch.finish(placed.is_err().then_some("box"));
+            assert!(placed.is_err(), "{why}: {placed:?}");
+            let at = at.to_string_lossy().into_owned();
+            if empty {
+                assert!(held_in(&at).is_empty(), "{why}");
+            } else {
+                assert_eq!(held_in(&at), ["notes.txt", "sealed"], "{why}");
+                assert_eq!(read_bytes(&format!("{at}/notes.txt")), b"mine", "{why}");
+                assert_eq!(read_bytes(&format!("{at}/sealed/kept")), b"kept", "{why}");
+                let sealed = std::fs::metadata(format!("{at}/sealed")).unwrap();
+                assert_eq!(sealed.permissions().mode() & 0o777, 0o555, "{why}");
+                std::fs::set_permissions(
+                    format!("{at}/sealed"),
+                    std::fs::Permissions::from_mode(0o755),
+                )
+                .unwrap();
+            }
+            assert!(held_in(&p(&d, "aside")).is_empty(), "{why}");
+        }
+    }
+
     #[cfg(unix)]
     fn held_in(dir: &str) -> Vec<String> {
         let mut found: Vec<String> = std::fs::read_dir(dir)
