@@ -205,11 +205,10 @@ L9 另開同步 PR（`beta2/l9-upstream-sync`，**必須 merge commit 合併**�
 ### C2. 同步流程與 `app/scripts/yuzora/sync-check`
 
 ```bash
-git subtree pull --prefix=app https://github.com/herdrdev/herdr-app.git master --squash
-git submodule update --init app/vendor/ghostty
-# 解衝突、commit 之後（建置環境照 lanes.md）
-app/scripts/yuzora/sync-check            # 5 項檢查，含 cargo test、bun test scripts 與 check-mods
-app/scripts/yuzora/sync-check --quick    # 只跑 1–4、掃描與 bun test scripts（不跑 cargo test、check-mods）
+app/scripts/yuzora/sync-pull v0.1.16     # subtree pull、ghostty submodule、固定衝突的解法（architecture.md）
+# 解完其餘衝突、commit 之後（建置環境照 lanes.md）
+app/scripts/yuzora/sync-check            # 6 項檢查，含 cargo test、bun test scripts 與 check-mods
+app/scripts/yuzora/sync-check --quick    # 同上，但不跑 cargo test、check-mods
 ```
 
 腳本比對三個 tree，都已經在 repo 裡（squash commit 本身就是上游的 tree），不需要網路：
@@ -217,7 +216,7 @@ app/scripts/yuzora/sync-check --quick    # 只跑 1–4、掃描與 bun test scr
 - 上一次的上游、這一次的上游。
 - 同步前的 `app/`：帶進這次上游的那個 merge commit 的第一個 parent。
 
-必要時可以用 `SYNC_BASE`、`SYNC_OLD`、`SYNC_NEW` 覆寫。5 項檢查：
+必要時可以用 `SYNC_BASE`、`SYNC_OLD`、`SYNC_NEW` 覆寫。6 項檢查：
 
 1. **Yuzora 的改動還在**：
    - 同步前 Yuzora 改過的上游檔，同步後若和上游一樣就 FAIL。
@@ -230,6 +229,7 @@ app/scripts/yuzora/sync-check --quick    # 只跑 1–4、掃描與 bun test scr
    - 列出上游新增的 URL；`herdr.dev` 的另外標出，提醒要補 D3 開關。
    - 只用 `HERDR_APP_HOME` 隔離的測試直接 FAIL，並跳過 cargo test。
    - 跑 `cargo test --locked` 與 `scripts/yuzora/check-mods`。
+6. **Yuzora 另寫一份的檔**：上游的 CI 與 release workflow、`scripts/package`、`scripts/mac-dmg`、安裝腳本有變動時，列出要對照的 Yuzora 檔（warn）。這些檔名稱不同，merge 不會衝突。
 
 建議總指揮在 architecture.md「上游同步流程」加一行，指向這個腳本。
 
