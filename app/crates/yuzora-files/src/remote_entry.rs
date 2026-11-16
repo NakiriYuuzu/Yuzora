@@ -2664,6 +2664,50 @@ exec mv -n -- "$from" "$to""#,
         }
     }
 
+    /// `hc` answers a script killed by a signal before its timeout with no exit code (`"code": null,
+    /// "signal": 9` from hc 0.1.21), read as -1. Its trap did not run either: the copy's scratch
+    /// folder is cleared as after the timeout.
+    #[test]
+    fn a_copy_killed_by_a_signal_leaves_nothing_when_the_machine_answers_again() {
+        let d = tempfile::tempdir().unwrap();
+        let src = sample(d.path());
+        let into = tempfile::tempdir().unwrap();
+        let dir = into.path().to_string_lossy().into_owned();
+        // Copies some, then kills the script and all it started (its own process group).
+        let (_bin, path) = shimmed(&[(
+            "cp",
+            "mkdir -p \"$4/half\" && : > \"$4/half/f\" && kill -KILL 0",
+        )]);
+        for shell in shells() {
+            let mut left_by_the_kill = Vec::new();
+            let mut code = None;
+            let got = copy_by(&src, &dir, &[], None, |req| {
+                let clear = req.args.iter().any(|a| a == CLEAR_SCRIPT);
+                if clear {
+                    left_by_the_kill = scratch_left(into.path());
+                }
+                let answer = fsops::run(
+                    killed_after_a_second(&shell, &path, req).timeout(Duration::from_secs(20)),
+                );
+                if !clear {
+                    code = answer.as_ref().ok().map(|out| out.code);
+                }
+                answer
+            });
+            assert_eq!(code, Some(-1), "{shell:?}: the copy ended by a signal");
+            assert!(
+                matches!(&got, Err(Problem::Failed(why)) if !why.contains("partial")),
+                "{shell:?}: {got:?}"
+            );
+            assert_eq!(left_by_the_kill.len(), 1, "{shell:?}: the kill ran no trap");
+            assert!(
+                names(into.path()).is_empty(),
+                "{shell:?}: {:?}",
+                names(into.path())
+            );
+        }
+    }
+
     /// [`CLEAR_SCRIPT`] under `shell` for the copy `id` made in `into`: the line it prints.
     fn clear_under(shell: &[&str], into: &Path, id: &str) -> String {
         let into = into.to_string_lossy();
