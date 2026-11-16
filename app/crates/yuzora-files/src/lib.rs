@@ -941,6 +941,13 @@ return JSON.stringify([a, b, c, d]); }})()"#
             ),
             (
                 &trash,
+                Problem::OtherDevice,
+                "a.txt",
+                "trash",
+                "The trash is on another disk",
+            ),
+            (
+                &trash,
                 Problem::FolderNotWritable,
                 "a.txt",
                 "trash",

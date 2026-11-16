@@ -35,7 +35,7 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   if (/does not exist on|no longer there|No such file|cannot find the (?:file|path)/i.test(text)) {
     return tell(making || /does not exist on/.test(text) ? "no_folder" : "gone");
   }
-  if (/another file system/.test(text)) return tell("other_disk");
+  if (/another file system/.test(text)) return tell(kind === "trash" ? "trash_disk" : "other_disk");
   // The system would not rename it where it is (a folder out of an image layer, a bind mount): mv's or perl's own words.
   if (/cross-device link/i.test(text)) return tell("no_rename");
   if (/copied instead of renamed/.test(text)) return tell("copied");

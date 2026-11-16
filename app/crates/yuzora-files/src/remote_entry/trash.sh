@@ -30,7 +30,8 @@ closed "$t/." || { chmod go-rwx "$t/." 2>/dev/null && closed "$t/."; } || nothin
 # The freedesktop trash of the home is for what is on its disk: a move from another one would copy.
 dev() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null; }
 a=$(dev "$p") b=$(dev "$t/files/.")
-{ [ -n "$a" ] && [ "$a" = "$b" ]; } || nothing
+{ [ -n "$a" ] && [ -n "$b" ]; } || nothing
+[ "$a" = "$b" ] || { echo 'refused device'; exit 0; }
 # The spec's Path is URL-escaped (RFC 2396): every byte but letters, digits and / - . _ ~ as %xx.
 url() {
   for o in $(printf '%s' "$1" | od -An -v -to1); do

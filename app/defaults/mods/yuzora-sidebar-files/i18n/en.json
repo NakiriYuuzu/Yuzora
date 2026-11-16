@@ -75,6 +75,7 @@
     "unsure": "Not sure it was done: check again",
     "partial": "A partial copy may be in .yuzora-save-…",
     "other_disk": "A rename can't copy to another disk",
+    "trash_disk": "The trash is on another disk",
     "no_rename": "Can't rename this here without copying",
     "copied": "Copied or replaced: check the result",
     "left": "An empty placeholder was left there",

@@ -2914,6 +2914,41 @@ exec mv -n -- "$from" "$to""#,
     }
 
     #[test]
+    fn a_file_on_another_disk_than_the_trash_is_refused_as_such_and_stays() {
+        let real = Command::new("/bin/sh")
+            .args(["-c", "command -v stat"])
+            .output()
+            .unwrap();
+        let real = String::from_utf8(real.stdout).unwrap();
+        // Everything in a folder named "far" is on device 99.
+        let stat = format!(
+            "for a; do last=$a; done\ncase \" $* \" in *' %d -- '*) case $last in */far/*) echo 99; exit 0 ;; esac ;; esac\nexec {} \"$@\"",
+            real.trim()
+        );
+        let tools: Vec<&str> = TRASH_TOOLS.into_iter().filter(|t| *t != "stat").collect();
+        let bin = only(&tools, &[("stat", &stat)]);
+        for shell in shells() {
+            let home = tempfile::tempdir().unwrap();
+            let data = home.path().join("data");
+            let env = [
+                ("PATH", bin.path().to_str().unwrap()),
+                ("HOME", home.path().to_str().unwrap()),
+                ("XDG_DATA_HOME", data.to_str().unwrap()),
+            ];
+            let d = tempfile::tempdir().unwrap();
+            fs::create_dir(d.path().join("far")).unwrap();
+            let f = put(&d.path().join("far"), "f.txt", b"x");
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Trash(&f)),
+                Err(Problem::OtherDevice),
+                "{shell:?}"
+            );
+            assert_eq!(fs::read(&f).unwrap(), b"x", "{shell:?}");
+            assert_eq!(trashed(&data), (vec![], vec![]), "{shell:?}");
+        }
+    }
+
+    #[test]
     fn a_trash_that_is_someone_elses_gets_nothing_made_in_it_and_nothing_moved_to_it() {
         let tools: Vec<&str> = TRASH_TOOLS.into_iter().filter(|t| *t != "id").collect();
         let bin = only(&tools, &[("id", "echo 4242")]);
