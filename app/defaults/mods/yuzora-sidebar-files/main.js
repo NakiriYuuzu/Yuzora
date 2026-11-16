@@ -5,7 +5,7 @@ import { View, div, svg, uniform_list } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
 import { spaces, panes, focused, theme, run, home, props, openOverlay, closeOverlay, shared, setShared, notify, watchFolder, window } from "herdr";
 import { t, tokens } from "yuzora:core";
-import { listDir, gitStatus, stat, createFile, createFolder, rename, trash, reveal, copyText, findFiles, grep, unsavedCount } from "yuzora:files";
+import { listDir, gitStatus, stat, createFile, createFolder, rename, copy, trash, reveal, copyText, findFiles, grep, unsavedCount } from "yuzora:files";
 import { openFile, moved, join, parent, base, rel } from "./open.js";
 import { fileIcon } from "./icons.js";
 import { heading } from "./paths.js";
@@ -16,6 +16,8 @@ import { createStore, panel, info } from "./tree-state.js";
 const ME = "yuzora-sidebar-files";
 const PER_FOLDER = 2000, ROWS = 20000;
 const REQUEST = "yuzora.files.request", REFRESH = "yuzora.files.refresh";
+// What Copy put aside, { on, path, seq }: the host's clipboard holds text only.
+const CLIPBOARD = "yuzora.files.clipboard";
 // How long a click waits to learn that the file is still there; after that it opens, and the pane says what is wrong.
 const CHECK_MS = 1500;
 
@@ -502,10 +504,25 @@ function revealLabel() {
   return t(p === "macos" ? "menu.reveal_mac" : p === "windows" ? "menu.reveal_windows" : "menu.reveal");
 }
 
+// Copies `from` into the folder `into` on `on`, under the first free name, and tells how it went.
+function copyInto(from, into, on) {
+  copy(from, into, { on }).then(made => {
+    setShared(REFRESH, Date.now());
+    const name = base(from), as = base(made);
+    notify({ title: as === name ? t("toast.copied", { name }) : t("toast.copied_as", { name, copy: as }), level: "success", timeout: 3000 });
+  }).catch(e => notify({ title: t("error.copy"), body: reason(e, { name: base(from), machine: on, kind: "copy" }), level: "error" }));
+}
+
+function trashIt(path, on) {
+  trash(path, { on }).then(() => { setShared(REFRESH, Date.now()); notify({ title: t("toast.trashed", { name: base(path) }), level: "success", timeout: 3000 }); })
+    .catch(e => notify({ title: t("error.trash"), body: reason(e, { name: base(path), machine: on, kind: "trash" }), level: "error" }));
+}
+
 // The popup's items for a row: { label, run, enabled?, danger? }, null a divider.
 function menuItems(m) {
-  const local = !m.on, folder = m.dir ? m.abs : parent(m.abs);
+  const on = m.on ?? null, local = !on, folder = m.dir ? m.abs : parent(m.abs);
   const relPath = rel(m.root, m.abs) ?? m.abs;
+  const clip = shared(CLIPBOARD);
   return [
     m.dir ? null : { label: t("menu.open"), run: () => openFile(m.abs, m.on) },
     m.dir ? null : { label: t("menu.open_side"), run: () => openFile(m.abs, m.on, { place: "side" }) },
@@ -514,10 +531,12 @@ function menuItems(m) {
     { label: t("menu.new_file"), run: () => request("new-file", m, { dir: folder }) },
     { label: t("menu.new_folder"), run: () => request("new-folder", m, { dir: folder }) },
     { label: t("menu.rename"), run: () => request("rename", m, { path: m.abs }) },
-    { label: t("menu.trash"), enabled: local, danger: true, run: () => {
-      trash(m.abs).then(() => { setShared(REFRESH, Date.now()); notify({ title: t("toast.trashed", { name: base(m.abs) }), level: "success", timeout: 3000 }); })
-        .catch(e => notify({ title: t("error.trash"), body: reason(e, { name: base(m.abs), kind: "trash" }), level: "error" }));
-    } },
+    { label: t("menu.trash"), danger: true, run: () => trashIt(m.abs, on) },
+    null,
+    { label: t("menu.copy"), run: () => setShared(CLIPBOARD, { on, path: m.abs, seq: Date.now() }) },
+    // Only onto the machine it was copied on: a copy does not cross machines.
+    { label: t("menu.paste"), enabled: Boolean(clip?.path) && (clip.on ?? null) === on, run: () => copyInto(clip.path, folder, on) },
+    { label: t("menu.duplicate"), run: () => copyInto(m.abs, parent(m.abs), on) },
     null,
     { label: t("menu.copy_path"), run: () => copyText(m.abs) },
     { label: t("menu.copy_relative"), run: () => copyText(relPath) },

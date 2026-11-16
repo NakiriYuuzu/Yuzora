@@ -50,6 +50,9 @@
     "new_folder": "New folder…",
     "rename": "Rename…",
     "trash": "Move to Trash",
+    "copy": "Copy",
+    "paste": "Paste",
+    "duplicate": "Duplicate",
     "copy_path": "Copy path",
     "copy_relative": "Copy relative path",
     "reveal_mac": "Reveal in Finder",
@@ -57,7 +60,9 @@
     "reveal": "Show in file manager"
   },
   "toast": {
-    "trashed": "Moved {name} to the trash"
+    "trashed": "Moved {name} to the trash",
+    "copied": "Copied {name}",
+    "copied_as": "Copied {name} as {copy}"
   },
   "reason": {
     "exists": "{name} already exists",
@@ -92,6 +97,7 @@
     "new-file": "Can't create the file",
     "new-folder": "Can't create the folder",
     "rename": "Can't rename",
+    "copy": "Can't copy",
     "trash": "Can't move to the trash",
     "reveal": "Can't show it in the file manager"
   },

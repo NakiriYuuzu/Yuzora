@@ -1,4 +1,4 @@
-// yuzora(v0.1.0 F1): what the Files sidebar tells a person whose new file, new folder, rename, trash or folder
+// yuzora(v0.1.0 F1): what the Files sidebar tells a person whose new file, new folder, rename, copy, trash or folder
 // listing failed. The messages are the ones yuzora-files makes (fsops.rs, remote_entry.rs, docs.rs), with the
 // prefix the engine puts before them, run through failure.js with the sidebar's real English strings.
 // Run: bun test scripts/yuzora-files-failure.test.ts
@@ -57,6 +57,13 @@ const cases: [string, Error | string | undefined, { name?: string; machine?: str
   ["a rename onto a document still open", host("rename", "/tmp/b.txt is still open (its file was deleted): close it first"), { name: "b.txt", kind: "rename" }, "A document of that name is still open"],
   ["a rename of a file being saved", host("rename", "/tmp/a.txt is being saved: try again when it is done"), { name: "b.txt", kind: "rename" }, "It is being saved: try again shortly"],
   ["a file that cannot go to the trash", host("trash", "cannot move /tmp/a.txt to the trash: Permission denied (os error 13)"), { name: "a.txt", kind: "trash" }, "Permission denied"],
+  ["a file that no trash on the machine can take", host("trash", "cannot move /srv/a.txt to the trash: nothing on lab can take it to a trash (no gio or trash command that does, and no trash folder on its disk that can be written)"), { name: "a.txt", machine: "lab", kind: "trash" }, "lab has no trash to use"],
+  ["a file on a machine in a folder that may not be changed, to the trash", host("trash", `cannot move /srv/a.txt to the trash: you may not change /srv on lab (${GROUP})`), { name: "a.txt", machine: "lab", kind: "trash" }, "The folder is not writable"],
+  ["a folder copied into itself", host("copy", "cannot copy /srv/src into /srv/src/sub: a folder cannot go into itself"), { name: "src", machine: "lab", kind: "copy" }, "A folder can't go into itself"],
+  ["a copy onto a document still open", host("copy", "/srv/b/a.txt is still open (its file was deleted): close it first"), { name: "a.txt", kind: "copy" }, "A document of that name is still open"],
+  ["a copy of a pipe, here", host("copy", "cannot copy /tmp/box on this machine: /tmp/box/pipe is not a file, a folder or a link"), { name: "box", kind: "copy" }, "pipe is not a file, a folder or a link"],
+  ["a copy on a full disk, here", host("copy", "cannot copy /tmp/a.txt on this machine: /tmp/.yuzora-save-0/c: No space left on device (os error 28)"), { name: "a.txt", kind: "copy" }, "The disk is full"],
+  ["a copy on a machine without cp", host("copy", "cannot copy /srv/a.txt: lab has no cp, which this needs"), { name: "a.txt", machine: "lab", kind: "copy" }, "lab has no cp"],
   ["a folder that cannot be opened", host("listDir", "cannot read /srv/x: Permission denied (os error 13)"), { name: "x", kind: "list" }, "Permission denied"],
   ["a failure it does not know, with the path left out", host("rename", "cannot rename /tmp/run/a.txt: Disk on fire (os error 99)"), { name: "b.txt", kind: "rename" }, "Disk on fire"],
   ["a failure with no cause to cut", host("listDir", "cannot open /srv/run/x"), { name: "x", kind: "list" }, "cannot open x"],

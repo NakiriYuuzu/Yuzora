@@ -97,7 +97,8 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     createFile: (path: string, options: object) => ask("make", ["createFile", path, options]),
     createFolder: (path: string, options: object) => ask("make", ["createFolder", path, options]),
     rename: (from: string, to: string, options: object) => ask("make", ["rename", from, to, options]),
-    trash: (path: string) => ask("make", ["trash", path]), reveal: () => { if (world.revealError) throw world.revealError; }, copyText() {},
+    copy: (from: string, into: string, options: object) => ask("make", ["copy", from, into, options]),
+    trash: (path: string, options: object) => ask("make", ["trash", path, options]), reveal: () => { if (world.revealError) throw world.revealError; }, copyText() {},
     findFiles: (root: string, query: string, options: object) => ask("find", [root, query, options]),
     grep: (root: string, query: string, options: object) => ask("grep", [root, query, options]),
     unsavedCount: () => 0,
@@ -990,13 +991,93 @@ test("a file that cannot be shown in the file manager says the cause first", asy
   expect(toasts(s)).toEqual([["error.reveal", "Disk on fire", "error"]]);
 });
 
-test("the menu of a remote Space offers new file, new folder and rename, and still not the trash or the file manager", async () => {
+test("the menu of a remote Space offers everything but the file manager, and Paste once something is copied", async () => {
   const s = await sidebarAt("lab");
-  s.pressRight(s.frame(), A_ROW);
-  const items = s.menuItems(s.world.menus[0].props.menu).filter((i: any) => i);
-  const enabled = Object.fromEntries(items.map((i: any) => [i.label, i.enabled !== false]));
-  expect(enabled).toMatchObject({ "menu.new_file": true, "menu.new_folder": true, "menu.rename": true, "menu.trash": false, "menu.copy_path": true });
-  expect(Object.entries(enabled).filter(([label, on]) => !on).map(([label]) => label).sort()).toEqual(["menu.trash", expect.stringMatching(/^menu\.reveal/)].sort());
+  const enabled = () => {
+    s.pressRight(s.frame(), A_ROW);
+    const items = s.menuItems(s.world.menus.at(-1).props.menu).filter((i: any) => i);
+    return Object.fromEntries(items.map((i: any) => [i.label, i.enabled !== false]));
+  };
+  const before = enabled();
+  expect(before).toMatchObject({ "menu.new_file": true, "menu.new_folder": true, "menu.rename": true, "menu.trash": true, "menu.copy": true, "menu.duplicate": true, "menu.copy_path": true });
+  expect(Object.entries(before).filter(([, on]) => !on).map(([label]) => label)).toEqual(["menu.paste", expect.stringMatching(/^menu\.reveal/)]);
+  s.menuItems(s.world.menus.at(-1).props.menu).find((i: any) => i?.label === "menu.copy").run();
+  expect(Object.entries(enabled()).filter(([, on]) => !on).map(([label]) => label)).toEqual([expect.stringMatching(/^menu\.reveal/)]);
+});
+
+const item = (s: Awaited<ReturnType<typeof sidebarAt>>, row: number, label: string) => {
+  s.pressRight(s.frame(), row);
+  return s.menuItems(s.world.menus.at(-1).props.menu).find((i: any) => i?.label === label);
+};
+
+for (const machine of [null, "lab"]) {
+  const where = machine ? "a remote Space" : "this machine";
+
+  test(`${where}: Duplicate copies beside it, says the name it took, and refreshes the tree`, async () => {
+    const s = await sidebarAt(machine);
+    item(s, A_ROW, "menu.duplicate").run();
+    expect(makes(s)).toEqual([["copy", "/srv/a.txt", "/srv", { on: machine }]]);
+    expect(s.world.shared.get("yuzora.files.refresh")).toBeUndefined();
+    await s.answer(s.pending("make")[0], "/srv/a copy.txt");
+    expect(toasts(s)).toEqual([['toast.copied_as {"name":"a.txt","copy":"a copy.txt"}', undefined, "success"]]);
+    expect(s.world.shared.get("yuzora.files.refresh")).toEqual(expect.any(Number));
+  });
+
+  test(`${where}: Copy then Paste on a folder copies into it, and on a file into the folder it is in`, async () => {
+    const s = await sidebarAt(machine);
+    item(s, A_ROW, "menu.copy").run();
+    expect(s.world.calls.make).toEqual([]);
+    expect(s.world.shared.get("yuzora.files.clipboard")).toMatchObject({ on: machine, path: "/srv/a.txt" });
+    item(s, SRC_ROW, "menu.paste").run();
+    item(s, A_ROW, "menu.paste").run();
+    expect(makes(s)).toEqual([["copy", "/srv/a.txt", "/srv/src", { on: machine }], ["copy", "/srv/a.txt", "/srv", { on: machine }]]);
+    await s.answer(s.pending("make")[0], "/srv/src/a.txt");
+    expect(toasts(s)).toEqual([['toast.copied {"name":"a.txt"}', undefined, "success"]]);
+  });
+
+  test(`${where}: Move to Trash is asked of the Space's own machine`, async () => {
+    const s = await sidebarAt(machine);
+    item(s, A_ROW, "menu.trash").run();
+    expect(makes(s)).toEqual([["trash", "/srv/a.txt", { on: machine }]]);
+    await s.answer(s.pending("make")[0], null);
+    expect(toasts(s)).toEqual([['toast.trashed {"name":"a.txt"}', undefined, "success"]]);
+    expect(s.world.shared.get("yuzora.files.refresh")).toEqual(expect.any(Number));
+  });
+}
+
+test("a machine with nothing to take a file to the trash says so", async () => {
+  const s = await sidebarAt("lab");
+  item(s, A_ROW, "menu.trash").run();
+  await s.fail(s.pending("make")[0], hostError("trash", "cannot move /srv/a.txt to the trash: nothing on lab can take it to a trash (no gio or trash command that does, and no trash folder on its disk that can be written)"));
+  expect(toasts(s)).toEqual([["error.trash", 'reason.no_trash {"machine":"lab"}', "error"]]);
+});
+
+test("what was copied on one machine is not offered to Paste on another", async () => {
+  const s = sidebar([{ id: "s1", active: true, folder: "/srv", machine: "lab" }, { id: "s2", active: false, folder: "/srv", machine: null }]);
+  await s.settle({ "/srv": listing("src/", "a.txt") }, repo("/srv"));
+  item(s, A_ROW, "menu.copy").run();
+  expect(item(s, A_ROW, "menu.paste").enabled).toBe(true);
+  s.show("s2");
+  s.frame();
+  await s.settle({ "/srv": listing("src/", "a.txt") }, repo("/srv"));
+  expect(item(s, A_ROW, "menu.paste").enabled).toBe(false);
+  item(s, A_ROW, "menu.copy").run();
+  expect(item(s, A_ROW, "menu.paste").enabled).toBe(true);
+  s.show("s1");
+  s.frame();
+  await s.settle({ "/srv": listing("src/", "a.txt") }, repo("/srv"));
+  expect(item(s, A_ROW, "menu.paste").enabled).toBe(false);
+});
+
+test("a copy that cannot be made says the cause first", async () => {
+  const s = await sidebarAt("lab");
+  item(s, SRC_ROW, "menu.copy").run();
+  item(s, SRC_ROW, "menu.paste").run();
+  await s.fail(s.pending("make")[0], hostError("copy", "cannot copy /srv/src into /srv/src: a folder cannot go into itself"));
+  expect(toasts(s)).toEqual([["error.copy", "reason.into_itself", "error"]]);
+  item(s, A_ROW, "menu.duplicate").run();
+  await s.fail(s.pending("make")[0], hostError("copy", "cannot copy /srv/a.txt: you may not change /srv on lab"));
+  expect(toasts(s).at(-1)).toEqual(["error.copy", "reason.writable", "error"]);
 });
 
 test("the toolbar of a remote Space has no read-only tooltip, and nothing is refused", async () => {
