@@ -16,7 +16,7 @@ const PATH = /(?<!\w)(?:[A-Za-z]:)?[\\/](?:[^\s\\/:;,]+[\\/])*([^\s\\/:;,]+)/g;
 /**
  * The cause of `error` (what a host call rejected with) in a line of at most LIMIT characters.
  * `name`: the name the change was for; `machine`: where, null for this one; `kind`: the toast it is for
- * ("new-file", "new-folder", "rename", "trash", "reveal", "list").
+ * ("new-file", "new-folder", "rename", "copy", "trash", "reveal", "list").
  */
 export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   const text = String(error?.message ?? error ?? "").replace(/^`[^`]*`:\s*/, "").trim();
@@ -26,6 +26,8 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   if (/already exists$|File exists|The file exists/i.test(text)) return tell("exists", { name: short(name, NAME_MAX) });
   if (/is still open/.test(text)) return tell("open");
   if (/is being saved/.test(text)) return tell("saving");
+  if (/cannot go into itself/.test(text)) return tell("into_itself");
+  if (/can take it to a trash/.test(text)) return tell("no_trash", { machine: there });
   if (/not connected|offline|unreachable|connection (?:refused|reset|closed|lost)|could not connect/i.test(text)) return tell("unreachable", { machine: there });
   if (/took longer than/.test(text)) return tell("timed", { machine: there });
   if (/may or may not/.test(text)) return tell("unsure");
@@ -40,7 +42,8 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   if (tool) return tell("no_tool", { machine: there, tool });
   if (/this needs sh on/.test(text)) return tell("no_shell");
   if (/path has to start with/.test(text)) return tell("bad_path");
-  if (/you may not change|Permission denied|Access is denied/i.test(text)) return tell(making || kind === "rename" ? "writable" : "denied");
+  if (/you may not change/.test(text)) return tell("writable");
+  if (/Permission denied|Access is denied/i.test(text)) return tell(making || kind === "rename" ? "writable" : "denied");
   if (/Read-only file system/.test(text)) return tell("read_only");
   if (/No space left|not enough space/i.test(text)) return tell("full");
   if (/name too long/i.test(text)) return tell("too_long");
