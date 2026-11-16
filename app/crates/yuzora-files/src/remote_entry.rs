@@ -100,7 +100,9 @@ const CLEAR_SCRIPT: &str = concat!(
 ///
 /// `gio trash` first, then a `trash` command, then the freedesktop trash by hand (its
 /// `.trashinfo` is written first, under a name nobody has, then the entry is moved next to it),
-/// and only on the disk the entry is on: a move to another disk would copy it.
+/// and only on the disk the entry is on: a move to another disk would copy it. The entry's folder
+/// is looked up by its path once, when the script enters it; every later step names the entry in
+/// the folder entered.
 const TRASH_SCRIPT: &str = concat!(
     include_str!("remote_entry/common.sh"),
     include_str!("remote_entry/trash.sh")
@@ -3228,7 +3230,7 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
         let real = String::from_utf8(real.stdout).unwrap();
         // Everything in a folder named "far" is on device 99.
         let stat = format!(
-            "for a; do last=$a; done\ncase \" $* \" in *' %d -- '*) case $last in */far/*) echo 99; exit 0 ;; esac ;; esac\nexec {} \"$@\"",
+            "for a; do last=$a; done\ncase $last in /*) at=$last ;; *) at=$(pwd -P)/$last ;; esac\ncase \" $* \" in *' %d -- '*) case $at in */far/*) echo 99; exit 0 ;; esac ;; esac\nexec {} \"$@\"",
             real.trim()
         );
         let tools: Vec<&str> = TRASH_TOOLS.into_iter().filter(|t| *t != "stat").collect();
@@ -3251,6 +3253,62 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
             );
             assert_eq!(fs::read(&f).unwrap(), b"x", "{shell:?}");
             assert_eq!(trashed(&data), (vec![], vec![]), "{shell:?}");
+        }
+    }
+
+    /// Someone who may rename where the folder is swaps it, after the trash looked at it, for a link
+    /// to another folder holding an entry of the same name: the entry moved is the one in the folder
+    /// entered, and the one in the link's target stays.
+    #[test]
+    fn a_folder_swapped_for_a_link_during_a_trash_gives_up_nothing_of_the_link_target() {
+        let real = |tool: &str| {
+            let out = Command::new("/bin/sh")
+                .args(["-c", &format!("command -v {tool}")])
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
+        };
+        // `date` runs after every check and before the move.
+        let date = format!(
+            "{} \"$FOLDER\" \"$FOLDER.away\" && {} -s \"$VICTIM\" \"$FOLDER\"\nexec {} \"$@\"",
+            real("mv"),
+            real("ln"),
+            real("date")
+        );
+        let tools: Vec<&str> = TRASH_TOOLS.into_iter().filter(|t| *t != "date").collect();
+        let bin = only(&tools, &[("date", &date)]);
+        for shell in shells() {
+            let base = tempfile::tempdir().unwrap();
+            let (folder, victim) = (base.path().join("w"), base.path().join("v"));
+            fs::create_dir(&folder).unwrap();
+            fs::create_dir(&victim).unwrap();
+            let f = put(&folder, "f.txt", b"mine");
+            put(&victim, "f.txt", b"theirs");
+            let data = base.path().join("data");
+            let env = [
+                ("PATH", bin.path().to_str().unwrap()),
+                ("HOME", base.path().to_str().unwrap()),
+                ("XDG_DATA_HOME", data.to_str().unwrap()),
+                ("FOLDER", folder.to_str().unwrap()),
+                ("VICTIM", victim.to_str().unwrap()),
+            ];
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Trash(&f)),
+                Ok(()),
+                "{shell:?}"
+            );
+            assert_eq!(
+                fs::read(victim.join("f.txt")).unwrap(),
+                b"theirs",
+                "{shell:?}"
+            );
+            assert!(names(&base.path().join("w.away")).is_empty(), "{shell:?}");
+            assert_eq!(trashed(&data).0, ["f.txt"], "{shell:?}");
+            assert_eq!(
+                fs::read(data.join("Trash/files/f.txt")).unwrap(),
+                b"mine",
+                "{shell:?}"
+            );
         }
     }
 

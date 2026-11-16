@@ -3,13 +3,19 @@ d=${p%/*}
 [ -n "$d" ] || d=/
 there "$p" || { echo gone; exit 0; }
 usable "$d" || { echo 'refused folder'; exit 0; }
+# The folder is looked up once, here: from now on it is the folder entered, whatever that is called by now. Someone
+# who may rename where it is can put another folder, or a link, at its name meanwhile. Only the trash information
+# keeps the path asked for.
+cd -P -- "$d" 2>/dev/null || { echo 'refused folder'; exit 0; }
+f=./${p##*/}
+there "$f" || { echo gone; exit 0; }
 if command -v gio >/dev/null 2>&1; then
-  gio trash "$p" >/dev/null 2>&1 </dev/null
-  there "$p" || { echo done; exit 0; }
+  gio trash "$f" >/dev/null 2>&1 </dev/null
+  there "$f" || { echo done; exit 0; }
 fi
 if command -v trash >/dev/null 2>&1; then
-  trash "$p" >/dev/null 2>&1 </dev/null
-  there "$p" || { echo done; exit 0; }
+  trash "$f" >/dev/null 2>&1 </dev/null
+  there "$f" || { echo done; exit 0; }
 fi
 nothing() { echo 'refused tool trash'; exit 0; }
 case ${XDG_DATA_HOME:-} in /*) data=$XDG_DATA_HOME ;; *) data=${HOME:+$HOME/.local/share} ;; esac
@@ -29,7 +35,7 @@ mine "$t/." || nothing
 closed "$t/." || { chmod go-rwx "$t/." 2>/dev/null && closed "$t/."; } || nothing
 # The freedesktop trash of the home is for what is on its disk: a move from another one would copy.
 dev() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null; }
-a=$(dev "$p") b=$(dev "$t/files/.")
+a=$(dev "$f") b=$(dev "$t/files/.")
 { [ -n "$a" ] && [ -n "$b" ]; } || nothing
 [ "$a" = "$b" ] || { echo 'refused device'; exit 0; }
 # The spec's Path is URL-escaped (RFC 2396): every byte but letters, digits and / - . _ ~ as %xx.
@@ -54,7 +60,7 @@ while [ "$i" -le 1000 ]; do
         rm -f -- "$t/info/$n.trashinfo"
         fail "the trash information for $n could not be written${msg:+: $msg}"
       fi
-      if msg=$(mv -- "$p" "$t/files/$n" 2>&1) && ! there "$p"; then echo done; exit 0; fi
+      if msg=$(mv -- "$f" "$t/files/$n" 2>&1) && ! there "$f"; then echo done; exit 0; fi
       rm -f -- "$t/info/$n.trashinfo"
       fail "$msg"
     fi
