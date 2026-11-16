@@ -2407,6 +2407,36 @@ exec mv -n -- "$from" "$to""#,
         assert!(names(into.path()).is_empty());
     }
 
+    #[test]
+    fn a_folder_copied_without_write_permission_is_cleared_when_the_copy_is_refused() {
+        if is_root() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let sealed = d.path().join("sealed");
+        fs::create_dir_all(sealed.join("inner")).unwrap();
+        fs::write(sealed.join("inner/f"), "f").unwrap();
+        fs::write(sealed.join("g"), "g").unwrap();
+        for dir in [sealed.join("inner"), sealed.clone()] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let from = sealed.to_string_lossy().into_owned();
+        let empty = tempfile::tempdir().unwrap();
+        let into = empty.path().to_string_lossy().into_owned();
+        let held = ["sealed".to_owned()];
+        for shell in shells() {
+            let got = copy_under(&shell, &[], &Act::Copy(&from, &into, &held));
+            assert_eq!(got, Err(Problem::StillOpen(0)), "{shell:?}");
+            assert!(names(empty.path()).is_empty(), "{shell:?}: {:?}", names(empty.path()));
+        }
+        let got = fsops::copy(&from, &into, None, &held);
+        assert!(got.unwrap_err().contains("is still open"));
+        assert!(names(empty.path()).is_empty(), "{:?}", names(empty.path()));
+        for dir in [sealed.clone(), sealed.join("inner")] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
     /// Where the freedesktop trash of `home` is, and what it holds.
     fn trashed(data: &Path) -> (Vec<String>, Vec<String>) {
         let at = |sub: &str| {
@@ -2420,7 +2450,7 @@ exec mv -n -- "$from" "$to""#,
         (at("files"), at("info"))
     }
 
-    const TRASH_TOOLS: [&str; 6] = ["mkdir", "mv", "stat", "od", "date", "rm"];
+    const TRASH_TOOLS: [&str; 9] = ["mkdir", "mv", "stat", "od", "date", "rm", "ls", "chmod", "id"];
 
     #[test]
     fn every_shell_moves_to_the_freedesktop_trash_when_nothing_else_can() {
@@ -2523,6 +2553,41 @@ exec mv -n -- "$from" "$to""#,
         let f = put(d.path(), "f", b"f");
         assert_eq!(run_under(&["/bin/sh"], None, &env, &Act::Trash(&f)), Ok(()));
         assert_eq!(trashed(&home.path().join(".local/share")).0, ["f"]);
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::symlink_metadata(path).unwrap().mode() & 0o7777
+    }
+
+    #[test]
+    fn the_trash_by_hand_is_for_its_owner_alone() {
+        let bin = only(&TRASH_TOOLS, &[]);
+        for shell in shells() {
+            for already in [false, true] {
+                let home = tempfile::tempdir().unwrap();
+                let data = home.path().join("data");
+                if already {
+                    fs::create_dir_all(data.join("Trash")).unwrap();
+                    fs::set_permissions(data.join("Trash"), fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                }
+                let env = [
+                    ("PATH", bin.path().to_str().unwrap()),
+                    ("HOME", home.path().to_str().unwrap()),
+                    ("XDG_DATA_HOME", data.to_str().unwrap()),
+                ];
+                let d = tempfile::tempdir().unwrap();
+                let f = put(d.path(), "f.txt", b"x");
+                let got = run_under(&shell, Some("022"), &env, &Act::Trash(&f));
+                assert_eq!(got, Ok(()), "{shell:?} {already}");
+                let why = format!("{shell:?}, a trash there before: {already}");
+                assert_eq!(mode(&data.join("Trash")), 0o700, "{why}");
+                assert_eq!(mode(&data.join("Trash/info/f.txt.trashinfo")), 0o600, "{why}");
+                if !already {
+                    assert_eq!(mode(&data.join("Trash/files")), 0o700, "{why}");
+                }
+            }
+        }
     }
 
     #[test]

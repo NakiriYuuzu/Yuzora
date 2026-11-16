@@ -13,12 +13,18 @@ if command -v trash >/dev/null 2>&1; then
 fi
 nothing() { echo 'refused tool trash'; exit 0; }
 case ${XDG_DATA_HOME:-} in /*) data=$XDG_DATA_HOME ;; *) data=${HOME:+$HOME/.local/share} ;; esac
-[ -n "$data" ] || nothing
-for tool in mkdir mv stat od date rm; do
+case $data in /*) ;; *) nothing ;; esac
+for tool in mkdir mv stat od date rm ls chmod id; do
   command -v "$tool" >/dev/null 2>&1 || { echo "refused tool $tool"; exit 0; }
 done
 t=$data/Trash
+umask 077
 { mkdir -p -- "$t/files" "$t/info" 2>/dev/null && usable "$t/files" && usable "$t/info"; } || nothing
+# What is in the trash is for its owner alone, as gio makes it: a trash others may look into is closed first.
+mine() { [ "$(stat -c %u -- "$1" 2>/dev/null || stat -f %u -- "$1" 2>/dev/null)" = "$(id -u)" ]; }
+closed() { case $(ls -ld -- "$1" 2>/dev/null) in d???------*) return 0 ;; *) return 1 ;; esac; }
+mine "$t/." || nothing
+closed "$t/." || { chmod go-rwx "$t/." 2>/dev/null && closed "$t/."; } || nothing
 # The freedesktop trash of the home is for what is on its disk: a move from another one would copy.
 dev() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null; }
 a=$(dev "$p") b=$(dev "$t/files/.")

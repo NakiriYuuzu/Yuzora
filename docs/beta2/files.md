@@ -238,13 +238,14 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
   - 不走 SFTP：L4 的 SFTP 路線不再是前提。
 - **複製**（PR-A，`fsops::copy(from, into, on, held)`，JS `copy(from, into, {on})`，回傳複本的路徑）：把 `from`（檔案、資料夾或連結）複製進資料夾 `into`。
   - 名稱：名稱本身沒人用就用它，否則依序 `<stem> copy<ext>`、`<stem> copy 2<ext>`…（Finder 的樣式），最多試 1000 個。副檔名從最後一個 `.` 切，開頭的 `.` 不算（`.env` → `.env copy`、`archive.tar.gz` → `archive.tar copy.gz`）；資料夾的名稱整個保留（`v1.2` → `v1.2 copy`）。本機與遠端用同一個切法（`fsops::split_ext`，遠端腳本拿到切好的 stem 與 ext）。
-  - 先在 `into` 裡建只有擁有者進得去的暫存資料夾 `.yuzora-save-<32 hex>/`（與存檔同一樣式，不列出），整份複製進去，完整之後才用不取代的 rename 換到空著的名稱；名稱被搶走就試下一個。任何一步失敗都把暫存資料夾整個刪掉，`into` 裡不會留下半份複本，也不會蓋掉任何既有項目。
+  - 先在 `into` 裡建只有擁有者進得去的暫存資料夾 `.yuzora-save-<32 hex>/`（與存檔同一樣式，不列出），整份複製進去，完整之後才用不取代的 rename 換到空著的名稱；名稱被搶走就試下一個。任何一步失敗都把暫存資料夾整個刪掉，`into` 裡不會留下半份複本，也不會蓋掉任何既有項目。遠端的複製逾時被中止時，暫存資料夾可能留下（樹不列出它）。複本裡沒有寫入權限的資料夾（來源是 0555 之類）會擋住刪除，所以刪之前先把複本裡的資料夾還給擁有者（`u+rwx`，本機與遠端都不跟隨連結；遠端用 `find -type d`）。
   - 內容：連結複製成連結（不跟進去，指到不存在的連結也照樣），資料夾遞迴；檔案的 mode 照來源（umask 照常作用），資料夾的權限不比來源寬（來源是 0700 的，複本也是）。FIFO、裝置之類不是檔案、資料夾或連結的項目拒絕並說出路徑。
   - 資料夾複製進它自己或它底下的資料夾時拒絕（以實際路徑比對）。目標名稱上有「檔案已刪除但還開著」的文件時拒絕，句子與重新命名的相同（`docs::held` 在主執行緒列出 `into` 裡被開著的名稱，交給 worker）；名稱在磁碟上有東西時本來就不會用它。
   - 遠端：`remote_entry/copy.sh`（`common.sh` 加 `copy.sh`，參數只走 argv），`cp -RP` 進暫存資料夾，再交給重新命名用的 `move.sh` 換入，所以「不取代、不跟隨」與重新命名完全一樣（上表）。回一行 verdict：`done file|folder <k>`（`k` 是用了第幾個名稱，名稱由用戶端用同一個規則組回來）、`refused inside`、`refused open <j>`，其餘與新增、重新命名相同。逾時 120 秒。缺 `cp` 等程式時點名。測試在每一種 shell 上對同一個資料夾跑本機與遠端版本，比對名稱、種類、內容、連結目標與 mode。
 - **刪除到垃圾桶**（R3，`fsops::trash(path, on)`，JS `trash(path, {on})`）：本機照舊用 `trash` crate。遠端跑 `remote_entry/trash.sh`：
   - 依序試 `gio trash`、`trash` 指令；跑完以「路徑不在了」為準，指令說成功但檔案還在的不算。
   - 都不行時自己照 freedesktop 規格搬進家目錄的垃圾桶：`${XDG_DATA_HOME:-$HOME/.local/share}/Trash`（`XDG_DATA_HOME` 不是絕對路徑時不用），先以 `set -C` 寫 `info/<名稱>.trashinfo`（`Path` 是 URL 編碼的完整路徑，`DeletionDate` 是本地時間），再 `mv` 進 `files/`；名稱撞到時用 `<stem>.2<ext>`、`<stem>.3<ext>`…。`mv` 失敗就刪掉剛寫的 `.trashinfo`。
+  - 垃圾桶只有擁有者看得到（與 gio 相同）：腳本在 `umask 077` 下建立 `Trash`、`files`、`info`（0700）與 `.trashinfo`（0600）；原本就有、別人看得到的 `Trash` 先 `chmod go-rwx`，不是自己的或關不起來就不搬。否則從只有自己進得去的資料夾丟進來的檔案，會在垃圾桶裡被別人讀到（Codex 審查 P1）。
   - 檔案和家目錄的垃圾桶不在同一個檔案系統時不搬（`mv` 會變成複製），垃圾桶建不起來或不可寫時也不搬：回 `refused tool trash`，toast 說「<機器> has no trash to use」，檔案留在原處。絕不改成直接刪除。
   - 所在資料夾不可寫時回 `refused folder`。測試給腳本的 PATH 只有它需要的程式與假的 `gio`／`trash`，`HOME` 與 `XDG_DATA_HOME` 是暫存資料夾，不會碰到真的垃圾桶。
 
@@ -323,6 +324,7 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 
 - 右側模式的鍵盤（Delete、`cmd-backspace` 丟垃圾桶，`cmd-d` Duplicate）：沒有在隔離實例上證實側欄拿得到鍵盤焦點、按鍵不會流到終端機（需要以 GUI 自動化送出真的按鍵），所以 PR-A 沒有做。`cmd-d` 另有問題：`keys.macos.json` 的全域 `cmd-d` 是 `pane.split:right`，GPUI 先派送 binding，mod 的 `on_key_down` 收不到；要改用 `mod:yuzora-sidebar-files` 區段的指令（`nextCommand()`）或改綁定。
 - 跨機器的複製（Paste 只在剪貼簿與這一列是同一台機器時啟用）。
+- `copy.sh` 與 `trash.sh` 還沒有在 Linux 容器（BusyBox、GNU coreutils）跑過：單元測試只在本機的 shell 上跑，`linux_entries_on_real_machines` 只涵蓋新增與重新命名。
 - 編輯器 gutter 的變更標記（新增／修改／agent 修改的行，設計稿 p2 左側色條）：需要 L2 的 diff API。
 - git 標記改用 `yuzora:git`（L2 合併後）。
 - Markdown 預覽：相對連結（`./other.md`）開檔、遠端檔案的相對圖片、fenced code 以外的 inline 語法上色（tree-sitter-md inline 語法）。

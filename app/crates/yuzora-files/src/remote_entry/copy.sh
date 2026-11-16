@@ -23,7 +23,11 @@ fi
 made= in=
 leave() {
   [ -n "$made" ] || return 0
-  [ -z "$in" ] || rm -rf ./c 2>/dev/null
+  if [ -n "$in" ]; then
+    # A folder copied without write permission keeps what it holds until its owner may change it again.
+    find ./c -type d -exec chmod u+rwx {} \; 2>/dev/null
+    rm -rf ./c 2>/dev/null
+  fi
   cd / 2>/dev/null
   rmdir -- "$sd" 2>/dev/null
   return 0

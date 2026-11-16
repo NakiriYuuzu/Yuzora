@@ -1410,9 +1410,42 @@ fn copy_here(from: &str, into: &str, held: &[String]) -> Result<String, Problem>
     if placed.is_ok() {
         let _ = std::fs::remove_dir(&scratch);
     } else {
+        unseal(&scratch);
         let _ = std::fs::remove_dir_all(&scratch);
     }
     placed
+}
+
+/// Lets the owner remove what a failed copy made: a folder copied without write permission (or,
+/// off Unix, a read-only file) keeps what it holds until then. Links are not followed.
+fn unseal(path: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if meta.file_type().is_symlink() {
+        return;
+    }
+    #[cfg(unix)]
+    if meta.is_dir() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(
+            path,
+            std::fs::Permissions::from_mode(mode_of(&meta) | 0o700),
+        );
+    }
+    #[cfg(not(unix))]
+    if meta.permissions().readonly() {
+        let mut writable = meta.permissions();
+        writable.set_readonly(false);
+        let _ = std::fs::set_permissions(path, writable);
+    }
+    if meta.is_dir()
+        && let Ok(entries) = std::fs::read_dir(path)
+    {
+        for entry in entries.flatten() {
+            unseal(&entry.path());
+        }
+    }
 }
 
 /// A folder only its owner can enter.

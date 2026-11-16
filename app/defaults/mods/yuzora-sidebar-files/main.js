@@ -504,7 +504,6 @@ function revealLabel() {
   return t(p === "macos" ? "menu.reveal_mac" : p === "windows" ? "menu.reveal_windows" : "menu.reveal");
 }
 
-// Copies `from` into the folder `into` on `on`, under the first free name, and tells how it went.
 function copyInto(from, into, on) {
   copy(from, into, { on }).then(made => {
     setShared(REFRESH, Date.now());
