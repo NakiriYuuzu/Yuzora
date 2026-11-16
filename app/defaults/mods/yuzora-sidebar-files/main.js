@@ -10,7 +10,7 @@ import { openFile, moved, join, parent, base, rel } from "./open.js";
 import { fileIcon } from "./icons.js";
 import { heading } from "./paths.js";
 import { readGit } from "./git-state.js";
-import { reason } from "./failure.js";
+import { reason, mayBeCopied } from "./failure.js";
 import { createStore, panel, info } from "./tree-state.js";
 
 const ME = "yuzora-sidebar-files";
@@ -527,7 +527,11 @@ function copyInto(from, into, on) {
     setShared(REFRESH, Date.now());
     const name = base(from), as = base(made);
     notify({ title: as === name ? t("toast.copied", { name }) : t("toast.copied_as", { name, copy: as }), level: "success", timeout: 3000 });
-  }).catch(e => notify({ title: t("error.copy"), body: reason(e, { name: base(from), machine: on, kind: "copy" }), level: "error" }));
+  }).catch(e => {
+    // The tree shows whether a copy that may have been made is there.
+    if (mayBeCopied(e)) setShared(REFRESH, Date.now());
+    notify({ title: t("error.copy"), body: reason(e, { name: base(from), machine: on, kind: "copy" }), level: "error" });
+  });
 }
 
 function trashIt(path, on) {

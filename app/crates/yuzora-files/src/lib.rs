@@ -869,6 +869,22 @@ return JSON.stringify([a, b, c, d]); }})()"#
         })
         .unwrap_err();
         let trash_not_known = interpret(Err(unknown())).unwrap_err();
+        // The line lost during the call, and the clear after it answers: the copy may be there.
+        let mut asked = 0;
+        let maybe = crate::remote_entry::copy_by("/srv/a.txt", "/srv/c", &held, Some("lab"), |_| {
+            asked += 1;
+            if asked == 1 {
+                return Err(ExecError::Remote(
+                    "lost the line to lab during the call".into(),
+                ));
+            }
+            Ok(yuzora_core::remote::ExecOutput {
+                code: 0,
+                stdout: b"done\n".to_vec(),
+                stderr: Vec::new(),
+            })
+        })
+        .unwrap_err();
         for (act, problem, name, kind, want) in [
             (
                 &make,
@@ -970,6 +986,13 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "a.txt",
                 "trash",
                 "unknown machine \"lab\"",
+            ),
+            (
+                &copy,
+                maybe,
+                "a.txt",
+                "copy",
+                "Not sure it was done: check again",
             ),
             (
                 &copy,

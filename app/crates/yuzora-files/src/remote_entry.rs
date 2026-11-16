@@ -463,7 +463,8 @@ pub(crate) fn copy_on_machine(
 /// A copy by [`COPY_SCRIPT`], each request run by `run`, as the path of the copy. A copy stopped before
 /// it is done (the timeout, a signal, the line to the machine lost) leaves its scratch folder:
 /// [`CLEAR_SCRIPT`] is sent after it, and when that cannot clear it the answer says where a partial
-/// copy may be.
+/// copy may be. A line lost after the copy was placed loses only its answer, so when the clear answers,
+/// the answer says the copy may or may not have been made.
 pub(crate) fn copy_by(
     from: &str,
     into: &str,
@@ -482,13 +483,20 @@ pub(crate) fn copy_by(
         Err(ExecError::Remote(m)) => !never_sent(m),
         Err(_) => true,
     };
+    let lost = matches!(&answer, Err(ExecError::Remote(m)) if m.starts_with("lost the line to "));
     let name = from.rsplit('/').next().unwrap_or(from);
     match interpret_copy(answer) {
         Ok((folder, k)) => Ok(fsops::join(into, &fsops::copy_name(name, folder, k))),
         Err(Problem::Failed(why)) if killed => {
             let clear = fsops::sh_request(on, CLEAR_SCRIPT, &[into, &id], TIMEOUT, MAX_OUTPUT);
             if matches!(read(run(clear)), Ok(Verdict::Done)) {
-                return Err(Problem::Failed(why));
+                return Err(Problem::Failed(if lost {
+                    format!(
+                        "{why}. The copy may or may not have been made: look in {into} before copying again"
+                    )
+                } else {
+                    why
+                }));
             }
             let scratch = fsops::join(into, &format!("{}{id}", fsops::SCRATCH_PREFIX));
             Err(Problem::Failed(format!(
@@ -2961,6 +2969,12 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
             if the_clear_answers {
                 assert!(!said.contains("partial"), "{why}: {said}");
                 assert!(
+                    said.contains(&format!(
+                        "The copy may or may not have been made: look in {dir}"
+                    )),
+                    "{why}: {said}"
+                );
+                assert!(
                     names(into.path()).is_empty(),
                     "{why}: {:?}",
                     names(into.path())
@@ -2975,6 +2989,24 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
                 }
             }
         }
+        // The line lost after the copy was placed: only its answer is lost, and the copy is there.
+        let placed = tempfile::tempdir().unwrap();
+        let placed_in = placed.path().to_string_lossy().into_owned();
+        let mut asked = 0;
+        let got = copy_by(&src, &placed_in, &[], None, |req| {
+            asked += 1;
+            if asked == 1 {
+                fsops::run(req).unwrap();
+                return Err(ExecError::Remote(lost.into()));
+            }
+            fsops::run(req)
+        });
+        assert_eq!(asked, 2);
+        assert!(
+            matches!(&got, Err(Problem::Failed(said)) if said.contains(&format!("The copy may or may not have been made: look in {placed_in}"))),
+            "{got:?}"
+        );
+        assert_eq!(names(placed.path()), ["src.d"]);
         // Words of hc's this does not know are read as "may have started": the clear is sent, and when it
         // cannot clear, the answer says where a partial copy may be.
         let mut asked = 0;

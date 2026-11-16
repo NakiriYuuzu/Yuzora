@@ -1186,6 +1186,18 @@ test("a copy that cannot be made says the cause first", async () => {
   expect(toasts(s).at(-1)).toEqual(["error.copy", "reason.writable", "error"]);
 });
 
+test("a copy that may have been made before its line was lost says so and reads the tree again; one never sent leaves the tree", async () => {
+  const s = await sidebarAt("lab");
+  choose(s, A_ROW, "menu.duplicate");
+  await s.fail(s.pending("make")[0], hostError("copy", "cannot copy /srv/a.txt on lab: lab is unreachable: cannot reach /srv/via: ssh: connect to host lab: Connection refused"));
+  expect(toasts(s)).toEqual([["error.copy", 'reason.unreachable {"machine":"lab"}', "error"]]);
+  expect(s.world.shared.get("yuzora.files.refresh")).toBeUndefined();
+  choose(s, A_ROW, "menu.duplicate");
+  await s.fail(s.pending("make")[0], hostError("copy", "cannot copy /srv/a.txt on lab: lost the line to lab during the call. The copy may or may not have been made: look in /srv before copying again"));
+  expect(toasts(s).at(-1)).toEqual(["error.copy", "reason.unsure", "error"]);
+  expect(s.world.shared.get("yuzora.files.refresh")).toEqual(expect.any(Number));
+});
+
 test("the toolbar of a remote Space has no read-only tooltip, and nothing is refused", async () => {
   const s = await sidebarAt("lab");
   const shown = s.frame();

@@ -24,6 +24,10 @@ function refusedIn(text, name) {
   return !last || last === name || /^(?:\.yuzora-save-)?[0-9a-f]{32}$/.test(last) ? "" : last;
 }
 
+// A remote copy whose line was lost during the call, cleared after (remote_entry.rs copy_by): its answer may be all
+// that was lost.
+export const mayBeCopied = error => /The copy may or may not have been made/.test(String(error?.message ?? error ?? ""));
+
 /**
  * The cause of `error` (what a host call rejected with) in a line of at most LIMIT characters.
  * `name`: the name the change was for; `machine`: where, null for this one; `kind`: the toast it is for
@@ -41,6 +45,7 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   if (/folders inside each other/.test(text)) return tell("deep");
   if (/can take it to a trash/.test(text)) return tell("no_trash", { machine: there });
   if (/partial copy may be left/.test(text)) return tell("partial");
+  if (mayBeCopied(text)) return tell("unsure");
   // A copy's scratch folder that someone else changed (copy.sh, fsops::anchored): its name says nothing to a person.
   if (/is not the folder (?:just made|the copy was made in)/.test(text)) return tell("scratch_changed");
   // trash.sh could not write the .trashinfo; what the shell said follows, and a full disk is the likely cause.
