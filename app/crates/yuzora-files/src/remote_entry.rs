@@ -2518,6 +2518,29 @@ exec mv -n -- "$from" "$to""#,
         }
     }
 
+    #[test]
+    fn every_shell_copies_a_fifo_as_a_new_fifo_and_this_machine_refuses_it() {
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::os::unix::fs::FileTypeExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("box");
+        fs::create_dir(&src).unwrap();
+        let pipe = std::ffi::CString::new(src.join("pipe").as_os_str().as_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o644) }, 0);
+        let from = src.to_string_lossy().into_owned();
+        let into = d.path().to_string_lossy().into_owned();
+        for shell in shells() {
+            let got = copy_under(&shell, &[], &Act::Copy(&from, &into, &[])).unwrap();
+            let made = fs::symlink_metadata(format!("{got}/pipe")).unwrap();
+            assert!(made.file_type().is_fifo(), "{shell:?}");
+            fs::remove_dir_all(&got).unwrap();
+        }
+        let refused = fsops::copy(&from, &into, None, &[]).unwrap_err();
+        assert!(refused.contains("pipe is not a file, a folder or a link"), "{refused}");
+        assert!(scratch_left(d.path()).is_empty());
+    }
+
     /// `req` run here under `shell` as `hc exec` runs it, with `path` for PATH, and killed with all it
     /// started (SIGKILL: no trap of the script runs) after a second, as `hc` does at the timeout.
     fn killed_after_a_second(shell: &[&str], path: &str, mut req: ExecRequest) -> ExecRequest {
