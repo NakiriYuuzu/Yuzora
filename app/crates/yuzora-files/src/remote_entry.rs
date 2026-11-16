@@ -2975,6 +2975,18 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
                 }
             }
         }
+        // Words of hc's this does not know are read as "may have started": the clear is sent, and when it
+        // cannot clear, the answer says where a partial copy may be.
+        let mut asked = 0;
+        let got = copy_by(&src, &dir, &[], None, |_| {
+            asked += 1;
+            Err(ExecError::Remote("lab hung up".into()))
+        });
+        assert_eq!(asked, 2, "the copy, then the clear");
+        assert!(
+            matches!(&got, Err(Problem::Failed(said)) if said.starts_with("lab hung up. A partial copy may be left in ")),
+            "{got:?}"
+        );
         for never_reached in [
             UNREACHABLE,
             "lab is unreachable: cannot reach /srv/via: the connection closed",
