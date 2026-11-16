@@ -2437,6 +2437,37 @@ exec mv -n -- "$from" "$to""#,
         }
     }
 
+    #[test]
+    fn a_scratch_folder_swapped_for_a_link_is_neither_changed_nor_cleared() {
+        let d = tempfile::tempdir().unwrap();
+        let victim = d.path().join("victim");
+        fs::create_dir_all(victim.join("c")).unwrap();
+        fs::write(victim.join("c/keep"), "keep").unwrap();
+        fs::set_permissions(&victim, fs::Permissions::from_mode(0o755)).unwrap();
+        let src = put(d.path(), "a.txt", b"a");
+        let into = tempfile::tempdir().unwrap();
+        let dir = into.path().to_string_lossy().into_owned();
+        // Someone who may rename in `into` puts a link to a folder of the person's at the name just made.
+        let (_bin, path) = shimmed(&[(
+            "mkdir",
+            "case $2 in */.yuzora-save-*) ln -s \"$VICTIM\" \"$2\"; exit 0 ;; esac\nexec mkdir \"$@\"",
+        )]);
+        for shell in shells() {
+            let env = [("PATH", path.as_str()), ("VICTIM", victim.to_str().unwrap())];
+            let got = copy_under(&shell, &env, &Act::Copy(&src, &dir, &[]));
+            assert!(
+                matches!(&got, Err(Problem::Failed(why)) if why.contains("is not the folder just made")),
+                "{shell:?}: {got:?}"
+            );
+            assert_eq!(mode(&victim), 0o755, "{shell:?}");
+            assert_eq!(names(&victim), ["c"], "{shell:?}");
+            assert_eq!(fs::read(victim.join("c/keep")).unwrap(), b"keep", "{shell:?}");
+            for link in names(into.path()) {
+                fs::remove_file(into.path().join(link)).unwrap();
+            }
+        }
+    }
+
     /// Where the freedesktop trash of `home` is, and what it holds.
     fn trashed(data: &Path) -> (Vec<String>, Vec<String>) {
         let at = |sub: &str| {

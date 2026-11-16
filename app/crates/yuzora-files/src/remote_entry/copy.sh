@@ -34,13 +34,15 @@ leave() {
 }
 trap leave EXIT
 trap 'echo "stopped before it was done: it may or may not have been" >&2; exit 1' HUP INT TERM
-if ! msg=$(mkdir -- "$sd" 2>&1); then blame "$sd"; fail "$msg"; fi
+if ! msg=$(umask 077 && mkdir -- "$sd" 2>&1); then blame "$sd"; fail "$msg"; fi
 made=1
-chmod 700 "$sd" || exit 1
+was=$(idof "$sd")
 cd -P -- "$sd" || exit 1
-in=1
 me=$(id -u)
-{ bare && chmod 700 . && [ "$(owner .)" = "$me" ] && bare; } || fail "$sd is not the folder just made"
+# Someone who may rename in $into can put a link, or a folder, at the name: nothing is changed in what is entered
+# until it is known to be the folder made (a link leads to another one), and nothing in it is cleared before.
+{ [ "$(idof .)" = "$was" ] && bare && [ "$(owner .)" = "$me" ] && chmod 700 . && bare; } || fail "$sd is not the folder just made"
+in=1
 msg=$(cp -RP -- "$from" ./c 2>&1) || fail "$msg"
 mine=$(idof ./c)
 k=0
