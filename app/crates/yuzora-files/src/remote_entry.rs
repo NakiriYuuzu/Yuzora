@@ -2893,6 +2893,98 @@ exec mv -n -- "$from" "$to""#,
         assert_eq!(names(d.path()), ["f.txt"]);
     }
 
+    #[test]
+    fn a_trash_that_is_someone_elses_gets_nothing_made_in_it_and_nothing_moved_to_it() {
+        let tools: Vec<&str> = TRASH_TOOLS.into_iter().filter(|t| *t != "id").collect();
+        let bin = only(&tools, &[("id", "echo 4242")]);
+        for shell in shells() {
+            for there_before in [true, false] {
+                let home = tempfile::tempdir().unwrap();
+                let data = home.path().join("data");
+                if there_before {
+                    fs::create_dir_all(data.join("Trash")).unwrap();
+                    fs::set_permissions(data.join("Trash"), fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                }
+                let env = [
+                    ("PATH", bin.path().to_str().unwrap()),
+                    ("HOME", home.path().to_str().unwrap()),
+                    ("XDG_DATA_HOME", data.to_str().unwrap()),
+                ];
+                let d = tempfile::tempdir().unwrap();
+                let f = put(d.path(), "f.txt", b"x");
+                let why = format!("{shell:?}, a trash there before: {there_before}");
+                assert_eq!(
+                    run_under(&shell, None, &env, &Act::Trash(&f)),
+                    Err(Problem::NoTrash),
+                    "{why}"
+                );
+                assert_eq!(fs::read(&f).unwrap(), b"x", "{why}");
+                if there_before {
+                    assert!(names(&data.join("Trash")).is_empty(), "{why}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_od_that_writes_no_octal_is_named_and_no_trash_info_is_left_without_a_path() {
+        let tools: Vec<&str> = TRASH_TOOLS.into_iter().filter(|t| *t != "od").collect();
+        let bin = only(&tools, &[("od", "echo 'od: invalid option -- t' >&2; exit 1")]);
+        for shell in shells() {
+            let home = tempfile::tempdir().unwrap();
+            let data = home.path().join("data");
+            let env = [
+                ("PATH", bin.path().to_str().unwrap()),
+                ("HOME", home.path().to_str().unwrap()),
+                ("XDG_DATA_HOME", data.to_str().unwrap()),
+            ];
+            let d = tempfile::tempdir().unwrap();
+            let f = put(d.path(), "f.txt", b"x");
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Trash(&f)),
+                Err(Problem::NoTool("od")),
+                "{shell:?}"
+            );
+            assert_eq!(fs::read(&f).unwrap(), b"x", "{shell:?}");
+            assert_eq!(trashed(&data), (vec![], vec![]), "{shell:?}");
+        }
+    }
+
+    #[test]
+    fn a_trash_info_that_cannot_be_written_is_taken_back_and_the_file_stays() {
+        let bin = only(&TRASH_TOOLS, &[]);
+        for shell in shells() {
+            let home = tempfile::tempdir().unwrap();
+            let data = home.path().join("data");
+            let d = tempfile::tempdir().unwrap();
+            let f = put(d.path(), "f.txt", b"x");
+            let req = request(&Act::Trash(&f), None).unwrap();
+            // A disk with no room left: a name can be made, nothing written in it.
+            let out = Command::new("/bin/sh")
+                .args(["-c", "ulimit -f 0; exec \"$@\"", "x"])
+                .args(&shell)
+                .args(&req.args)
+                .env("PATH", bin.path())
+                .env("HOME", home.path())
+                .env("XDG_DATA_HOME", &data)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            let got = interpret(Ok(ExecOutput {
+                code: out.status.code().unwrap_or(-1),
+                stdout: out.stdout,
+                stderr: out.stderr,
+            }));
+            assert!(
+                matches!(&got, Err(Problem::Failed(why)) if why.contains("the trash information for f.txt could not be written")),
+                "{shell:?}: {got:?}"
+            );
+            assert_eq!(trashed(&data), (vec![], vec![]), "{shell:?}");
+            assert_eq!(fs::read(&f).unwrap(), b"x", "{shell:?}");
+        }
+    }
+
     /// On Linux machines, in throwaway containers (`docker info` must work, and the images are
     /// pulled): the scripts as an ordinary user, against folders with default ACLs and setgid, makers
     /// and movers that race, two file systems, programs that are missing.

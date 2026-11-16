@@ -19,10 +19,12 @@ for tool in mkdir mv stat od date rm ls chmod id; do
 done
 t=$data/Trash
 umask 077
-{ mkdir -p -- "$t/files" "$t/info" 2>/dev/null && usable "$t/files" && usable "$t/info"; } || nothing
-# What is in the trash is for its owner alone, as gio makes it: a trash others may look into is closed first.
+# What is in the trash is for its owner alone, as gio makes it: a trash others may look into is closed first, and
+# nothing is made in one that is someone else's.
 mine() { [ "$(stat -c %u -- "$1" 2>/dev/null || stat -f %u -- "$1" 2>/dev/null)" = "$(id -u)" ]; }
 closed() { case $(ls -ld -- "$1" 2>/dev/null) in d???------*) return 0 ;; *) return 1 ;; esac; }
+! there "$t" || mine "$t/." || nothing
+{ mkdir -p -- "$t/files" "$t/info" 2>/dev/null && usable "$t/files" && usable "$t/info"; } || nothing
 mine "$t/." || nothing
 closed "$t/." || { chmod go-rwx "$t/." 2>/dev/null && closed "$t/."; } || nothing
 # The freedesktop trash of the home is for what is on its disk: a move from another one would copy.
@@ -39,12 +41,18 @@ url() {
   done
 }
 enc=$(url "$p") when=$(date +%Y-%m-%dT%H:%M:%S)
+[ -n "$enc" ] || { echo 'refused tool od'; exit 0; }
 name=${p##*/}
 case $name in ?*.*) stem=${name%.*} ext=.${name##*.} ;; *) stem=$name ext= ;; esac
 i=1 n=$name
 while [ "$i" -le 1000 ]; do
   if ! there "$t/files/$n"; then
-    if (set -C; printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$enc" "$when" > "$t/info/$n.trashinfo") 2>/dev/null; then
+    if (set -C; : > "$t/info/$n.trashinfo") 2>/dev/null; then
+      # The name is this move's now: a write that fails (a full disk) gives it back and says why.
+      if ! msg=$( { printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$enc" "$when" >> "$t/info/$n.trashinfo"; } 2>&1); then
+        rm -f -- "$t/info/$n.trashinfo"
+        fail "${msg:-the trash information for $n could not be written}"
+      fi
       if msg=$(mv -- "$p" "$t/files/$n" 2>&1) && ! there "$p"; then echo done; exit 0; fi
       rm -f -- "$t/info/$n.trashinfo"
       fail "$msg"
