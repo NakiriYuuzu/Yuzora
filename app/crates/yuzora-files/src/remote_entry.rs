@@ -3042,7 +3042,7 @@ exec mv -n -- "$from" "$to""#,
 
     /// On Linux machines, in throwaway containers (`docker info` must work, and the images are
     /// pulled): the scripts as an ordinary user, against folders with default ACLs and setgid, makers
-    /// and movers that race, two file systems, programs that are missing.
+    /// and movers that race, two file systems, programs that are missing, copies, the home trash.
     /// `YZ_DOCKER=1 cargo test --locked -p yuzora-files --lib -- --ignored --exact
     /// remote_entry::tests::linux_entries_on_real_machines --nocapture`.
     #[test]
@@ -3052,6 +3052,8 @@ exec mv -n -- "$from" "$to""#,
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("make.sh"), MAKE_SCRIPT).unwrap();
         fs::write(dir.path().join("move.sh"), MOVE_SCRIPT).unwrap();
+        fs::write(dir.path().join("copy.sh"), COPY_SCRIPT).unwrap();
+        fs::write(dir.path().join("trash.sh"), TRASH_SCRIPT).unwrap();
         fs::write(
             dir.path().join("entry.sh"),
             include_str!("../tests/docker/remote-entry.sh"),
