@@ -3357,4 +3357,34 @@ mod tests {
         let _: fn(&str, Option<&str>) -> Result<(), String> = trash;
         let _: fn(&str) -> Result<(), String> = reveal;
     }
+
+    /// A folder of 1,000 files of 4 KiB copied here, ten times: the median has a budget of 3 s.
+    /// `cargo test --release -p yuzora-files --lib -- --ignored --exact fsops::tests::perf_copy_1000 --nocapture`.
+    #[test]
+    #[ignore = "a timing, for the perf lane"]
+    fn perf_copy_1000() {
+        let d = tempfile::tempdir().unwrap();
+        let src = p(&d, "src");
+        std::fs::create_dir(&src).unwrap();
+        for i in 0..1000 {
+            std::fs::write(format!("{src}/f{i:04}.bin"), [i as u8; 4096]).unwrap();
+        }
+        let into = p(&d, "");
+        let into = into.trim_end_matches('/');
+        let mut ms: Vec<u128> = (0..10)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                let made = copy(&src, into, None, &[]).unwrap();
+                let took = started.elapsed().as_millis();
+                assert_eq!(std::fs::read_dir(&made).unwrap().count(), 1000);
+                std::fs::remove_dir_all(made).unwrap();
+                took
+            })
+            .collect();
+        println!("perf_copy_1000 runs_ms={ms:?}");
+        ms.sort();
+        let median = (ms[4] + ms[5]) / 2;
+        println!("perf_copy_1000 median_ms={median}");
+        assert!(median <= 3000, "median {median} ms is over the 3000 ms budget");
+    }
 }
