@@ -1642,8 +1642,10 @@ mod anchored {
                     })?;
                     copy_from(&from, &n, &st, &inner, &made, &n)?;
                 }
-                let mode = perm(&made.stat()?);
-                let want = mode & !(0o700 & !perm(&own));
+                // The sticky bit is kept, as `cp -RP` keeps it; a setgid the new folder got from
+                // the folder it was made in stays.
+                let mode = bits(&made.stat()?);
+                let want = (mode & !(0o700 & !perm(&own))) | (bits(&own) & 0o1000);
                 if want != mode {
                     made.chmod(want)?;
                 }
@@ -1709,6 +1711,12 @@ mod anchored {
     #[allow(clippy::unnecessary_cast)]
     fn perm(st: &libc::stat) -> u32 {
         st.st_mode as u32 & 0o777
+    }
+
+    /// [`perm`] with setuid, setgid and the sticky bit.
+    #[allow(clippy::unnecessary_cast)]
+    fn bits(st: &libc::stat) -> u32 {
+        st.st_mode as u32 & 0o7777
     }
 
     fn c_name(name: &OsStr) -> io::Result<CString> {
@@ -3867,6 +3875,33 @@ mod tests {
         let made = copy(&sparse, root.trim_end_matches('/'), None, &[]).unwrap();
         assert_eq!(std::fs::metadata(&made).unwrap().len(), 64 << 20);
         assert!(room(&made) < 1 << 20, "{} bytes taken", room(&made));
+    }
+
+    /// A shared folder's sticky bit (there, only an entry's owner may rename or remove it) is kept, on the
+    /// folder copied and on one inside it; a file's setuid and setgid are not. The file is empty: a write
+    /// clears them anyway, and macOS never sets them on a file someone other than root makes.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_keeps_a_folders_sticky_bit_and_never_a_files_setuid_or_setgid() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(p(&d, "shared/inner")).unwrap();
+        put(&d, "shared/run", b"");
+        let mode = |rel: &str| std::fs::metadata(p(&d, rel)).unwrap().permissions().mode() & 0o7777;
+        let set = |rel: &str, mode| {
+            std::fs::set_permissions(p(&d, rel), std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        set("shared", 0o1777);
+        set("shared/inner", 0o1755);
+        set("shared/run", 0o6755);
+        assert_ne!(mode("shared/run") & 0o4000, 0, "a setuid to copy");
+        let root = p(&d, "");
+        let made = copy(&p(&d, "shared"), root.trim_end_matches('/'), None, &[]).unwrap();
+        assert_eq!(made, p(&d, "shared copy"));
+        assert_eq!(mode("shared copy") & 0o1000, 0o1000);
+        assert_eq!(mode("shared copy/inner") & 0o1000, 0o1000);
+        assert_eq!(mode("shared copy/run") & 0o6000, 0);
+        assert_eq!(mode("shared copy/run") & 0o111, 0o111);
     }
 
     #[cfg(unix)]
