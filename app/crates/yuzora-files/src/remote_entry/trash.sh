@@ -52,7 +52,7 @@ while [ "$i" -le 1000 ]; do
       # The name is this move's now: a write that fails (a full disk) gives it back and says why.
       if ! msg=$( { printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$enc" "$when" >> "$t/info/$n.trashinfo"; } 2>&1); then
         rm -f -- "$t/info/$n.trashinfo"
-        fail "${msg:-the trash information for $n could not be written}"
+        fail "the trash information for $n could not be written${msg:+: $msg}"
       fi
       if msg=$(mv -- "$p" "$t/files/$n" 2>&1) && ! there "$p"; then echo done; exit 0; fi
       rm -f -- "$t/info/$n.trashinfo"

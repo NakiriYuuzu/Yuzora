@@ -74,6 +74,8 @@
     "timed": "{machine} took too long: check again",
     "unsure": "Not sure it was done: check again",
     "partial": "A partial copy may be in .yuzora-save-…",
+    "scratch_changed": "The copy's hidden folder was changed",
+    "trash_info": "Can't write in the trash",
     "other_disk": "A rename can't copy to another disk",
     "trash_disk": "The trash is on another disk",
     "no_rename": "Can't rename this here without copying",

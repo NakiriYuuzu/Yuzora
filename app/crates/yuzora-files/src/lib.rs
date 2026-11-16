@@ -961,6 +961,26 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "That item is no longer there",
             ),
             (
+                &copy,
+                Problem::Failed(
+                    "/srv/c/.yuzora-save-0123456789abcdef0123456789abcdef is not the folder just made"
+                        .into(),
+                ),
+                "a.txt",
+                "copy",
+                "The copy's hidden folder was changed",
+            ),
+            (
+                &trash,
+                Problem::Failed(
+                    "the trash information for a.txt could not be written: sh: printf: write error: Disk quota exceeded"
+                        .into(),
+                ),
+                "a.txt",
+                "trash",
+                "The disk is full",
+            ),
+            (
                 &rename,
                 timed,
                 "b.txt",
