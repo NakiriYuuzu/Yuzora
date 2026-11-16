@@ -1468,6 +1468,12 @@ mod anchored {
             let parent = Dir::open(Path::new(into)).map_err(refused)?;
             let name = OsString::from(format!("{SCRATCH_PREFIX}{}", scratch_id()));
             parent.mkdir(&name, 0o700).map_err(refused)?;
+            Self::take(parent, name, into)
+        }
+
+        /// Opens what is at `name` in `parent` once the scratch folder was made there, and takes it
+        /// for the scratch folder only if it is an empty folder of the person's.
+        fn take(parent: Dir, name: OsString, into: &str) -> Result<Self, Problem> {
             let not_made = Problem::Failed(format!(
                 "{} is not the folder just made",
                 join(into, &name.to_string_lossy())
@@ -1998,6 +2004,28 @@ mod anchored {
         assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(d.path().join("a")).unwrap(), b"a");
         assert_eq!(std::fs::read(d.path().join("b")).unwrap(), b"b");
+    }
+
+    /// A folder of the person's found at the scratch name once it was made (someone renamed it there)
+    /// is not taken, and its mode and what it holds stay as they were.
+    #[cfg(test)]
+    #[test]
+    fn a_folder_of_the_persons_at_the_scratch_name_is_not_taken_and_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let name = format!("{SCRATCH_PREFIX}{}", scratch_id());
+        let theirs = d.path().join(&name);
+        std::fs::create_dir(&theirs).unwrap();
+        std::fs::write(theirs.join("keep.txt"), b"mine").unwrap();
+        std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let into = d.path().to_string_lossy();
+        let taken = Scratch::take(Dir::open(d.path()).unwrap(), name.into(), &into);
+        assert!(
+            matches!(&taken, Err(Problem::Failed(m)) if m.ends_with("is not the folder just made"))
+        );
+        let mode = std::fs::metadata(&theirs).unwrap().permissions().mode();
+        assert_eq!(mode & 0o7777, 0o755);
+        assert_eq!(std::fs::read(theirs.join("keep.txt")).unwrap(), b"mine");
     }
 }
 
