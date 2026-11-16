@@ -820,6 +820,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
         let copy = Act::Copy("/srv/a.txt", "/srv/c", &held);
         let trash = Act::Trash("/srv/a.txt");
         // Stopped at its timeout, and the machine does not answer the clear that follows.
+        let unreachable = "lab is unreachable: cannot reach /srv/via: ssh: connect to host lab: Connection refused";
         let mut asked = 0;
         let partial = crate::remote_entry::copy_by("/srv/a.txt", "/srv/c", &held, Some("lab"), |_| {
             asked += 1;
@@ -828,8 +829,13 @@ return JSON.stringify([a, b, c, d]); }})()"#
                     seconds: 120.0,
                     machine: Some("lab".into()),
                 },
-                _ => ExecError::Remote("machine lab is not connected".into()),
+                _ => ExecError::Remote(unreachable.into()),
             })
+        })
+        .unwrap_err();
+        // The machine cannot be reached (hc 0.1.21's words): nothing was sent, so nothing may be left.
+        let never_sent = crate::remote_entry::copy_by("/srv/a.txt", "/srv/c", &held, Some("lab"), |_| {
+            Err(ExecError::Remote(unreachable.into()))
         })
         .unwrap_err();
         for (act, problem, name, kind, want) in [
@@ -925,6 +931,7 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "copy",
                 "A partial copy may be in .yuzora-save-…",
             ),
+            (&copy, never_sent, "a.txt", "copy", "Can't reach lab"),
             (
                 &copy,
                 Problem::Gone,

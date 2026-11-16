@@ -479,9 +479,7 @@ pub(crate) fn copy_by(
     let killed = match &answer {
         Ok(out) => out.code < 0,
         Err(ExecError::Spawn(_)) => false,
-        Err(ExecError::Remote(m)) => {
-            !(m.ends_with("is not connected") || m.starts_with("cannot start sh"))
-        }
+        Err(ExecError::Remote(m)) => !never_sent(m),
         Err(_) => true,
     };
     let name = from.rsplit('/').next().unwrap_or(from);
@@ -499,6 +497,16 @@ pub(crate) fn copy_by(
         }
         Err(problem) => Err(problem),
     }
+}
+
+/// Whether `hc` says a request never reached the machine, so nothing ran there. hc 0.1.21 answers
+/// `<machine> is unreachable: cannot reach …` when it cannot open the line, and `lost the line to
+/// <machine> during the call` when the line goes once the request is sent; both with the same
+/// `"kind": "unavailable"` and exit status 5, so only its words tell them apart.
+fn never_sent(message: &str) -> bool {
+    message.contains(" is unreachable: ")
+        || message.ends_with("is not connected")
+        || message.starts_with("cannot start sh")
 }
 
 #[cfg(all(test, unix))]
@@ -2869,7 +2877,8 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
     /// The line to the machine is lost during a copy: the machine kills the script's process group
     /// (no trap runs), and `hc` answers `lost the line to <machine> during the call`. The clear
     /// follows; when it cannot be sent either, the answer says where a partial copy may be. A
-    /// machine never reached was sent nothing, and gets no clear.
+    /// machine never reached was sent nothing, and gets no clear and no word of a partial copy. The
+    /// texts are hc 0.1.21's own (`/tmp/swarm-pr-a/owner-r2/e1/summary.txt`).
     #[test]
     fn a_copy_cut_short_by_a_lost_line_is_cleared_or_says_where_a_partial_copy_may_be() {
         let d = tempfile::tempdir().unwrap();
@@ -2878,13 +2887,14 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
         let dir = into.path().to_string_lossy().into_owned();
         let (_bin, path) = hung_cp();
         let lost = "lost the line to lab during the call";
+        const UNREACHABLE: &str = "lab is unreachable: cannot reach /srv/via: ssh: connect to host lab: Connection refused";
         for the_clear_answers in [true, false] {
             let mut cleared = 0;
             let got = copy_by(&src, &dir, &[], None, |req| {
                 if req.args.iter().any(|a| a == CLEAR_SCRIPT) {
                     cleared += 1;
                     if !the_clear_answers {
-                        return Err(ExecError::Remote("machine lab is not connected".into()));
+                        return Err(ExecError::Remote(UNREACHABLE.into()));
                     }
                     return fsops::run(killed_after_a_second(&["/bin/sh"], &path, req));
                 }
@@ -2914,16 +2924,22 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
                 }
             }
         }
-        let mut asked = 0;
-        let got = copy_by(&src, &dir, &[], None, |_| {
-            asked += 1;
-            Err(ExecError::Remote("machine lab is not connected".into()))
-        });
-        assert_eq!(asked, 1, "a machine never reached gets no clear");
-        assert!(
-            matches!(&got, Err(Problem::Failed(said)) if said == "machine lab is not connected"),
-            "{got:?}"
-        );
+        for never_reached in [
+            UNREACHABLE,
+            "lab is unreachable: cannot reach /srv/via: the connection closed",
+            "machine lab is not connected",
+        ] {
+            let mut asked = 0;
+            let got = copy_by(&src, &dir, &[], None, |_| {
+                asked += 1;
+                Err(ExecError::Remote(never_reached.into()))
+            });
+            assert_eq!(asked, 1, "no clear after: {never_reached}");
+            assert!(
+                matches!(&got, Err(Problem::Failed(said)) if said == never_reached),
+                "{got:?}"
+            );
+        }
     }
 
     /// [`CLEAR_SCRIPT`] under `shell`, with `env` set, for the copy `id` made in `into`: the line it
