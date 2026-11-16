@@ -1396,28 +1396,425 @@ fn copy_here(from: &str, into: &str, held: &[String]) -> Result<String, Problem>
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or(Problem::BadPath)?;
-    let scratch = scratch_path(Path::new(into));
-    private_dir(&scratch).map_err(|e| match e.kind() {
-        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
-            Problem::FolderNotWritable
-        }
-        _ => failed(e),
-    })?;
-    let made = scratch.join(name);
-    let placed = copy_entry(source, &made)
-        .map_err(failed)
-        .and_then(|()| place(&made, into, name, whole, held));
-    if placed.is_ok() {
-        let _ = std::fs::remove_dir(&scratch);
-    } else {
-        unseal(&scratch);
-        let _ = std::fs::remove_dir_all(&scratch);
+    #[cfg(unix)]
+    {
+        let scratch = anchored::Scratch::make(into)?;
+        let placed = scratch
+            .fill(source, name)
+            .and_then(|()| scratch.place(name, into, whole, held));
+        scratch.finish(placed.is_err().then_some(name));
+        placed
     }
-    placed
+    #[cfg(not(unix))]
+    {
+        let scratch = scratch_path(Path::new(into));
+        private_dir(&scratch).map_err(|e| match e.kind() {
+            io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
+                Problem::FolderNotWritable
+            }
+            _ => failed(e),
+        })?;
+        let made = scratch.join(name);
+        let placed = copy_entry(source, &made)
+            .map_err(failed)
+            .and_then(|()| place(&made, into, name, whole, held));
+        if placed.is_ok() {
+            let _ = std::fs::remove_dir(&scratch);
+        } else {
+            unseal(&scratch);
+            let _ = std::fs::remove_dir_all(&scratch);
+        }
+        placed
+    }
 }
 
-/// Lets the owner remove what a failed copy made: a folder copied without write permission (or,
-/// off Unix, a read-only file) keeps what it holds until then. Links are not followed.
+/// The local copy on Unix goes through folders it has opened, not through paths. Someone who may
+/// rename in `into` can swap the scratch folder for a link to one of the person's folders once it
+/// is made; a path through that link would write in that folder, or rename it out into `into`.
+/// Inside the scratch folder (the person's, 0700) nobody else can change anything.
+#[cfg(unix)]
+mod anchored {
+    use super::{
+        COPY_NAMES, Problem, SCRATCH_PREFIX, copy_name, join, mode_of, open_regular, scratch_id,
+    };
+    use std::ffi::{CStr, CString, OsStr, OsString};
+    use std::io;
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::path::Path;
+
+    pub(super) struct Scratch {
+        into: Dir,
+        pub(super) name: OsString,
+        dir: Dir,
+    }
+
+    impl Scratch {
+        /// Makes the scratch folder in `into` and opens it. What is opened is used only if it is
+        /// an empty folder of the person's: until then someone else may have put another one, or
+        /// a link, at its name.
+        pub(super) fn make(into: &str) -> Result<Self, Problem> {
+            let failed = |e: io::Error| Problem::Failed(e.to_string());
+            let parent = Dir::open(Path::new(into)).map_err(failed)?;
+            let name = OsString::from(format!("{SCRATCH_PREFIX}{}", scratch_id()));
+            parent.mkdir(&name, 0o700).map_err(|e| match e.kind() {
+                io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
+                    Problem::FolderNotWritable
+                }
+                _ => failed(e),
+            })?;
+            let not_made = Problem::Failed(format!(
+                "{} is not the folder just made",
+                join(into, &name.to_string_lossy())
+            ));
+            let Ok(dir) = parent.dir(&name) else {
+                return Err(not_made);
+            };
+            let Ok(st) = dir.stat() else {
+                return Err(not_made);
+            };
+            let scratch = Self {
+                into: parent,
+                name,
+                dir,
+            };
+            // SAFETY: geteuid has no preconditions.
+            if st.st_uid != unsafe { libc::geteuid() } {
+                return Err(not_made);
+            }
+            let private = perm(&st) == 0o700 || scratch.dir.chmod(0o700).is_ok();
+            if !(private && scratch.dir.names().is_ok_and(|n| n.is_empty())) {
+                scratch.finish(None);
+                return Err(not_made);
+            }
+            Ok(scratch)
+        }
+
+        pub(super) fn fill(&self, source: &Path, name: &str) -> Result<(), Problem> {
+            copy_entry_at(source, &self.dir, name.as_ref())
+                .map_err(|e| Problem::Failed(e.to_string()))
+        }
+
+        /// Renames the copy to the first free name in `into`; never over what is there.
+        pub(super) fn place(
+            &self,
+            name: &str,
+            into: &str,
+            whole: bool,
+            held: &[String],
+        ) -> Result<String, Problem> {
+            let mut last = name.to_owned();
+            for k in 0..COPY_NAMES {
+                last = copy_name(name, whole, k);
+                if self.into.stat_at(last.as_ref()).is_ok() {
+                    continue;
+                }
+                if let Some(at) = held.iter().position(|h| *h == last) {
+                    return Err(Problem::StillOpen(at));
+                }
+                match self.dir.rename_to(name.as_ref(), &self.into, last.as_ref()) {
+                    Ok(()) => return Ok(join(into, &last)),
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(Problem::Failed(e.to_string())),
+                }
+            }
+            Err(Problem::Failed(format!(
+                "every name from {name} to {last} is taken in {into}"
+            )))
+        }
+
+        /// Takes away what a failed copy `left`, then the scratch folder's name while it is still
+        /// that folder.
+        pub(super) fn finish(self, left: Option<&str>) {
+            if let Some(name) = left {
+                remove_at(&self.dir, name.as_ref());
+            }
+            let same = match (self.into.stat_at(&self.name), self.dir.stat()) {
+                (Ok(a), Ok(b)) => (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino),
+                _ => false,
+            };
+            if same {
+                let _ = self.into.unlink(&self.name, true);
+            }
+        }
+    }
+
+    /// Copies one entry into `at` as `name`, and all a folder holds. A new entry gets the mode
+    /// `cp` gives it: the original's, less the umask.
+    fn copy_entry_at(from: &Path, at: &Dir, name: &OsStr) -> io::Result<()> {
+        let said = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", from.display()));
+        let meta = std::fs::symlink_metadata(from).map_err(said)?;
+        let kind = meta.file_type();
+        if kind.is_symlink() {
+            return std::fs::read_link(from)
+                .and_then(|to| at.symlink(&to, name))
+                .map_err(said);
+        }
+        if kind.is_dir() {
+            // The owner may fill it whatever the original's mode; what it lacks is taken away after.
+            at.mkdir(name, mode_of(&meta) | 0o700)?;
+            let made = at.dir(name)?;
+            for entry in std::fs::read_dir(from).map_err(said)? {
+                let entry = entry.map_err(said)?;
+                copy_entry_at(&entry.path(), &made, &entry.file_name())?;
+            }
+            let mode = perm(&made.stat()?);
+            let want = mode & !(0o700 & !mode_of(&meta));
+            if want != mode {
+                made.chmod(want)?;
+            }
+            return Ok(());
+        }
+        if !kind.is_file() {
+            return Err(io::Error::other(format!(
+                "{} is not a file, a folder or a link",
+                from.display()
+            )));
+        }
+        let mut source = open_regular(from).map_err(said)?;
+        let mut copy = at.create(name, mode_of(&meta))?;
+        io::copy(&mut source, &mut copy).map_err(said)?;
+        Ok(())
+    }
+
+    /// Takes away `name` in `at`, all a folder holds first. A folder copied without write
+    /// permission is given it back; links are not followed.
+    fn remove_at(at: &Dir, name: &OsStr) {
+        let Ok(st) = at.stat_at(name) else {
+            return;
+        };
+        let folder = (st.st_mode & libc::S_IFMT) == libc::S_IFDIR;
+        if folder {
+            let _ = at.chmod_at(name, perm(&st) | 0o700);
+            if let Ok(inner) = at.dir(name)
+                && let Ok(names) = inner.names()
+            {
+                for n in names {
+                    remove_at(&inner, &n);
+                }
+            }
+        }
+        let _ = at.unlink(name, folder);
+    }
+
+    #[allow(clippy::unnecessary_cast)]
+    fn perm(st: &libc::stat) -> u32 {
+        st.st_mode as u32 & 0o777
+    }
+
+    fn c_name(name: &OsStr) -> io::Result<CString> {
+        CString::new(name.as_bytes()).map_err(|_| io::ErrorKind::InvalidInput.into())
+    }
+
+    fn sys(r: libc::c_int) -> io::Result<libc::c_int> {
+        if r < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(r)
+        }
+    }
+
+    /// A folder opened once: what is done through it stays in that folder, whatever is renamed
+    /// or put at its path meanwhile.
+    struct Dir(OwnedFd);
+
+    impl Dir {
+        const FLAGS: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+
+        /// The folder at `path`, a link to one followed.
+        fn open(path: &Path) -> io::Result<Self> {
+            let path = c_name(path.as_os_str())?;
+            // SAFETY: a NUL-terminated path that outlives the call.
+            Self::own(unsafe { libc::open(path.as_ptr(), Self::FLAGS) })
+        }
+
+        /// The folder `name` in this one; a link is refused.
+        fn dir(&self, name: &OsStr) -> io::Result<Self> {
+            let name = c_name(name)?;
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            Self::own(unsafe {
+                libc::openat(self.fd(), name.as_ptr(), Self::FLAGS | libc::O_NOFOLLOW)
+            })
+        }
+
+        fn own(fd: libc::c_int) -> io::Result<Self> {
+            let fd = sys(fd)?;
+            // SAFETY: a descriptor just opened, owned by nothing else.
+            Ok(Self(unsafe { OwnedFd::from_raw_fd(fd) }))
+        }
+
+        fn fd(&self) -> libc::c_int {
+            self.0.as_raw_fd()
+        }
+
+        fn stat(&self) -> io::Result<libc::stat> {
+            let mut st = std::mem::MaybeUninit::uninit();
+            // SAFETY: room for one stat, filled when the call succeeds.
+            sys(unsafe { libc::fstat(self.fd(), st.as_mut_ptr()) })?;
+            // SAFETY: the call succeeded.
+            Ok(unsafe { st.assume_init() })
+        }
+
+        /// What is at `name` here; a link is not followed.
+        fn stat_at(&self, name: &OsStr) -> io::Result<libc::stat> {
+            let name = c_name(name)?;
+            let mut st = std::mem::MaybeUninit::uninit();
+            // SAFETY: as in `stat`, with a NUL-terminated name.
+            sys(unsafe {
+                libc::fstatat(
+                    self.fd(),
+                    name.as_ptr(),
+                    st.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            })?;
+            // SAFETY: the call succeeded.
+            Ok(unsafe { st.assume_init() })
+        }
+
+        fn mkdir(&self, name: &OsStr, mode: u32) -> io::Result<()> {
+            let name = c_name(name)?;
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            sys(unsafe { libc::mkdirat(self.fd(), name.as_ptr(), mode as libc::mode_t) }).map(drop)
+        }
+
+        /// A new file `name` here: never one that is there, nor through a link.
+        fn create(&self, name: &OsStr, mode: u32) -> io::Result<std::fs::File> {
+            let name = c_name(name)?;
+            let flags =
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            let fd = sys(unsafe {
+                libc::openat(self.fd(), name.as_ptr(), flags, mode as libc::c_uint)
+            })?;
+            // SAFETY: a descriptor just opened, owned by nothing else.
+            Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+        }
+
+        fn symlink(&self, target: &Path, name: &OsStr) -> io::Result<()> {
+            let (target, name) = (c_name(target.as_os_str())?, c_name(name)?);
+            // SAFETY: NUL-terminated strings and a descriptor this owns.
+            sys(unsafe { libc::symlinkat(target.as_ptr(), self.fd(), name.as_ptr()) }).map(drop)
+        }
+
+        fn chmod(&self, mode: u32) -> io::Result<()> {
+            // SAFETY: a descriptor this owns.
+            sys(unsafe { libc::fchmod(self.fd(), mode as libc::mode_t) }).map(drop)
+        }
+
+        /// Follows a link: only for a folder in the scratch folder, which nobody else can change.
+        fn chmod_at(&self, name: &OsStr, mode: u32) -> io::Result<()> {
+            let name = c_name(name)?;
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            sys(unsafe { libc::fchmodat(self.fd(), name.as_ptr(), mode as libc::mode_t, 0) })
+                .map(drop)
+        }
+
+        fn unlink(&self, name: &OsStr, folder: bool) -> io::Result<()> {
+            let name = c_name(name)?;
+            let flags = if folder { libc::AT_REMOVEDIR } else { 0 };
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            sys(unsafe { libc::unlinkat(self.fd(), name.as_ptr(), flags) }).map(drop)
+        }
+
+        /// The names in this folder.
+        fn names(&self) -> io::Result<Vec<OsString>> {
+            // fdopendir keeps the descriptor it is given: a copy of this one.
+            // SAFETY: a descriptor this owns.
+            let fd = sys(unsafe { libc::fcntl(self.fd(), libc::F_DUPFD_CLOEXEC, 0) })?;
+            // SAFETY: a descriptor just made, handed over.
+            let listing = unsafe { libc::fdopendir(fd) };
+            if listing.is_null() {
+                let e = io::Error::last_os_error();
+                // SAFETY: fdopendir did not take it.
+                unsafe { libc::close(fd) };
+                return Err(e);
+            }
+            let mut names = Vec::new();
+            // SAFETY: `listing` is open until closedir; each entry is read before the next call.
+            unsafe {
+                libc::rewinddir(listing);
+                loop {
+                    let entry = libc::readdir(listing);
+                    if entry.is_null() {
+                        break;
+                    }
+                    let name = CStr::from_ptr((*entry).d_name.as_ptr()).to_bytes();
+                    if name != b"." && name != b".." {
+                        names.push(OsStr::from_bytes(name).to_owned());
+                    }
+                }
+                libc::closedir(listing);
+            }
+            Ok(names)
+        }
+
+        /// Renames `name` here to `to` in `into`; never over what is there.
+        fn rename_to(&self, name: &OsStr, into: &Dir, to: &OsStr) -> io::Result<()> {
+            let (a, b) = (c_name(name)?, c_name(to)?);
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            {
+                // SAFETY: NUL-terminated names and descriptors these own.
+                #[cfg(target_os = "macos")]
+                let done = unsafe {
+                    libc::renameatx_np(
+                        self.fd(),
+                        a.as_ptr(),
+                        into.fd(),
+                        b.as_ptr(),
+                        libc::RENAME_EXCL,
+                    )
+                };
+                // SAFETY: as above.
+                #[cfg(target_os = "linux")]
+                let done = unsafe {
+                    libc::renameat2(
+                        self.fd(),
+                        a.as_ptr(),
+                        into.fd(),
+                        b.as_ptr(),
+                        libc::RENAME_NOREPLACE,
+                    )
+                };
+                if done == 0 {
+                    return Ok(());
+                }
+                let e = io::Error::last_os_error();
+                if !matches!(
+                    e.raw_os_error(),
+                    Some(libc::EINVAL | libc::ENOTSUP | libc::ENOSYS)
+                ) {
+                    return Err(e);
+                }
+            }
+            // Where the system cannot refuse to replace, what is there is looked at first.
+            if into.stat_at(to).is_ok() {
+                return Err(io::ErrorKind::AlreadyExists.into());
+            }
+            // SAFETY: NUL-terminated names and descriptors these own.
+            sys(unsafe { libc::renameat(self.fd(), a.as_ptr(), into.fd(), b.as_ptr()) }).map(drop)
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn a_rename_onto_a_taken_name_is_refused_and_both_stay() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a"), b"a").unwrap();
+        std::fs::write(d.path().join("b"), b"b").unwrap();
+        let here = Dir::open(d.path()).unwrap();
+        let e = here
+            .rename_to("a".as_ref(), &here, "b".as_ref())
+            .unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(d.path().join("a")).unwrap(), b"a");
+        assert_eq!(std::fs::read(d.path().join("b")).unwrap(), b"b");
+    }
+}
+
+/// Lets the owner remove what a failed copy made: a read-only file keeps what it holds until
+/// then. Links are not followed.
+#[cfg(not(unix))]
 fn unseal(path: &Path) {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return;
@@ -1425,15 +1822,6 @@ fn unseal(path: &Path) {
     if meta.file_type().is_symlink() {
         return;
     }
-    #[cfg(unix)]
-    if meta.is_dir() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let _ = std::fs::set_permissions(
-            path,
-            std::fs::Permissions::from_mode(mode_of(&meta) | 0o700),
-        );
-    }
-    #[cfg(not(unix))]
     if meta.permissions().readonly() {
         let mut writable = meta.permissions();
         writable.set_readonly(false);
@@ -1448,16 +1836,13 @@ fn unseal(path: &Path) {
     }
 }
 
-/// A folder only its owner can enter.
+#[cfg(not(unix))]
 fn private_dir(path: &Path) -> io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(path)
+    std::fs::DirBuilder::new().create(path)
 }
 
-/// Copies one entry, and all a folder holds. A new entry gets the mode `cp` gives it: the
-/// original's, less the umask.
+/// Copies one entry, and all a folder holds.
+#[cfg(not(unix))]
 fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
     let said = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", from.display()));
     let meta = std::fs::symlink_metadata(from).map_err(said)?;
@@ -1466,23 +1851,10 @@ fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
         return link_like(from, to).map_err(said);
     }
     if kind.is_dir() {
-        let mut builder = std::fs::DirBuilder::new();
-        // The owner may fill it whatever the original's mode; what it lacks is taken away after.
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, mode_of(&meta) | 0o700);
-        builder.create(to)?;
+        std::fs::create_dir(to)?;
         for entry in std::fs::read_dir(from).map_err(said)? {
             let entry = entry.map_err(said)?;
             copy_entry(&entry.path(), &to.join(entry.file_name()))?;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let made = mode_of(&std::fs::symlink_metadata(to)?);
-            let want = made & !(0o700 & !mode_of(&meta));
-            if want != made {
-                std::fs::set_permissions(to, std::fs::Permissions::from_mode(want))?;
-            }
         }
         return Ok(());
     }
@@ -1493,13 +1865,11 @@ fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
         )));
     }
     let mut source = open_regular(from).map_err(said)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode_of(&meta));
-    let mut copy = options.open(to)?;
+    let mut copy = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)?;
     io::copy(&mut source, &mut copy).map_err(said)?;
-    #[cfg(not(unix))]
     if meta.permissions().readonly() {
         std::fs::set_permissions(to, meta.permissions())?;
     }
@@ -1510,11 +1880,6 @@ fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
 fn mode_of(meta: &std::fs::Metadata) -> u32 {
     use std::os::unix::fs::PermissionsExt as _;
     meta.permissions().mode() & 0o777
-}
-
-#[cfg(unix)]
-fn link_like(from: &Path, to: &Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(std::fs::read_link(from)?, to)
 }
 
 /// A link to a folder is made as one; a link to nothing, as a link to a file.
@@ -1529,6 +1894,7 @@ fn link_like(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 /// Renames the copy made at `made` to the first free name in `into`; never over what is there.
+#[cfg(not(unix))]
 fn place(
     made: &Path,
     into: &str,
@@ -3319,6 +3685,56 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(held_in(&p(&d, "box")), ["inner", "note", "pipe"]);
+    }
+
+    /// Someone who may rename in a shared folder swaps the scratch folder of a copy into it for a
+    /// link to the person's home: before the copy is written (the home has no folder of that
+    /// name), or after it and before it is renamed in (the home has one).
+    #[cfg(unix)]
+    #[test]
+    fn a_scratch_folder_swapped_for_a_link_gets_nothing_written_through_it_nor_moved_out_of_it() {
+        use std::os::unix::fs::symlink;
+        for before_the_copy in [true, false] {
+            let d = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(p(&d, "shared/.config/sub")).unwrap();
+            put(&d, "shared/.config/sub/planted", b"theirs");
+            std::fs::create_dir(p(&d, "home")).unwrap();
+            if !before_the_copy {
+                std::fs::create_dir(p(&d, "home/.config")).unwrap();
+                put(&d, "home/.config/secret", b"mine");
+            }
+            let home = held_in(&p(&d, "home"));
+            let into = p(&d, "shared");
+            let swap = |name: &std::ffi::OsStr| {
+                let at = Path::new(&into).join(name);
+                std::fs::rename(&at, p(&d, "moved")).unwrap();
+                symlink(p(&d, "home"), &at).unwrap();
+            };
+            let scratch = anchored::Scratch::make(&into).unwrap();
+            if before_the_copy {
+                swap(&scratch.name);
+            }
+            scratch
+                .fill(Path::new(&p(&d, "shared/.config")), ".config")
+                .unwrap();
+            if !before_the_copy {
+                swap(&scratch.name);
+            }
+            let placed = scratch.place(".config", &into, true, &[]);
+            scratch.finish(placed.is_err().then_some(".config"));
+            let why = format!("swapped before the copy: {before_the_copy}");
+            assert_eq!(placed, Ok(p(&d, "shared/.config copy")), "{why}");
+            assert_eq!(
+                read_bytes(&p(&d, "shared/.config copy/sub/planted")),
+                b"theirs",
+                "{why}"
+            );
+            assert_eq!(held_in(&p(&d, "home")), home, "{why}");
+            if !before_the_copy {
+                assert_eq!(held_in(&p(&d, "home/.config")), ["secret"], "{why}");
+            }
+            assert!(held_in(&p(&d, "moved")).is_empty(), "{why}");
+        }
     }
 
     #[cfg(unix)]
