@@ -228,7 +228,7 @@ export default class FilesSidebar extends View {
     cx.notify();
   }
 
-  // Requests from the popup copy (rename, new file …) and refreshes after its actions.
+  // Requests from the popup copy (rename, new file, copy, trash …) and refreshes after its actions.
   requests(cx) {
     const req = shared(REQUEST);
     if (req?.seq && req.seq > this.lastRequest) {
@@ -244,8 +244,19 @@ export default class FilesSidebar extends View {
 
   // The popup's request, for the machine and the folder this tree is.
   answer(req, cx) {
+    if (req.action === "copy" || req.action === "trash") { this.act(req); return; }
     const here = this.here;
     if (here?.root && (req.on ?? null) === (here.on ?? null) && this.store.owns(here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
+  }
+
+  // A copy or a move to the trash from the popup, done here: closing the popup ends its copy and every call it
+  // started. The paths are whole, so any copy of the sidebar can do it; the first one to answer takes it, once.
+  act(req) {
+    const now = shared(REQUEST);
+    if (now?.seq !== req.seq || now.taken) return;
+    setShared(REQUEST, { ...now, taken: true });
+    if (req.action === "copy") copyInto(req.from, req.into, req.on);
+    else trashIt(req.path, req.on);
   }
 
   startEdit(kind, path, dir, cx) {
@@ -530,12 +541,12 @@ function menuItems(m) {
     { label: t("menu.new_file"), run: () => request("new-file", m, { dir: folder }) },
     { label: t("menu.new_folder"), run: () => request("new-folder", m, { dir: folder }) },
     { label: t("menu.rename"), run: () => request("rename", m, { path: m.abs }) },
-    { label: t("menu.trash"), danger: true, run: () => trashIt(m.abs, on) },
+    { label: t("menu.trash"), danger: true, run: () => request("trash", m, { path: m.abs }) },
     null,
     { label: t("menu.copy"), run: () => setShared(CLIPBOARD, { on, path: m.abs, seq: Date.now() }) },
     // Only onto the machine it was copied on: a copy does not cross machines.
-    { label: t("menu.paste"), enabled: Boolean(clip?.path) && (clip.on ?? null) === on, run: () => copyInto(clip.path, folder, on) },
-    { label: t("menu.duplicate"), run: () => copyInto(m.abs, parent(m.abs), on) },
+    { label: t("menu.paste"), enabled: Boolean(clip?.path) && (clip.on ?? null) === on, run: () => request("copy", m, { from: clip.path, into: folder }) },
+    { label: t("menu.duplicate"), run: () => request("copy", m, { from: m.abs, into: parent(m.abs) }) },
     null,
     { label: t("menu.copy_path"), run: () => copyText(m.abs) },
     { label: t("menu.copy_relative"), run: () => copyText(relPath) },
