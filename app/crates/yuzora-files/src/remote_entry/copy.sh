@@ -28,7 +28,7 @@ if [ -d "$from" ] && [ ! -L "$from" ]; then
     [ -n "$up" ] || up=/
   done
 fi
-made= in=
+made= in= was=
 leave() {
   [ -n "$made" ] || return 0
   if [ -n "$in" ]; then
@@ -36,8 +36,11 @@ leave() {
     find "./$id" -type d -exec chmod u+rwx {} \; 2>/dev/null
     rm -rf "./$id" 2>/dev/null
   fi
-  cd / 2>/dev/null
-  rmdir -- "$sd" 2>/dev/null
+  # The name only while it is still the folder made: someone may have renamed another one to it.
+  if [ -n "$was" ] && [ "$(idof "$sd")" = "$was" ]; then
+    cd / 2>/dev/null
+    rmdir -- "$sd" 2>/dev/null
+  fi
   return 0
 }
 trap leave EXIT
@@ -63,8 +66,9 @@ while [ "$k" -lt 1000 ]; do
     j=$((j + 1))
     if [ "$held" = "$cand" ]; then echo "refused open $j"; exit 0; fi
   done
-  if [ -n "$mine" ] && [ "$(idof "$sd/$id")" != "$mine" ]; then fail "$sd is not the folder the copy was made in"; fi
-  said=$(sh -c "$move" sh "$sd/$id" "$to" 0) || exit 1
+  # Relative to the folder entered and checked (move.sh inherits it): $sd may name another folder by now.
+  if [ -n "$mine" ] && [ "$(idof "./$id")" != "$mine" ]; then fail "$sd is not the folder the copy was made in"; fi
+  said=$(sh -c "$move" sh "./$id" "$to" 0) || exit 1
   case $said in
     done)
       if [ -n "$mine" ] && [ "$(idof "$to")" != "$mine" ]; then fail "$to is there, but it is not the copy that was made"; fi

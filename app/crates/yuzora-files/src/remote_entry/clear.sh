@@ -19,5 +19,5 @@ if there "./$id"; then
   find "./$id" -type d -exec chmod u+rwx {} \; 2>/dev/null
   rm -rf "./$id" 2>/dev/null
 fi
-cd / && rmdir -- "$sd" 2>/dev/null && { echo done; exit 0; }
+[ "$(idof "$sd")" = "$was" ] && cd / && rmdir -- "$sd" 2>/dev/null && { echo done; exit 0; }
 echo left

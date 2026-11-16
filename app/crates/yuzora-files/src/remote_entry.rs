@@ -2717,6 +2717,82 @@ exec mv -n -- "$from" "$to""#,
         }
     }
 
+    /// Someone who may rename in `into` swaps the scratch folder for another folder after the
+    /// copy's last look at it and before the rename: `<hex>` in that folder is not what is renamed
+    /// in, and that folder is not removed, even when empty.
+    #[test]
+    fn a_scratch_folder_swapped_just_before_the_rename_gives_up_nothing_of_the_folder_put_there() {
+        let d = tempfile::tempdir().unwrap();
+        let src = put(d.path(), "a.txt", b"mine");
+        let swap = r#"d=$(pwd -P) id=${d##*/.yuzora-save-}
+mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" && echo theirs > "$d/$id/precious"; fi"#;
+        // The rename itself (GNU mv -nT, or perl's rename): the swap, then the real one.
+        let mv = format!("case \" $* \" in *\" -nT \"*) {swap} ;; esac\nexec mv \"$@\"");
+        let perl = format!("case \"$2\" in *rename*) {swap} ;; esac\nexec perl \"$@\"");
+        let (_bin, path) = shimmed(&[("mv", mv.as_str()), ("perl", perl.as_str())]);
+        for shell in shells() {
+            for entry in ["1", ""] {
+                let into = tempfile::tempdir().unwrap();
+                let dir = into.path().to_string_lossy().into_owned();
+                let env = [("PATH", path.as_str()), ("SWAP_ENTRY", entry)];
+                let got = copy_under(&shell, &env, &Act::Copy(&src, &dir, &[]));
+                let why = format!("{shell:?}, an entry at the hex: {entry:?}");
+                assert_eq!(
+                    got.as_ref().ok(),
+                    Some(&format!("{dir}/a.txt")),
+                    "{why}: {got:?}"
+                );
+                assert_eq!(
+                    fs::read(into.path().join("a.txt")).unwrap(),
+                    b"mine",
+                    "{why}"
+                );
+                let put_there: Vec<String> = scratch_left(into.path())
+                    .into_iter()
+                    .filter(|n| !n.ends_with(".away"))
+                    .collect();
+                assert_eq!(put_there.len(), 1, "{why}: {:?}", names(into.path()));
+                let held = names(&into.path().join(&put_there[0]));
+                if entry.is_empty() {
+                    assert!(held.is_empty(), "{why}: {held:?}");
+                } else {
+                    let id = put_there[0].trim_start_matches(fsops::SCRATCH_PREFIX);
+                    assert_eq!(held, [id], "{why}");
+                    let precious = into.path().join(&put_there[0]).join(id).join("precious");
+                    assert_eq!(fs::read(precious).unwrap(), b"theirs\n", "{why}");
+                }
+            }
+        }
+    }
+
+    /// Someone renames another folder to the scratch name while the clear runs: the clear takes
+    /// the copy out of the folder it entered and checked, and leaves the one put there, even empty.
+    #[test]
+    fn a_clear_leaves_a_folder_renamed_to_the_scratch_name_while_it_ran() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let swap = "case \" $* \" in *\" -rf \"*) d=$(pwd -P); mv \"$d\" \"$d.away\" && mkdir \"$d\" ;; esac\nexec rm \"$@\"";
+        let (_bin, path) = shimmed(&[("rm", swap)]);
+        for shell in shells() {
+            let d = tempfile::tempdir().unwrap();
+            let into = d.path().join("into");
+            let scratch = format!("{}{id}", fsops::SCRATCH_PREFIX);
+            fs::create_dir_all(into.join(&scratch).join(id).join("half")).unwrap();
+            fs::write(into.join(&scratch).join(id).join("half/f"), "f").unwrap();
+            let said = clear_under(&shell, &[("PATH", path.as_str())], &into, id);
+            assert_eq!(said, "left", "{shell:?}");
+            assert!(
+                into.join(&scratch).is_dir(),
+                "{shell:?}: {:?}",
+                names(&into)
+            );
+            assert!(names(&into.join(&scratch)).is_empty(), "{shell:?}");
+            assert!(
+                names(&into.join(format!("{scratch}.away"))).is_empty(),
+                "{shell:?}"
+            );
+        }
+    }
+
     /// The line to the machine is lost during a copy: the machine kills the script's process group
     /// (no trap runs), and `hc` answers `lost the line to <machine> during the call`. The clear
     /// follows; when it cannot be sent either, the answer says where a partial copy may be. A
@@ -2777,13 +2853,15 @@ exec mv -n -- "$from" "$to""#,
         );
     }
 
-    /// [`CLEAR_SCRIPT`] under `shell` for the copy `id` made in `into`: the line it prints.
-    fn clear_under(shell: &[&str], into: &Path, id: &str) -> String {
+    /// [`CLEAR_SCRIPT`] under `shell`, with `env` set, for the copy `id` made in `into`: the line it
+    /// prints.
+    fn clear_under(shell: &[&str], env: &[(&str, &str)], into: &Path, id: &str) -> String {
         let into = into.to_string_lossy();
         let req = fsops::sh_request(None, CLEAR_SCRIPT, &[&into, id], TIMEOUT, MAX_OUTPUT);
         let out = Command::new(shell[0])
             .args(&shell[1..])
             .args(&req.args)
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .output()
             .unwrap();
@@ -2802,7 +2880,7 @@ exec mv -n -- "$from" "$to""#,
             // The folder renamed away: the copy is out of sight, not gone.
             let moved = d.path().join("moved");
             fs::rename(&into, &moved).unwrap();
-            assert_eq!(clear_under(&shell, &into, id), "left", "{shell:?}");
+            assert_eq!(clear_under(&shell, &[], &into, id), "left", "{shell:?}");
             assert!(
                 moved.join(&scratch).join(id).join("half/f").exists(),
                 "{shell:?}"
@@ -2810,13 +2888,13 @@ exec mv -n -- "$from" "$to""#,
             // A folder that cannot be entered.
             if !is_root() {
                 fs::set_permissions(&moved, fs::Permissions::from_mode(0o600)).unwrap();
-                assert_eq!(clear_under(&shell, &moved, id), "left", "{shell:?}");
+                assert_eq!(clear_under(&shell, &[], &moved, id), "left", "{shell:?}");
                 fs::set_permissions(&moved, fs::Permissions::from_mode(0o755)).unwrap();
             }
             // In sight: cleared, then known to be gone.
-            assert_eq!(clear_under(&shell, &moved, id), "done", "{shell:?}");
+            assert_eq!(clear_under(&shell, &[], &moved, id), "done", "{shell:?}");
             assert!(names(&moved).is_empty(), "{shell:?}");
-            assert_eq!(clear_under(&shell, &moved, id), "done", "{shell:?}");
+            assert_eq!(clear_under(&shell, &[], &moved, id), "done", "{shell:?}");
         }
     }
 
