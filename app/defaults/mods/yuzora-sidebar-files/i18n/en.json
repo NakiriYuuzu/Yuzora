@@ -68,6 +68,7 @@
     "exists": "{name} already exists",
     "writable": "The folder is not writable",
     "denied": "Permission denied",
+    "denied_at": "Permission denied: {name}",
     "no_folder": "The folder no longer exists",
     "gone": "That item is no longer there",
     "unreachable": "Can't reach {machine}",

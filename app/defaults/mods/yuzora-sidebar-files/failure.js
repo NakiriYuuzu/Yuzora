@@ -13,6 +13,17 @@ const short = (text, max) => (text.length <= max ? text : `${text.slice(0, max -
 // A path in a message, as the name it ends in.
 const PATH = /(?<!\w)(?:[A-Za-z]:)?[\\/](?:[^\s\\/:;,]+[\\/])*([^\s\\/:;,]+)/g;
 
+// The entry a copy was refused inside the tree it copies: the name the path before the first "Permission denied" ends
+// in, unless that is the item copied or the copy's hidden folder. GNU cp quotes the path; BSD cp and the copy made
+// here end it with ": ".
+function refusedIn(text, name) {
+  const before = text.slice(0, text.search(/Permission denied|Access is denied/i)).replace(/:\s*$/, "");
+  const quoted = before.match(/['‘]([^'’]*)['’][^'‘’]*$/), at = before.lastIndexOf(": ");
+  const path = quoted ? quoted[1] : at < 0 ? "" : before.slice(at + 2);
+  const last = /[\\/]/.test(path) ? path.split(/[\\/]/).pop() : "";
+  return !last || last === name || /^(?:\.yuzora-save-)?[0-9a-f]{32}$/.test(last) ? "" : last;
+}
+
 /**
  * The cause of `error` (what a host call rejected with) in a line of at most LIMIT characters.
  * `name`: the name the change was for; `machine`: where, null for this one; `kind`: the toast it is for
@@ -48,7 +59,11 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   if (/this needs sh on/.test(text)) return tell("no_shell");
   if (/path has to start with/.test(text)) return tell("bad_path");
   if (/you may not change/.test(text)) return tell("writable");
-  if (/Permission denied|Access is denied/i.test(text)) return tell(making || kind === "rename" ? "writable" : "denied");
+  if (/Permission denied|Access is denied/i.test(text)) {
+    if (making || kind === "rename") return tell("writable");
+    const entry = kind === "copy" ? refusedIn(text, name) : "";
+    return entry ? tell("denied_at", { name: short(entry, NAME_MAX) }) : tell("denied");
+  }
   if (/Read-only file system/.test(text)) return tell("read_only");
   if (/No space left|not enough space/i.test(text)) return tell("full");
   if (/name too long/i.test(text)) return tell("too_long");

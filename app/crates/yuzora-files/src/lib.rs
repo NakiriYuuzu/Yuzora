@@ -791,6 +791,19 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "The folder is not writable",
             ));
             std::fs::set_permissions(at("ro"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            // A copy refused inside the tree it copies names the entry, here and by this machine's cp.
+            let (tree, out) = (at("tree"), at("out"));
+            std::fs::create_dir_all(at("tree/sub")).unwrap();
+            std::fs::create_dir(&out).unwrap();
+            std::fs::write(at("tree/sub/secret.txt"), "").unwrap();
+            let shut = std::fs::Permissions::from_mode(0o000);
+            std::fs::set_permissions(at("tree/sub/secret.txt"), shut).unwrap();
+            let denied = "Permission denied: secret.txt";
+            let here = failed(fsops::copy(&tree, &out, None, &[]).map(drop));
+            cases.push((here, "tree", "copy", denied));
+            let by_cp = crate::remote_entry::copy_by(&tree, &out, &[], None, fsops::run);
+            let by_cp = Act::Copy(&tree, &out, &[]).describe(&by_cp.unwrap_err(), "lab");
+            cases.push((by_cp, "tree", "copy", denied));
         }
         let timed = interpret(Err(ExecError::TimedOut {
             seconds: 30.0,
