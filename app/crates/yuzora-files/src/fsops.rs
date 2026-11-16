@@ -1610,7 +1610,17 @@ mod anchored {
         match st.st_mode & libc::S_IFMT {
             libc::S_IFLNK => {
                 let target = src.read_link(name).map_err(opened)?;
-                at.symlink(&target, to)
+                at.symlink(&target, to)?;
+                #[cfg(target_os = "macos")]
+                {
+                    let link = src.open_link(name).map_err(opened)?;
+                    if !same(&stat_of(link.as_raw_fd())?) {
+                        return Err(changed());
+                    }
+                    let made = at.open_link(to)?;
+                    keep(link.as_raw_fd(), made.as_raw_fd(), libc::COPYFILE_XATTR).map_err(said)?;
+                }
+                Ok(())
             }
             libc::S_IFDIR => {
                 let from = src.dir(name).map_err(opened)?;
@@ -1621,6 +1631,8 @@ mod anchored {
                 // The owner may fill it whatever the original's mode; what it lacks is taken away after.
                 at.mkdir(to, perm(&own) | 0o700)?;
                 let made = at.dir(to)?;
+                #[cfg(target_os = "macos")]
+                keep(from.fd(), made.fd(), libc::COPYFILE_XATTR).map_err(said)?;
                 for n in from.names().map_err(said)? {
                     let inner = shown.join(&n);
                     let st = from.stat_at(&n).map_err(|e| {
@@ -1636,14 +1648,13 @@ mod anchored {
                 Ok(())
             }
             libc::S_IFREG => {
-                let mut source = src.open_file(name).map_err(opened)?;
+                let source = src.open_file(name).map_err(opened)?;
                 let own = stat_of(source.as_raw_fd())?;
                 if !same(&own) {
                     return Err(changed());
                 }
-                let mut copy = at.create(to, perm(&own))?;
-                io::copy(&mut source, &mut copy).map_err(said)?;
-                Ok(())
+                let copy = at.create(to, perm(&own))?;
+                fill(&source, &copy).map_err(said)
             }
             _ => Err(io::Error::other(format!(
                 "{} is not a file, a folder or a link",
@@ -1670,6 +1681,27 @@ mod anchored {
             }
         }
         let _ = at.unlink(name, folder);
+    }
+
+    /// Puts what `source` holds in `copy`: on macOS with its extended attributes, through `fcopyfile` as a
+    /// save keeps them ([`super::keep_extended`]), and with the holes of a sparse file kept as holes.
+    #[cfg(target_os = "macos")]
+    fn fill(source: &std::fs::File, copy: &std::fs::File) -> io::Result<()> {
+        let flags = libc::COPYFILE_DATA | libc::COPYFILE_DATA_SPARSE | libc::COPYFILE_XATTR;
+        keep(source.as_raw_fd(), copy.as_raw_fd(), flags)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn fill(mut source: &std::fs::File, mut copy: &std::fs::File) -> io::Result<()> {
+        io::copy(&mut source, &mut copy).map(drop)
+    }
+
+    /// What `flags` name, from one handle onto the other. `COPYFILE_XATTR` is what `cp -RP` keeps:
+    /// extended attributes (Finder tags, a resource fork, the quarantine flag), not the ACL.
+    #[cfg(target_os = "macos")]
+    fn keep(from: libc::c_int, to: libc::c_int, flags: libc::copyfile_flags_t) -> io::Result<()> {
+        // SAFETY: both descriptors are open for the call; no state is passed.
+        sys(unsafe { libc::fcopyfile(from, to, std::ptr::null_mut(), flags) }).map(drop)
     }
 
     #[allow(clippy::unnecessary_cast)]
@@ -1774,6 +1806,18 @@ mod anchored {
         fn open_file(&self, name: &OsStr) -> io::Result<std::fs::File> {
             let name = c_name(name)?;
             let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            let fd = sys(unsafe { libc::openat(self.fd(), name.as_ptr(), flags) })?;
+            // SAFETY: a descriptor just opened, owned by nothing else.
+            Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+        }
+
+        /// The link `name` here itself, for its attributes; anything else there is opened as it is, and a
+        /// FIFO is not waited on.
+        #[cfg(target_os = "macos")]
+        fn open_link(&self, name: &OsStr) -> io::Result<std::fs::File> {
+            let name = c_name(name)?;
+            let flags = libc::O_RDONLY | libc::O_SYMLINK | libc::O_NONBLOCK | libc::O_CLOEXEC;
             // SAFETY: a NUL-terminated name and a descriptor this owns.
             let fd = sys(unsafe { libc::openat(self.fd(), name.as_ptr(), flags) })?;
             // SAFETY: a descriptor just opened, owned by nothing else.
@@ -3725,6 +3769,88 @@ mod tests {
             "{:?}",
             held(&d)
         );
+    }
+
+    /// An extended attribute of the entry at `path` itself (a link is not followed); false where it cannot be set.
+    #[cfg(target_os = "macos")]
+    fn set_attr(path: &str, name: &str, value: &[u8]) -> bool {
+        let new = |s: &str| std::ffi::CString::new(s).unwrap();
+        let (path, name) = (new(path), new(name));
+        let (at, len) = (value.as_ptr().cast(), value.len());
+        let flags = libc::XATTR_NOFOLLOW;
+        // SAFETY: NUL-terminated strings and a value as long as said.
+        unsafe { libc::setxattr(path.as_ptr(), name.as_ptr(), at, len, 0, flags) == 0 }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn attr(path: &str, name: &str) -> Option<Vec<u8>> {
+        let new = |s: &str| std::ffi::CString::new(s).unwrap();
+        let (path, name) = (new(path), new(name));
+        let mut value = vec![0u8; 256];
+        let (at, len) = (value.as_mut_ptr().cast(), value.len());
+        let flags = libc::XATTR_NOFOLLOW;
+        // SAFETY: NUL-terminated strings and a buffer as long as said.
+        let got = unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), at, len, 0, flags) };
+        value.truncate(usize::try_from(got).ok()?);
+        Some(value)
+    }
+
+    /// What `cp -RP` and Finder keep of a folder, a file and a link in it: an attribute of the person's, a
+    /// Finder tag and the quarantine flag (its flags: the time in it becomes the copy's, as `cp -RP` writes it).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_copy_keeps_the_extended_attributes_finder_tags_and_quarantine_flag_of_what_it_copies() {
+        use std::os::unix::fs::symlink;
+        const TAGS: &str = "com.apple.metadata:_kMDItemUserTags";
+        const QUARANTINE: &str = "com.apple.quarantine";
+        // A binary property list of one tag: "Red", color 6.
+        let tag = b"bplist00\xa1\x01URed\x0a6\x08\x0a\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10";
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(p(&d, "box")).unwrap();
+        put(&d, "box/a.txt", b"a");
+        symlink("a.txt", p(&d, "box/link")).unwrap();
+        for entry in ["box", "box/a.txt", "box/link"] {
+            let at = p(&d, entry);
+            for (name, value) in [
+                ("user.note", &b"mine"[..]),
+                (TAGS, &tag[..]),
+                (QUARANTINE, b"0081;5f000000;Safari;"),
+            ] {
+                assert!(set_attr(&at, name, value), "{entry}: {name}");
+            }
+        }
+        let root = p(&d, "");
+        let made = copy(&p(&d, "box"), root.trim_end_matches('/'), None, &[]).unwrap();
+        for entry in ["", "/a.txt", "/link"] {
+            let at = format!("{made}{entry}");
+            let mine = attr(&at, "user.note");
+            assert_eq!(mine.as_deref(), Some(&b"mine"[..]), "{at}");
+            assert_eq!(attr(&at, TAGS).as_deref(), Some(&tag[..]), "{at}");
+            let flag = attr(&at, QUARANTINE);
+            let flagged = flag.as_ref().is_some_and(|q| q.starts_with(b"0081;"));
+            assert!(flagged, "{at}: {flag:?}");
+        }
+        let link = std::fs::symlink_metadata(format!("{made}/link")).unwrap();
+        assert!(link.is_symlink());
+    }
+
+    /// A sparse file of 64 MiB holding one byte is copied with its holes: it takes no more room than it did.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sparse_file_is_copied_sparse() {
+        use std::os::unix::fs::MetadataExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let sparse = p(&d, "sparse.bin");
+        let file = std::fs::File::create(&sparse).unwrap();
+        file.set_len(64 << 20).unwrap();
+        std::os::unix::fs::FileExt::write_at(&file, b"x", (64 << 20) - 1).unwrap();
+        drop(file);
+        let room = |path: &str| std::fs::metadata(path).unwrap().blocks() * 512;
+        assert!(room(&sparse) < 1 << 20, "not sparse to begin with");
+        let root = p(&d, "");
+        let made = copy(&sparse, root.trim_end_matches('/'), None, &[]).unwrap();
+        assert_eq!(std::fs::metadata(&made).unwrap().len(), 64 << 20);
+        assert!(room(&made) < 1 << 20, "{} bytes taken", room(&made));
     }
 
     #[cfg(unix)]
