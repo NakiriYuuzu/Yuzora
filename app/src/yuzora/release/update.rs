@@ -89,7 +89,8 @@ fn failure_slot() -> std::sync::MutexGuard<'static, Option<SwapFailure>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// `swap` (src/update.rs) could not move the folders: keeps why, for "Restart" and Settings › Updates.
+/// `swap` (src/update.rs) could not move the folders: keeps why, for "Restart" and Settings › Updates. Its two callers
+/// say so, not `swap` itself: upstream's tests fail a swap on purpose, in the process the tests here share.
 pub fn note_swap_failure(e: &std::io::Error) {
     note_swap_failure_of(crate::update::ready(), e);
 }
@@ -381,9 +382,9 @@ mod tests {
         );
         let update = include_str!("../../update.rs");
         assert_eq!(
-            update.matches("update::note_swap_failure(&e)").count(),
+            update.matches("yuzora::release::update::note_swap_failure").count(),
             2,
-            "both ways a swap fails"
+            "both callers of swap: Restart, and the swap as the app starts"
         );
         assert!(
             update.contains("\"failure\": crate::yuzora::release::update::swap_failure()"),
