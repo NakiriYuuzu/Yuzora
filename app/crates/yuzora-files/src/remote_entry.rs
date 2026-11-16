@@ -82,7 +82,8 @@ const COPY_SCRIPT: &str = concat!(
 );
 
 /// `$1` into, `$2` the hex of a copy's scratch folder there. Prints `done` when nothing of that copy
-/// is left there, else `left`. It removes `.yuzora-save-<hex>` only when that is a folder of the
+/// is left there, else `left`; `left` too when `into` cannot be entered (renamed away, or shut), since
+/// the copy may still be in it. It removes `.yuzora-save-<hex>` only when that is a folder of the
 /// person's, not a link, and the folder entered; and in it only `<hex>`, which only [`COPY_SCRIPT`]
 /// makes there: a folder put at that name by someone else keeps what it holds.
 const CLEAR_SCRIPT: &str = concat!(
@@ -2660,6 +2661,49 @@ exec mv -n -- "$from" "$to""#,
             if Path::new(&scratch).exists() {
                 fs::remove_dir_all(&scratch).unwrap();
             }
+        }
+    }
+
+    /// [`CLEAR_SCRIPT`] under `shell` for the copy `id` made in `into`: the line it prints.
+    fn clear_under(shell: &[&str], into: &Path, id: &str) -> String {
+        let into = into.to_string_lossy();
+        let req = fsops::sh_request(None, CLEAR_SCRIPT, &[&into, id], TIMEOUT, MAX_OUTPUT);
+        let out = Command::new(shell[0])
+            .args(&shell[1..])
+            .args(&req.args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn a_clear_that_cannot_see_the_folder_the_copy_was_made_in_says_the_copy_is_left() {
+        let id = "0123456789abcdef0123456789abcdef";
+        for shell in shells() {
+            let d = tempfile::tempdir().unwrap();
+            let into = d.path().join("into");
+            let scratch = format!("{}{id}", fsops::SCRATCH_PREFIX);
+            fs::create_dir_all(into.join(&scratch).join(id).join("half")).unwrap();
+            fs::write(into.join(&scratch).join(id).join("half/f"), "f").unwrap();
+            // The folder renamed away: the copy is out of sight, not gone.
+            let moved = d.path().join("moved");
+            fs::rename(&into, &moved).unwrap();
+            assert_eq!(clear_under(&shell, &into, id), "left", "{shell:?}");
+            assert!(
+                moved.join(&scratch).join(id).join("half/f").exists(),
+                "{shell:?}"
+            );
+            // A folder that cannot be entered.
+            if !is_root() {
+                fs::set_permissions(&moved, fs::Permissions::from_mode(0o600)).unwrap();
+                assert_eq!(clear_under(&shell, &moved, id), "left", "{shell:?}");
+                fs::set_permissions(&moved, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            // In sight: cleared, then known to be gone.
+            assert_eq!(clear_under(&shell, &moved, id), "done", "{shell:?}");
+            assert!(names(&moved).is_empty(), "{shell:?}");
+            assert_eq!(clear_under(&shell, &moved, id), "done", "{shell:?}");
         }
     }
 

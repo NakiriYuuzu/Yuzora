@@ -2,7 +2,12 @@ into=$1 id=$2
 case $id in ''|*[!0-9a-f]*) fail 'no name for the scratch folder' ;; esac
 [ "${#id}" -eq 32 ] || fail 'no name for the scratch folder'
 case $into in /) sd=/.yuzora-save-$id ;; *) sd=$into/.yuzora-save-$id ;; esac
-there "$sd" || { echo done; exit 0; }
+# Not there means gone only where the folder it was made in can be entered: a folder renamed away,
+# or one that cannot be entered, may hold it out of sight.
+if ! there "$sd"; then
+  if (cd -P -- "$into") 2>/dev/null; then echo done; else echo left; fi
+  exit 0
+fi
 idof() { stat -c '%d:%i' -- "$1" 2>/dev/null || stat -f '%d:%i' -- "$1" 2>/dev/null; }
 owner() { stat -c %u -- "$1" 2>/dev/null || stat -f %u -- "$1" 2>/dev/null; }
 { [ -d "$sd" ] && [ ! -L "$sd" ]; } || { echo left; exit 0; }
