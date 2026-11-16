@@ -456,9 +456,10 @@ pub(crate) fn copy_on_machine(
         .map_err(|problem| Act::Copy(from, into, held).describe(&problem, machine))
 }
 
-/// A copy by [`COPY_SCRIPT`], each request run by `run`, as the path of the copy. A copy killed before
-/// it is done (the timeout) leaves its scratch folder: [`CLEAR_SCRIPT`] is sent after it, and when that
-/// cannot clear it the answer says where a partial copy may be.
+/// A copy by [`COPY_SCRIPT`], each request run by `run`, as the path of the copy. A copy stopped before
+/// it is done (the timeout, a signal, the line to the machine lost) leaves its scratch folder:
+/// [`CLEAR_SCRIPT`] is sent after it, and when that cannot clear it the answer says where a partial
+/// copy may be.
 pub(crate) fn copy_by(
     from: &str,
     into: &str,
@@ -468,10 +469,16 @@ pub(crate) fn copy_by(
 ) -> Result<String, Problem> {
     let id = fsops::scratch_id();
     let answer = run(copy_request(from, into, held, &id, on)?);
+    // Whether the script may have been stopped before its trap ran: at the timeout, by a signal
+    // (`hc` gives no exit code, read as -1), or with the line to the machine lost during the call
+    // (the machine then kills it). Only a request that never left needs no clear.
     let killed = match &answer {
-        Err(ExecError::TimedOut { .. }) => true,
         Ok(out) => out.code < 0,
-        Err(_) => false,
+        Err(ExecError::Spawn(_)) => false,
+        Err(ExecError::Remote(m)) => {
+            !(m.ends_with("is not connected") || m.starts_with("cannot start sh"))
+        }
+        Err(_) => true,
     };
     let name = from.rsplit('/').next().unwrap_or(from);
     match interpret_copy(answer) {
@@ -2708,6 +2715,66 @@ exec mv -n -- "$from" "$to""#,
                 names(into.path())
             );
         }
+    }
+
+    /// The line to the machine is lost during a copy: the machine kills the script's process group
+    /// (no trap runs), and `hc` answers `lost the line to <machine> during the call`. The clear
+    /// follows; when it cannot be sent either, the answer says where a partial copy may be. A
+    /// machine never reached was sent nothing, and gets no clear.
+    #[test]
+    fn a_copy_cut_short_by_a_lost_line_is_cleared_or_says_where_a_partial_copy_may_be() {
+        let d = tempfile::tempdir().unwrap();
+        let src = sample(d.path());
+        let into = tempfile::tempdir().unwrap();
+        let dir = into.path().to_string_lossy().into_owned();
+        let (_bin, path) = hung_cp();
+        let lost = "lost the line to lab during the call";
+        for the_clear_answers in [true, false] {
+            let mut cleared = 0;
+            let got = copy_by(&src, &dir, &[], None, |req| {
+                if req.args.iter().any(|a| a == CLEAR_SCRIPT) {
+                    cleared += 1;
+                    if !the_clear_answers {
+                        return Err(ExecError::Remote("machine lab is not connected".into()));
+                    }
+                    return fsops::run(killed_after_a_second(&["/bin/sh"], &path, req));
+                }
+                let _ = fsops::run(killed_after_a_second(&["/bin/sh"], &path, req));
+                Err(ExecError::Remote(lost.into()))
+            });
+            let why = format!("the clear answers: {the_clear_answers}");
+            assert_eq!(cleared, 1, "{why}");
+            let Err(Problem::Failed(said)) = &got else {
+                panic!("{why}: {got:?}")
+            };
+            assert!(said.starts_with(lost), "{why}: {said}");
+            if the_clear_answers {
+                assert!(!said.contains("partial"), "{why}: {said}");
+                assert!(
+                    names(into.path()).is_empty(),
+                    "{why}: {:?}",
+                    names(into.path())
+                );
+            } else {
+                assert!(
+                    said.contains("A partial copy may be left in"),
+                    "{why}: {said}"
+                );
+                for left in scratch_left(into.path()) {
+                    fs::remove_dir_all(into.path().join(left)).unwrap();
+                }
+            }
+        }
+        let mut asked = 0;
+        let got = copy_by(&src, &dir, &[], None, |_| {
+            asked += 1;
+            Err(ExecError::Remote("machine lab is not connected".into()))
+        });
+        assert_eq!(asked, 1, "a machine never reached gets no clear");
+        assert!(
+            matches!(&got, Err(Problem::Failed(said)) if said == "machine lab is not connected"),
+            "{got:?}"
+        );
     }
 
     /// [`CLEAR_SCRIPT`] under `shell` for the copy `id` made in `into`: the line it prints.

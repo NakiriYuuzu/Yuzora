@@ -33,7 +33,7 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   if (/is not the folder (?:just made|the copy was made in)/.test(text)) return tell("scratch_changed");
   // trash.sh could not write the .trashinfo; what the shell said follows, and a full disk is the likely cause.
   if (/trash information for .* could not be written/.test(text)) return tell(/No space left|Disk quota/i.test(text) ? "full" : "trash_info");
-  if (/not connected|offline|unreachable|connection (?:refused|reset|closed|lost)|could not connect/i.test(text)) return tell("unreachable", { machine: there });
+  if (/not connected|offline|unreachable|connection (?:refused|reset|closed|lost)|could not connect|lost the line/i.test(text)) return tell("unreachable", { machine: there });
   if (/took longer than/.test(text)) return tell("timed", { machine: there });
   if (/may or may not/.test(text)) return tell("unsure");
   if (/does not exist on|no longer there|No such file|cannot find the (?:file|path)/i.test(text)) {
