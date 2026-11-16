@@ -74,8 +74,10 @@ const MOVE_SCRIPT: &str = concat!(
 /// goes into and checks before it changes anything there (`cd -P`, then the entry made, empty and its
 /// own): someone who may write `into` cannot have the copy made, or anything cleared, in a folder of
 /// theirs or of the person's. The rename script then moves it to the first free name, never over what
-/// is there. A copy killed before it is done (the timeout) cannot clear that folder, which the tree
-/// does not list: [`CLEAR_SCRIPT`] does.
+/// is there. `into` is looked up by its path once, when the script enters it: the names, the rename
+/// and the scratch folder's removal go through the scratch folder's `..`, so `into` swapped for a link
+/// meanwhile gets the copy put nowhere else. A copy killed before it is done (the timeout) cannot
+/// clear that folder, which the tree does not list: [`CLEAR_SCRIPT`] does.
 const COPY_SCRIPT: &str = concat!(
     include_str!("remote_entry/common.sh"),
     include_str!("remote_entry/copy.sh")
@@ -2790,6 +2792,75 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
                 names(&into.join(format!("{scratch}.away"))).is_empty(),
                 "{shell:?}"
             );
+        }
+    }
+
+    /// Someone who may rename where the target folder is swaps it for a link to another folder
+    /// while the copy runs: the copy is made in the folder entered, under whatever name that has
+    /// by now, nothing is made in the link's target, and the scratch folder is gone.
+    #[test]
+    fn a_target_folder_swapped_for_a_link_while_the_copy_runs_gets_the_copy_and_the_link_target_nothing()
+     {
+        let d = tempfile::tempdir().unwrap();
+        let src = put(d.path(), "authorized_keys", b"mine");
+        // The copy runs in the scratch folder: its ".." is the folder entered.
+        let cp = "case \" $* \" in *\" -RP \"*) i=$(cd -P .. && pwd -P); mv \"$i\" \"$i.away\" && ln -s \"$VICTIM\" \"$i\" ;; esac\nexec cp \"$@\"";
+        let (_bin, path) = shimmed(&[("cp", cp)]);
+        for (shell, taken) in shells()
+            .into_iter()
+            .flat_map(|s| [(s.clone(), false), (s, true)])
+        {
+            let base = tempfile::tempdir().unwrap();
+            let (into, victim) = (base.path().join("into"), base.path().join("victim"));
+            fs::create_dir(&into).unwrap();
+            fs::create_dir(&victim).unwrap();
+            // The name free or taken in the link's target: neither is looked at.
+            if taken {
+                put(&victim, "authorized_keys", b"theirs");
+            }
+            let dir = into.to_string_lossy().into_owned();
+            let env = [
+                ("PATH", path.as_str()),
+                ("VICTIM", victim.to_str().unwrap()),
+            ];
+            let got = copy_under(&shell, &env, &Act::Copy(&src, &dir, &[]));
+            let away = base.path().join("into.away");
+            let why = format!("{shell:?}, taken in the link's target: {taken}");
+            assert!(got.is_ok(), "{why}: {got:?}");
+            assert_eq!(names(&away), ["authorized_keys"], "{why}");
+            assert_eq!(
+                fs::read(away.join("authorized_keys")).unwrap(),
+                b"mine",
+                "{why}"
+            );
+            let theirs: &[&str] = if taken { &["authorized_keys"] } else { &[] };
+            assert_eq!(names(&victim), theirs, "{why}");
+            if taken {
+                assert_eq!(
+                    fs::read(victim.join("authorized_keys")).unwrap(),
+                    b"theirs",
+                    "{why}"
+                );
+            }
+        }
+    }
+
+    /// The folder a killed copy was made in is renamed while the clear runs: the clear still takes
+    /// the scratch folder out of it, through the scratch folder's "..".
+    #[test]
+    fn a_clear_removes_the_scratch_folder_from_the_folder_it_entered_though_that_was_renamed() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let swap = "case \" $* \" in *\" -rf \"*) i=$(cd -P .. && pwd -P); mv \"$i\" \"$i.away\" && mkdir \"$i\" ;; esac\nexec rm \"$@\"";
+        let (_bin, path) = shimmed(&[("rm", swap)]);
+        for shell in shells() {
+            let d = tempfile::tempdir().unwrap();
+            let into = d.path().join("into");
+            let scratch = format!("{}{id}", fsops::SCRATCH_PREFIX);
+            fs::create_dir_all(into.join(&scratch).join(id).join("half")).unwrap();
+            let said = clear_under(&shell, &[("PATH", path.as_str())], &into, id);
+            assert_eq!(said, "done", "{shell:?}");
+            assert!(names(&d.path().join("into.away")).is_empty(), "{shell:?}");
+            assert!(names(&into).is_empty(), "{shell:?}");
         }
     }
 
