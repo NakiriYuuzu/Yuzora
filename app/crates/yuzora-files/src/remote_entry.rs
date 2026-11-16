@@ -91,8 +91,10 @@ const CLEAR_SCRIPT: &str = concat!(
     include_str!("remote_entry/clear.sh")
 );
 
-/// `$1` path. Prints one line and exits 0: `done`, `gone`, `refused folder` or `refused tool
-/// trash` (nothing here could take it to a trash). Any other end leaves it where it was.
+/// `$1` path. Prints one line and exits 0: `done`, `gone`, `refused folder`, `refused device` (the
+/// entry is on another disk than the trash), `refused tool trash` (nothing here could take it to a
+/// trash) or `refused tool <name>` (a tool it needs, such as `od`, is missing). Any other end leaves
+/// it where it was.
 ///
 /// `gio trash` first, then a `trash` command, then the freedesktop trash by hand (its
 /// `.trashinfo` is written first, under a name nobody has, then the entry is moved next to it),
