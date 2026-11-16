@@ -3957,6 +3957,27 @@ mod tests {
         }
     }
 
+    /// A folder renamed to another folder needs write permission on itself (its `..` changes):
+    /// a folder whose owner may not write it (0555) is not copied, and nothing is left. One inside
+    /// the folder copied is (`a_folder_is_copied_with_all_it_holds_...`).
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_its_owner_may_not_write_is_not_copied_and_leaves_nothing() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(p(&d, "sealed")).unwrap();
+        put(&d, "sealed/kept", b"kept");
+        std::fs::set_permissions(p(&d, "sealed"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::create_dir(p(&d, "into")).unwrap();
+        let e = copy(&p(&d, "sealed"), &p(&d, "into"), None, &[]).unwrap_err();
+        assert!(e.contains("Permission denied"), "{e}");
+        assert!(held_in(&p(&d, "into")).is_empty());
+        std::fs::set_permissions(p(&d, "sealed"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     #[cfg(unix)]
     fn held_in(dir: &str) -> Vec<String> {
         let mut found: Vec<String> = std::fs::read_dir(dir)
