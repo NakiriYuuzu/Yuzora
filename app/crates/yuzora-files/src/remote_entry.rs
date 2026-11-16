@@ -2490,10 +2490,7 @@ exec mv -n -- "$from" "$to""#,
             let lines: Vec<&str> = info.lines().collect();
             assert_eq!(lines[0], "[Trash Info]");
             let escaped = lines[1].strip_prefix("Path=").unwrap();
-            assert!(
-                !escaped.contains(' ') && !escaped.contains("%.txt"),
-                "{escaped}"
-            );
+            assert!(escaped.ends_with("/a%20b%25.txt"), "{escaped}");
             let mut bytes = Vec::new();
             let mut rest = escaped.as_bytes();
             while let Some((&b, tail)) = rest.split_first() {

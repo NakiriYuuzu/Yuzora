@@ -23,10 +23,13 @@ t=$data/Trash
 dev() { stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null; }
 a=$(dev "$p") b=$(dev "$t/files/.")
 { [ -n "$a" ] && [ "$a" = "$b" ]; } || nothing
-# The spec's Path is URL-escaped: every byte but / as %xx.
+# The spec's Path is URL-escaped (RFC 2396): every byte but letters, digits and / - . _ ~ as %xx.
 url() {
-  for h in $(printf '%s' "$1" | od -An -v -tx1); do
-    if [ "$h" = 2f ]; then printf /; else printf '%%%s' "$h"; fi
+  for o in $(printf '%s' "$1" | od -An -v -to1); do
+    case $o in
+      055|056|057|137|176|06[0-7]|07[01]|10[1-7]|11[0-7]|12[0-7]|13[0-2]|14[1-7]|15[0-7]|16[0-7]|17[0-2]) printf "\\$o" ;;
+      *) printf '%%%02x' "$((0$o))" ;;
+    esac
   done
 }
 enc=$(url "$p") when=$(date +%Y-%m-%dT%H:%M:%S)
