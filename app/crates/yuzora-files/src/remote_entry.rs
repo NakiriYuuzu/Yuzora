@@ -69,15 +69,25 @@ const MOVE_SCRIPT: &str = concat!(
 /// `refused open J` (the Jth of those names was the next free one) or `refused tool …`. Any other
 /// end leaves no copy in `into`.
 ///
-/// `cp -RP` makes the copy (a link stays a link, a new entry gets the mode `cp` gives it) in
-/// `.yuzora-save-<hex>/` beside the names, a folder only its owner can enter, which the script goes
-/// into and checks as the save script does (`cd -P`, then empty and its own): someone who may write
-/// `into` cannot have the copy made in a folder of theirs. The rename script then moves it to the
-/// first free name, never over what is there. A copy cut short (a timeout) stays in that folder,
-/// which the tree does not list.
+/// `cp -RP` makes the copy (a link stays a link, a new entry gets the mode `cp` gives it) as
+/// `.yuzora-save-<hex>/<hex>` beside the names, in a folder only its owner can enter, which the script
+/// goes into and checks before it changes anything there (`cd -P`, then the entry made, empty and its
+/// own): someone who may write `into` cannot have the copy made, or anything cleared, in a folder of
+/// theirs or of the person's. The rename script then moves it to the first free name, never over what
+/// is there. A copy killed before it is done (the timeout) cannot clear that folder, which the tree
+/// does not list: [`CLEAR_SCRIPT`] does.
 const COPY_SCRIPT: &str = concat!(
     include_str!("remote_entry/common.sh"),
     include_str!("remote_entry/copy.sh")
+);
+
+/// `$1` into, `$2` the hex of a copy's scratch folder there. Prints `done` when nothing of that copy
+/// is left there, else `left`. It removes `.yuzora-save-<hex>` only when that is a folder of the
+/// person's, not a link, and the folder entered; and in it only `<hex>`, which only [`COPY_SCRIPT`]
+/// makes there: a folder put at that name by someone else keeps what it holds.
+const CLEAR_SCRIPT: &str = concat!(
+    include_str!("remote_entry/common.sh"),
+    include_str!("remote_entry/clear.sh")
 );
 
 /// `$1` path. Prints one line and exits 0: `done`, `gone`, `refused folder` or `refused tool
@@ -278,28 +288,38 @@ pub(crate) fn request(act: &Act, on: Option<&str>) -> Result<ExecRequest, Proble
                 if other_case(from, to) { "1" } else { "0" }.into(),
             ],
         ),
-        Act::Copy(from, into, held)
-            if usable_path(from) && into.starts_with('/') && !into.contains('\0') =>
-        {
-            let name = from.rsplit('/').next().unwrap_or(from);
-            let (stem, ext) = fsops::split_ext(name);
-            let mut args: Vec<String> = vec![
-                from.into(),
-                into.into(),
-                name.into(),
-                stem.into(),
-                ext.into(),
-                fsops::scratch_id(),
-                MOVE_SCRIPT.into(),
-            ];
-            args.extend(held.iter().cloned());
-            (COPY_SCRIPT, COPY_TIMEOUT, args)
+        Act::Copy(from, into, held) => {
+            return copy_request(from, into, held, &fsops::scratch_id(), on);
         }
         Act::Trash(path) if usable_path(path) => (TRASH_SCRIPT, TIMEOUT, vec![path.into()]),
         _ => return Err(Problem::BadPath),
     };
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     Ok(fsops::sh_request(on, script, &args, timeout, MAX_OUTPUT))
+}
+
+/// The request for a copy whose scratch folder is named after `id` (32 lowercase hex).
+fn copy_request(
+    from: &str,
+    into: &str,
+    held: &[String],
+    id: &str,
+    on: Option<&str>,
+) -> Result<ExecRequest, Problem> {
+    if !(usable_path(from) && into.starts_with('/') && !into.contains('\0')) {
+        return Err(Problem::BadPath);
+    }
+    let name = from.rsplit('/').next().unwrap_or(from);
+    let (stem, ext) = fsops::split_ext(name);
+    let mut args = vec![from, into, name, stem, ext, id, MOVE_SCRIPT];
+    args.extend(held.iter().map(String::as_str));
+    Ok(fsops::sh_request(
+        on,
+        COPY_SCRIPT,
+        &args,
+        COPY_TIMEOUT,
+        MAX_OUTPUT,
+    ))
 }
 
 /// What the script said.
@@ -429,12 +449,42 @@ pub(crate) fn copy_on_machine(
     held: &[String],
     machine: &str,
 ) -> Result<String, String> {
-    let act = Act::Copy(from, into, held);
+    copy_by(from, into, held, Some(machine), fsops::run)
+        .map_err(|problem| Act::Copy(from, into, held).describe(&problem, machine))
+}
+
+/// A copy by [`COPY_SCRIPT`], each request run by `run`, as the path of the copy. A copy killed before
+/// it is done (the timeout) leaves its scratch folder: [`CLEAR_SCRIPT`] is sent after it, and when that
+/// cannot clear it the answer says where a partial copy may be.
+pub(crate) fn copy_by(
+    from: &str,
+    into: &str,
+    held: &[String],
+    on: Option<&str>,
+    mut run: impl FnMut(ExecRequest) -> Result<ExecOutput, ExecError>,
+) -> Result<String, Problem> {
+    let id = fsops::scratch_id();
+    let answer = run(copy_request(from, into, held, &id, on)?);
+    let killed = match &answer {
+        Err(ExecError::TimedOut { .. }) => true,
+        Ok(out) => out.code < 0,
+        Err(_) => false,
+    };
     let name = from.rsplit('/').next().unwrap_or(from);
-    request(&act, Some(machine))
-        .and_then(|req| interpret_copy(fsops::run(req)))
-        .map(|(folder, k)| fsops::join(into, &fsops::copy_name(name, folder, k)))
-        .map_err(|problem| act.describe(&problem, machine))
+    match interpret_copy(answer) {
+        Ok((folder, k)) => Ok(fsops::join(into, &fsops::copy_name(name, folder, k))),
+        Err(Problem::Failed(why)) if killed => {
+            let clear = fsops::sh_request(on, CLEAR_SCRIPT, &[into, &id], TIMEOUT, MAX_OUTPUT);
+            if matches!(read(run(clear)), Ok(Verdict::Done)) {
+                return Err(Problem::Failed(why));
+            }
+            let scratch = fsops::join(into, &format!("{}{id}", fsops::SCRATCH_PREFIX));
+            Err(Problem::Failed(format!(
+                "{why}. A partial copy may be left in {scratch}, a folder the tree does not show"
+            )))
+        }
+        Err(problem) => Err(problem),
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -2464,6 +2514,108 @@ exec mv -n -- "$from" "$to""#,
             assert_eq!(fs::read(victim.join("c/keep")).unwrap(), b"keep", "{shell:?}");
             for link in names(into.path()) {
                 fs::remove_file(into.path().join(link)).unwrap();
+            }
+        }
+    }
+
+    /// `req` run here under `shell` as `hc exec` runs it, with `path` for PATH, and killed with all it
+    /// started (SIGKILL: no trap of the script runs) after a second, as `hc` does at the timeout.
+    fn killed_after_a_second(shell: &[&str], path: &str, mut req: ExecRequest) -> ExecRequest {
+        req.args = shell[1..]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .chain(req.args)
+            .collect();
+        req.program = shell[0].to_owned();
+        req.timeout(Duration::from_secs(1)).env("PATH", path)
+    }
+
+    /// A `cp` that copies some, then never ends.
+    fn hung_cp() -> (tempfile::TempDir, String) {
+        shimmed(&[(
+            "cp",
+            "mkdir -p \"$4/half\" && : > \"$4/half/f\" && exec sleep 30",
+        )])
+    }
+
+    #[test]
+    fn a_copy_killed_at_its_timeout_leaves_nothing_when_the_machine_answers_again() {
+        let d = tempfile::tempdir().unwrap();
+        let src = sample(d.path());
+        let into = tempfile::tempdir().unwrap();
+        let dir = into.path().to_string_lossy().into_owned();
+        let (_bin, path) = hung_cp();
+        for shell in shells() {
+            let mut left_by_the_kill = Vec::new();
+            let got = copy_by(&src, &dir, &[], None, |req| {
+                if req.args.iter().any(|a| a == CLEAR_SCRIPT) {
+                    left_by_the_kill = scratch_left(into.path());
+                }
+                fsops::run(killed_after_a_second(&shell, &path, req))
+            });
+            assert!(
+                matches!(&got, Err(Problem::Failed(why)) if why.starts_with("took longer than 1 s") && !why.contains("partial")),
+                "{shell:?}: {got:?}"
+            );
+            assert_eq!(left_by_the_kill.len(), 1, "{shell:?}: the kill ran no trap");
+            assert!(names(into.path()).is_empty(), "{shell:?}: {:?}", names(into.path()));
+        }
+    }
+
+    #[test]
+    fn a_killed_copy_that_cannot_be_cleared_says_where_a_partial_copy_may_be_and_clears_nothing_else() {
+        let d = tempfile::tempdir().unwrap();
+        let src = sample(d.path());
+        let into = tempfile::tempdir().unwrap();
+        let dir = into.path().to_string_lossy().into_owned();
+        let mine = d.path().join("mine");
+        let (_bin, path) = hung_cp();
+        // At the clear: the machine is gone; the scratch folder is a link to a folder of the person's; it
+        // is a folder of the person's, moved there, that holds what its own name does not say is the copy.
+        for at_the_clear in ["unreachable", "link", "folder"] {
+            fs::create_dir_all(mine.join("c")).unwrap();
+            fs::write(mine.join("c/keep"), "keep").unwrap();
+            let mut scratch = String::new();
+            let got = copy_by(&src, &dir, &[], None, |req| {
+                if !req.args.iter().any(|a| a == CLEAR_SCRIPT) {
+                    return fsops::run(killed_after_a_second(&["/bin/sh"], &path, req));
+                }
+                scratch = format!("{dir}/{}", scratch_left(into.path())[0]);
+                match at_the_clear {
+                    "unreachable" => return Err(ExecError::Remote("machine lab is not connected".into())),
+                    "link" => {
+                        fs::rename(&scratch, d.path().join("aside")).unwrap();
+                        symlink(&mine, &scratch).unwrap();
+                    }
+                    _ => {
+                        fs::rename(&scratch, d.path().join("aside")).unwrap();
+                        fs::rename(&mine, &scratch).unwrap();
+                    }
+                }
+                fsops::run(killed_after_a_second(&["/bin/sh"], &path, req))
+            });
+            let Err(Problem::Failed(why)) = &got else {
+                panic!("{at_the_clear}: {got:?}")
+            };
+            assert!(why.starts_with("took longer than 1 s"), "{at_the_clear}: {why}");
+            assert!(
+                why.contains(&format!("A partial copy may be left in {scratch}, ")),
+                "{at_the_clear}: {why}"
+            );
+            let kept = if at_the_clear == "folder" { Path::new(&scratch) } else { mine.as_path() };
+            assert_eq!(fs::read(kept.join("c/keep")).unwrap(), b"keep", "{at_the_clear}");
+            assert_eq!(names(kept), ["c"], "{at_the_clear}");
+            if at_the_clear == "folder" {
+                fs::rename(&scratch, &mine).unwrap();
+            } else if at_the_clear == "link" {
+                fs::remove_file(&scratch).unwrap();
+            }
+            let aside = d.path().join("aside");
+            if aside.exists() {
+                fs::remove_dir_all(&aside).unwrap();
+            }
+            if Path::new(&scratch).exists() {
+                fs::remove_dir_all(&scratch).unwrap();
             }
         }
     }

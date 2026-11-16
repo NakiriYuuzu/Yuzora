@@ -28,6 +28,7 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   if (/is being saved/.test(text)) return tell("saving");
   if (/cannot go into itself/.test(text)) return tell("into_itself");
   if (/can take it to a trash/.test(text)) return tell("no_trash", { machine: there });
+  if (/partial copy may be left/.test(text)) return tell("partial");
   if (/not connected|offline|unreachable|connection (?:refused|reset|closed|lost)|could not connect/i.test(text)) return tell("unreachable", { machine: there });
   if (/took longer than/.test(text)) return tell("timed", { machine: there });
   if (/may or may not/.test(text)) return tell("unsure");

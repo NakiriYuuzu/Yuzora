@@ -819,6 +819,19 @@ return JSON.stringify([a, b, c, d]); }})()"#
         let rename = Act::Move("/srv/a.txt", "/srv/b.txt");
         let copy = Act::Copy("/srv/a.txt", "/srv/c", &held);
         let trash = Act::Trash("/srv/a.txt");
+        // Stopped at its timeout, and the machine does not answer the clear that follows.
+        let mut asked = 0;
+        let partial = crate::remote_entry::copy_by("/srv/a.txt", "/srv/c", &held, Some("lab"), |_| {
+            asked += 1;
+            Err(match asked {
+                1 => ExecError::TimedOut {
+                    seconds: 120.0,
+                    machine: Some("lab".into()),
+                },
+                _ => ExecError::Remote("machine lab is not connected".into()),
+            })
+        })
+        .unwrap_err();
         for (act, problem, name, kind, want) in [
             (
                 &make,
@@ -904,6 +917,13 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "a.txt",
                 "copy",
                 "The folder is not writable",
+            ),
+            (
+                &copy,
+                partial,
+                "a.txt",
+                "copy",
+                "A partial copy may be in .yuzora-save-…",
             ),
             (
                 &copy,
