@@ -821,6 +821,17 @@ return JSON.stringify([a, b, c, d]); }})()"#
             "copy",
             "A folder can't go into itself",
         ));
+        // 65 folders inside each other, one more than a copy here goes through.
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(at(&["deep"; 65].join("/"))).unwrap();
+            cases.push((
+                failed(fsops::copy(&at("deep"), &at("box"), None, &[]).map(drop)),
+                "deep",
+                "copy",
+                "Too many folders inside each other",
+            ));
+        }
         let held = ["a.txt".to_owned()];
         cases.push((
             failed(fsops::copy(&at("a.txt"), &at("box"), None, &held).map(drop)),

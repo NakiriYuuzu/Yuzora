@@ -38,6 +38,7 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   if (/is still open/.test(text)) return tell("open");
   if (/is being saved/.test(text)) return tell("saving");
   if (/cannot go into itself/.test(text)) return tell("into_itself");
+  if (/folders inside each other/.test(text)) return tell("deep");
   if (/can take it to a trash/.test(text)) return tell("no_trash", { machine: there });
   if (/partial copy may be left/.test(text)) return tell("partial");
   // A copy's scratch folder that someone else changed (copy.sh, fsops::anchored): its name says nothing to a person.

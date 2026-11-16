@@ -1337,6 +1337,11 @@ pub fn trash(path: &str, on: Option<&str>) -> Result<(), String> {
 
 /// How many names a copy tries before it gives up.
 const COPY_NAMES: u32 = 1000;
+/// How many folders inside each other a copy here goes through, the one copied counted. Each holds two
+/// descriptors (about 120 deep fill the 256 a process may have by default) and a frame of the walk on
+/// the stack (some 600 deep fill the 2 MiB of the thread on a debug build).
+#[cfg(unix)]
+const COPY_DEPTH: usize = 64;
 
 /// A file's name as stem and extension: the extension starts at the last dot, unless that dot
 /// starts the name (`.env` has none).
@@ -1434,7 +1439,7 @@ fn copy_here(from: &str, into: &str, held: &[String]) -> Result<String, Problem>
 /// Inside the scratch folder (the person's, 0700) nobody else can change anything.
 #[cfg(unix)]
 mod anchored {
-    use super::{COPY_NAMES, Problem, SCRATCH_PREFIX, copy_name, join, scratch_id};
+    use super::{COPY_DEPTH, COPY_NAMES, Problem, SCRATCH_PREFIX, copy_name, join, scratch_id};
     use std::ffi::{CStr, CString, OsStr, OsString};
     use std::io;
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
@@ -1505,6 +1510,7 @@ mod anchored {
                 &looked.shown,
                 &self.dir,
                 name.as_ref(),
+                0,
             )
         }
 
@@ -1588,7 +1594,7 @@ mod anchored {
     /// after the look: it is opened without following a link and copied only while it is still
     /// what was looked at, and its mode is read from what was opened. So what is read never
     /// lands wider than it is. A new entry gets the mode `cp` gives it: the original's, less the
-    /// umask.
+    /// umask. `above`: how many folders of the copy it is in.
     fn copy_from(
         src: &Dir,
         name: &OsStr,
@@ -1596,6 +1602,7 @@ mod anchored {
         shown: &Path,
         at: &Dir,
         to: &OsStr,
+        above: usize,
     ) -> io::Result<()> {
         let said = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", shown.display()));
         let changed =
@@ -1625,6 +1632,12 @@ mod anchored {
                 Ok(())
             }
             libc::S_IFDIR => {
+                if above == COPY_DEPTH {
+                    return Err(io::Error::other(format!(
+                        "{}: more than {COPY_DEPTH} folders inside each other",
+                        shown.display()
+                    )));
+                }
                 let from = src.dir(name).map_err(opened)?;
                 let own = from.stat()?;
                 if !same(&own) {
@@ -1640,7 +1653,7 @@ mod anchored {
                     let st = from.stat_at(&n).map_err(|e| {
                         io::Error::new(e.kind(), format!("{}: {e}", inner.display()))
                     })?;
-                    copy_from(&from, &n, &st, &inner, &made, &n)?;
+                    copy_from(&from, &n, &st, &inner, &made, &n, above + 1)?;
                 }
                 // The sticky bit is kept, as `cp -RP` keeps it; a setgid the new folder got from
                 // the folder it was made in stays.
@@ -3875,6 +3888,40 @@ mod tests {
         let made = copy(&sparse, root.trim_end_matches('/'), None, &[]).unwrap();
         assert_eq!(std::fs::metadata(&made).unwrap().len(), 64 << 20);
         assert!(room(&made) < 1 << 20, "{} bytes taken", room(&made));
+    }
+
+    /// A copy here goes through [`COPY_DEPTH`] folders inside each other, the one copied counted, and
+    /// refuses a tree one deeper with nothing left. At the limit it fits in half the stack of the
+    /// thread it runs on (2 MiB, `docs::blocking`) on a debug build: it needs some 350 KiB on macOS.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_goes_as_deep_as_its_limit_and_refuses_one_folder_more() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().to_owned();
+        let deepest = |top: &str, levels: usize| {
+            let mut path = root.join(top);
+            path.extend(std::iter::repeat_n("d", levels - 1));
+            path
+        };
+        let mut said = Vec::new();
+        for (top, levels) in [("fits", COPY_DEPTH), ("deep", COPY_DEPTH + 1)] {
+            std::fs::create_dir_all(deepest(top, levels)).unwrap();
+            std::fs::write(deepest(top, levels).join("f"), "f").unwrap();
+            let (from, out) = (root.join(top), root.join(format!("{top} out")));
+            std::fs::create_dir(&out).unwrap();
+            let (from, out) = (from.display().to_string(), out.display().to_string());
+            let run = std::thread::Builder::new().stack_size(1 << 20);
+            let run = run.spawn(move || copy(&from, &out, None, &[])).unwrap();
+            said.push(run.join().unwrap());
+        }
+        let copied = deepest("fits out/fits", COPY_DEPTH).join("f");
+        assert_eq!(std::fs::read(copied).unwrap(), b"f");
+        let Err(why) = &said[1] else {
+            panic!("{said:?}")
+        };
+        let deep = "more than 64 folders inside each other";
+        assert!(why.ends_with(deep), "{why}");
+        assert_eq!(std::fs::read_dir(root.join("deep out")).unwrap().count(), 0);
     }
 
     /// A shared folder's sticky bit (there, only an entry's owner may rename or remove it) is kept, on the
