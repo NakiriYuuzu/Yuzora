@@ -19,6 +19,14 @@ if [ -d "$from" ] && [ ! -L "$from" ]; then
   if [ -n "$a" ] && [ -n "$b" ]; then
     case $b/ in "$a"/*) echo 'refused inside'; exit 0 ;; esac
   fi
+  # Each folder $into is in, by device and inode too: a disk that folds case spells one folder many ways.
+  a=$(idof "$from") up=$b
+  while [ -n "$a" ] && [ -n "$up" ]; do
+    [ "$(idof "$up")" != "$a" ] || { echo 'refused inside'; exit 0; }
+    [ "$up" != / ] || break
+    up=${up%/*}
+    [ -n "$up" ] || up=/
+  done
 fi
 made= in=
 leave() {

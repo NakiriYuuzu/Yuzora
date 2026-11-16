@@ -2519,6 +2519,26 @@ exec mv -n -- "$from" "$to""#,
     }
 
     #[test]
+    fn a_folder_is_not_copied_into_itself_spelled_in_other_letters_on_a_disk_that_folds_case() {
+        let d = tempfile::tempdir().unwrap();
+        if !folds_case(d.path()) {
+            return;
+        }
+        fs::create_dir_all(d.path().join("Src/sub")).unwrap();
+        let from = at(d.path(), "Src");
+        let into = at(d.path(), "src/sub");
+        let act = Act::Copy(&from, &into, &[]);
+        for shell in shells() {
+            assert_eq!(copy_under(&shell, &[], &act), Err(Problem::IntoItself), "{shell:?}");
+        }
+        assert_eq!(
+            fsops::copy(&from, &into, None, &[]),
+            Err(act.describe(&Problem::IntoItself, "this machine"))
+        );
+        assert!(names(&d.path().join("Src/sub")).is_empty());
+    }
+
+    #[test]
     fn every_shell_copies_a_fifo_as_a_new_fifo_and_this_machine_refuses_it() {
         use std::os::unix::ffi::OsStrExt as _;
         use std::os::unix::fs::FileTypeExt as _;
