@@ -258,7 +258,10 @@ export default class FilesSidebar extends View {
     const now = shared(REQUEST);
     if (now?.seq !== req.seq || now.taken) return;
     setShared(REQUEST, { ...now, taken: true });
-    if (Date.now() - req.seq > LATE_MS) return;
+    if (Date.now() - req.seq > LATE_MS) {
+      notify({ title: t(`error.${req.action}`), body: t("reason.late"), level: "warning" });
+      return;
+    }
     if (req.action === "copy") copyInto(req.from, req.into, req.on);
     else trashIt(req.path, req.on);
   }

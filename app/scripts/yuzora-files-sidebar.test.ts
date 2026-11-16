@@ -1072,17 +1072,22 @@ test("an item from the popup is done once, though the sidebar of another window 
   expect(toasts(s)).toEqual([]);
 });
 
-test("an item from the popup that waits more than a few seconds for the sidebar to be drawn is not done", async () => {
+test("an item from the popup that waits more than a few seconds for the sidebar to be drawn is not done, and says so once", async () => {
   for (const label of ["menu.duplicate", "menu.trash"]) {
     const s = await sidebarAt("lab");
+    const other = sidebar(spacesAt("/srv", "lab"), false, s.world.shared);
+    await other.settle({ "/srv": listing("src/", "a.txt") }, repo("/srv"));
     s.pressRight(s.frame(), A_ROW);
     s.popup(s.world.menus.at(-1).props.menu).click(label);
     // The Files mode is hidden for a while: the sidebar draws, and so answers, only when it is shown again.
     s.world.shared.set(CLOCK, s.world.shared.get(CLOCK) + 5_001);
-    s.frame();
-    s.tasks();
-    expect(makes(s)).toEqual([]);
+    for (const window of [other, s]) window.frame();
+    for (const window of [other, s]) window.tasks();
+    expect([...makes(other), ...makes(s)]).toEqual([]);
     expect(s.world.shared.get("yuzora.files.request").taken).toBe(true);
+    // Told once, by the window that saw it first.
+    const action = label === "menu.trash" ? "trash" : "copy";
+    expect([...toasts(other), ...toasts(s)]).toEqual([[`error.${action}`, "reason.late", "warning"]]);
     // Answered in time, the next one is done.
     s.pressRight(s.frame(), A_ROW);
     s.popup(s.world.menus.at(-1).props.menu).click(label);

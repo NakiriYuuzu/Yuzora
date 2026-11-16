@@ -73,6 +73,7 @@
     "unreachable": "Can't reach {machine}",
     "timed": "{machine} took too long: check again",
     "unsure": "Not sure it was done: check again",
+    "late": "Not done: Files was not showing",
     "partial": "A partial copy may be in .yuzora-save-…",
     "scratch_changed": "The copy's hidden folder was changed",
     "trash_info": "Can't write in the trash",
