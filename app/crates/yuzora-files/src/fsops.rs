@@ -1487,8 +1487,11 @@ mod anchored {
             if st.st_uid != unsafe { libc::geteuid() } {
                 return Err(not_made);
             }
-            let private = perm(&st) == 0o700 || scratch.dir.chmod(0o700).is_ok();
-            if !(private && scratch.dir.names().is_ok_and(|n| n.is_empty())) {
+            // Empty twice: before its mode is changed, so a folder of the person's put there stays as it
+            // was, and once private, as someone else may have added an entry while it was wider.
+            let empty = || scratch.dir.names().is_ok_and(|n| n.is_empty());
+            let private = || perm(&st) == 0o700 || scratch.dir.chmod(0o700).is_ok();
+            if !(empty() && private() && empty()) {
                 scratch.finish(None);
                 return Err(not_made);
             }
