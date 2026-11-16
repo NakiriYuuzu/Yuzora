@@ -862,6 +862,13 @@ return JSON.stringify([a, b, c, d]); }})()"#
             Err(ExecError::Remote(unreachable.into()))
         })
         .unwrap_err();
+        // hc no longer knows the machine (removed while a Space on it is open): told as Move to Trash tells it.
+        let unknown = || ExecError::Remote("unknown machine \"lab\"".into());
+        let not_known = crate::remote_entry::copy_by("/srv/a.txt", "/srv/c", &held, Some("lab"), |_| {
+            Err(unknown())
+        })
+        .unwrap_err();
+        let trash_not_known = interpret(Err(unknown())).unwrap_err();
         for (act, problem, name, kind, want) in [
             (
                 &make,
@@ -956,6 +963,14 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "A partial copy may be in .yuzora-save-…",
             ),
             (&copy, never_sent, "a.txt", "copy", "Can't reach lab"),
+            (&copy, not_known, "a.txt", "copy", "unknown machine \"lab\""),
+            (
+                &trash,
+                trash_not_known,
+                "a.txt",
+                "trash",
+                "unknown machine \"lab\"",
+            ),
             (
                 &copy,
                 Problem::Gone,

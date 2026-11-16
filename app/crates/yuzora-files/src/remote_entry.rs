@@ -499,14 +499,18 @@ pub(crate) fn copy_by(
     }
 }
 
-/// Whether `hc` says a request never reached the machine, so nothing ran there. hc 0.1.21 answers
-/// `<machine> is unreachable: cannot reach …` when it cannot open the line, and `lost the line to
-/// <machine> during the call` when the line goes once the request is sent; both with the same
-/// `"kind": "unavailable"` and exit status 5, so only its words tell them apart.
+/// Whether `hc` says a request never reached the machine, so nothing ran there. [`ExecError::Remote`]
+/// carries hc's message and not its `kind`, so this reads the words. hc 0.1.21 answers `<machine> is
+/// unreachable: cannot reach …` when it cannot open the line, and `lost the line to <machine> during
+/// the call` when the line goes once the request is sent; both with the same `"kind": "unavailable"`
+/// and exit status 5. It answers `unknown machine "<machine>"` (`"kind": "machine_unknown"`, exit
+/// status 4) for a machine it no longer knows, such as one removed with `hc machine rm` while a Space
+/// on it is open. A machine with no `sh` is not read here: [`read`] takes `cannot start sh` for
+/// [`Problem::NoShell`], which is never cleared.
 fn never_sent(message: &str) -> bool {
     message.contains(" is unreachable: ")
         || message.ends_with("is not connected")
-        || message.starts_with("cannot start sh")
+        || message.starts_with("unknown machine ")
 }
 
 #[cfg(all(test, unix))]
@@ -2975,6 +2979,8 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
             UNREACHABLE,
             "lab is unreachable: cannot reach /srv/via: the connection closed",
             "machine lab is not connected",
+            // hc 0.1.21 on a Space whose machine was removed (`hc machine rm`).
+            "unknown machine \"ghost\"",
         ] {
             let mut asked = 0;
             let got = copy_by(&src, &dir, &[], None, |_| {
@@ -2987,6 +2993,16 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
                 "{got:?}"
             );
         }
+        // A machine with no sh: nothing ran there, so no clear either.
+        let mut asked = 0;
+        let got = copy_by(&src, &dir, &[], None, |_| {
+            asked += 1;
+            Err(ExecError::Remote(
+                "cannot start sh: No such file or directory (os error 2)".into(),
+            ))
+        });
+        assert_eq!(asked, 1);
+        assert_eq!(got, Err(Problem::NoShell));
     }
 
     /// [`CLEAR_SCRIPT`] under `shell`, with `env` set, for the copy `id` made in `into`: the line it
