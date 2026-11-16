@@ -3034,6 +3034,27 @@ mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" 
         }
     }
 
+    /// A scratch folder of another account's (its owner as `stat` tells it) is not the copy's: nothing
+    /// in it is removed, and the copy may be left.
+    #[test]
+    fn a_clear_leaves_a_scratch_folder_another_account_owns() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let (_bin, path) = shimmed(&[(
+            "stat",
+            "case \"$*\" in *%u*) echo 4242; exit 0 ;; esac\nexec stat \"$@\"",
+        )]);
+        for shell in shells() {
+            let d = tempfile::tempdir().unwrap();
+            let scratch = d.path().join(format!("{}{id}", fsops::SCRATCH_PREFIX));
+            fs::create_dir_all(scratch.join(id).join("half")).unwrap();
+            fs::write(scratch.join(id).join("half/f"), "f").unwrap();
+            let env = [("PATH", path.as_str())];
+            assert_eq!(clear_under(&shell, &env, d.path(), id), "left", "{shell:?}");
+            assert!(scratch.join(id).join("half/f").exists(), "{shell:?}");
+            assert_eq!(clear_under(&shell, &[], d.path(), id), "done", "{shell:?}");
+        }
+    }
+
     /// Where the freedesktop trash of `home` is, and what it holds.
     fn trashed(data: &Path) -> (Vec<String>, Vec<String>) {
         let at = |sub: &str| {
