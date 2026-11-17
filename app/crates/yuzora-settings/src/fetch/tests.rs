@@ -169,6 +169,11 @@ fn names(list: &[(PathBuf, String)]) -> Vec<&str> {
     list.iter().map(|(_, n)| n.as_str()).collect()
 }
 
+/// The code and the message the page is given for a plan that was refused.
+fn refused(planned: Result<Plan, InstallError>) -> (&'static str, String) {
+    planned.err().map(|e| (e.code(), e.to_string())).expect("it was planned")
+}
+
 #[test]
 fn reads_githubs_own_archive() {
     // GitHub's legacy archive of octocat/Hello-World at HEAD, as codeload answered it on 2026-11-17.
@@ -401,7 +406,8 @@ fn folders_count_against_the_cap_as_files_do() {
         ("the folders of files' paths", deep.iter().map(|f| (f.as_str(), b'0', &b"x"[..], "")).collect()),
     ] {
         let (base, _) = serving(gz_of(tar_of(&[&[(main.as_str(), b'0', &b"m"[..], "")][..], &members].concat())));
-        assert!(matches!(lab.plan("acme/demo", &base), Err(InstallError::TooBig)), "{what}");
+        let (code, why) = refused(lab.plan("acme/demo", &base));
+        assert!(code == "too_big" && why.contains(&format!("over {MAX_WRITTEN} files and folders")), "{what}: {code} {why}");
         assert!(lab.temp_is_empty(), "{what}");
     }
 }
@@ -417,8 +423,8 @@ fn a_member_far_deeper_than_the_cap_is_refused_at_once() {
     let (done, planned) = std::sync::mpsc::channel();
     std::thread::spawn(move || done.send(plan(&crate::source::parse("acme/demo").unwrap(), &base, &temp, &home).map(|p| p.to_json())));
     match planned.recv_timeout(Duration::from_secs(60)) {
-        Ok(Err(InstallError::TooBig)) => {}
-        Ok(other) => panic!("{other:?}"),
+        Ok(Err(e)) => assert!(e.code() == "too_big" && e.to_string().contains(&format!("over {MAX_WRITTEN} files and folders")), "{e}"),
+        Ok(Ok(p)) => panic!("{p}"),
         Err(_) => panic!("still counting after 60 s"),
     }
     assert!(lab.temp_is_empty());
@@ -438,7 +444,8 @@ fn a_download_over_the_limit_is_too_big() {
         }
         let _ = s.write_all(b"0\r\n\r\n");
     });
-    assert!(matches!(lab.plan("acme/demo", &base), Err(InstallError::TooBig)));
+    let (code, why) = refused(lab.plan("acme/demo", &base));
+    assert!(code == "too_big" && why.contains(&format!("archive of the whole repository is over {} MB", MAX_DOWNLOAD >> 20)), "{code} {why}");
     assert!(lab.temp_is_empty());
 }
 
@@ -459,7 +466,8 @@ fn a_small_archive_that_unpacks_huge_is_too_big() {
     assert!(archive.len() < 1 << 20, "a small download: {}", archive.len());
     let (base, _) = serving(archive);
     // The huge file is outside the folder the link names, so nothing after the unpack step would see it.
-    assert!(matches!(lab.plan("https://github.com/acme/demo/tree/HEAD/mod", &base), Err(InstallError::TooBig)));
+    let (code, why) = refused(lab.plan("https://github.com/acme/demo/tree/HEAD/mod", &base));
+    assert!(code == "too_big" && why.contains(&format!("unpacks to over {} MB", MAX_UNPACKED >> 20)), "{code} {why}");
     assert!(lab.temp_is_empty());
 }
 

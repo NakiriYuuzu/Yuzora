@@ -25,6 +25,7 @@ type Files = BTreeMap<String, String>;
 /// Folders bigger than this aren't a mod someone meant to install.
 const MAX_FILES: usize = 2000;
 const MAX_BYTES: u64 = 64 << 20;
+const OVER: &str = "It has over 2000 files or 64 MB.";
 
 /// FNV-1a, as Herdr fingerprints installed files.
 pub fn fingerprint(bytes: &[u8]) -> String {
@@ -305,7 +306,8 @@ pub enum InstallError {
     NotAMod,
     /// It's already in the home.
     Inside,
-    TooBig,
+    /// Over a limit; it says which.
+    TooBig(&'static str),
     Io(std::io::Error),
     /// Not a link to a GitHub repository (or a herdr.dev gallery page).
     BadSource,
@@ -318,7 +320,7 @@ impl InstallError {
         match self {
             InstallError::NotAMod => "not_a_mod",
             InstallError::Inside => "inside_home",
-            InstallError::TooBig => "too_big",
+            InstallError::TooBig(_) => "too_big",
             InstallError::Io(_) => "io",
             InstallError::BadSource => "bad_source",
             InstallError::FetchFailed(_) => "fetch_failed",
@@ -331,6 +333,7 @@ impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InstallError::Io(e) => write!(f, "io: {e}"),
+            InstallError::TooBig(why) => f.write_str(why),
             InstallError::FetchFailed(why) | InstallError::UnpackFailed(why) => f.write_str(why),
             other => f.write_str(other.code()),
         }
@@ -470,7 +473,7 @@ fn plan_for(source: &Path, home: &Path, windows: bool) -> Result<Plan, InstallEr
     let mut entries: Vec<(PathBuf, PathBuf, Vec<(String, String)>)> = Vec::new();
     for (dir, to) in &plan.mods {
         let mut files = Vec::new();
-        files_in(dir, true, &mut files).map_err(|_| InstallError::TooBig)?;
+        files_in(dir, true, &mut files).map_err(|_| InstallError::TooBig(OVER))?;
         let own: Vec<(String, String)> = renames.iter().filter(|(a, _)| *a == folder_name(dir)).cloned().collect();
         for f in files {
             let rel = f.strip_prefix(dir).map_err(std::io::Error::other)?.to_path_buf();
@@ -482,7 +485,7 @@ fn plan_for(source: &Path, home: &Path, windows: bool) -> Result<Plan, InstallEr
     }
     plan.files = entries.len();
     if plan.files > MAX_FILES || entries.iter().map(|(f, ..)| std::fs::metadata(f).map_or(0, |m| m.len())).sum::<u64>() > MAX_BYTES {
-        return Err(InstallError::TooBig);
+        return Err(InstallError::TooBig(OVER));
     }
     let mut reaches = std::collections::BTreeSet::new();
     for (from, to, renames) in entries {
@@ -493,7 +496,7 @@ fn plan_for(source: &Path, home: &Path, windows: bool) -> Result<Plan, InstallEr
         };
         plan.bytes += bytes.len() as u64;
         if plan.bytes > MAX_BYTES {
-            return Err(InstallError::TooBig);
+            return Err(InstallError::TooBig(OVER));
         }
         let is_code = to.extension().is_some_and(|e| matches!(e.to_str(), Some("js" | "mjs" | "ts")));
         if is_code && let Ok(text) = std::str::from_utf8(&bytes) {

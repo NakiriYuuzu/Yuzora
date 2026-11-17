@@ -83,7 +83,7 @@
     "stale": "That plan is out of date: start the install again.",
     "not_a_mod": "There's no main.js there, and no mods/ or layouts/ folder: it isn't a mod or a shared layout.",
     "inside_home": "That folder is already in Yuzora's home.",
-    "too_big": "That's too big to be a mod (over 2000 files or 64 MB).",
+    "too_big": "That's too big to install.",
     "io": "It couldn't be copied.",
     "bad_source": "That isn't a GitHub repository (owner/repo or its address) or a herdr.dev/mods or herdr.dev/layouts page.",
     "fetch_failed": "Couldn't download it from GitHub. Check the owner, repository, branch and folder, and your connection.",

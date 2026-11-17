@@ -22,6 +22,7 @@ const MAX_DOWNLOAD: u64 = 64 << 20;
 const MAX_UNPACKED: u64 = 128 << 20;
 /// Folders and files written to the temp folder; the plan then holds the folder to 2000 files.
 const MAX_WRITTEN: usize = 20_000;
+const OVER_WRITTEN: &str = "The link's folder has over 20000 files and folders.";
 
 /// What a link names, unpacked.
 pub struct Fetched {
@@ -76,7 +77,7 @@ fn download(url: &str) -> Result<Vec<u8>, InstallError> {
     let out = run(&req).map_err(|e| InstallError::FetchFailed(e.to_string()))?;
     // 63 is --max-filesize; a curl that lets a stream without a length run past it is held by max_output.
     if out.code == 63 || out.stdout.len() as u64 > MAX_DOWNLOAD {
-        return Err(InstallError::TooBig);
+        return Err(InstallError::TooBig("GitHub's archive of the whole repository is over 64 MB."));
     }
     let said = out.stderr_text();
     let (status, moved) = said.lines().find_map(|l| l.strip_prefix("yuzora-http ")).and_then(|r| r.split_once(' ')).unwrap_or_default();
@@ -103,7 +104,7 @@ fn plain_tar(archive: &[u8]) -> Result<Vec<u8>, InstallError> {
         .read_to_end(&mut tar)
         .map_err(|e| InstallError::UnpackFailed(format!("not a gzip archive GitHub would send: {e}")))?;
     if tar.len() as u64 > MAX_UNPACKED {
-        return Err(InstallError::TooBig);
+        return Err(InstallError::TooBig("GitHub's archive of the whole repository unpacks to over 128 MB."));
     }
     Ok(tar)
 }
@@ -252,7 +253,7 @@ fn unpack(tar: &[u8], source: &Source, into: &Path) -> Result<(PathBuf, String),
     for (rel, m) in &picked {
         // Each folder of a path is hashed whole, so a path costs the square of its depth: one that alone is over the cap goes first.
         if rel.len() > MAX_WRITTEN {
-            return Err(InstallError::TooBig);
+            return Err(InstallError::TooBig(OVER_WRITTEN));
         }
         let file = usize::from(matches!(m, Member::File(..)));
         files += file;
@@ -262,7 +263,7 @@ fn unpack(tar: &[u8], source: &Source, into: &Path) -> Result<(PathBuf, String),
             }
         }
         if files + folders.len() > MAX_WRITTEN {
-            return Err(InstallError::TooBig);
+            return Err(InstallError::TooBig(OVER_WRITTEN));
         }
     }
     let root = into.join(source.name());
