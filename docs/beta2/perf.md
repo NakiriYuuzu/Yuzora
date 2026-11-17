@@ -1,6 +1,6 @@
 # L8 效能監控（資源用量）
 
-lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popover 移植到 beta.2，放在**視窗最右下角**（狀態列最右端，指令面板快捷鍵的右邊）。點 chip 往上展開明細，右緣對齊。beta.1 的程式（`src-tauri/src/perf_service.rs`、`src/state/perfStore.ts`、`src/workbench/PerfBridge.tsx`、`ResourceUsagePopover.tsx`）是移植來源，已從 repo 移除（見 tag `v0.1.2`）。架構規則見 [architecture.md](architecture.md)，lane 流程見 [lanes.md](lanes.md)。
+lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popover 移植到 beta.2，放在**視窗最右下角**：有狀態列的 layout 在狀態列最右端（`yuzora` 在指令面板快捷鍵的右邊），沒有狀態列的在視窗底部一個 26px 高的 block 右端（見「放置」）。點 chip 往上展開明細，右緣對齊。beta.1 的程式（`src-tauri/src/perf_service.rs`、`src/state/perfStore.ts`、`src/workbench/PerfBridge.tsx`、`ResourceUsagePopover.tsx`）是移植來源，已從 repo 移除（見 tag `v0.1.2`）。架構規則見 [architecture.md](architecture.md)，lane 流程見 [lanes.md](lanes.md)。
 
 ## 範圍與檔案
 
@@ -17,8 +17,9 @@ lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popove
 | `app/Cargo.toml` | yuzora crate 區塊加 `yuzora-perf = { path = "crates/yuzora-perf" }` |
 | `app/src/yuzora/mod.rs` | `host_modules()` 加 `yuzora_perf::host_module(),`；同檔測試的模組數 7 → 8（加模組的必然結果） |
 | `app/defaults/layouts/yuzora.json` | `status` 由 block 改成 row：`yuzora-statusbar`（佔滿）＋`yuzora-perf`（150px），`resizable: false` |
-| `app/src/yuzora/dock.rs` | `place_perf`：載入時把 chip 放進其他 layout（見「放置」）；`strip` 的還原；`ensure` 依檔案的大小補上 chip |
-| `app/src/mods/render_tests.rs` | 一行 `mod yuzora_perf_place_tests;`（`// yuzora(perf-place):`），測試在 `render_tests/yuzora_perf_place_tests.rs` |
+| `app/src/yuzora/dock.rs` | `place_perf`：載入時把 chip 放進其他 layout（見「放置」）；`strip` 的還原；`ensure` 依 `layout.set` 之後 layout 檔的大小放 chip |
+| `app/src/mods/render_tests.rs` | 一行 `mod yuzora_perf_place_tests;`，註記 `// yuzora(perf-place):` 在同一行；測試在 `render_tests/yuzora_perf_place_tests.rs` |
+| `app/src/window.rs`（`mod tests`） | 4 行：`edit_heavy`、`open_heavy`、`load_recovery_survives_switches`、`new_vm_keeps_popup` 數 mod 複本時加上 `&& c.inst.name != "yuzora-perf"`，各行同一行註記 `// yuzora(perf-place):`。這些測試的 layout 現在也有 chip，它的複本不算在內 |
 | `app/Cargo.lock`、`app/THIRD-PARTY-NOTICES` | 新增 workspace package `yuzora-perf`；沒有新的第三方套件（sysinfo 0.37.2 已由 gpui-fps 帶入） |
 
 ## 量測語意
@@ -89,10 +90,11 @@ beta.2 沒有 WebView，分成三類：
 - `layout` 只有 `px` 與 `weight` 兩種大小，沒有「依內容寬度」。所以 `status` 改成 row，`yuzora-perf` 固定 150px、chip 靠右；左邊空白與狀態列同為 `chrome` 背景、同一條 `divider` 上緣線，看起來是同一條狀態列。
 - row 設 `resizable: false`、不設 `divider`，兩個 block 之間沒有分隔線也沒有拖拉把手。
 - 不需要改 L1 的 `yuzora-statusbar/main.js`。
-- 其他 layout（`main`、`terminals`、`win98`、使用者自己的）由 `app/src/yuzora/dock.rs` 的 `place_perf` 在載入時放進去。和 dock 一樣只在畫面上，存檔時 `strip` 拿掉，layout 檔不會出現 `yuzora-dock-*`；dock 設成 off 也照放。layout 裡任何地方（block 或 float）已經有 `yuzora-perf` 時不動：`yuzora.json`、它的複本、`-edited` 檔。
+- 其他 layout（`main`、`terminals`、`win98`、使用者自己的）由 `app/src/yuzora/dock.rs` 的 `place_perf` 在載入時放進去。和 dock 一樣只在畫面上，存檔時 `strip` 拿掉，layout 檔不會出現 `yuzora-dock-*`；dock 設成 off 也照放。layout 裡任何地方（block 或 float）已經有 `yuzora-perf` 時不動：`yuzora.json` 與它的複本（包括改過而另存的 `yuzora-edited`）。
   - 狀態列：放 tab 的 block 最近的上層 column，最後一個子節點是 32px 以下的 mod block。那個 block 原地變成 row，原本的內容移到子節點 `yuzora-dock-body`，右邊是 `yuzora-dock-perf`（150px）。id、大小、外觀留在原節點，所以 `.state` 對它的點選（隱藏、改高度）仍是整條狀態列的。`main` 走這條，形狀和 `yuzora.json` 的 `status` 相同。
-  - 沒有狀態列：根是 column 時在最後加一條 26px 的 `yuzora-dock-perf`（`terminals`；`win98` 在 taskbar 下方，taskbar 40px 不算狀態列）。根不是 column 時，根原地變成 column（id 改成 `yuzora-dock-root`）：根原本的內容帶著根的 id 成為第一個子節點，下面是 chip。根獨有的欄位（`titlebar`、`theme`、floats 等）留在根上；`layout.select`、終端機 pane、mod 複本照舊用原本的 id 找到內容。
-  - 大小是點選。mod 用 `layout.set` 送回沒有 chip 的樹時（win98 先把 taskbar 縮成 28px），`ensure` 依 layout 檔的大小決定位置，所以和畫面上的一樣，shipped layout 不會把它當成結構變更而拒絕。
+  - 沒有狀態列：根是 column 時在最後加一個 26px 高的 block `yuzora-dock-perf`（`terminals`；`win98` 在 taskbar 下方，taskbar 40px 不算狀態列）。根不是 column 時，根原地變成 column（id 改成 `yuzora-dock-root`）：根原本的內容帶著根的 id 成為第一個子節點，下面是 chip。根獨有的欄位（`titlebar`、`theme`、floats 等）留在根上；`layout.select`、終端機 pane、mod 複本照舊用原本的 id 找到內容。
+  - 位置只看 layout 檔裡的大小，不看點選。載入或檔案被改時，看剛讀到的檔。shipped layout 的 `layout.set` 不改檔（送來的大小都是點選），`ensure` 看原本的檔（`file_chrome`）。個人 layout 的 `layout.set` 把送來的樹寫成檔，`ensure` 與 `as_read` 都看送來的樹。所以載入、檔案被改或 `layout.set` 之後，畫面上的樹和 app 手上的檔案樹（`file_chrome`）是同一個形狀，重啟後 chip 在同一個位置，`.state` 不會記到沒有人做的點選。
+  - win98：`fitLayout` 先用點選把 taskbar 縮成 28px（zoom 改變時是 21.538px 這類值），再把 `layout()`（含 chip）送回 `layout.set`。shipped 的 `win98` 檔仍是 40px，chip 留在 taskbar 下方，結構沒變，所以被接受。win98 的複本則會把縮小後的高度寫進自己的檔，taskbar 從此算狀態列，chip 當下就移到 taskbar 右端（150px 寬），重啟後也一樣。
 - 既有 app home 裡沒有 `yuzora-perf` 的舊 `yuzora` layout 也會在載入時得到 chip，不用重設 layout。
 
 ## 不做
@@ -108,7 +110,8 @@ beta.2 沒有 WebView，分成三類：
 cd app
 cargo test --locked -p yuzora-perf          # 聚合、分類、不變式、hc server 辨識與快取、滾動視窗、模組宣告
 cargo test --locked --bin herdr-app yuzora  # 模組數、layout 引用的 mod 都有出貨、每個 layout 剛好一個 chip（yuzora::dock）
-cargo test --locked --bin herdr-app yuzora_perf_place  # 出貨的 layout 畫得出 chip
+cargo test --locked --bin herdr-app yuzora_perf_place  # 出貨的 yuzora-perf 把一筆樣本畫成 chip（數字與圖示）
+scripts/yuzora/test-isolated -p herdr-app --bin herdr-app window::tests::  # 每個出貨 layout 只載入一個 chip、畫在右下角；layout.set 跨過狀態列高度後，畫面與重啟一致、不記點選
 scripts/yuzora/check-mods yuzora-perf
 cargo run --release -p yuzora-perf --example cost -- <app pid> 30   # 在 app 的隔離環境變數下執行
 ```

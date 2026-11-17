@@ -1596,11 +1596,14 @@ with these differences.
   `herdr-app do`) opens or closes the details. Remote (SSH) Spaces are not measured.
 - The app adds the chip to every layout that doesn't show `yuzora-perf` (in a block or a float) at load, the dock
   on or off, and never writes it into a layout file. It goes beside the status bar (the last child of the column
-  that holds the tab, when that is a mod block of 32px or less), else in a 26px row at the bottom of the window.
+  that holds the tab, when that is a mod block of 32px or less), else at the bottom of the window in a 26px block.
   Its node is `yuzora-dock-perf`, and what the status bar showed moves into `yuzora-dock-body`; the status bar keeps
-  its id, so `layout.hide` and `layout.resize` on it act on the whole bar. A root that isn't a column becomes one
-  with the id `yuzora-dock-root`, and what it showed keeps the root's id. These ids are reserved, like the dock's.
-  To place the chip yourself, put a `yuzora-perf` block in the layout: the app then adds none.
+  its id, so `layout.hide` and `layout.resize` on it act on the whole bar. With no status bar and a root that isn't
+  a column, the root becomes a column with the id `yuzora-dock-root`: what it showed is its first child, under the
+  root's own id, with the chip below. The sizes in the layout file decide, never a click: `layout.set` on a layout
+  of your own writes its sizes into the file, so a bar it makes 32px or less is the status bar at once. These ids
+  are reserved, like the dock's. To place the chip yourself, put a `yuzora-perf` block in the layout: the app then
+  adds none.
 - `yuzora:perf`: `tick(focused)` samples on a worker thread (at most once every 1.5 s, whatever the number of
   callers) and `state()` reads the last sample without sampling: `{snapshot: {total, app, core, tools, core_pid,
   core_error}, health: {attempts, failures, empty, skipped, last_error}, cost}`. Each category is
