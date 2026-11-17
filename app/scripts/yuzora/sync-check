@@ -47,8 +47,10 @@ echo "upstream $(split "$old" | cut -c1-12) → $(split "$new" | cut -c1-12); ap
 changed_before=$(git diff --name-only --diff-filter=M "$old" "$base:app" | sort)
 changed_after=$(git diff --name-only --diff-filter=M "$new" "HEAD:app" | sort)
 # The marker comment of every `yuzora` line, from the comment on: code beside
-# it may change with upstream, the note must not disappear.
-markers() { git show "$1:app/$2" 2>/dev/null | grep -oE '(//|#|<!--|/\*) ?yuzora.*' | sed 's/[[:space:]]*$//' | sort || true; }
+# it may change with upstream, the note must not disappear. An HTML comment
+# ends at its `-->`: the prose after it on the line is Yuzora's own and may
+# be reworded.
+markers() { git show "$1:app/$2" 2>/dev/null | grep -oE '(//|#|/\*) ?yuzora.*|<!-- ?yuzora([^-]|-[^-]|--[^>])*(-->)?' | sed 's/[[:space:]]*$//' | sort || true; }
 
 # --- 1. Yuzora's changes to upstream files are still there ----------------------
 echo "1. Yuzora's changes to upstream files"
