@@ -2678,7 +2678,9 @@ exec mv -n -- "$from" "$to""#,
                 fsops::run(killed_after_a_second(&shell, &path, req))
             });
             assert!(
-                matches!(&got, Err(Problem::Failed(why)) if why.starts_with("took longer than 1 s") && !why.contains("partial")),
+                matches!(&got, Err(Problem::Failed(why)) if why.starts_with("took longer than 1 s")
+                    && !why.contains("partial")
+                    && !why.contains("The copy may or may not have been made")),
                 "{shell:?}: {got:?}"
             );
             assert_eq!(left_by_the_kill.len(), 1, "{shell:?}: the kill ran no trap");
