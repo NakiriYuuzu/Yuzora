@@ -238,7 +238,8 @@ fn unpack(tar: &[u8], source: &Source, into: &Path) -> Result<(PathBuf, String),
         if parts.next() != Some(top) {
             return Err(InstallError::UnpackFailed(format!("{:?} is outside the archive's folder", m.path())));
         }
-        let rest: Vec<&str> = parts.collect();
+        // A pax path can have millions of parts. Past the cap they are not listed: a path that deep is refused below.
+        let rest: Vec<&str> = parts.take(source.path.len() + MAX_WRITTEN + 1).collect();
         if rest.len() <= source.path.len() || rest.iter().zip(&source.path).any(|(a, b)| a != b) {
             continue;
         }

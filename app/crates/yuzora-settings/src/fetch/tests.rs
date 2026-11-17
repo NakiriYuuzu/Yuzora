@@ -2,11 +2,34 @@
 //! runs the real curl of this machine (and its gzip, to build the archives).
 
 use super::*;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::net::{TcpListener, TcpStream};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 const TOP: &str = "acme-demo-1a2b3c4";
+
+/// The bytes this thread has allocated so far: what a call costs, whatever the tests on other threads do.
+struct Counting;
+
+thread_local! {
+    static ALLOCATED: Cell<usize> = const { Cell::new(0) };
+}
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let _ = ALLOCATED.try_with(|n| n.set(n.get() + layout.size()));
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static COUNTING: Counting = Counting;
 
 struct Lab {
     root: PathBuf,
@@ -427,6 +450,24 @@ fn a_member_far_deeper_than_the_cap_is_refused_at_once() {
         Ok(Ok(p)) => panic!("{p}"),
         Err(_) => panic!("still counting after 60 s"),
     }
+    assert!(lab.temp_is_empty());
+}
+
+/// A 128 MiB tar can hold a pax path of 67 million parts. Listed, each part takes 16 bytes, twice over: over 2 GB.
+/// A path deeper than the cap is refused at the cost of the path itself (as read, and as checked) and a list of no
+/// more parts than the cap.
+#[test]
+fn a_path_of_millions_of_parts_is_refused_without_listing_them() {
+    let lab = Lab::new("parts");
+    let deep = format!("{TOP}/{}x.js", "d/".repeat(1 << 20));
+    let tar = tar_of(&[(&format!("{TOP}/main.js"), b'0', b"m", ""), ("pax", b'x', &pax_path(&deep), ""), ("deep", b'0', b"x", "")]);
+    let source = crate::source::parse("acme/demo").unwrap();
+    let before = ALLOCATED.with(Cell::get);
+    let unpacked = unpack(&tar, &source, &lab.root.join("temp"));
+    let cost = ALLOCATED.with(Cell::get) - before;
+    let (code, why) = unpacked.err().map(|e| (e.code(), e.to_string())).expect("it was unpacked");
+    assert!(code == "too_big" && why.contains(&format!("over {MAX_WRITTEN} files and folders")), "{code} {why}");
+    assert!(cost < 4 * deep.len(), "{cost} bytes allocated to refuse a path of {} bytes", deep.len());
     assert!(lab.temp_is_empty());
 }
 
