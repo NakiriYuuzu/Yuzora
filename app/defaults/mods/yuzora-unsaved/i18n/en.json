@@ -1,0 +1,14 @@
+{
+  "title_one": "Save changes to {name}?",
+  "title_many": "Save changes to {count} files?",
+  "body": "Your changes are lost if you don't save them.",
+  "on": "on {machine}",
+  "save": "Save",
+  "saving": "Saving…",
+  "dont_save": "Don't Save",
+  "cancel": "Cancel",
+  "error": {
+    "save": "Not saved: {error}",
+    "conflict": "Not saved: it changed on disk. Open it to choose which version to keep."
+  }
+}
