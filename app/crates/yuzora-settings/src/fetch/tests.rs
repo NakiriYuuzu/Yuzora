@@ -365,7 +365,7 @@ fn a_body_that_is_not_a_gzip_of_a_tar_is_refused() {
     let local = lab.root.join("outside/target").to_string_lossy().into_owned();
     let mtree = format!("#mtree\n{TOP} type=dir\n{TOP}/main.js type=file contents={local}\n").into_bytes();
     let tar = tar_of(&[(&format!("{TOP}/main.js"), b'0', b"m", "")]);
-    let bodies = [("gzipped mtree", gz_of(mtree.clone())), ("mtree", mtree), ("zstd", zstd_of(&tar)), ("zip", zip_of(&format!("{TOP}/main.js"), b"m"))];
+    let bodies = [("gzipped mtree", gz_of(mtree.clone())), ("mtree", mtree), ("zstd", zstd_of(&tar)), ("zip", zip_of(&format!("{TOP}/main.js"), b"m")), ("plain tar", tar)];
     let mut planned = Vec::new();
     for (what, body) in bodies {
         let (base, _) = serving(body);
