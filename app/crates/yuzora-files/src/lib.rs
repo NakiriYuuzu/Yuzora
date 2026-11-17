@@ -125,6 +125,8 @@ export function documentChanged(doc: number, seq: number): Promise<number>;
 export function saveDocument(doc: number, options?: { force?: boolean }): Promise<{ ok: boolean; conflict: boolean; error: string | null }>;
 /** Reads the file again, dropping unsaved changes. */
 export function reloadDocument(doc: number): null;
+/** Drops the unsaved changes now (Don't Save): a document a pane holds takes its file from disk again, one no pane holds is forgotten. */
+export function discardDocument(doc: number): null;
 /** Keeps the unsaved changes over a change on disk; the next save overwrites it. */
 export function keepMine(doc: number): null;
 /** Compares with the disk: a clean document follows a change made elsewhere, a dirty one is marked in conflict. */
@@ -542,6 +544,11 @@ pub fn host_module() -> HostModule {
         })
         .function("reloadDocument", |a| {
             with_doc(a, |d, cx| d.reload(cx))?;
+            Ok(HostValue::Null)
+        })
+        .function("discardDocument", |a| {
+            let id = doc_id(a)?;
+            app(|cx| docs::discard(id, cx))?;
             Ok(HostValue::Null)
         })
         .function("keepMine", |a| {
