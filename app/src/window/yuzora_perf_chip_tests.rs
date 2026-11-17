@@ -174,6 +174,16 @@ fn perf_chip_without_a_bar(cx: &mut gpui::TestAppContext) {
             { "id": "perf", "type": "block", "size": { "px": 150 }, "content": { "mod": "yuzora-perf" } }] }] });
     chip_file(&view, cx, &yuzora);
     assert_eq!(chip_copies(&view, cx), [("perf".to_owned(), serde_json::Value::Null)], "only the layout's own");
+    // A node named like the chip's slot: no chip, and that node's copy is drawn only where the node is.
+    let named = json!({ "id": "root", "type": "column", "children": [
+        { "id": "status#yuzora-perf", "type": "block", "size": { "px": 20 }, "content": { "mod": "bar" } },
+        { "id": "main", "type": "block", "content": { "tab": "active" } },
+        { "id": "status", "type": "block", "size": { "px": 28 }, "content": { "mod": "bar" } }] });
+    chip_file(&view, cx, &named);
+    let ((w, h), quads) = chip_frame(cx);
+    assert_eq!(chip_copies(&view, cx), [], "no copy");
+    let status = quads.iter().find(|q| q.bg == chip_rgb(0x123456) && chip_near(q.y, h - 28.0)).expect("the status bar is drawn");
+    assert_eq!(status.w, w, "drawn whole, nothing beside it: {quads:?}");
 }
 
 #[test]

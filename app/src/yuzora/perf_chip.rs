@@ -47,8 +47,15 @@ pub fn slot(shown: &Node, file: &Node) -> Option<(String, Instance)> {
 }
 
 /// The chip's slot at the block `id`, named as upstream names a mod slot that belongs to a node (`<stack>#header`).
-pub fn key(id: &str) -> String {
+fn key(id: &str) -> String {
     format!("{id}#{MOD}")
+}
+
+/// The chip's slot at the mod block `id`, when the window holds a copy there (`held`) and no node of `shown` is
+/// named so: such a node's own copy is under that name, and it is drawn where that node is, not beside `id`.
+pub fn at(shown: &Node, id: &str, held: impl Fn(&str) -> bool) -> Option<String> {
+    let key = key(id);
+    (held(&key) && shown.find(&key).is_none()).then_some(key)
 }
 
 /// The status bar of `shown`: the last child of a column that holds the shown tab, below the tab's own branch, when
@@ -228,7 +235,10 @@ mod tests {
     fn a_node_named_like_the_chips_slot_keeps_it() {
         let with = |id: &str| column(vec![thin(id, 20.0), tab(), thin("status", 28.0)]);
         assert_eq!(found(&with("status#yuzora-perf")), None);
+        assert_eq!(at(&with("status#yuzora-perf"), "status", |_| true), None, "that node's copy is not drawn beside the bar");
         assert_eq!(found(&with("status#other")).as_deref(), Some("status"));
+        assert_eq!(at(&with("status#other"), "status", |_| true).as_deref(), Some("status#yuzora-perf"));
+        assert_eq!(at(&with("status#other"), "status", |_| false), None, "no copy, nothing drawn");
     }
 
     #[test]

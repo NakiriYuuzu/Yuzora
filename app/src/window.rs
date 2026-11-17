@@ -4447,7 +4447,7 @@ impl AppWindow {
                 }
                 None => div().into_any_element(),
             },
-            Content::Mod { .. } => crate::yuzora::perf_chip::beside(self.render_slot(&n.id, cx), Some(crate::yuzora::perf_chip::key(&n.id)).filter(|k| self.copies.contains_key(k)).map(|k| self.render_slot(&k, cx))), // yuzora(L8): the resource chip at a status bar's right end
+            Content::Mod { .. } => crate::yuzora::perf_chip::beside(self.render_slot(&n.id, cx), crate::yuzora::perf_chip::at(&self.chrome, &n.id, |k| self.copies.contains_key(k)).map(|k| self.render_slot(&k, cx))), // yuzora(L8): the resource chip at a status bar's right end
             Content::Agent { .. } => match self.shown_agent() {
                 Some(addr) => match self.agent_view(&n.id, &addr) {
                     Some(t) => div().size_full().child(shown_terminal(&t.view, cx)).into_any_element(),

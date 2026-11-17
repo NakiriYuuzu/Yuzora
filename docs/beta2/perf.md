@@ -8,7 +8,7 @@ lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popove
 | --- | --- |
 | `app/crates/yuzora-perf/` | `yuzora:perf`：取樣 worker、行程樹聚合與分類、找 herdr-core、滾動視窗 |
 | `app/defaults/mods/yuzora-perf/` | 右下角的 chip 與 popover；`i18n/en.json`；Lucide 圖示（`cpu`、`memory-stick`、`app-window`、`wrench`、`chevron-up`） |
-| `app/src/yuzora/perf_chip.rs` | 哪個 block 是狀態列（`bar`）、chip 的 copy（`slot`、`key`）、在狀態列的右端畫它（`beside`）；規則的單元測試 |
+| `app/src/yuzora/perf_chip.rs` | 哪個 block 是狀態列（`bar`）、chip 的 copy（`slot`、`at`）、在狀態列的右端畫它（`beside`）；規則的單元測試 |
 | `app/src/window/yuzora_perf_chip_tests.rs` | chip 在視窗裡的測試：畫在狀態列右端、狀態列自己的內容在它左邊、沒有狀態列或自己放了 chip 時沒有、跟著狀態列的修改／隱藏／改大小、點 chip 開明細、win98 工作列的樣子、layout 檔與 `.state` 和沒有 chip 時相同 |
 | `app/crates/yuzora-perf/examples/cost.rs` | 從外部對執行中的 app 量測單次取樣成本 |
 
@@ -18,7 +18,7 @@ lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popove
 | --- | --- |
 | `app/Cargo.toml` | yuzora crate 區塊加 `yuzora-perf = { path = "crates/yuzora-perf" }` |
 | `app/src/yuzora/mod.rs` | `host_modules()` 加 `yuzora_perf::host_module(),`；同檔測試的模組數 7 → 8（加模組的必然結果）；chip 再加一行 `pub mod perf_chip;` |
-| `app/src/window.rs`（上游） | chip：4 行，每行都以 `// yuzora(L8):` 註記。`visible()` 與 `owned_mods()` 各加 1 行 `mods.extend`／`out.extend(perf_chip::slot(&self.chrome, &self.file_chrome))`；`render_block` 的 `Content::Mod` 改 1 行，把 `render_slot(&n.id)` 與 chip 的 copy 交給 `perf_chip::beside`；測試區加 1 行 `include!("window/yuzora_perf_chip_tests.rs")` |
+| `app/src/window.rs`（上游） | chip：4 行，每行都以 `// yuzora(L8):` 註記。`visible()` 與 `owned_mods()` 各加 1 行 `mods.extend`／`out.extend(perf_chip::slot(&self.chrome, &self.file_chrome))`；`render_block` 的 `Content::Mod` 改 1 行，把 `render_slot(&n.id)` 與 chip 的 copy（`perf_chip::at` 找到時）交給 `perf_chip::beside`；測試區加 1 行 `include!("window/yuzora_perf_chip_tests.rs")` |
 | `app/defaults/layouts/yuzora.json` | `status` 由 block 改成 row：`yuzora-statusbar`（佔滿）＋`yuzora-perf`（150px），`resizable: false` |
 | `app/Cargo.lock`、`app/THIRD-PARTY-NOTICES` | 新增 workspace package `yuzora-perf`；沒有新的第三方套件（sysinfo 0.37.2 已由 gpui-fps 帶入） |
 
@@ -97,7 +97,7 @@ beta.2 沒有 WebView，分成三類：
   - 狀態列隱藏：沒有 chip，也不會跑到上面那條；再顯示時回來。
   - column 的最後一個是 stack（stack 裡放的是可切換的內容）或 row（由幾個 block 組成的狀態列）：不算；整個 stack 包著 tab 與狀態列時，stack 顯示那一邊就照常找到。
   - 狀態列下面還有別的 block（例如一個終端機）：狀態列不是最後一個，不算；那個 block 移除後就有 chip。
-- **什麼時候畫**：判斷在 `perf_chip::slot`，由 `window.rs` 的 `visible()` 與 `owned_mods()` 呼叫。這兩處把樹變成 mod 的 slot，`sync()` 在每次樹變動之後（載入、layout 檔被改、`layout.set`、mod 自動 dock、layout 裡的終端機結束而移除 slot、隱藏與顯示）都會跑它們，所以 chip 和每個 layout 裡的 mod 一樣，沒有哪條路徑會漏掉。成本是幾次走訪樹、不讀檔。copy 的 key 是 `<狀態列 id>#yuzora-perf`（上游替屬於某個節點的 mod slot 取名的方式，如 `<stack>#header`）；節點 id 是自由文字，layout 裡有節點正好叫這個名字時，chip 不畫，slot 留給那個節點。`render_block` 畫 mod block 時，這個 key 的 copy 存在才把它畫在右端。layout 自己放了 `yuzora-perf`（block 或 float，隱藏的、不在前面的 stack 子節點也算）就什麼都不加。
+- **什麼時候畫**：判斷在 `perf_chip::slot`，由 `window.rs` 的 `visible()` 與 `owned_mods()` 呼叫。這兩處把樹變成 mod 的 slot，`sync()` 在每次樹變動之後（載入、layout 檔被改、`layout.set`、mod 自動 dock、layout 裡的終端機結束而移除 slot、隱藏與顯示）都會跑它們，所以 chip 和每個 layout 裡的 mod 一樣，沒有哪條路徑會漏掉。成本是幾次走訪樹、不讀檔。copy 的 key 是 `<狀態列 id>#yuzora-perf`（上游替屬於某個節點的 mod slot 取名的方式，如 `<stack>#header`）；節點 id 是自由文字，layout 裡有節點正好叫這個名字時，chip 不畫，slot 留給那個節點。`render_block` 畫 mod block 時，這個 key 的 copy 存在、而且沒有節點叫這個名字（`perf_chip::at`），才把它畫在右端；那個節點自己的 copy 只畫在節點的位置。layout 自己放了 `yuzora-perf`（block 或 float，隱藏的、不在前面的 stack 子節點也算）就什麼都不加。
 - **沒有狀態列的 layout**（`terminals`、使用者自己沒有狀態列的）：沒有 chip，也沒有 copy。`yuzora-perf.toggle` 這時回錯誤 `unknown command "yuzora-perf.toggle"`（mod 的指令只送給顯示中的 copy），狀態列隱藏時也一樣。要 chip 就在 layout 裡放 `yuzora-perf` block。
 - **與 dock 開關無關**：layout 的 `"yuzora": {"dock": "off"}` 與設定頁的個人 dock 選擇都不影響 chip。
 - **樣子**：chip 收到 `props().bar`（狀態列的 mod 名稱），畫成那條狀態列的樣子，看起來是同一條：`win98` 的工作列是它的灰 `#c0c0c0`、上緣兩條亮線（`#dfdfdf`、`#ffffff`）、黑字，以 Win98 像素計；其他狀態列照上游 `workspace-status` 的畫法：`chrome` 底、`border` 上緣線、11.8 的 `muted` 字。chip 在右端垂直置中，左邊留著 150px 裡剩下的空白。`yuzora` 狀態列裡的 chip（沒有 `bar`）照舊是 `yuzora-statusbar` 的樣子。
