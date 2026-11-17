@@ -1446,6 +1446,11 @@ mod anchored {
     use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
     use std::path::{Path, PathBuf};
 
+    #[cfg(target_os = "linux")]
+    use libc::__errno_location as errno;
+    #[cfg(target_os = "macos")]
+    use libc::__error as errno;
+
     pub(super) struct Scratch {
         into: Dir,
         pub(super) name: OsString,
@@ -1912,7 +1917,7 @@ mod anchored {
             sys(unsafe { libc::unlinkat(self.fd(), name.as_ptr(), flags) }).map(drop)
         }
 
-        /// The names in this folder.
+        /// The names in this folder, or why they could not all be read.
         fn names(&self) -> io::Result<Vec<OsString>> {
             // fdopendir keeps the descriptor it is given: a copy of this one.
             // SAFETY: a descriptor this owns.
@@ -1929,10 +1934,15 @@ mod anchored {
             // SAFETY: `listing` is open until closedir; each entry is read before the next call.
             unsafe {
                 libc::rewinddir(listing);
-                loop {
+                let listed = loop {
+                    // A null is the end of the folder, or a read that failed: only errno tells.
+                    *errno() = 0;
                     let entry = libc::readdir(listing);
                     if entry.is_null() {
-                        break;
+                        break match *errno() {
+                            0 => Ok(names),
+                            e => Err(io::Error::from_raw_os_error(e)),
+                        };
                     }
                     let name = CStr::from_ptr((*entry).d_name.as_ptr()).to_bytes();
                     if name != b"." && name != b".." {
@@ -1940,10 +1950,10 @@ mod anchored {
                         #[cfg(test)]
                         unread(listing);
                     }
-                }
+                };
                 libc::closedir(listing);
+                listed
             }
-            Ok(names)
         }
 
         /// Renames `name` here to `to` in `into`; never over what is there.
