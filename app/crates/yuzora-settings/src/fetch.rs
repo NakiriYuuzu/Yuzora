@@ -265,16 +265,11 @@ pub fn fetch(source: &Source, base: &str, temp_root: &Path) -> Result<Fetched, I
     Ok(Fetched { dir, commit, _temp: temp })
 }
 
-/// What installing from `link` would do: [`crate::mods::plan`] of the folder it
-/// names, shown as its GitHub address and commit. Nothing is written to `home`,
-/// and nothing is left in `temp_root`.
-pub fn plan(link: &str, base: &str, temp_root: &Path, home: &Path) -> Result<Plan, InstallError> {
-    let source = crate::source::parse(link).ok_or(InstallError::BadSource)?;
-    // What the link was read as: a herdr.dev name can split into the wrong repo and folder.
-    let fetched = fetch(&source, base, temp_root).map_err(|e| match e {
-        InstallError::FetchFailed(why) => InstallError::FetchFailed(format!("{}: {why}", source.github_url())),
-        e => e,
-    })?;
+/// What installing from `source` would do: [`crate::mods::plan`] of the folder
+/// it names, shown as its GitHub address and commit. Nothing is written to
+/// `home`, and nothing is left in `temp_root`.
+pub fn plan(source: &Source, base: &str, temp_root: &Path, home: &Path) -> Result<Plan, InstallError> {
+    let fetched = fetch(source, base, temp_root)?;
     let mut plan = crate::mods::plan(&fetched.dir, home)?;
     plan.source = source.github_url();
     plan.commit = Some(fetched.commit.clone());

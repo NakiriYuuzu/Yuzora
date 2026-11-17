@@ -74,8 +74,8 @@ export function appStatus(): Promise<Outcome>;
 export function checkMod(name: string): Promise<Outcome>;
 /** What installing a folder would do (nothing is written). code stale: a newer planInstall or planFetch was asked for meanwhile. */
 export function planInstall(path: string): Promise<Outcome & { plan?: InstallPlan }>;
-/** What installing from a link would do: a GitHub repository (owner/repo or its address, a tree/<ref>/<folder> address) or a herdr.dev/mods or herdr.dev/layouts page, downloaded from GitHub only, into a temp folder that is gone when this resolves (nothing is written to the home). code bad_source, fetch_failed, unpack_failed, too_big, not_a_mod, stale (a newer planInstall or planFetch was asked for meanwhile). */
-export function planFetch(link: string): Promise<Outcome & { plan?: InstallPlan }>;
+/** What installing from a link would do: a GitHub repository (owner/repo or its address, a tree/<ref>/<folder> address) or a herdr.dev/mods or herdr.dev/layouts page, downloaded from GitHub only, into a temp folder that is gone when this resolves (nothing is written to the home). github: what was asked of GitHub, each part on its own (ref null: the default branch; folder "": the repository's root). code bad_source, fetch_failed, unpack_failed, too_big, not_a_mod, io, stale (a newer planInstall or planFetch was asked for meanwhile). */
+export function planFetch(link: string): Promise<Outcome & { plan?: InstallPlan; github?: { repo: string; ref: string | null; folder: string } }>;
 /** Installs the files planInstall or planFetch read (plan.token: the latest plan), never overwriting: what was shown is what's installed, whatever the folder holds now. code stale: plan again. */
 export function installFolder(token: string): Promise<Outcome & { plan?: InstallPlan }>;
 /** Opens a folder (or shows a file) in the system's file manager. */
@@ -339,8 +339,11 @@ fn plan_install(asked: u64, path: &str) -> Value {
 }
 
 fn plan_fetch(asked: u64, link: &str) -> Value {
+    let Some(source) = source::parse(link) else { return remember(asked, Err(mods::InstallError::BadSource)) };
     let base = source::base(std::env::var("YUZORA_INSTALL_URL").ok(), cfg!(debug_assertions));
-    remember(asked, fetch::plan(link, &base, &std::env::temp_dir(), &yuzora_core::paths::app_home()))
+    let mut outcome = remember(asked, fetch::plan(&source, &base, &std::env::temp_dir(), &yuzora_core::paths::app_home()));
+    outcome["github"] = source.parts();
+    outcome
 }
 
 /// Keeps `planned` as the one installFolder may write, under a new token,

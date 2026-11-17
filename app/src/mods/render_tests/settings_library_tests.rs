@@ -7,9 +7,15 @@ use super::*;
 /// (a call of `list` counts in `t.listed`), and the Templates tab's reading records what it was made with in
 /// `t.made` instead of asking hc. `setup` runs at the end of init.
 fn page(cx: &mut TestAppContext, staged: &Staged, props: Value, setup: &str) -> DockCopy {
+    scenario(staged, setup);
+    dock_copy(cx, staged, "", props, &Value::Null, Value::Null, &[], &[], None)
+}
+
+fn scenario(staged: &Staged, setup: &str) {
     std::fs::write(staged.0.join("main.js"), format!(
         "import Real from './mods/yuzora-settings-mods/main.js'; \
          import {{ Templates }} from './mods/yuzora-settings-mods/templates.js'; \
+         import {{ InputState }} from 'gpui-base'; \
          import {{ shared, setShared }} from 'herdr'; \
          Templates.prototype.reload = function () {{ \
            setShared('t.made', [...(shared('t.made') ?? []), {{ machine: this.machine, edit: this.pendingEdit }}]); \
@@ -18,7 +24,46 @@ fn page(cx: &mut TestAppContext, staged: &Staged, props: Value, setup: &str) -> 
            this.refresh = () => {{}}; this.list = () => setShared('t.listed', (shared('t.listed') ?? 0) + 1); \
            super.init(props, cx); {setup} }} }}"
     )).unwrap();
-    dock_copy(cx, staged, "", props, &Value::Null, Value::Null, &[], &[], None)
+}
+
+/// The page as `page` makes it with no props, yuzora:settings' planFetch and installFolder stood in for as
+/// `module` stands in for herdr: planFetch answers `answer`, installFolder `{ok, plan: answer.plan}`, and every
+/// call is kept. What it drew and the calls so far, once the answers have come and again a second later.
+fn answered(cx: &mut TestAppContext, staged: &Staged, answer: Value, setup: &str) -> [(String, Vec<Value>); 2] {
+    scenario(staged, setup);
+    let calls: Rc<RefCell<Vec<Value>>> = Rc::default();
+    let (fetches, installs, installed) = (calls.clone(), calls.clone(), json!({"ok": true, "plan": answer["plan"]}));
+    let settings = yuzora_settings::host_module()
+        .async_function("planFetch", move |a| {
+            fetches.borrow_mut().push(json!(["planFetch", a.string(0)?]));
+            Ok(std::future::ready(Ok(to_host(&answer))))
+        })
+        .async_function("installFolder", move |a| {
+            installs.borrow_mut().push(json!(["installFolder", a.string(0)?]));
+            Ok(std::future::ready(Ok(to_host(&installed))))
+        });
+    let herdr = Rc::new(RefCell::new(Calls::default()));
+    let policy = Policy::new()
+        .with_storage_path(staged.0.join("store-answered.json"))
+        .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+        .with_host_module(module(fixture(true, json!({}), updates("current", "current")), herdr.clone()))
+        .unwrap();
+    let policy = crate::yuzora::with_modules(policy, "").with_host_module(settings).unwrap();
+    let window = cx.add_window(|_, _| Empty);
+    let mut session = window.update(cx, |_, window, cx| DescriptionSession::load(ShellRuntime::new_isolated().unwrap(), &staged.0, policy, window, cx).unwrap()).unwrap();
+    let mut seen = Vec::new();
+    for wait in [0, 1000] {
+        cx.executor().advance_clock(std::time::Duration::from_millis(wait));
+        cx.run_until_parked();
+        let tree = window.update(cx, |_, window, cx| session.describe(window, cx).unwrap()).unwrap();
+        cx.run_until_parked();
+        seen.push((tree, calls.borrow().clone()));
+    }
+    drop(session);
+    window.update(cx, |_, window, _| window.remove_window()).unwrap();
+    cx.run_until_parked();
+    assert!(herdr.borrow().unexpected.is_empty(), "{:?}", herdr.borrow().unexpected);
+    seen.try_into().unwrap()
 }
 
 fn made(r: &DockCopy) -> Vec<Value> {
@@ -72,7 +117,7 @@ fn install_from_link_asks_for_a_link_and_shows_where_the_files_come_from(cx: &mu
     assert!(open.tree.contains("md-link-go") && open.tree.contains("md-link-cancel"), "{}", open.tree);
 
     let fetching = page(cx, &staged, json!({}), "this.install = { link: 'acme/demo', busy: true };");
-    assert!(fetching.tree.contains("install_fetching"), "{}", fetching.tree);
+    assert!(fetching.tree.contains("install_fetching") && fetching.tree.contains("in-cancel"), "{}", fetching.tree);
 
     let plan = "{ kind: 'mod', source: 'https://github.com/acme/demo', commit: '1a2b3c4', mods: [{ from: '/tmp/t/demo', as: 'demo' }], \
                 layouts: [], keys: false, reaches: ['network'], files: 1, bytes: 9, token: 't1' }";
@@ -81,8 +126,8 @@ fn install_from_link_asks_for_a_link_and_shows_where_the_files_come_from(cx: &mu
         assert!(shown.tree.contains(part), "{part}: {}", shown.tree);
     }
 
-    let failed = page(cx, &staged, json!({}), "this.install = { link: 'acme/demo', error: 'fetch_failed', message: 'https://github.com/acme/demo: HTTP 404' };");
-    for part in ["install_errors.fetch_failed", "https://github.com/acme/demo: HTTP 404"] {
+    let failed = page(cx, &staged, json!({}), "this.install = { link: 'acme/demo', github: { repo: 'acme/demo', ref: null, folder: '' }, error: 'fetch_failed', message: 'HTTP 404' };");
+    for part in ["install_errors.fetch_failed", "HTTP 404", "github_repo acme/demo", "github_ref github_default", "github_folder github_root"] {
         assert!(failed.tree.contains(part), "{part}: {}", failed.tree);
     }
     assert!(!failed.tree.contains("in-go"));
@@ -90,6 +135,25 @@ fn install_from_link_asks_for_a_link_and_shows_where_the_files_come_from(cx: &mu
     let bare = page(cx, &staged, json!({}), "this.install = { link: 'acme/plain', error: 'not_a_mod', message: 'not_a_mod' };");
     assert!(bare.tree.contains("text \"install_errors.not_a_mod\""), "{}", bare.tree);
     assert!(!bare.tree.contains("text \"not_a_mod\""), "{}", bare.tree);
+}
+
+// Read, shown, and installed only when "I trust it: install" is pressed (its handler, doInstall, a second in).
+#[gpui::test]
+fn a_link_is_installed_only_once_the_person_trusts_its_plan(cx: &mut TestAppContext) {
+    shell_init(cx);
+    let staged = Staged::new();
+    let link = "https://github.com/acme/kit/tree/feature/x/side";
+    let plan = json!({"kind": "mod", "source": link, "commit": "1a2b3c4", "mods": [{"from": "/tmp/t/side", "as": "side"}], "layouts": [],
+                      "keys": false, "reaches": [], "files": 1, "bytes": 9, "token": "t1"});
+    let answer = json!({"ok": true, "plan": plan, "github": {"repo": "acme/kit", "ref": "feature", "folder": "x/side"}});
+    let typed = format!("this.linkInput = InputState.new({{ value: '{link}' }}); this.fetchLink(cx); cx.timer.after(500, (cx) => this.doInstall(cx));");
+    let [(shown, read), (done, installed)] = answered(cx, &staged, answer, &typed);
+    assert_eq!(read, [json!(["planFetch", link])], "the link is read, and nothing is installed");
+    for part in ["trust_title", "github_repo acme/kit", "github_ref feature", "github_folder x/side", "install_commit 1a2b3c4", "in-go"] {
+        assert!(shown.contains(part), "{part}: {shown}");
+    }
+    assert_eq!(installed, [json!(["planFetch", link]), json!(["installFolder", "t1"])], "pressed, the plan it showed is installed");
+    assert!(done.contains("installed"), "{done}");
 }
 
 // The settings frame: app.settings {section: "templates"} and the old mod name both open the merged page's

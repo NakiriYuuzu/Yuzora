@@ -227,7 +227,7 @@ export default class Mods extends View {
     cx.spawn(async (cx) => {
       const r = await planFetch(link);
       if (this.install !== install) return;
-      this.install = r.ok ? { link, plan: r.plan } : { link, error: r.code, message: r.message };
+      this.install = r.ok ? { link, github: r.github, plan: r.plan } : { link, github: r.github, error: r.code, message: r.message };
       cx.notify();
     });
     cx.notify();
@@ -240,7 +240,7 @@ export default class Mods extends View {
     cx.spawn(async (cx) => {
       // The files the plan read, whatever the folder holds by now.
       const r = await installFolder(i.plan.token);
-      const from = { path: i.path, link: i.link };
+      const from = { path: i.path, link: i.link, github: i.github };
       this.install = r.ok ? { ...from, plan: r.plan, done: true } : { ...from, error: r.code, message: r.message };
       this.refresh(cx);
     });
@@ -398,11 +398,28 @@ export default class Mods extends View {
     const i = this.install;
     if (!i) return null;
     const box = v_flex().p(12).gap(8).rounded(8).border_1().border_color(i.done ? th.border : th.blocked).bg(th.background);
-    if (i.busy && !i.plan) return box.child(h_flex().gap(8).child(spinner(th)).child(note(th, t(i.link ? "install_fetching" : "install_reading"))));
+    // A link: what was asked of GitHub, each part on its own (a branch with "/" in a tree/ address reads as a branch and a folder).
+    const asked = (el) => el
+      .child(note(th, `${t("github_repo")} ${i.github.repo}`))
+      .child(note(th, `${t("github_ref")} ${i.github.ref ?? t("github_default")}`))
+      .child(note(th, `${t("github_folder")} ${i.github.folder || t("github_root")}`));
+    if (i.busy && !i.plan) {
+      // Cancel drops the panel; an answer that still comes is not for the install on screen, and is dropped.
+      return box.child(
+        h_flex()
+          .gap(8)
+          .items_center()
+          .child(spinner(th))
+          .child(note(th, t(i.link ? "install_fetching" : "install_reading")))
+          .child(div().flex_1())
+          .child(button(th, "in-cancel", t("cancel"), (_e, cx) => { this.install = null; cx.notify(); })),
+      );
+    }
     if (i.error) {
       return box
         .child(note(th, t(`install_errors.${i.error}`), "error"))
         .when(Boolean(i.message) && i.message !== i.error, (el) => el.child(note(th, i.message)))
+        .when(Boolean(i.github), asked)
         .child(h_flex().child(button(th, "in-close", t("close"), (_e, cx) => { this.install = null; cx.notify(); })));
     }
     const p = i.plan;
@@ -411,7 +428,8 @@ export default class Mods extends View {
       .when(!i.done, (el) => el.child(div().text_size(13).font_semibold().text_color(th.blocked).child(t("trust_title"))).child(note(th, t("trust_about"))))
       .when(Boolean(i.done), (el) => el.child(note(th, t("installed"), "ok")))
       .child(note(th, `${t("install_from")} ${p.source}`))
-      .when(Boolean(p.commit), (el) => el.child(note(th, t("install_commit", { commit: p.commit }))))
+      .when(Boolean(i.github), asked)
+      .when(Boolean(p.commit), (el) => el.child(note(th, `${t("install_commit")} ${p.commit}`)))
       .when(p.mods.length > 0, (el) => el.child(note(th, t("install_mods", { list: pairs(p.mods) }))))
       .when(p.layouts.length > 0, (el) => el.child(note(th, t("install_layouts", { list: pairs(p.layouts) }))))
       .when(p.reaches.length > 0, (el) => el.child(note(th, t("install_reaches", { list: p.reaches.map((r) => t(`reaches.${r}`)).join(t("list_sep")) }), "warning")))

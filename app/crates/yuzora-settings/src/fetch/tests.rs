@@ -24,7 +24,8 @@ impl Lab {
     }
 
     fn plan(&self, link: &str, base: &str) -> Result<Plan, InstallError> {
-        plan(link, base, &self.root.join("temp"), &self.root.join("home"))
+        let source = crate::source::parse(link).unwrap_or_else(|| panic!("{link}"));
+        plan(&source, base, &self.root.join("temp"), &self.root.join("home"))
     }
 
     /// Everything in the lab but the temp folder: names, kinds and contents.
@@ -335,12 +336,11 @@ fn a_missing_repo_or_no_server_fails_to_fetch() {
         let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     });
     match lab.plan("acme/demo", &base) {
-        Err(InstallError::FetchFailed(why)) => assert_eq!(why, "https://github.com/acme/demo: HTTP 404", "what was asked, and GitHub's answer"),
+        Err(InstallError::FetchFailed(why)) => assert_eq!(why, "HTTP 404", "GitHub's answer"),
         other => panic!("{:?}", other.map(|p| p.to_json())),
     }
     let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
     assert!(matches!(lab.plan("acme/demo", &format!("http://{closed}")), Err(InstallError::FetchFailed(_))));
-    assert!(matches!(lab.plan("not a link", &base), Err(InstallError::BadSource)));
     assert!(lab.temp_is_empty());
 }
 

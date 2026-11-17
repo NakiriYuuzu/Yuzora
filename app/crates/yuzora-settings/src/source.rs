@@ -43,6 +43,14 @@ impl Source {
     pub fn name(&self) -> &str {
         self.path.last().unwrap_or(&self.repo)
     }
+
+    /// What is asked of GitHub, each part on its own, for the person to see
+    /// how the link was read (a branch with `/` in a `tree/` address reads as
+    /// a branch and a folder): `{repo, ref, folder}`, `ref` null for the
+    /// default branch, `folder` empty for the repository's root.
+    pub fn parts(&self) -> serde_json::Value {
+        serde_json::json!({ "repo": format!("{}/{}", self.owner, self.repo), "ref": self.reference, "folder": self.path.join("/") })
+    }
 }
 
 /// The archives' address: `YUZORA_INSTALL_URL` (`var`) in a debug build, for
@@ -195,6 +203,14 @@ mod tests {
         let branch = parse("https://github.com/acme/kit/tree/dev/mods").unwrap();
         assert_eq!(branch.archive_url(CODELOAD), "https://codeload.github.com/acme/kit/legacy.tar.gz/dev");
         assert_eq!(branch.github_url(), "https://github.com/acme/kit/tree/dev/mods");
+    }
+
+    #[test]
+    fn shows_each_part_it_asks_for() {
+        let slashed = parse("https://github.com/acme/kit/tree/feature/x/mods/side").unwrap();
+        assert_eq!(slashed.parts(), serde_json::json!({"repo": "acme/kit", "ref": "feature", "folder": "x/mods/side"}), "a branch feature/x reads as feature and a folder");
+        assert_eq!(parse("herdr.dev/mods/acme/kit--release--blackx").unwrap().parts(), serde_json::json!({"repo": "acme/kit", "ref": null, "folder": "release/blackx"}));
+        assert_eq!(parse("acme/demo").unwrap().parts(), serde_json::json!({"repo": "acme/demo", "ref": null, "folder": ""}));
     }
 
     #[test]
