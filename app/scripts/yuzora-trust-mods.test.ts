@@ -76,6 +76,7 @@ function world(trusted: boolean | (() => boolean)) {
     focused: () => null,
     watchFolder: async () => { throw new Error("no folder watch here"); },
     readTextFile: async () => null,
+    appHome: () => join(home, ".config/yuzora"),
     theme: () => ({}),
     settings: () => ({}),
     window: () => ({ platform: process.platform === "win32" ? "windows" : process.platform }),
@@ -286,7 +287,7 @@ test("Spaces: branch and ahead/behind come from yuzora:shell, never git status",
   const asked: unknown[][] = [];
   const Spaces = await load("spaces", "Spaces", { ...w.stubs, gitStatus: async (...a: unknown[]) => (asked.push(a), { branch: "topic", upstream: "origin/topic", ahead: 2, behind: 1, changed: null, conflicted: null }) });
   const view = new Spaces();
-  Object.assign(view, { git: {}, checked: {}, unsure: new Set(), watching: new Set() });
+  Object.assign(view, { git: {}, checked: {}, unsure: new Set(), watching: new Map() });
   const key = JSON.stringify([null, repo]);
   await view.check(key, w.cx);
   expect(asked).toEqual([[repo, { on: null }]]);
@@ -295,7 +296,7 @@ test("Spaces: branch and ahead/behind come from yuzora:shell, never git status",
   expect(await ran()).toEqual([]);
   // Not a repo: remembered as none, not asked again on the fallback.
   const none = await load("spaces", "Spaces", { ...w.stubs, gitStatus: async () => null });
-  const other = Object.assign(new none(), { git: {}, checked: {}, unsure: new Set(), watching: new Set() });
+  const other = Object.assign(new none(), { git: {}, checked: {}, unsure: new Set(), watching: new Map() });
   await other.check(key, w.cx);
   expect(other.git[key]).toBe(null);
   expect(other.unsure.size).toBe(0);

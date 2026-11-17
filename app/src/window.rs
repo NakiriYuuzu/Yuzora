@@ -102,14 +102,23 @@ fn mtime(p: &std::path::Path) -> Option<SystemTime> {
 pub fn shell() -> String {
     if cfg!(windows) {
         let path = std::env::var_os("PATH").unwrap_or_default();
-        let pwsh = std::env::split_paths(&path).any(|d| d.join("pwsh.exe").is_file());
-        return if pwsh { "pwsh.exe" } else { "powershell.exe" }.into();
+        return std::env::split_paths(&path)
+            .map(|dir| dir.join("pwsh.exe"))
+            .find(|exe| exe.is_file())
+            .map_or_else(|| "powershell.exe".into(), |exe| exe.to_string_lossy().into_owned());
     }
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+    std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into())
 }
 
 fn unix_agent_argv(sh: String, cmd: Vec<String>, login: bool) -> Vec<String> {
-    let fish = std::path::Path::new(&sh).file_name().and_then(|s| s.to_str()) == Some("fish");
+    let name = std::path::Path::new(&sh).file_name().and_then(|s| s.to_str());
+    if !matches!(name, Some("sh" | "bash" | "zsh" | "dash" | "ksh" | "fish")) {
+        // Other shells cannot parse our wrapper; return to the person's shell after the command.
+        let mut run = vec!["/bin/sh".into(), "-c".into(), "\"$@\"; exec \"$0\" -i".into(), sh];
+        run.extend(cmd);
+        return run;
+    }
+    let fish = name == Some("fish");
     let script = match (fish, login) {
         (true, true) => "command $argv[2..]; exec $argv[1] -li",
         (true, false) => "command $argv[2..]; exec $argv[1] -i",
@@ -279,6 +288,18 @@ struct PendingTerminalChange {
 /// The slot of a terminal shown in a pane in place of its own (`<pane>#swap`).
 const SWAP: &str = "#swap";
 
+/// The share of the script VM's heap ceiling past which a mod edit starts a
+/// new VM instead of reloading into the old one (`files_changed`).
+const RESTART_MODS_AT: f64 = 0.75;
+
+/// QuickJS reports allocation failures both as exceptions and as host errors.
+fn out_of_memory(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("out of memory") || message.contains("Allocation failed while creating object")
+    })
+}
+
 struct Copy {
     inst: Instance,
     /// Its number for commands (`mods::prepare_load`); 0 if it never loaded.
@@ -350,6 +371,10 @@ struct Watched {
 pub struct AppWindow {
     core: Arc<Core>,
     runtime: Option<Rc<ShellRuntime>>,
+    restarting_mods: bool,
+    load_recovery: Option<Instant>,
+    failed_loads: HashSet<String>,
+    mod_stamps: RefCell<HashMap<String, crate::files::ModStamp>>,
     chrome: Node,
     /// Which layout `chrome` is (`layouts/<name>.json`).
     layout_name: String,
@@ -432,6 +457,7 @@ pub struct AppWindow {
     /// Where a press on a `window_drag` node started, until it moves the window.
     drag_from: Option<Point<Pixels>>,
     titlebar_applied: Option<(crate::layout::Titlebar, Option<[f32; 2]>)>,
+    blur_applied: bool,
     focused_pane: Option<String>,
     /// The mod block holding the keyboard for directional navigation.
     focused_block: Option<String>,
@@ -452,6 +478,7 @@ pub struct AppWindow {
     /// What's waiting, in words (`update_label`).
     update_ready: Option<String>,
     update_dismissed: Option<String>,
+    core_update_error_dismissed: Option<String>,
     update_success: bool,
     update_status: String,
     focus: FocusHandle,
@@ -465,8 +492,12 @@ pub struct AppWindow {
 
 impl AppWindow {
     pub fn new(core: Arc<Core>, requests: async_channel::Receiver<Request>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let runtime = ShellRuntime::new(cx).map_err(|e| tracing::error!("script runtime failed, mods are off: {e:#}")).ok();
         let file_events = crate::files::watch(&mods::app_dir(), #[cfg(test)] cx.background_executor().clone());
+        Self::with_file_events(core, requests, file_events, window, cx)
+    }
+
+    fn with_file_events(core: Arc<Core>, requests: async_channel::Receiver<Request>, file_events: Option<crate::files::FileEvents>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let runtime = ShellRuntime::new(cx).map_err(|e| tracing::error!("script runtime failed, mods are off: {e:#}")).ok();
         if let (Some(runtime), Some(events)) = (&runtime, &file_events) {
             runtime.set_source_revision_provider(events.revision_provider());
         }
@@ -475,6 +506,10 @@ impl AppWindow {
         let mut w = AppWindow {
             core,
             runtime,
+            restarting_mods: false,
+            load_recovery: None,
+            failed_loads: HashSet::new(),
+            mod_stamps: RefCell::new(HashMap::new()),
             chrome: default_layout("main"),
             layout_name: "main".into(),
             agent: None,
@@ -532,6 +567,8 @@ impl AppWindow {
             pointer: Point::default(),
             drag_from: None,
             titlebar_applied: None,
+            // Windows open opaque: leave the platform alone until a layout asks for blur.
+            blur_applied: false,
             focused_pane: None,
             focused_block: None,
             synced_model_pane: None,
@@ -544,6 +581,7 @@ impl AppWindow {
             polls: 0,
             update_ready: None,
             update_dismissed: None,
+            core_update_error_dismissed: None,
             update_success: false,
             update_status: String::new(),
             focus: cx.focus_handle(),
@@ -583,6 +621,8 @@ impl AppWindow {
         let gone = name.as_deref().map(missing_mods).unwrap_or_default();
         // yuzora: a fresh install starts on Yuzora's layout.
         w.load_layout(if gone.is_empty() { name.as_deref().unwrap_or(crate::yuzora::DEFAULT_LAYOUT) } else { "main" });
+        #[cfg(target_os = "macos")]
+        crate::macos::refresh_menus(cx);
         w.apply_look(window, cx);
         w.show_layout_notes(window, cx);
         if let (Some(n), false) = (&name, gone.is_empty()) {
@@ -614,6 +654,30 @@ impl AppWindow {
         }
         w._tasks.push(cx.spawn_in(window, async move |this, cx| {
             while let Ok(req) = requests.recv().await {
+                let req = match req {
+                    Request::Control { cmd, reply } => {
+                        if let Some(path) = cmd.get("shot").and_then(Value::as_str) {
+                            if this.upgrade().is_none() {
+                                break;
+                            }
+                            (**cx).update(crate::terminal::flush_output_clock);
+                            let body = match crate::control::save_shot(
+                                cx.window_handle(),
+                                cx,
+                                std::path::Path::new(path),
+                            ) {
+                                Ok(()) => json!({ "path": path }),
+                                Err(error) => {
+                                    json!({ "error": format!("cannot save screenshot: {error:#}") })
+                                }
+                            };
+                            let _ = reply.send(body);
+                            continue;
+                        }
+                        Request::Control { cmd, reply }
+                    }
+                    other => other,
+                };
                 if this.update_in(cx, |this, window, cx| this.handle(req, window, cx)).is_err() {
                     break;
                 }
@@ -1016,6 +1080,8 @@ impl AppWindow {
             self.drop_layout_copies(window, cx);
         }
         self.load_layout(&next);
+        #[cfg(target_os = "macos")]
+        crate::macos::refresh_menus(cx);
         self.apply_look(window, cx);
         // Whatever the new layout shows takes the keyboard.
         self.focused_pane = None;
@@ -1451,22 +1517,35 @@ impl AppWindow {
             let size_hint = (dim("cols", 120), dim("rows", 40));
             let view = cx.new(|cx| TerminalView::attach(self.core.clone(), address.clone(), size_hint, cx));
             self.tell_term(&view, &address, cx);
+            mods::track_pane_view(id.clone(), &view);
             let (block, addr) = (id.clone(), address.clone());
             let sub = cx.subscribe_in(&view, window, move |this, _, ev: &TerminalEvent, window, cx| match ev {
                 TerminalEvent::Peek(address) => this.peek_terminal(address, window, cx),
                 TerminalEvent::TitleChanged => this.publish(cx),
+                TerminalEvent::ScrollChanged => {
+                    mods::panes_scrolled();
+                    this.refresh_snapshot_mods(cx);
+                }
+                TerminalEvent::SelectionChanged => this.publish_selection(&addr, window, cx),
                 TerminalEvent::Ended => this.terminal_ended(&block, window, cx),
                 TerminalEvent::ContextMenu(at) => {
                     this.open_menu("pane", json!({ "pane": block.trim_end_matches(SWAP), "terminal": addr }), Some(*at), window, cx)
                 }
+                TerminalEvent::Notice { title, body } => {
+                    let spec = json!({"kind":"toast", "notification":{"title":title, "body":body, "level":"error"}});
+                    this.open_overlay(mods::new_overlay_id(), spec, window, cx)
+                }
             });
             let focus = view.read(cx).focus_handle().clone();
-            self.terms.insert(id, Term { view, address, focus, _sub: sub });
+            if let Some(previous) = self.terms.insert(id, Term { view, address, focus, _sub: sub }) {
+                self.publish_selection(&previous.address, window, cx);
+            }
         }
         let gone: Vec<String> = self.terms.keys().filter(|id| !want_terms.contains(*id)).cloned().collect();
         for id in gone {
             if let Some(t) = self.terms.remove(&id) {
                 t.view.read(cx).detach();
+                self.publish_selection(&t.address, window, cx);
             }
         }
 
@@ -1650,7 +1729,23 @@ impl AppWindow {
             let view = t.view.read(cx);
             (view.owns_keyboard_focus(window, cx), view.on_screen_this_frame(), own_pane.as_deref() == Some(pane.as_str()))
         });
-        best.map(|(_, t)| t.view.clone()).ok_or_else(|| format!("terminal {address:?} is running but not shown in this window, so it has no view to scroll"))
+        best.map(|(_, t)| t.view.clone()).ok_or_else(|| format!("terminal {address:?} is running but not shown in this window, so it has no view"))
+    }
+
+    fn publish_selection(&self, address: &str, window: &Window, cx: &mut Context<Self>) {
+        let selection = self.shown_terminal_view(address, window, cx).ok().and_then(|view| view.read(cx).selection());
+        let changed = mods::publish_selection(address, json!(selection));
+        self.publish_focused_selection(window, cx);
+        if changed {
+            self.refresh_snapshot_mods(cx);
+        }
+    }
+
+    fn publish_focused_selection(&self, window: &Window, cx: &mut Context<Self>) {
+        let selection = self.focused_terminal(window, cx).and_then(|t| t.view.read(cx).selection());
+        if mods::publish_focused_selection(json!(selection)) {
+            self.refresh_snapshot_mods(cx);
+        }
     }
 
     fn scroll_terminal(&self, args: &Value, window: &Window, cx: &mut Context<Self>) -> Result<(), String> {
@@ -1689,6 +1784,7 @@ impl AppWindow {
             return copy;
         };
         copy.id = mods::prepare_load(&copy.inst);
+        self.mod_stamps.borrow_mut().entry(copy.inst.name.clone()).or_insert_with(|| crate::files::mod_stamp(&folder.dir));
         match runtime.try_load(&folder.dir, window, cx) {
             Ok(root) => {
                 if self.file_events.is_none() {
@@ -1699,6 +1795,17 @@ impl AppWindow {
             Err(e) => {
                 tracing::warn!("mod {} failed to load: {e:#}", copy.inst.name);
                 copy.error = Some(format!("{e:#}"));
+                if !self.restarting_mods && (out_of_memory(&e) || runtime.memory_share() >= RESTART_MODS_AT) {
+                    // Finish mounting before retrying all copies. Other failures on
+                    // this VM must not restart the replacement again.
+                    let failed = Rc::downgrade(runtime);
+                    let name = copy.inst.name.clone();
+                    cx.defer_in(window, move |this, window, cx| {
+                        if failed.upgrade().is_some_and(|failed| this.runtime.as_ref().is_some_and(|current| Rc::ptr_eq(&failed, current))) {
+                            this.recover_mods(&BTreeSet::from([name]), window, cx);
+                        }
+                    });
+                }
             }
         }
         copy
@@ -2457,9 +2564,9 @@ impl AppWindow {
         })
     }
 
-    /// A space with its first tab and terminal, shown at once.
+    /// A space with its first tab and terminal, shown at once unless focus is false.
     /// `machine`: another machine (`hc machine ls`); its space starts in that machine's home.
-    fn new_space(&mut self, name: &str, folder: Option<String>, ctx_name: Option<&str>, argv: Option<Vec<String>>, task: Option<&str>, machine: Option<String>, window: &Window) -> Result<Value, String> {
+    fn new_space(&mut self, name: &str, folder: Option<String>, ctx_name: Option<&str>, argv: Option<Vec<String>>, task: Option<&str>, machine: Option<String>, focus: bool, window: &Window) -> Result<Value, String> {
         let follow = folder.is_none();
         let on = machine.as_deref();
         // The focused pane's folder only means something on its own machine.
@@ -2471,15 +2578,16 @@ impl AppWindow {
         let size = self.initial_size(&Tab::new(&ctx, "", &pane, "").root, &pane, window);
         let (addr, folder) = self.spawn(Self::agent_argv(argv.clone(), task, on).or(argv), folder, follow, &space, &ctx, on, size, window)?;
         let ctx_name = ctx_name.map(str::trim).unwrap_or_default();
-        self.model.add_space(&space, name.trim(), &folder, Tab::new(&ctx, ctx_name, &pane, &addr));
+        let tab = Tab::new(&ctx, ctx_name, &pane, &addr);
+        if focus { self.model.add_space(&space, name.trim(), &folder, tab) } else { self.model.add_space_unshown(&space, name.trim(), &folder, tab) }
         if let Some(p) = self.model.space_mut(&space) {
             p.machine = machine;
         }
         Ok(json!({ "space": space, "tab": ctx, "terminal": addr }))
     }
 
-    /// A tab in a space (default: the shown one), shown at once.
-    fn new_tab(&mut self, space: Option<String>, name: &str, folder: Option<String>, argv: Option<Vec<String>>, task: Option<&str>, window: &Window) -> Result<Value, String> {
+    /// A tab in a space (default: the shown one), shown at once unless focus is false.
+    fn new_tab(&mut self, space: Option<String>, name: &str, folder: Option<String>, argv: Option<Vec<String>>, task: Option<&str>, focus: bool, window: &Window) -> Result<Value, String> {
         let space = space.or_else(|| self.model.active_space().map(|p| p.id.clone())).ok_or("no space yet: make one first (space.new)")?;
         if self.model.space(&space).is_none() {
             return Err(format!("no space {space:?}"));
@@ -2490,13 +2598,22 @@ impl AppWindow {
         let (ctx, pane) = (self.model.fresh_id_on("tb", on.as_deref()), self.model.fresh_id_on("p", on.as_deref()));
         let size = self.initial_size(&Tab::new(&ctx, "", &pane, "").root, &pane, window);
         let (addr, _) = self.spawn(Self::agent_argv(argv.clone(), task, on.as_deref()).or(argv), folder, follow, &space, &ctx, on.as_deref(), size, window)?;
-        self.model.add_tab(&space, Tab::new(&ctx, name.trim(), &pane, &addr));
-        self.model.active = Some(space.clone());
+        self.add_new_tab(&space, Tab::new(&ctx, name.trim(), &pane, &addr), focus);
         Ok(json!({ "space": space, "tab": ctx, "terminal": addr }))
     }
 
-    /// A tab whose only pane is a mod (a file, a board), shown at once.
-    fn new_mod_tab(&mut self, space: Option<String>, name: &str, m: String, props: Value) -> Result<Value, String> {
+    /// Adds a new tab to its space and shows it, or (focus false) leaves what is shown as it is.
+    fn add_new_tab(&mut self, space: &str, tab: Tab, focus: bool) {
+        if focus {
+            self.model.add_tab(space, tab);
+            self.model.active = Some(space.to_owned());
+        } else {
+            self.model.add_tab_unselected(space, tab);
+        }
+    }
+
+    /// A tab whose only pane is a mod (a file, a board), shown at once unless focus is false.
+    fn new_mod_tab(&mut self, space: Option<String>, name: &str, m: String, props: Value, focus: bool) -> Result<Value, String> {
         let space = space.or_else(|| self.model.active_space().map(|p| p.id.clone())).ok_or("no space yet: make one first (space.new)")?;
         if self.model.space(&space).is_none() {
             return Err(format!("no space {space:?}"));
@@ -2507,8 +2624,7 @@ impl AppWindow {
         let machine = self.machine_of(&space);
         self.require_document(machine.as_deref())?;
         let (ctx, pane) = (self.model.fresh_id_on("tb", machine.as_deref()), self.model.fresh_id_on("p", machine.as_deref()));
-        self.model.add_tab(&space, Tab::with_pane(&ctx, name.trim(), Node::block(pane.clone(), Content::Mod { name: m, props })));
-        self.model.active = Some(space.clone());
+        self.add_new_tab(&space, Tab::with_pane(&ctx, name.trim(), Node::block(pane.clone(), Content::Mod { name: m, props })), focus);
         Ok(json!({ "space": space, "tab": ctx, "pane": pane }))
     }
 
@@ -2780,6 +2896,14 @@ impl AppWindow {
         Self::arg(args, k).map(str::to_owned)
     }
 
+    /// Whether a new space or tab is shown: `focus`, true when omitted; None when it isn't a boolean.
+    fn focus(args: &Value) -> Option<bool> {
+        match args.get("focus") {
+            None | Some(Value::Null) => Some(true),
+            Some(v) => v.as_bool(),
+        }
+    }
+
     fn answer(&mut self, r: Result<Value, String>) {
         if let Err(e) = &r {
             tracing::warn!("{e}");
@@ -2928,8 +3052,9 @@ impl AppWindow {
         match name {
             // ---- spaces
             "space.new" => {
+                let Some(focus) = Self::focus(a) else { return self.fail("space.new focus is true or false") };
                 let name = Self::arg(a, "name").unwrap_or_default();
-                let r = self.new_space(name, Self::owned(a, "folder"), Self::arg(a, "tab"), Self::argv(a), Self::arg(a, "task"), Self::owned(a, "machine").filter(|m| !m.is_empty()), window);
+                let r = self.new_space(name, Self::owned(a, "folder"), Self::arg(a, "tab"), Self::argv(a), Self::arg(a, "task"), Self::owned(a, "machine").filter(|m| !m.is_empty()), focus, window);
                 self.answer(r);
             }
             "space.close" => {
@@ -2976,14 +3101,15 @@ impl AppWindow {
             }
             // ---- tabs
             "tab.new" => {
+                let Some(focus) = Self::focus(a) else { return self.fail("tab.new focus is true or false") };
                 let name = Self::arg(a, "name").unwrap_or_default();
                 let r = match Self::owned(a, "mod") {
-                    Some(m) => self.new_mod_tab(Self::owned(a, "space"), name, m, a.get("props").cloned().unwrap_or(Value::Null)),
+                    Some(m) => self.new_mod_tab(Self::owned(a, "space"), name, m, a.get("props").cloned().unwrap_or(Value::Null), focus),
                     // A person's new tab with no space open starts one, as space.new does.
                     None if person && a.get("space").is_none() && self.model.active_space().is_none() => {
-                        self.new_space("", Self::owned(a, "folder"), Some(name), Self::argv(a), Self::arg(a, "task"), None, window)
+                        self.new_space("", Self::owned(a, "folder"), Some(name), Self::argv(a), Self::arg(a, "task"), None, focus, window)
                     }
-                    None => self.new_tab(Self::owned(a, "space"), name, Self::owned(a, "folder"), Self::argv(a), Self::arg(a, "task"), window),
+                    None => self.new_tab(Self::owned(a, "space"), name, Self::owned(a, "folder"), Self::argv(a), Self::arg(a, "task"), focus, window),
                 };
                 self.answer(r);
             }
@@ -3006,13 +3132,13 @@ impl AppWindow {
                 c.name = name.trim().to_owned();
             }
             "tab.move" => {
-                let (Some(id), Some(i)) = (Self::arg(a, "id"), a.get("index").and_then(Value::as_u64)) else { return self.fail("tab.move needs id and index") };
-                let Some(pid) = self.model.space_of(id).map(|p| p.id.clone()) else { return self.fail(format!("no tab {id:?}")) };
-                let p = self.model.space_mut(&pid).unwrap();
-                let from = p.tabs.iter().position(|c| c.id == id).unwrap();
-                let c = p.tabs.remove(from);
-                let to = (i as usize).saturating_sub(1).min(p.tabs.len());
-                p.tabs.insert(to, c);
+                let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab") };
+                let moved = match (a.get("index").and_then(Value::as_u64), a.get("by").and_then(Value::as_i64)) {
+                    (Some(i), None) => self.model.move_tab(&id, i as usize),
+                    (None, Some(by)) => self.model.shift_tab(&id, by),
+                    _ => return self.fail("tab.move needs index or by"),
+                };
+                if !moved { return self.fail(format!("no tab {id:?}")); }
             }
             "tab.settle" | "tab.unsettle" => {
                 let Some(id) = Self::owned(a, "id").or(active_ctx) else { return self.fail("no tab") };
@@ -3070,13 +3196,8 @@ impl AppWindow {
                 self.kill(&addr.into_iter().collect::<Vec<_>>(), cx);
             }
             "pane.zoom" => {
-                let pane = Self::owned(a, "pane").or_else(|| self.model.focused_pane());
-                if let Some(pane) = pane
-                    && let Some(ctx) = self.model.tab_of(&pane).map(|c| c.id.clone())
-                    && let Some(c) = self.model.tab_mut(&ctx)
-                    && c.root.panes().len() > 1
-                {
-                    c.zoomed = if c.zoomed.as_deref() == Some(pane.as_str()) { None } else { Some(pane) };
+                if let Some(pane) = Self::owned(a, "pane").or_else(|| self.model.focused_pane()) {
+                    self.model.toggle_zoom(&pane);
                 }
             }
             "pane.focus" => {
@@ -3137,7 +3258,7 @@ impl AppWindow {
                         let name = Self::owned(a, "name")
                             .or_else(|| argv.as_ref().and_then(|v| v.first()).map(|p| p.rsplit('/').next().unwrap_or(p).to_owned()))
                             .unwrap_or_else(|| "shell".into());
-                        self.new_tab(None, &name, Self::owned(a, "folder"), argv, None, window)
+                        self.new_tab(None, &name, Self::owned(a, "folder"), argv, None, true, window)
                     }
                 };
                 self.answer(r);
@@ -3235,6 +3356,27 @@ impl AppWindow {
                     });
                 }
                 return;
+            }
+            "terminal.select_all" => {
+                let view = match Self::owned(a, "terminal") {
+                    Some(address) => self.shown_terminal_view(&address, window, cx),
+                    None => self.focused_terminal(window, cx).map(|t| t.view.clone()).ok_or_else(|| "no focused terminal to select".into()),
+                };
+                match view {
+                    Ok(view) => view.update(cx, |view, cx| view.select_all(cx)),
+                    Err(error) => self.fail(error),
+                }
+                return;
+            }
+            "terminal.select" | "terminal.adjust_selection" | "terminal.clear_selection" => {
+                let view = match Self::owned(a, "terminal") {
+                    Some(address) => self.shown_terminal_view(&address, window, cx),
+                    None => self.focused_terminal(window, cx).map(|t| t.view.clone()).ok_or_else(|| "no focused terminal to select".into()),
+                };
+                let result = view.and_then(|view| view.update(cx, |view, cx| view.selection_command(name, a, cx)));
+                if let Err(error) = result {
+                    return self.fail(error);
+                }
             }
             "terminal.scroll" => {
                 if let Err(error) = self.scroll_terminal(a, window, cx) {
@@ -3479,7 +3621,7 @@ impl AppWindow {
             }
             "app.quit" => cx.quit(),
             "app.update" => {
-                if !crate::update::apply() {
+                if !matches!(crate::update::apply(), Ok(true)) {
                     return self.fail(crate::yuzora::release::update::apply_failure()); // yuzora(win-update): why the swap failed, else "no update is ready yet"
                 }
                 self.drain_documents(window, cx);
@@ -3521,7 +3663,10 @@ impl AppWindow {
     /// `pane.go`: the nearest pane or focusable mod.
     fn go(&mut self, dir: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(from) = self.focused_block.clone().or_else(|| self.model.focused_pane()) else { return };
-        let Some(to) = self.neighbor(&from, dir, true) else { return };
+        let to = self.model.active_tab().filter(|tab| tab.zoomed.as_deref() == Some(from.as_str()))
+            .and_then(|tab| self.unzoomed_neighbor(tab, &from, dir))
+            .or_else(|| self.neighbor(&from, dir, true));
+        let Some(to) = to else { return };
         if self.focusable(&to) {
             return self.focus_block(&to, window, cx);
         }
@@ -3738,6 +3883,11 @@ impl AppWindow {
 
     /// Closes an overlay; a kept window stays closed on the next start too.
     fn close_overlay(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if id == "core-update-error" {
+            self.core_update_error_dismissed = crate::update::core().error;
+            cx.notify();
+            return;
+        }
         if let Some(k) = self.overlays.iter().find(|o| o.id == id).and_then(|o| o.key.clone()) {
             movable::forget(&self.layout_name, &k);
         }
@@ -3799,6 +3949,8 @@ impl AppWindow {
             Request::Run { name, args } => self.run(&name, args, window, cx),
             Request::OpenOverlay { id, spec } => self.open_overlay(id, spec, window, cx),
             Request::CloseOverlay { id } => self.close_overlay(&id, window, cx),
+            Request::SetWindowTitle(title) => window.set_window_title(title.as_deref().unwrap_or(crate::yuzora::APP_NAME)), // yuzora: null restores the title the window opened with
+            Request::SetBadge(text) => crate::badge::set(text.as_deref()),
             Request::Refresh => self.refresh_mods(cx),
             Request::Control { cmd, reply } => {
                 let _ = reply.send(self.control(cmd, window, cx));
@@ -3810,12 +3962,6 @@ impl AppWindow {
         if let Some(name) = cmd.get("do").and_then(Value::as_str) {
             let args = cmd.get("args").cloned().unwrap_or(Value::Null);
             return self.run_as(name, args, false, window, cx);
-        }
-        if let Some(path) = cmd.get("shot").and_then(Value::as_str) {
-            return match crate::control::save_shot(window, std::path::Path::new(path)) {
-                Ok(()) => json!({ "path": path }),
-                Err(error) => json!({ "error": format!("cannot save screenshot: {error:#}") }),
-            };
         }
         if cmd.get("commands").is_some() {
             return crate::commands::listing();
@@ -3911,6 +4057,7 @@ impl AppWindow {
         // The settings screen shows versions and progress: redraw mods when they move.
         let status = crate::update::status().to_string();
         if status != self.update_status {
+            reconcile_core_update_error(&mut self.core_update_error_dismissed, &crate::update::core());
             self.update_status = status;
             self.refresh_mods(cx);
         }
@@ -3971,23 +4118,135 @@ impl AppWindow {
         if changed.iter().any(|p| top(p) == "layouts") {
             self.check_layout_file(window, cx);
         }
-        let edited: BTreeSet<String> = changed.iter().filter_map(|p| crate::files::mod_of(p)).collect();
+        // The View menu lists the layouts (not their saved clicks in layouts/.state).
+        #[cfg(target_os = "macos")]
+        if changed.iter().any(|p| p.parent() == Some(std::path::Path::new("layouts"))) {
+            crate::macos::refresh_menus(cx);
+        }
+        let changed_mods: BTreeSet<String> = changed.iter().filter_map(|p| crate::files::mod_of(p)).collect();
+        let edited: BTreeSet<String> = changed_mods.into_iter().filter(|name| {
+            let Some(folder) = self.folders.get(name) else { return true };
+            let stamp = crate::files::mod_stamp(&folder.dir);
+            // An incomplete scan cannot prove that the source is unchanged.
+            stamp.is_none() || self.mod_stamps.borrow_mut().insert(name.clone(), stamp.clone()).as_ref() != Some(&stamp)
+        }).collect();
         if edited.is_empty() {
             return;
         }
+        self.failed_loads.retain(|name| !edited.contains(name));
         // Copies that load now (a new folder, a fixed failed load) already run the
         // saved code: reloading them too would start them twice.
         let loaded: BTreeSet<u64> = self.copies.values().filter(|c| c.root.is_some()).map(|c| c.id).collect();
+        let count = self.copies.len();
+        self.copies.retain(|_, c| c.root.is_some() || !edited.contains(&c.inst.name));
+        let retry = self.copies.len() != count;
         self.sync_folders(window, cx);
+        if retry {
+            self.sync(window, cx);
+        }
         let Some(runtime) = self.runtime.clone() else { return };
+        // A reload keeps the code it replaces: QuickJS frees evaluated modules
+        // only with the whole context. Before the window's VM runs out, start a
+        // new one, which also loads the saved code.
+        if runtime.memory_share() >= RESTART_MODS_AT
+            && self.copies.values().any(|c| edited.contains(&c.inst.name) && loaded.contains(&c.id))
+        {
+            if self.load_recovery.is_none_or(|last| last.elapsed() >= Duration::from_secs(60)) && self.copies.values().all(|c| c.error.is_none()) {
+                self.restart_mods(window, cx);
+                return;
+            }
+            if self.recover_mods(&edited, window, cx) {
+                return;
+            }
+        }
+        let mut exhausted = BTreeSet::new();
         for copy in self.copies.values_mut().filter(|c| edited.contains(&c.inst.name) && loaded.contains(&c.id)) {
             let Some(root) = &copy.root else { continue };
-            let error = runtime.reload_now(root, window, cx).err().map(|e| format!("{e:#}"));
+            let near_limit = runtime.memory_share() >= RESTART_MODS_AT;
+            let error = runtime.reload_now(root, window, cx).err();
+            if error.as_ref().is_some_and(|e| near_limit || out_of_memory(e) || runtime.memory_share() >= RESTART_MODS_AT) {
+                exhausted.insert(copy.inst.name.clone());
+            }
+            let error = error.map(|e| format!("{e:#}"));
             if let Some(e) = &error {
                 tracing::warn!("mod reload failed: {e}");
             }
             copy.error = error;
         }
+        if !exhausted.is_empty() {
+            self.recover_mods(&exhausted, window, cx);
+        }
+    }
+
+    fn recover_mods(&mut self, names: &BTreeSet<String>, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.load_recovery.is_some_and(|last| last.elapsed() < Duration::from_secs(60))
+            || names.iter().all(|name| self.failed_loads.contains(name))
+        {
+            return false;
+        }
+        if !self.restart_mods(window, cx) {
+            return false;
+        }
+        self.load_recovery = Some(Instant::now());
+        true
+    }
+
+    /// The window's mods on a new VM, as when the window opens: every copy
+    /// closes on the old one and the shown ones load again, open popups,
+    /// dialogs and windows too (toasts close). Hidden copies start fresh when
+    /// shown. Terminals, the core and the layout stay.
+    fn restart_mods(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let fresh = match ShellRuntime::replace_default(cx) {
+            Ok(fresh) => fresh,
+            Err(e) => {
+                tracing::error!("could not start a new script runtime: {e:#}");
+                return false;
+            }
+        };
+        tracing::warn!("mod memory was nearly used up; restarting this window's mods");
+        if let Some(events) = &self.file_events {
+            fresh.set_source_revision_provider(events.revision_provider());
+        }
+        // A toast would show (or send) its notification again: it closes.
+        let toasts: Vec<String> = self.overlays.iter().filter(|o| o.kind == OverlayKind::Toast).map(|o| o.id.clone()).collect();
+        for id in toasts {
+            self.remove_overlay(&id, window, cx);
+        }
+        // An overlay's own mod loads when it opens, not in `sync`: it loads
+        // again here, in its frame.
+        let reopen: Vec<(String, Instance, bool)> = self
+            .overlays
+            .iter()
+            .filter(|o| o.layout.is_none())
+            .filter_map(|o| self.copies.get(&o.slot).map(|c| (o.slot.clone(), c.inst.clone(), o.fit)))
+            .collect();
+        let slots: Vec<String> = self.copies.keys().cloned().collect();
+        for slot in slots {
+            self.remove_copy(&slot, window, cx);
+        }
+        self.runtime = Some(fresh);
+        // A failure in the fresh VM gets reported, not retried forever.
+        self.restarting_mods = true;
+        // The frame takes the keyboard first, as when it opened.
+        if let Some(focus) = self.overlays.iter().rev().find(|o| o.kind.modal_keys()).map(|o| o.focus.clone()) {
+            focus.focus(window, cx);
+        }
+        for (slot, inst, fit) in reopen {
+            let copy = self.load(inst, window, cx);
+            if fit
+                && let Some(root) = &copy.root
+            {
+                root.update(cx, |r, cx| r.set_fit_content(true, cx));
+            }
+            self.copies.insert(slot, copy);
+        }
+        self.sync(window, cx);
+        self.restarting_mods = false;
+        if self.copies.values().any(|c| c.error.is_some()) {
+            self.load_recovery = Some(Instant::now());
+            self.failed_loads.extend(self.copies.values().filter(|c| c.error.is_some()).map(|c| c.inst.name.clone()));
+        }
+        true
     }
 
     fn sync_folders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3999,6 +4258,7 @@ impl AppWindow {
         let added = found.keys().any(|k| !self.folders.contains_key(k));
         let removed = self.folders.keys().any(|k| !found.contains_key(k));
         let fresh: Vec<Found> = found.values().filter(|f| !self.seen.contains(&f.id)).cloned().collect();
+        self.mod_stamps.borrow_mut().retain(|name, _| found.contains_key(name));
         self.folders = found;
 
         // Copies that failed get another try when their folder changes; loaded ones hot-reload.
@@ -4458,13 +4718,20 @@ impl AppWindow {
                 }
             }
         }
-        if let Some(error) = crate::update::core().error {
+        let core = crate::update::core();
+        if let Some(error) = core.error.filter(|error| core.managed.is_none() && self.core_update_error_dismissed.as_ref() != Some(error)) {
             out.push(div().absolute().right(settings::z(16.0)).bottom(settings::z(toast_y))
                 .max_w(settings::z(540.0)).p(settings::z(12.0)).rounded_lg().bg(c("popover"))
                 .border_1().border_color(c("border")).text_size(settings::z(13.0)).text_color(c("foreground"))
-                .id("core-update-error").cursor_pointer()
-                .on_click(cx.listener(|this, _, w, cx| this.run("app.settings", json!({ "section": "updates" }), w, cx)))
-                .child(format!("herdr-core update failed: {error} · Open Updates")).into_any_element());
+                .occlude().flex().items_center().gap(settings::z(8.0))
+                .child(div().id("core-update-error").flex_1().min_w_0().cursor_pointer()
+                    .on_click(cx.listener(|this, _, w, cx| this.run("app.settings", json!({ "section": "updates" }), w, cx)))
+                    .child(format!("herdr-core update failed: {error} · Open Updates")))
+                .child(div().id("core-update-error-dismiss").size(settings::z(24.0)).flex_none()
+                    .flex().items_center().justify_center().rounded_full().cursor_pointer()
+                    .text_color(c("dim")).hover(|s| s.bg(c("raised")).text_color(c("foreground"))).child("×")
+                    .on_click(cx.listener(|this, _, w, cx| this.close_overlay("core-update-error", w, cx))))
+                .into_any_element());
         }
         out.extend(pill);
         out
@@ -4478,7 +4745,7 @@ impl AppWindow {
     /// What's waiting, in words: the pill shows it until clicked or dismissed.
     fn update_label() -> Option<String> {
         let core = crate::update::core();
-        let core = core.ready.filter(|_| !core.updating);
+        let core = core.ready.filter(|_| !core.updating && core.managed.is_none());
         match (crate::update::ready(), core) {
             // yuzora(win-update): the app a person installed is called Yuzora; the pill said Herdr.
             (Some(a), Some(c)) => Some(format!("Yuzora {a} and herdr-core {c} are ready")),
@@ -4961,8 +5228,10 @@ impl Render for AppWindow {
             self.synced_model_pane = self.model.focused_pane();
             self.publish(cx);
         }
+        self.publish_focused_selection(window, cx);
         self.tick_floats(window);
         self.apply_titlebar(window);
+        self.apply_blur(window);
         if mods::publish_window(self.window_json(window)) {
             self.refresh_snapshot_mods(cx);
         }
@@ -4985,6 +5254,11 @@ impl Render for AppWindow {
             .text_color(c("foreground"))
             .font_family(settings::get().ui_font_family.clone())
             .on_action(cx.listener(|this, a: &ShellAction, w, cx| {
+                #[cfg(any(target_os = "macos", test))]
+                if matches!(a.id(), "terminal.copy" | "terminal.paste")
+                    && crate::macos::dispatch_edit(a, this.terms.values().any(|t| t.view.read(cx).owns_keyboard_focus(w, cx)), w, cx) {
+                    return;
+                }
                 // Nothing selected: the copy chord goes to the program (#216).
                 if a.id() == "terminal.copy" {
                     if !this.copy_key(w, cx) {
@@ -5015,10 +5289,14 @@ impl Render for AppWindow {
                     }
                 }
             }))
-            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
-                if ev.keystroke.key == "escape" && this.pane_drag.is_some() {
-                    this.cancel_pane_drag(cx);
-                    cx.stop_propagation();
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                if ev.keystroke.key == "escape" {
+                    if this.pane_drag.is_some() {
+                        this.cancel_pane_drag(cx);
+                        cx.stop_propagation();
+                    } else if cx.stop_active_drag(window) {
+                        cx.stop_propagation();
+                    }
                 }
             }))
             .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, _| this.pointer = ev.position))
@@ -5097,10 +5375,38 @@ fn changed_asset_paths(home: &std::path::Path, changed: &[std::path::PathBuf]) -
     paths.into_iter().collect()
 }
 
+fn reconcile_core_update_error(dismissed: &mut Option<String>, core: &crate::update::CoreInfo) {
+    if core.error.as_ref().is_some_and(|error| dismissed.as_ref() != Some(error)) || (!core.updating && core.error.is_none()) {
+        *dismissed = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use gpui::{div, point, px, size, Context, IntoElement, Render, TestAppContext, Window};
     use gpui::prelude::*;
+
+    #[test]
+    fn core_error_dismissal_survives_failed_retries_but_resets_after_recovery() {
+        let mut dismissed = Some("connection closed".to_owned());
+        let mut core = crate::update::CoreInfo { updating: true, ..Default::default() };
+        super::reconcile_core_update_error(&mut dismissed, &core);
+        assert!(dismissed.is_some());
+        core.updating = false;
+        core.error = Some("connection closed".into());
+        super::reconcile_core_update_error(&mut dismissed, &core);
+        assert_eq!(dismissed, core.error);
+        core.error = None;
+        super::reconcile_core_update_error(&mut dismissed, &core);
+        assert!(dismissed.is_none());
+        core.error = Some("connection closed".into());
+        super::reconcile_core_update_error(&mut dismissed, &core);
+        assert_ne!(dismissed, core.error);
+        dismissed = core.error.clone();
+        core.error = Some("checksum mismatch".into());
+        super::reconcile_core_update_error(&mut dismissed, &core);
+        assert!(dismissed.is_none());
+    }
 
     #[test]
     fn going_back_into_a_split_column_takes_its_top_pane_whatever_the_fractions() {
@@ -5193,7 +5499,7 @@ mod tests {
     #[gpui::test]
     fn image_invalidation_drops_cached_atlas_tiles_without_loading_missing_assets(cx: &mut TestAppContext) {
         use gpui::{ImgResourceLoader, Resource};
-        let temp = if cfg!(target_os = "linux") { std::path::PathBuf::from("/var/tmp") } else { std::env::temp_dir() };
+        let temp = if cfg!(target_os = "linux") { crate::test_tmp() } else { std::env::temp_dir() };
         let home = temp.join(format!("herdr-image-atlas-test-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
         let file = home.join("image.gif");
@@ -5281,7 +5587,7 @@ mod tests {
                 encoder.encode_frame(image::Frame::new(image::RgbaImage::from_pixel(2, 2, image::Rgba(color)))).unwrap();
             }
         }
-        let temp = if cfg!(target_os = "linux") { std::path::PathBuf::from("/var/tmp") } else { std::env::temp_dir() };
+        let temp = if cfg!(target_os = "linux") { crate::test_tmp() } else { std::env::temp_dir() };
         let dir = temp.join(format!("herdr-many-images-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let sources: Vec<_> = (0..24).map(|id| {
@@ -5374,7 +5680,7 @@ mod tests {
                 element
             }
         }
-        let temp = if cfg!(target_os = "linux") { std::path::PathBuf::from("/var/tmp") } else { std::env::temp_dir() };
+        let temp = if cfg!(target_os = "linux") { crate::test_tmp() } else { std::env::temp_dir() };
         let home = temp.join(format!("herdr-image-release-test-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
         let gif = home.join("animated.gif");
@@ -5441,7 +5747,7 @@ mod tests {
 
     #[test]
     fn directory_changes_include_nested_assets() {
-        let temp = if cfg!(target_os = "linux") { std::path::PathBuf::from("/var/tmp") } else { std::env::temp_dir() };
+        let temp = if cfg!(target_os = "linux") { crate::test_tmp() } else { std::env::temp_dir() };
         let home = temp.join(format!("herdr-image-directory-test-{}", std::process::id()));
         std::fs::create_dir_all(home.join("mods/probe/nested")).unwrap();
         std::fs::write(home.join("mods/probe/nested/icon.svg"), "svg").unwrap();
@@ -5510,8 +5816,32 @@ mod tests {
                     (false, false) => "\"$@\"; exec \"$0\" -i",
                 };
                 assert_eq!(run[2], expected);
+                // Whatever the wrapper, a pane shows the agent it runs, not the shell.
+                let agent = super::unix_agent_argv(sh.into(), vec!["cursor-agent".into()], login);
+                assert_eq!(crate::programs::of(None, &agent)["key"], "cursor", "{agent:?}");
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn other_shells_run_the_command_then_return_to_the_shell() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = if cfg!(target_os = "linux") { std::path::PathBuf::from("/var/tmp") } else { std::env::temp_dir() };
+        let dir = temp.join(format!("herdr-other-shell-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Stands in for nushell: it would fail on sh syntax, so it only records how it was started.
+        let nu = dir.join("nu");
+        std::fs::write(&nu, "#!/bin/sh\nprintf 'shell:%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&nu, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let task = "a 'quoted' task; $(not-a-command)\nnext line";
+        let cmd = vec!["printf".to_owned(), "[%s]\n".to_owned(), task.to_owned(), "".to_owned()];
+        for login in [false, true] {
+            let run = super::unix_agent_argv(nu.to_string_lossy().into(), cmd.clone(), login);
+            let out = std::process::Command::new(&run[0]).args(&run[1..]).output().unwrap();
+            assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("[{task}]\n[]\nshell:-i\n"));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -5625,7 +5955,7 @@ mod tests {
     /// fresh app home: a window takes process-wide things (the app home, the
     /// mods' request channel) that tests beside it would otherwise share.
     fn in_own_process(name: &str) {
-        let home = std::path::PathBuf::from(format!("/var/tmp/herdr-window-test-{name}-{}", std::process::id()));
+        let home = crate::test_tmp().join(format!("herdr-window-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         // yuzora(L9): a stub `hc` first on PATH, so no window test ever runs the real one (with no server it would start a herdr-core under launchd that outlives the test). Unix only: Windows CI has no `hc`, and `Command::new("hc")` finds no .cmd there either.
         #[cfg(unix)]
@@ -5684,9 +6014,350 @@ mod tests {
         let requests = crate::mods::install_policy();
         crate::mods::set_shared("layout".into(), json!("test"));
         crate::mods::set_shared("frame.welcomed".into(), json!("test"));
-        let (view, cx) = cx.add_window_view(|window, cx| super::AppWindow::new(crate::hc::offline(), requests, window, cx));
+        let (view, cx) = cx.add_window_view(|window, cx| super::AppWindow::with_file_events(crate::hc::offline(), requests, Some(crate::files::FileEvents::for_test(home.clone())), window, cx));
         assert_eq!(view.update(cx, |this, _| this.layout_name.clone()), "test");
         (view, cx)
+    }
+
+    /// A mod whose every version keeps `mib` MiB alive at module scope, in
+    /// 1 MiB strings so no single allocation is large.
+    fn heavy_mod(version: usize, mib: usize) -> String {
+        format!("import {{ View, div }} from \"gpui-kit\";\n\
+            const kept = Array.from({{ length: {mib} }}, (_, i) => \"{version}-\".padEnd(1 << 20, String(i)));\n\
+            export default class Heavy extends View {{ render() {{ return div().child(String(kept.length)); }} }}\n")
+    }
+
+    /// Saves `heavy`'s main.js as `version` and lets the window apply it, then
+    /// returns the mounted copies and their errors.
+    fn edit_heavy(view: &gpui::Entity<super::AppWindow>, version: usize, mib: usize, cx: &mut gpui::VisualTestContext) -> (usize, Vec<String>) {
+        std::fs::write(crate::mods::app_dir().join("mods/heavy/main.js"), heavy_mod(version, mib)).unwrap();
+        cx.update(|window, cx| view.update(cx, |this, cx| this.files_changed(vec!["mods/heavy/main.js".into()], window, cx)));
+        cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        view.update(cx, |this, _| (
+            this.copies.values().filter(|c| c.root.is_some()).count(),
+            this.copies.values().filter_map(|c| c.error.clone()).collect(),
+        ))
+    }
+
+    fn open_heavy(cx: &mut gpui::TestAppContext, mib: usize) -> (gpui::Entity<super::AppWindow>, &mut gpui::VisualTestContext) {
+        // yuzora(dock): no dock here, so the one copy these tests count is the heavy mod's.
+        let (view, cx) = open_window(cx, "heavy", &heavy_mod(0, mib), serde_json::json!({ "id": "heavy", "type": "block", "yuzora": { "dock": "off" }, "content": { "mod": "heavy" } }));
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.copies.values().filter(|c| c.root.is_some()).count()), 1, "the mod loads");
+        (view, cx)
+    }
+
+    #[test]
+    fn repeated_mod_edits_start_a_new_vm_before_the_old_one_fills() {
+        in_own_process("edits_restart_full_vm");
+    }
+
+    /// QuickJS frees evaluated modules only with their context, so each edit
+    /// leaves the replaced version in the window's VM. At 16 MiB a version the
+    /// 256 MiB ceiling fails a reload within twenty edits unless the window
+    /// moves its mods to a new VM first. The full VM and its code cache go away.
+    #[gpui::test]
+    fn edits_restart_full_vm(cx: &mut gpui::TestAppContext) {
+        if !running_alone("edits_restart_full_vm") {
+            return;
+        }
+        let (view, cx) = open_heavy(cx, 16);
+        let first = view.update(cx, |this, _| std::rc::Rc::downgrade(this.runtime.as_ref().unwrap()));
+        for version in 1..=40 {
+            assert_eq!(edit_heavy(&view, version, 16, cx), (1, vec![]), "edit {version}");
+        }
+        assert!(first.upgrade().is_none(), "the replaced VM, with its code cache, is freed");
+        let share = view.update(cx, |this, _| this.runtime.as_ref().unwrap().memory_share());
+        assert!(share < super::RESTART_MODS_AT, "the current VM has room: {share}");
+    }
+
+    #[test]
+    fn a_reload_that_runs_out_of_memory_starts_a_new_vm() {
+        in_own_process("out_of_memory_restarts_vm");
+    }
+
+    /// One version fills more than half the VM, so the first edit cannot fit
+    /// beside it. The reload fails with out of memory. The window then loads
+    /// the saved code in a new VM instead of leaving the failed view.
+    #[gpui::test]
+    fn out_of_memory_restarts_vm(cx: &mut gpui::TestAppContext) {
+        if !running_alone("out_of_memory_restarts_vm") {
+            return;
+        }
+        let (view, cx) = open_heavy(cx, 140);
+        let first = view.update(cx, |this, _| std::rc::Rc::downgrade(this.runtime.as_ref().unwrap()));
+        assert!(view.update(cx, |this, _| this.runtime.as_ref().unwrap().memory_share()) < super::RESTART_MODS_AT);
+        assert_eq!(edit_heavy(&view, 1, 140, cx), (1, vec![]));
+        assert!(first.upgrade().is_none(), "the exhausted VM is freed");
+    }
+
+    #[test]
+    fn reload_errors_share_the_load_recovery_cap() {
+        in_own_process("reload_recovery_cap");
+    }
+
+    #[gpui::test]
+    fn reload_recovery_cap(cx: &mut gpui::TestAppContext) {
+        if !running_alone("reload_recovery_cap") {
+            return;
+        }
+        let (view, cx) = open_heavy(cx, 140);
+        assert_eq!(edit_heavy(&view, 1, 140, cx), (1, vec![]));
+        let fresh = view.update(cx, |this, _| std::rc::Rc::downgrade(this.runtime.as_ref().unwrap()));
+        let (loaded, errors) = edit_heavy(&view, 2, 140, cx);
+        assert_eq!(loaded, 1, "a failed reload keeps the previous view");
+        assert_eq!(errors.len(), 1, "the capped reload error is reported");
+        view.update(cx, |this, _| {
+            assert!(std::rc::Rc::ptr_eq(&fresh.upgrade().unwrap(), this.runtime.as_ref().unwrap()));
+            this.load_recovery = Some(std::time::Instant::now() - std::time::Duration::from_secs(61));
+        });
+        assert_eq!(edit_heavy(&view, 3, 140, cx), (1, vec![]));
+        assert!(fresh.upgrade().is_none(), "a later edit can recover again");
+    }
+
+    #[test]
+    fn unchanged_mod_events_do_not_restart_a_healthy_vm() {
+        in_own_process("unchanged_mod_events");
+    }
+
+    #[gpui::test]
+    fn unchanged_mod_events(cx: &mut gpui::TestAppContext) {
+        if !running_alone("unchanged_mod_events") {
+            return;
+        }
+        let (view, cx) = open_heavy(cx, 200);
+        let first = view.update(cx, |this, _| std::rc::Rc::downgrade(this.runtime.as_ref().unwrap()));
+        std::fs::write(crate::mods::app_dir().join("mods/heavy/gpui-kit.d.ts"), "generated").unwrap();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.files_changed(vec!["mods/heavy".into(), "mods/heavy/main.js".into()], window, cx);
+        }));
+        cx.run_until_parked();
+        view.update(cx, |this, _| {
+            assert!(std::rc::Rc::ptr_eq(&first.upgrade().unwrap(), this.runtime.as_ref().unwrap()));
+            assert!(this.copies.values().all(|c| c.error.is_none()));
+        });
+        assert_eq!(edit_heavy(&view, 1, 200, cx), (1, vec![]));
+        assert!(first.upgrade().is_none(), "a real edit refreshes the healthy full VM");
+        assert_eq!(edit_heavy(&view, 2, 200, cx), (1, vec![]), "healthy proactive refreshes are not capped");
+    }
+
+    #[test]
+    fn failed_mass_mounts_retry_on_a_fresh_vm() {
+        in_own_process("mounts_restart_full_vm");
+    }
+
+    #[gpui::test]
+    fn mounts_restart_full_vm(cx: &mut gpui::TestAppContext) {
+        if !running_alone("mounts_restart_full_vm") {
+            return;
+        }
+        let (view, cx) = open_heavy(cx, 140);
+        let first = view.update(cx, |this, _| {
+            std::rc::Rc::downgrade(this.runtime.as_ref().unwrap())
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |this, cx| {
+                this.chrome = serde_json::from_value(
+                    serde_json::json!({"id":"empty","type":"column","children":[]}),
+                )
+                .unwrap();
+                this.sync(window, cx);
+            })
+        });
+        assert_eq!(edit_heavy(&view, 1, 140, cx), (0, vec![]));
+        let share = view.update(cx, |this, _| this.runtime.as_ref().unwrap().memory_share());
+        eprintln!("heap share before mount: {share}");
+        assert!(share < super::RESTART_MODS_AT);
+        cx.update(|window, cx| {
+            view.update(cx, |this, cx| {
+                this.chrome = serde_json::from_value(serde_json::json!({
+                    "id":"many","type":"column","children": (0..20).map(|i| serde_json::json!({
+                        "id":format!("copy{i}"),"type":"block","content":{"mod":"heavy"}
+                    })).collect::<Vec<_>>()
+                }))
+                .unwrap();
+                this.sync(window, cx);
+                eprintln!(
+                    "heap share after mount: {}",
+                    this.runtime.as_ref().unwrap().memory_share()
+                );
+            })
+        });
+        cx.run_until_parked();
+        let (loaded, errors) = view.update(cx, |this, _| {
+            (
+                this.copies.values().filter(|c| c.root.is_some()).count(),
+                this.copies
+                    .values()
+                    .filter_map(|c| c.error.clone())
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(loaded, 20, "{errors:?}");
+        assert!(errors.is_empty());
+        assert!(first.upgrade().is_none(), "the exhausted VM is freed");
+    }
+
+    #[test]
+    fn opaque_load_errors_near_the_limit_retry_only_once() {
+        in_own_process("opaque_load_recovery");
+    }
+
+    #[gpui::test]
+    fn opaque_load_recovery(cx: &mut gpui::TestAppContext) {
+        if running_alone("opaque_load_recovery") {
+            check_failed_load_recovery(cx, 200, "throw null;");
+        }
+    }
+
+    #[test]
+    fn oversized_mods_do_not_restart_forever() {
+        in_own_process("oversized_load_recovery");
+    }
+
+    #[gpui::test]
+    fn oversized_load_recovery(cx: &mut gpui::TestAppContext) {
+        if running_alone("oversized_load_recovery") {
+            check_failed_load_recovery(cx, 1, &heavy_mod(0, 300));
+        }
+    }
+
+    fn check_failed_load_recovery(cx: &mut gpui::TestAppContext, held_mib: usize, broken: &str) {
+        let (view, cx) = open_heavy(cx, held_mib);
+        let folder = crate::mods::app_dir().join("mods/broken");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("mod.json"), r#"{"place":"none"}"#).unwrap();
+        std::fs::write(folder.join("main.js"), broken).unwrap();
+        crate::mods::set_shared("vmdead.sentinel".into(), serde_json::json!(42));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.open_overlay("dialog".into(), serde_json::json!({"kind":"dialog","mod":"heavy"}), window, cx);
+        }));
+        let first = view.update(cx, |this, _| {
+            std::rc::Rc::downgrade(this.runtime.as_ref().unwrap())
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |this, cx| {
+                this.sync_folders(window, cx);
+                this.chrome = serde_json::from_value(serde_json::json!({
+                    "id":"root","type":"row","children":[
+                        {"id":"heavy","type":"block","content":{"mod":"heavy"}},
+                        {"id":"broken","type":"block","content":{"mod":"broken"}}
+                    ]
+                }))
+                .unwrap();
+                this.sync(window, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(first.upgrade().is_none(), "a failed load gets one fresh VM");
+        let fresh = view.update(cx, |this, _| {
+            std::rc::Rc::downgrade(this.runtime.as_ref().unwrap())
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(2));
+        cx.run_until_parked();
+        view.update(cx, |this, _| {
+            assert!(std::rc::Rc::ptr_eq(
+                &fresh.upgrade().unwrap(),
+                this.runtime.as_ref().unwrap()
+            ));
+            assert_eq!(this.copies.values().filter(|c| c.root.is_some()).count(), 2);
+            assert_eq!(crate::mods::shared("vmdead.sentinel"), Some(serde_json::json!(42)));
+            let errors: Vec<_> = this
+                .copies
+                .values()
+                .filter_map(|c| c.error.as_ref())
+                .collect();
+            assert_eq!(errors.len(), 1, "the broken mod's error is still reported");
+            if held_mib == 200 {
+                assert!(this.runtime.as_ref().unwrap().memory_share() >= super::RESTART_MODS_AT);
+                assert!(!errors[0].contains("out of memory"), "{errors:?}");
+            }
+        });
+        cx.update(|window, cx| {
+            let this = view.read(cx);
+            let dialog = this.overlays.iter().find(|o| o.id == "dialog").unwrap();
+            assert!(this.copies[&dialog.slot].root.is_some());
+            assert!(dialog.focus.contains_focused(window, cx), "the reopened dialog keeps the keyboard");
+        });
+    }
+
+
+    #[test]
+    fn persistent_load_errors_do_not_restart_on_layout_switches() {
+        in_own_process("load_recovery_survives_switches");
+    }
+
+    #[gpui::test]
+    fn load_recovery_survives_switches(cx: &mut gpui::TestAppContext) {
+        if !running_alone("load_recovery_survives_switches") {
+            return;
+        }
+        let home = crate::mods::app_dir();
+        std::fs::create_dir_all(home.join("layouts")).unwrap();
+        for name in ["broken", "other"] {
+            let folder = home.join("mods").join(name);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("mod.json"), r#"{"place":"none"}"#).unwrap();
+            std::fs::write(folder.join("main.js"), "export default class {").unwrap();
+        }
+        for (layout, bad) in [("bad-a", "broken"), ("bad-b", "broken"), ("bad-other", "other")] {
+            std::fs::write(home.join(format!("layouts/{layout}.json")), serde_json::json!({
+                "id":"root","type":"row","yuzora":{"dock":"off"}, // yuzora(dock): the copies counted below are these two blocks
+                "children":[
+                    {"id":"heavy","type":"block","content":{"mod":"heavy"}},
+                    {"id":"bad","type":"block","content":{"mod":bad}}
+                ]
+            }).to_string()).unwrap();
+        }
+        let (view, cx) = open_heavy(cx, 200);
+        let first = view.update(cx, |this, _| std::rc::Rc::downgrade(this.runtime.as_ref().unwrap()));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.sync_folders(window, cx);
+            this.switch_layout(Some("bad-a"), window, cx);
+        }));
+        cx.run_until_parked();
+        cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(first.upgrade().is_none(), "the initial load failure gets one recovery");
+        let fresh = view.update(cx, |this, _| std::rc::Rc::downgrade(this.runtime.as_ref().unwrap()));
+        for (layout, expired) in [("bad-b", false), ("bad-a", false), ("bad-other", false), ("bad-b", true)] {
+            if expired {
+                view.update(cx, |this, _| this.load_recovery = Some(std::time::Instant::now() - std::time::Duration::from_secs(61)));
+            }
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.switch_layout(Some(layout), window, cx);
+                this.files_changed(vec!["layouts/.state/bad-a.json".into()], window, cx);
+                this.files_changed(vec!["mods/heavy".into()], window, cx);
+            }));
+            cx.run_until_parked();
+            if layout == "bad-b" && !expired {
+                let (_, errors) = edit_heavy(&view, 1, 200, cx);
+                assert_eq!(errors.len(), 2, "a real edit reports its reload error during the cooldown");
+                let (_, errors) = edit_heavy(&view, 2, 1, cx);
+                assert_eq!(errors.len(), 1, "a small repair can still reload in the current VM");
+            }
+            view.update(cx, |this, _| {
+                assert!(std::rc::Rc::ptr_eq(&fresh.upgrade().unwrap(), this.runtime.as_ref().unwrap()), "{layout} must not restart the VM");
+                assert!(this.runtime.as_ref().unwrap().memory_share() >= super::RESTART_MODS_AT);
+                assert_eq!(this.copies.values().filter(|c| c.error.is_some()).count(), 1);
+                assert_eq!(this.copies.values().filter(|c| c.root.is_some()).count(), 1);
+            });
+        }
+        std::fs::write(home.join("mods/broken/main.js"), "throw null;").unwrap();
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.files_changed(vec!["mods/broken/main.js".into()], window, cx);
+        }));
+        cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        let state = view.update(cx, |this, _| format!("cooldown={:?} suppressed={:?} copies={:?}", this.load_recovery.map(|t| t.elapsed()), this.failed_loads, this.copies.values().map(|c| (&c.inst.name, &c.error)).collect::<Vec<_>>()));
+        assert!(fresh.upgrade().is_none(), "its own source edit allows another recovery: {state}");
+        view.update(cx, |this, _| {
+            assert_eq!(this.copies.values().filter(|c| c.error.is_some()).count(), 1);
+        });
     }
 
     #[test]
@@ -5753,6 +6424,43 @@ mod tests {
                 assert_eq!(&saved(this), expected);
             }
         }));
+    }
+
+    #[test]
+    fn a_new_vm_loads_the_open_popup_again() {
+        in_own_process("new_vm_keeps_popup");
+    }
+
+    /// A popup's copy loads when it opens, not with the layout's. When the
+    /// window moves its mods to a new VM, the open popup loads there too
+    /// instead of staying an empty frame that holds the keyboard.
+    #[gpui::test]
+    fn new_vm_keeps_popup(cx: &mut gpui::TestAppContext) {
+        if !running_alone("new_vm_keeps_popup") {
+            return;
+        }
+        let (view, cx) = open_heavy(cx, 1);
+        cx.update(|window, cx| view.update(cx, |this, cx| this.open_overlay("menu".into(), serde_json::json!({ "kind": "popup", "mod": "heavy" }), window, cx)));
+        cx.run_until_parked();
+        let popup = |view: &gpui::Entity<super::AppWindow>, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                let this = view.read(cx);
+                let o = this.overlays.iter().find(|o| o.id == "menu").expect("the popup stays open");
+                let copy = this.copies.get(&o.slot);
+                (copy.is_some_and(|c| c.root.is_some() && c.error.is_none()), o.focus.contains_focused(window, cx))
+            })
+        };
+        assert_eq!(popup(&view, cx), (true, true), "the popup shows its mod and holds the keyboard");
+        let note = serde_json::json!({ "kind": "toast", "notification": { "title": "Saved", "body": "", "level": "info" } });
+        cx.update(|window, cx| view.update(cx, |this, cx| this.open_overlay("note".into(), note, window, cx)));
+        let first = view.update(cx, |this, _| std::rc::Rc::downgrade(this.runtime.as_ref().unwrap()));
+        cx.update(|window, cx| view.update(cx, |this, cx| this.restart_mods(window, cx)));
+        cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(first.upgrade().is_none(), "the old VM is freed");
+        assert_eq!(popup(&view, cx), (true, true), "on the new VM the popup shows its mod again");
+        assert!(view.update(cx, |this, _| !this.overlays.iter().any(|o| o.id == "note")), "a toast is not shown twice");
+        assert_eq!(view.update(cx, |this, _| this.copies.values().filter(|c| c.root.is_some()).count()), 2, "the block and the popup");
     }
 
     #[test]
@@ -5892,6 +6600,57 @@ mod tests {
     }
 
     #[test]
+    fn new_tabs_without_focus_leave_the_shown_tab() {
+        in_own_process("tab_new_without_focus");
+    }
+
+    /// `tab.new {mod, focus: false}` adds the tab at the end of its space,
+    /// in the shown space or another, and keeps what is shown; without focus the
+    /// new tab is shown.
+    #[gpui::test]
+    fn tab_new_without_focus(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("tab_new_without_focus") {
+            return;
+        }
+        let (view, cx) = open_window(cx, "board", "", json!({
+            "id": "main", "type": "block", "content": { "tab": "active" }
+        }));
+        let shown = |cx: &mut gpui::VisualTestContext| cx.update(|_, cx| view.read_with(cx, |this, _| {
+            (this.model.active.clone().unwrap_or_default(), this.model.active_tab().map(|c| c.id.clone()).unwrap_or_default())
+        }));
+        let new_tab = |args: serde_json::Value, cx: &mut gpui::VisualTestContext| cx.update(|window, cx| view.update(cx, |this, cx| {
+            // No core here: count its layout as read, as a connected core's would be.
+            this.documents.entry(String::new()).or_default().available = true;
+            this.run_as("tab.new", args, false, window, cx)
+        }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.add_space("s1", "one", "", crate::model::Tab::new("a", "a", "pa", "t1"));
+            this.model.add_space("s2", "two", "", crate::model::Tab::new("b", "b", "pb", "t2"));
+            this.model.select_tab("a");
+            this.sync(window, cx);
+        }));
+        assert_eq!(shown(cx), ("s1".into(), "a".into()));
+
+        let here = new_tab(json!({ "space": "s1", "mod": "board", "focus": false }), cx);
+        assert_eq!(here["space"], "s1", "{here}");
+        assert_eq!(shown(cx), ("s1".into(), "a".into()));
+        let s1_tabs = cx.update(|_, cx| view.read_with(cx, |this, _| this.model.space("s1").unwrap().tabs.len()));
+        assert_eq!(s1_tabs, 2);
+        let refused = new_tab(json!({ "space": "s1", "mod": "board", "focus": "false" }), cx);
+        assert!(refused["error"].as_str().is_some_and(|e| e.contains("true or false")), "{refused}");
+        let there = new_tab(json!({ "space": "s2", "mod": "board", "focus": false }), cx);
+        assert_eq!(there["space"], "s2", "{there}");
+        assert_eq!(shown(cx), ("s1".into(), "a".into()));
+        let s2_selected = cx.update(|_, cx| view.read_with(cx, |this, _| this.model.space("s2").unwrap().active.clone()));
+        assert_eq!(s2_selected.as_deref(), Some("b"), "s2 still opens on its own tab");
+
+        let shown_now = new_tab(json!({ "space": "s2", "mod": "board" }), cx);
+        let tab = shown_now["tab"].as_str().unwrap().to_owned();
+        assert_eq!(shown(cx), ("s2".into(), tab));
+    }
+
+    #[test]
     fn find_focus_survives_tab_and_space_switches() {
         in_own_process("find_focus_switches");
     }
@@ -6021,140 +6780,202 @@ export default class Probe extends View {
     }
 
     #[test]
-    fn a_mod_pane_in_a_tab_not_shown_yet_is_listed_with_its_props_but_has_not_started() {
-        in_own_process("pane_props_listed");
+    fn focused_selection_follows_the_terminal_receiving_commands() {
+        in_own_process("selection_view_focus");
     }
 
-    // yuzora(v0.1.0 files-open): a restored layout starts only the tab shown, so the mods of its other tabs'
-    // panes have no copy to ask: `panes()` is the one place that says which file such a pane holds.
     #[gpui::test]
-    fn pane_props_listed(cx: &mut gpui::TestAppContext) {
+    fn selection_view_focus(cx: &mut gpui::TestAppContext) {
         use serde_json::json;
-        if !running_alone("pane_props_listed") {
+        if !running_alone("selection_view_focus") {
             return;
         }
         let probe = r#"import { View, div } from "gpui-kit";
-import { panes, props, shared, setShared } from "herdr";
+import { focused, setShared } from "herdr";
+export default class Probe extends View {
+  render() {
+    const value = focused();
+    const text = JSON.stringify(value);
+    if (text !== this.last) {
+      this.last = text;
+      setShared("probe.focused", value);
+    }
+    return div();
+  }
+}
+"#;
+        let (view, cx) = open_window(cx, "selection-probe", probe, json!({
+            "id": "root", "type": "row", "children": [
+                {"id": "main", "type": "block", "content": {"tab": "active"}},
+                {"id": "agent", "type": "block", "content": {"agent": "focused"}},
+                {"id": "probe", "type": "block", "content": {"mod": "selection-probe"}}
+            ],
+            "floating": [{"id": "float", "content": {"terminal": "t2"}}]
+        }));
+        cx.update(|window, cx| view.update(cx, |this, cx| {
+            this.model.add_space("s1", "one", "", crate::model::Tab::new("a", "a", "pa", "t1"));
+            for address in ["t1", "t2", "t3"] {
+                this.live.insert(address.into(), json!({"address": address}));
+            }
+            this.agent = Some("t3".into());
+            this.sync(window, cx);
+        }));
+        cx.run_until_parked();
+        for (slot, col) in [("pa", 1), ("float:float", 2), ("agent", 3)] {
+            cx.update(|window, cx| view.update(cx, |this, cx| {
+                this.terms[slot].focus.focus(window, cx);
+                let result = this.run_as("terminal.select", json!({"at": {"row": 0, "col": col}}), false, window, cx);
+                assert!(result.get("error").is_none(), "{result}");
+                assert_eq!(this.focused_terminal(window, cx).unwrap().address, this.terms[slot].address);
+            }));
+            cx.run_until_parked();
+            let focused = crate::mods::shared("probe.focused").unwrap();
+            assert_eq!(focused["terminal"], "t1", "logical identity stays with the model pane");
+            assert_eq!(focused["selection"]["end"], json!({"row": 0, "col": col}), "{slot}: {focused}");
+        }
+        // Moving the keyboard alone must publish the destination's existing selection.
+        for (slot, col) in [("float:float", 2), ("pa", 1), ("agent", 3)] {
+            cx.update(|window, cx| view.update(cx, |this, cx| this.terms[slot].focus.focus(window, cx)));
+            cx.run_until_parked();
+            let focused = crate::mods::shared("probe.focused").unwrap();
+            assert_eq!(focused["selection"]["end"], json!({"row": 0, "col": col}), "{slot}: {focused}");
+        }
+    }
+
+    #[test]
+    fn mods_set_the_window_title() {
+        in_own_process("window_title");
+    }
+
+    #[gpui::test]
+    fn window_title(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("window_title") {
+            return;
+        }
+        let probe = r#"import { View, div } from "gpui-kit";
+import { setWindowTitle, shared } from "herdr";
 
 export default class Probe extends View {
-  init() {
-    if (props()?.path) setShared("probe.started", [...(shared("probe.started") ?? []), props().path]);
-  }
   render() {
-    if (!props()?.path) setShared("probe.panes", panes());
+    const title = shared("probe.title");
+    if (title !== undefined) setWindowTitle(title);
     return div();
   }
 }
 "#;
         let layout = json!({ "id": "root", "type": "row", "children": [
-            { "id": "tabs", "type": "block", "content": { "tab": "active" } },
-            { "id": "probe", "type": "block", "content": { "mod": "pane-probe" } }
+            { "id": "probe", "type": "block", "content": { "mod": "title-probe" } }
         ] });
-        let (view, cx) = open_window(cx, "pane-probe", probe, layout);
-        let props = json!({ "path": "/srv/a.rs", "on": "lab", "opened": 1 });
-        let settle = |cx: &mut gpui::VisualTestContext| {
-            cx.executor().advance_clock(std::time::Duration::from_secs(1));
+        let (_view, cx) = open_window(cx, "title-probe", probe, layout);
+        let title = |value, cx: &mut gpui::VisualTestContext| {
+            crate::mods::set_shared("probe.title".into(), value);
             cx.run_until_parked();
+            cx.window_title()
         };
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            this.model.add_space("sp1", "", "/tmp", crate::model::Tab::new("tb1", "", "p1", "t1"));
-            let pane = crate::layout::Node::block("lab/pa175", crate::layout::Content::Mod { name: "pane-probe".into(), props: props.clone() });
-            this.model.add_tab("sp1", crate::model::Tab::with_pane("tb2", "a.rs", pane));
-            this.model.select_tab("tb1");
-            this.sync(window, cx);
-        }));
-        settle(cx);
-        let listed = |id: &str| crate::mods::shared("probe.panes").and_then(|v| v.as_array()?.iter().find(|p| p["pane"] == id).cloned());
-        let pane = listed("lab/pa175").expect("the pane of the tab not shown is listed");
-        assert_eq!((&pane["mod"], &pane["props"]), (&json!("pane-probe"), &props));
-        assert_eq!(pane["started"], json!(false), "no copy of its mod runs: nothing has opened its file");
-        assert!(listed("p1").expect("the terminal is listed").get("props").is_none());
-        assert!(listed("p1").unwrap().get("started").is_none(), "a terminal has no copy of a mod");
-        assert_eq!(crate::mods::shared("probe.started"), None, "its tab has not been shown: no copy of the mod has started");
-        assert!(!view.read_with(cx, |this, _| this.copies.contains_key("lab/pa175")));
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            this.model.select_tab("tb2");
-            this.sync(window, cx);
-        }));
-        settle(cx);
-        assert_eq!(crate::mods::shared("probe.started"), Some(json!(["/srv/a.rs"])), "shown, it starts with the props it is listed with");
-        assert_eq!(listed("lab/pa175").unwrap()["started"], json!(true), "and is listed as started");
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            this.model.select_tab("tb1");
-            this.sync(window, cx);
-        }));
-        settle(cx);
-        assert_eq!(listed("lab/pa175").unwrap()["started"], json!(true), "its copy keeps running when its tab is put away");
-    }
-
-    #[test]
-    fn a_pane_not_started_is_replaced_in_place_and_its_tab_shown_without_the_old_one_starting() {
-        in_own_process("pane_replaced_in_place");
-    }
-
-    // yuzora(v0.1.0 files-open): what Files asks for a file whose pane waits in a tab not shown yet: a pane beside it with
-    // other props, the old one closed, the tab selected. The old copy never starts, the new one does, with the tab's focus.
-    #[gpui::test]
-    fn pane_replaced_in_place(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("pane_replaced_in_place") {
-            return;
-        }
-        let probe = r#"import { View, div } from "gpui-kit";
-import { props, shared, setShared } from "herdr";
-
-export default class Probe extends View {
-  init() {
-    if (props()?.path) setShared("probe.started", [...(shared("probe.started") ?? []), JSON.stringify(props())]);
-  }
-  render() { return div(); }
-}
-"#;
-        let layout = json!({ "id": "root", "type": "row", "children": [
-            { "id": "tabs", "type": "block", "content": { "tab": "active" } },
-            { "id": "probe", "type": "block", "content": { "mod": "pane-probe" } }
-        ] });
-        let (view, cx) = open_window(cx, "pane-probe", probe, layout);
-        let settle = |cx: &mut gpui::VisualTestContext| {
-            cx.executor().advance_clock(std::time::Duration::from_secs(1));
-            cx.run_until_parked();
-        };
-        let old = json!({ "path": "/srv/a.rs", "on": null, "opened": 1 });
-        let new = json!({ "path": "/srv/a.rs", "on": null, "opened": 2, "line": 7, "column": 2 });
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            this.model.add_space("sp1", "", "/tmp", crate::model::Tab::new("tb1", "", "p1", "t1"));
-            let pane = crate::layout::Node::block("pf1", crate::layout::Content::Mod { name: "pane-probe".into(), props: old.clone() });
-            this.model.add_tab("sp1", crate::model::Tab::with_pane("tb2", "a.rs", pane));
-            this.model.select_tab("tb1");
-            this.sync(window, cx);
-        }));
-        settle(cx);
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            // The layout document of this machine is read: pane commands wait for it.
-            this.documents.get_mut("").expect("this machine's slot").available = true;
-            this.run("pane.split", json!({ "direction": "right", "pane": "pf1", "mod": "pane-probe", "props": new.clone() }), window, cx);
-            this.run("pane.close", json!({ "pane": "pf1" }), window, cx);
-            this.run("tab.select", json!({ "id": "tb2" }), window, cx);
-        }));
-        settle(cx);
-        let (shown, panes, focused) = view.read_with(cx, |this, _| {
-            let tab = this.model.tab("tb2").expect("the tab is still there");
-            let ids: Vec<String> = tab.root.panes().iter().map(|n| n.id.clone()).collect();
-            (this.model.active_tab().map(|t| t.id.clone()), ids, this.model.focused_pane())
-        });
-        assert_eq!(shown.as_deref(), Some("tb2"), "the tab with the new pane is shown");
-        assert_eq!(panes.len(), 1, "the old pane is gone: {panes:?}");
-        assert_ne!(panes[0], "pf1");
-        assert_eq!(focused.as_deref(), Some(panes[0].as_str()), "the new pane has the tab's focus");
-        assert_eq!(
-            crate::mods::shared("probe.started"),
-            Some(json!([new.to_string()])),
-            "only the new pane started, with the props it was given"
-        );
+        assert_eq!(title(json!("acorn"), cx).as_deref(), Some("acorn"));
+        assert_eq!(title(json!(null), cx).as_deref(), Some("Yuzora")); // yuzora
     }
 
     include!("window/pane_size_tests.rs");
     include!("window/overlay_motion_tests.rs"); // yuzora(motion): the arrival of dialogs, popups and toasts
+    include!("window/yuzora_pane_list_tests.rs"); // yuzora(v0.1.0 files-open): what panes() lists of a pane not started, and a pane replaced in place
+    include!("window/yuzora_dock_tests.rs"); // yuzora(dock): the right dock never reaches a layout file
+
+    /// What a `{"command":"tab.move","args":{"by":-1}}` key runs.
+    #[test]
+    fn tab_move_by_steps_the_active_tab() {
+        in_own_process("tab_move_by");
+    }
+
+    #[gpui::test]
+    fn tab_move_by(cx: &mut gpui::TestAppContext) {
+        use serde_json::json;
+        if !running_alone("tab_move_by") { return; }
+        let (view, cx) = open_window(cx, "unused", "", json!({
+            "id": "context", "type": "block", "content": { "tab": "active" }
+        }));
+        let order = |this: &super::AppWindow|this.model.active_space().unwrap().tabs.iter().map(|c| c.id.clone()).collect::<Vec<_>>();
+        view.update_in(cx, |this, window, cx| {
+            this.model.add_space("space", "test", "/", super::Tab::new("t1", "", "a", "term-a"));
+            this.model.add_tab_unselected("space", super::Tab::new("t2", "", "b", "term-b"));
+            this.model.add_tab_unselected("space", super::Tab::new("t3", "", "c", "term-c"));
+            this.documents.entry(String::new()).or_default().available = true;
+            this.sync(window, cx);
+            for (by, expected) in [(1, ["t2", "t1", "t3"]), (1, ["t2", "t3", "t1"]), (1, ["t1", "t2", "t3"]), (-1, ["t2", "t3", "t1"])] {
+                let out = this.run_as("tab.move", json!({ "by": by }), false, window, cx);
+                assert!(out.get("error").is_none(), "{out}");
+                assert_eq!(order(this), expected, "by {by}");
+                assert_eq!(this.model.active_tab().unwrap().id, "t1");
+            }
+            let out = this.run_as("tab.move", json!({ "index": 1 }), false, window, cx);
+            assert!(out.get("error").is_none(), "{out}");
+            assert_eq!(order(this), ["t1", "t2", "t3"]);
+            for args in [json!({}), json!({ "index": 1, "by": 1 })] {
+                let out = this.run_as("tab.move", args.clone(), false, window, cx);
+                assert!(out.get("error").is_some(), "{args}: {out}");
+                assert_eq!(order(this), ["t1", "t2", "t3"]);
+            }
+        });
+    }
+
+    #[test]
+    fn directional_navigation_moves_zoom_and_keyboard_focus() {
+        in_own_process("zoomed_navigation");
+    }
+
+    #[gpui::test]
+    fn zoomed_navigation(cx: &mut gpui::TestAppContext) {
+        use crate::model::pane;
+        use serde_json::json;
+        if !running_alone("zoomed_navigation") { return; }
+        let (view, cx) = open_window(cx, "unused", "", json!({
+            "id": "context", "type": "block", "content": { "tab": "active" }
+        }));
+        let mut tab = super::Tab::new("tab", "", "a", "term-a");
+        tab.root.split("a", super::Axis::Row, pane("b", "term-b"), "row".into());
+        tab.root.split("b", super::Axis::Column, pane("c", "term-c"), "column".into());
+        tab.focus("c");
+        tab.zoomed = Some("c".into());
+        view.update_in(cx, |this, window, cx| {
+            this.model.add_space("space", "test", "/", tab);
+            this.sync(window, cx);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        view.update(cx, |this, _| {
+            assert!(!this.bounds.borrow().contains_key("a"), "start without cached split bounds");
+            assert!(!this.bounds.borrow().contains_key("b"));
+        });
+        for (direction, expected) in [("up", "b"), ("down", "c"), ("left", "a"), ("right", "c"), ("right", "c")] {
+            view.update_in(cx, |this, window, cx| this.run("pane.go", json!({"direction": direction}), window, cx));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            view.update_in(cx, |this, window, _| {
+                let tab = this.model.active_tab().unwrap();
+                assert_eq!(tab.zoomed.as_deref(), Some(expected), "{direction}");
+                assert_eq!(tab.focused.as_deref(), Some(expected));
+                assert_eq!(tab.shown().id, expected);
+                assert!(this.terms[expected].focus.is_focused(window));
+            });
+        }
+        let (left, right) = if cfg!(target_os = "macos") { ("cmd-alt-left", "cmd-alt-right") } else { ("alt-h", "alt-l") };
+        cx.simulate_keystrokes(left);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        view.update_in(cx, |this, window, cx| {
+            assert_eq!(this.model.active_tab().unwrap().zoomed.as_deref(), Some("a"));
+            assert!(this.terms["a"].focus.is_focused(window));
+            this.run("pane.zoom", json!({}), window, cx);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_keystrokes(right);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        view.update_in(cx, |this, window, _| {
+            let tab = this.model.active_tab().unwrap();
+            assert_eq!(tab.zoomed, None);
+            assert_eq!(tab.focused.as_deref(), Some("c"));
+            assert!(this.terms["c"].focus.is_focused(window));
+        });
+    }
+
     include!("window/drag_tests.rs");
 
     /// The whole path, in a real window: a layout names the toast mod, a
@@ -6445,828 +7266,41 @@ export default class SystemToast extends View {
         assert!(!super::adoptable(&record("live"), "sp1", Some("tb2"), None));
     }
 
-    // yuzora(dock): W1-W3 and the guard below: the right dock never reaches a layout file.
 
-    /// A personal layout shaped like `main`: a `panel` column with a `panel-body` stack in the root row.
-    fn panel_layout() -> serde_json::Value {
-        serde_json::json!({
-            "id": "root", "type": "row", "children": [
-                { "id": "main", "type": "block", "content": { "tab": "active" } },
-                { "id": "panel", "type": "column", "hidden": true, "size": { "px": 368 }, "children": [
-                    { "id": "panel-body", "type": "stack", "active": "files", "children": [
-                        { "id": "files", "type": "block", "content": { "mod": "files" } },
-                        { "id": "changes", "type": "block", "content": { "mod": "changes" } } ] } ] } ]
-        })
-    }
 
-    fn layout_file() -> String {
-        std::fs::read_to_string(super::layout_path("test")).unwrap()
-    }
-
-    #[test]
-    fn the_dock_never_reaches_a_personal_layout_file() {
-        in_own_process("dock_never_reaches_file");
-    }
-
+    /// A popup opened near the right edge must snap back inside the window
+    /// with the 8 px margin: its body may not paint past the window border
+    /// (the reported right-edge menu clip).
     #[gpui::test]
-    fn dock_never_reaches_file(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_never_reaches_file") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let original = panel_layout().to_string();
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        assert_eq!(layout_file(), original, "showing a layout writes nothing");
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some() && this.file_chrome.find("yuzora-dock-bar").is_some(), "the dock is in both trees"));
-
-        // Clicks on the dock (a mode, the panel open) are the person's, kept in .state only.
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx);
-            this.run("layout.show", json!({ "id": "panel" }), window, cx);
-            this.save();
-        }));
-        assert_eq!(layout_file(), original, "clicks write no layout file");
-        let state = std::fs::read_to_string(super::state_path("test")).unwrap();
-        assert!(state.contains("yuzora-dock-git"), "{state}");
-
-        // Shown again (a restart): the dock is back, on Git.
-        view.update(cx, |this, _| {
-            this.load_layout("test");
-            assert!(this.chrome.find("yuzora-dock-bar").is_some());
-            assert!(!this.chrome.find("panel").unwrap().hidden);
-            assert!(matches!(&this.chrome.find("panel-body").unwrap().kind, crate::layout::Kind::Stack { active, .. } if active.as_deref() == Some("yuzora-dock-git")));
-        });
-        assert_eq!(layout_file(), original);
-
-        // A mod docking a block is an edit: the file gets it, never the dock.
-        view.update(cx, |this, _| {
-            this.chrome.children_mut().unwrap().push(crate::layout::Node::block("docked", crate::layout::Content::Mod { name: "unused".into(), props: serde_json::Value::Null }));
-            this.save();
-        });
-        let written = layout_file();
-        assert!(written.contains("docked") && !written.contains("yuzora-dock"), "{written}");
-        view.update(cx, |this, _| {
-            assert!(this.chrome.find("yuzora-dock-bar").is_some(), "still shown");
-            assert!(this.file_chrome.find("yuzora-dock-bar").is_some());
-        });
-        let after_save = layout_file();
-
-        // layout.set with the tree a mod read from layout() (dock and all) plus a change.
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            let mut tree = serde_json::to_value(&this.chrome).unwrap();
-            tree["children"].as_array_mut().unwrap().push(json!({ "id": "second", "type": "block", "content": { "mod": "unused" } }));
-            this.run("layout.set", json!({ "layout": tree }), window, cx);
-        }));
-        let written = layout_file();
-        assert_ne!(written, after_save);
-        assert!(written.contains("second") && !written.contains("yuzora-dock"), "{written}");
-        let back: crate::layout::Node = serde_json::from_str(&written).unwrap();
-        assert!(matches!(&back.find("panel-body").unwrap().kind, crate::layout::Kind::Stack { active, .. } if active.as_deref() == Some("files")), "the stack is back on the file's own choice");
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some()));
-
-        // A tree built without the dock (a script, not layout()) is shown with it all the same.
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            let tree = serde_json::to_value(crate::yuzora::dock::strip(&this.chrome, None)).unwrap();
-            this.run("layout.set", json!({ "layout": tree }), window, cx);
-        }));
-        assert!(!layout_file().contains("yuzora-dock"));
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some() && this.file_chrome.find("yuzora-dock-bar").is_some()));
-    }
-
-    #[test]
-    fn the_dock_follows_a_file_edit() {
-        in_own_process("dock_follows_file_edit");
-    }
-
-    #[gpui::test]
-    fn dock_follows_file_edit(cx: &mut gpui::TestAppContext) {
-        if !running_alone("dock_follows_file_edit") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some()));
-        let mut off = panel_layout();
-        off["yuzora"] = serde_json::json!({ "dock": "off" });
-        std::fs::write(super::layout_path("test"), off.to_string()).unwrap();
-        cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
-        view.update(cx, |this, _| {
-            assert!(this.chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")) && this.file_chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")));
-            assert!(!super::file("layout.error").exists(), "the opt-out is a valid layout");
-        });
-        // And back: taking the opt-out out brings the dock back.
-        std::fs::write(super::layout_path("test"), panel_layout().to_string()).unwrap();
-        let mtime = || std::fs::metadata(super::layout_path("test")).unwrap().modified().unwrap();
-        let written_at = mtime();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
-        assert_eq!(layout_file(), panel_layout().to_string(), "reading the edit rewrites nothing (the dock is in the file's tree too, so it is no edit)");
-        assert_eq!(mtime(), written_at, "and the file isn't touched");
-        let before_save = layout_file();
-        view.update(cx, |this, _| {
-            assert!(this.chrome.find("yuzora-dock-bar").is_some());
-            assert!(this.file_chrome.find("yuzora-dock-bar").is_some(), "the file's tree has the dock too, or its clicks are edits");
-            this.save();
-        });
-        assert_eq!(layout_file(), before_save, "a save after a file edit rewrites nothing");
-    }
-
-    // W3b: a file edit with an id-less node is given its ids (and written) before the dock goes in.
-    #[test]
-    fn a_file_edit_without_ids_never_writes_the_dock() {
-        in_own_process("dock_watcher_keep_ids");
-    }
-
-    #[gpui::test]
-    fn dock_watcher_keep_ids(cx: &mut gpui::TestAppContext) {
-        if !running_alone("dock_watcher_keep_ids") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        let mut edited = panel_layout();
-        edited["children"].as_array_mut().unwrap().push(serde_json::json!({ "type": "block", "content": { "mod": "unused" } }));
-        std::fs::write(super::layout_path("test"), edited.to_string()).unwrap();
-        cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
-        let written = layout_file();
-        assert!(written.contains("node-1"), "keep_ids wrote the file: {written}");
-        assert!(!written.contains("yuzora-dock"), "{written}");
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some() && this.file_chrome.find("yuzora-dock-bar").is_some()));
-    }
-
-    #[test]
-    fn keep_ids_never_writes_the_dock() {
-        in_own_process("keep_ids_never_writes_dock");
-    }
-
-    #[gpui::test]
-    fn keep_ids_never_writes_dock(cx: &mut gpui::TestAppContext) {
-        if !running_alone("keep_ids_never_writes_dock") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        // A node without an id: loading gives it one and writes the file (keep_ids).
-        let mut layout = panel_layout();
-        layout["children"].as_array_mut().unwrap().push(serde_json::json!({ "type": "block", "content": { "mod": "unused" } }));
-        let (view, cx) = open_window(cx, "unused", "", layout);
-        let written = layout_file();
-        assert!(written.contains("node-1"), "keep_ids wrote the file: {written}");
-        assert!(!written.contains("yuzora-dock"), "{written}");
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some(), "yet the dock shows"));
-    }
-
-    /// What the dock shows after a click: the stack's mode, whether the panel and the bar are hidden.
-    fn dock_view(n: &crate::layout::Node) -> (Option<String>, bool, bool) {
-        let active = match &n.find("panel-body").unwrap().kind {
-            crate::layout::Kind::Stack { active, .. } => active.clone(),
-            _ => None,
-        };
-        (active, n.find("panel").unwrap().hidden, n.find("yuzora-dock-bar").unwrap().hidden)
-    }
-
-    // W1b (B1): layout.set again and again, then a structural save: the file never has the dock, and keeps the person's own choice.
-    #[test]
-    fn layout_set_twice_and_a_save_never_write_the_dock() {
-        in_own_process("dock_set_twice");
-    }
-
-    #[gpui::test]
-    fn dock_set_twice(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_set_twice") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        let set = |name: &str, cx: &mut gpui::VisualTestContext| {
-            cx.update(|window, cx| {
-                view.update(cx, |this, cx| {
-                    let mut tree = serde_json::to_value(&this.chrome).unwrap();
-                    tree["children"].as_array_mut().unwrap().push(json!({ "id": name, "type": "block", "content": { "mod": "unused" } }));
-                    this.run("layout.set", json!({ "layout": tree }), window, cx);
-                })
-            });
-        };
-        let own_choice = |cx: &mut gpui::VisualTestContext| {
-            let written = layout_file();
-            assert!(!written.contains("yuzora-dock"), "{written}");
-            let back: crate::layout::Node = serde_json::from_str(&written).unwrap();
-            assert_eq!(dock_choice(&back), Some("files".to_string()), "{written}");
-            view.update(cx, |this, _| assert!(this.file_chrome.find("yuzora-dock-bar").is_some() && this.chrome.find("yuzora-dock-bar").is_some()));
-        };
-        fn dock_choice(n: &crate::layout::Node) -> Option<String> {
-            match &n.find("panel-body")?.kind {
-                crate::layout::Kind::Stack { active, .. } => active.clone(),
-                _ => None,
+    fn popup_at_right_edge_snaps_inside(cx: &mut TestAppContext) {
+        struct PopupView { at: gpui::Point<gpui::Pixels> }
+        impl Render for PopupView {
+            fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(super::position_popup(
+                    self.at,
+                    div().id("popup-body").debug_selector(|| "POPUP".into()).w(px(220.)).h(px(140.)).bg(gpui::rgb(0x00ff00)),
+                ))
             }
         }
-        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx)));
-        set("one", cx);
-        own_choice(cx);
-        set("two", cx);
-        own_choice(cx);
-        view.update(cx, |this, _| {
-            this.chrome.children_mut().unwrap().push(crate::layout::Node::block("three", crate::layout::Content::Mod { name: "unused".into(), props: serde_json::Value::Null }));
-            this.save();
+        let window = cx.open_window(size(px(800.), px(600.)), |_, _| PopupView {
+            at: point(px(770.), px(100.)),   // 220 wide: 770 + 220 = 990, well past the 800 px edge
         });
-        own_choice(cx);
-        assert!(layout_file().contains("three"));
-        view.update(cx, |this, _| assert_eq!(dock_view(&this.chrome).0.as_deref(), Some("yuzora-dock-git"), "the click is still shown"));
-    }
-
-    // S2: the dock's clicks that came in with a layout.set are the same after a restart.
-    #[test]
-    fn dock_clicks_made_before_a_layout_set_survive_a_restart() {
-        in_own_process("dock_set_restart");
-    }
-
-    #[gpui::test]
-    fn dock_set_restart(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_set_restart") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        cx.update(|window, cx| {
-            view.update(cx, |this, cx| {
-                this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx);
-                this.run("layout.show", json!({ "id": "panel" }), window, cx);
-                this.run("layout.hide", json!({ "id": "yuzora-dock-bar" }), window, cx);
-                let tree = serde_json::to_value(&this.chrome).unwrap();
-                this.run("layout.set", json!({ "layout": tree }), window, cx);
-                this.save();
-            })
-        });
-        let before = view.update(cx, |this, _| dock_view(&this.chrome));
-        assert_eq!(before, (Some("yuzora-dock-git".to_string()), false, true));
-        let after = view.update(cx, |this, _| {
-            this.load_layout("test");
-            dock_view(&this.chrome)
-        });
-        assert_eq!(after, before);
-        assert!(!layout_file().contains("yuzora-dock"));
-    }
-
-    // W4: the person's choice for a layout (settings `shell.dock.layouts.<name>`) applies at once, with
-    // `layout.switch` to the layout shown, and leaves the layout file alone and the dock's clicks in `.state`.
-    #[test]
-    fn a_persons_dock_choice_applies_at_once() {
-        in_own_process("dock_personal_choice");
-    }
-
-    #[gpui::test]
-    fn dock_personal_choice(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_personal_choice") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let original = panel_layout().to_string();
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        let choose = |word: Option<&str>| {
-            let shell = word.map_or(serde_json::Value::Null, |w| json!({ "dock": { "layouts": { "test": w } } }));
-            yuzora_core::settings::set_section(crate::yuzora::dock::SHELL, shell).unwrap();
-        };
-        let switch = |cx: &mut gpui::VisualTestContext| {
-            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.switch", json!({ "name": "test" }), window, cx)));
-            cx.run_until_parked();
-        };
-        // The dock on Git, panel wider than the file has it: clicks.
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx);
-            this.run("layout.show", json!({ "id": "panel" }), window, cx);
-            this.run("layout.resize", json!({ "id": "panel", "px": 420 }), window, cx);
-        }));
-        let shown = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| (dock_view(&this.chrome), this.chrome.find("panel").unwrap().size));
-        let before = shown(cx);
-        assert_eq!(before.0, (Some("yuzora-dock-git".to_string()), false, false));
-
-        // Off: the dock is gone at once (in both trees), the layout file is the same bytes.
-        choose(Some("off"));
-        switch(cx);
-        view.update(cx, |this, _| {
-            assert!(this.chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")) && this.file_chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")));
-        });
-        assert_eq!(layout_file(), original);
-        // Saved while it is off (a click elsewhere, a switch to the same layout): still nothing in the file.
-        view.update(cx, |this, _| this.save());
-        switch(cx);
-        assert_eq!(layout_file(), original);
-
-        // Auto again: the dock is back, on Git, at the width it was dragged to.
-        choose(Some("auto"));
-        switch(cx);
-        assert_eq!(shown(cx), before, "the clicks on the dock survived the time it was off");
-        assert_eq!(layout_file(), original);
-
-        // Drawer: the panel's bar gives way to the drawer; auto brings the panel back.
-        choose(Some("drawer"));
-        switch(cx);
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_none() && this.chrome.find("yuzora-dock").is_none() && this.chrome.walk().iter().any(|n| n.floating.iter().any(|f| f.id == "yuzora-dock"))));
-        choose(None);
-        switch(cx);
-        assert_eq!(shown(cx), before);
-        assert!(!layout_file().contains("yuzora-dock"));
-
-        // Over the layout file's own field: the file says off, the person says auto (the dock is shown); no choice, off.
-        let mut off = panel_layout();
-        off["yuzora"] = json!({ "dock": "off" });
-        std::fs::write(super::layout_path("test"), off.to_string()).unwrap();
-        choose(Some("auto"));
-        switch(cx);
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some(), "the person's auto beats the file's off"));
-        choose(None);
-        switch(cx);
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_none(), "no choice: the file's off"));
-    }
-
-    // "When Yuzora opens" (general.startup.dock): the first bar of a run opens the dock on that mode (or closes it), once.
-    #[test]
-    fn the_first_dock_of_a_run_opens_the_mode_settings_ask_for() {
-        in_own_process("dock_startup_mode");
-    }
-
-    #[gpui::test]
-    fn dock_startup_mode(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_startup_mode") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let general = |dock: &str| yuzora_core::settings::set_section(yuzora_core::settings::GENERAL, json!({ "startup": { "dock": dock } })).unwrap();
-        general("database");
-        let (view, cx) = open_window(cx, "yuzora-modebar", include_str!("../defaults/mods/yuzora-modebar/main.js"), panel_layout());
         cx.run_until_parked();
-        let shown = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| dock_view(&this.chrome));
-        assert_eq!(shown(cx), (Some("yuzora-dock-database".to_string()), false, false), "the panel opens on the mode settings name");
-        assert_eq!(crate::mods::shared("yuzora.startup.honored"), Some(json!(true)), "settings may show the choice now");
-
-        // The person goes on to Files; a layout switch (the bar's mod loads again) does not take that back.
-        std::fs::write(super::layout_path("other"), json!({ "id": "root", "type": "block", "yuzora": { "dock": "off" }, "content": { "tab": "active" } }).to_string()).unwrap();
-        let switch = |name: &str, cx: &mut gpui::VisualTestContext| {
-            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.switch", json!({ "name": name }), window, cx)));
-            cx.run_until_parked();
-        };
-        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.select", json!({ "stack": "panel-body", "child": "files" }), window, cx)));
-        switch("other", cx);
-        switch("test", cx);
-        assert_eq!(shown(cx).0, Some("files".to_string()), "once per run");
-
-        // A new run (another session) with none: the dock starts closed.
-        crate::mods::set_shared("yuzora.startup.applied".into(), json!("an earlier run"));
-        general("none");
-        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.show", json!({ "id": "panel" }), window, cx)));
-        assert!(!shown(cx).1);
-        switch("other", cx);
-        switch("test", cx);
-        assert!(shown(cx).1, "none: the panel is closed");
-    }
-
-    // yuzora(dock): PR-4 review r1 and acceptance fixes (S1, S2, S4, S5, panel left open).
-
-    /// The modes of the drawer's windows (key `yuzora-dock`) that are open.
-    fn dock_windows(this: &super::AppWindow) -> Vec<String> {
-        this.overlays
-            .iter()
-            .filter(|o| o.key.as_deref() == Some("yuzora-dock"))
-            .map(|o| {
-                let l = o.layout.as_ref().map(|n| serde_json::to_value(n).unwrap()).unwrap_or_default();
-                l["children"][0]["content"]["props"]["mode"].as_str().unwrap_or("?").to_owned()
-            })
-            .collect()
-    }
-
-    fn dock_window_spec(mode: &str) -> serde_json::Value {
-        serde_json::json!({ "kind": "window", "key": "yuzora-dock", "keep": true, "width": 380, "height": 0.85, "layout": { "id": "dock", "type": "column", "children": [
-            { "id": "head", "type": "block", "size": { "px": 34 }, "content": { "mod": "unused", "props": { "dock": "head", "mode": mode } } },
-            { "id": "body", "type": "block", "content": { "mod": "unused" } } ] } })
-    }
-
-    // S1: the drawer's window is the drawer's: once the layout shows no drawer (off, or auto with a panel),
-    // the window does not come back with a restart (or a switch back), and its keep is forgotten.
-    #[test]
-    fn the_drawers_window_does_not_outlive_the_drawer() {
-        in_own_process("dock_window_outlives_drawer");
-    }
-
-    #[gpui::test]
-    fn dock_window_outlives_drawer(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_window_outlives_drawer") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let choose = |w: &str| yuzora_core::settings::set_section(crate::yuzora::dock::SHELL, json!({ "dock": { "layouts": { "test": w } } })).unwrap();
-        choose("drawer");
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        let kept = || std::fs::read_to_string(super::file("windows.json")).unwrap_or_default().contains("\"yuzora-dock\"");
-        for next in ["off", "auto"] {
-            choose("drawer");
-            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.switch", json!({ "name": "test" }), window, cx)));
-            view.update(cx, |this, _| assert!(this.chrome.floating.iter().any(|f| f.id == "yuzora-dock"), "the drawer"));
-            cx.update(|window, cx| view.update(cx, |this, cx| this.open_overlay("o-dock".into(), dock_window_spec("git"), window, cx)));
-            assert!(kept(), "{next}: kept while the drawer shows");
-            choose(next);
-            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.switch", json!({ "name": "test" }), window, cx)));
-            // The app quits (windows go without a close) and starts again: the kept windows of the layout reopen.
-            cx.update(|window, cx| view.update(cx, |this, cx| {
-                this.remove_overlay("o-dock", window, cx);
-                this.open_kept_windows(window, cx);
-            }));
-            cx.run_until_parked();
-            assert_eq!(view.update(cx, |this, _| dock_windows(this)), Vec::<String>::new(), "{next}: no window");
-            assert!(!kept(), "{next}: not kept either");
-            // Auto with a panel: the bar and no drawer.
-            if next == "auto" {
-                view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some() && this.chrome.floating.iter().all(|f| f.id != "yuzora-dock")));
-            }
-        }
-        // A drawer that is there keeps its window.
-        choose("drawer");
-        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.switch", json!({ "name": "test" }), window, cx)));
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            this.open_overlay("o-dock".into(), dock_window_spec("git"), window, cx);
-            this.remove_overlay("o-dock", window, cx);
-            this.open_kept_windows(window, cx);
-        }));
-        cx.run_until_parked();
-        assert_eq!(view.update(cx, |this, _| dock_windows(this)), ["git"], "the drawer's window reopens with the drawer");
-    }
-
-    // S2: the layout file changes while the dock is off (or a drawer): the clicks on the dock are still there on its return.
-    #[test]
-    fn a_file_edit_while_the_dock_is_off_keeps_its_clicks() {
-        in_own_process("dock_edit_while_off");
-    }
-
-    #[gpui::test]
-    fn dock_edit_while_off(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_edit_while_off") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let choose = |w: &str| yuzora_core::settings::set_section(crate::yuzora::dock::SHELL, json!({ "dock": { "layouts": { "test": w } } })).unwrap();
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        let switch = |cx: &mut gpui::VisualTestContext| {
-            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.switch", json!({ "name": "test" }), window, cx)));
-            cx.run_until_parked();
-        };
-        cx.update(|window, cx| view.update(cx, |this, cx| {
-            this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx);
-            this.run("layout.show", json!({ "id": "panel" }), window, cx);
-            this.run("layout.hide", json!({ "id": "yuzora-dock-bar" }), window, cx);
-        }));
-        let before = view.update(cx, |this, _| dock_view(&this.chrome));
-        assert_eq!(before, (Some("yuzora-dock-git".to_string()), false, true));
-        for off in ["off", "drawer"] {
-            choose(off);
-            switch(cx);
-            let mut edited = panel_layout();
-            edited["children"].as_array_mut().unwrap().push(json!({ "id": format!("extra-{off}"), "type": "block", "content": { "mod": "unused" } }));
-            std::fs::write(super::layout_path("test"), edited.to_string()).unwrap();
-            cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
-            assert!(view.update(cx, |this, _| this.chrome.find("panel").unwrap().hidden), "{off}: the panel opened for the dock stays shut after the edit");
-            choose("auto");
-            switch(cx);
-            assert_eq!(view.update(cx, |this, _| dock_view(&this.chrome)), before, "{off}: the clicks survive an edit of the file meanwhile");
-            std::fs::write(super::layout_path("test"), panel_layout().to_string()).unwrap();
-            cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
-        }
-    }
-
-    // The person's own panel (the tab bar's Files / Changes button) opened while the dock is off or a drawer outlives a file edit and a reload.
-    #[test]
-    fn a_panel_the_person_opened_while_the_dock_is_hidden_stays_open() {
-        in_own_process("dock_own_panel_while_hidden");
-    }
-
-    #[gpui::test]
-    fn dock_own_panel_while_hidden(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_own_panel_while_hidden") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        std::fs::write(super::layout_path("other"), json!({ "id": "root", "type": "column", "children": [ { "id": "main", "type": "block", "content": { "tab": "active" } } ] }).to_string()).unwrap();
-        let choose = |w: &str| yuzora_core::settings::set_section(crate::yuzora::dock::SHELL, json!({ "dock": { "layouts": { "test": w } } })).unwrap();
-        let switch = |cx: &mut gpui::VisualTestContext, name: &str| {
-            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.switch", json!({ "name": name }), window, cx)));
-            cx.run_until_parked();
-        };
-        let panel = |cx: &mut gpui::VisualTestContext| {
-            view.update(cx, |this, _| {
-                let active = match &this.chrome.find("panel-body").unwrap().kind {
-                    crate::layout::Kind::Stack { active, .. } => active.clone(),
-                    _ => None,
-                };
-                (active, this.chrome.find("panel").unwrap().hidden)
-            })
-        };
-        for mode in ["off", "drawer"] {
-            for pick in ["files", "changes"] {
-                for how in ["edit", "reload"] {
-                    let at = format!("{mode}/{pick}/{how}");
-                    std::fs::write(super::layout_path("test"), panel_layout().to_string()).unwrap();
-                    cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
-                    choose("auto");
-                    switch(cx, "test");
-                    cx.update(|window, cx| view.update(cx, |this, cx| {
-                        this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx);
-                        this.run("layout.show", json!({ "id": "panel" }), window, cx);
-                    }));
-                    choose(mode);
-                    switch(cx, "test");
-                    assert!(panel(cx).1, "{at}: the dock's panel is shut while it is hidden");
-                    // The person's own click: the tab bar's button.
-                    cx.update(|window, cx| view.update(cx, |this, cx| {
-                        this.run("layout.select", json!({ "stack": "panel-body", "child": pick }), window, cx);
-                        this.run("layout.show", json!({ "id": "panel" }), window, cx);
-                        this.save();
-                    }));
-                    cx.run_until_parked();
-                    assert_eq!(panel(cx), (Some(pick.to_string()), false), "{at}: opened");
-                    if how == "edit" {
-                        let mut edited = panel_layout();
-                        edited["children"].as_array_mut().unwrap().push(json!({ "id": "extra", "type": "block", "content": { "mod": "unused" } }));
-                        std::fs::write(super::layout_path("test"), edited.to_string()).unwrap();
-                        cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
-                    } else {
-                        switch(cx, "other");
-                        switch(cx, "test");
-                    }
-                    cx.run_until_parked();
-                    assert_eq!(panel(cx), (Some(pick.to_string()), false), "{at}: still the person's panel after the {how}");
-                    choose("auto");
-                    switch(cx, "test");
-                    assert_eq!(panel(cx), (Some(pick.to_string()), false), "{at}: back to auto it shows what the person chose");
-                }
-            }
-        }
-    }
-
-    // S4: the drawer's startup mode ("When Yuzora opens"): the first drawer of a run opens that mode's window.
-    #[test]
-    fn the_first_drawer_of_a_run_opens_the_startup_mode() {
-        in_own_process("dock_startup_drawer");
-    }
-
-    #[gpui::test]
-    fn dock_startup_drawer(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_startup_drawer") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        yuzora_core::settings::set_section(yuzora_core::settings::GENERAL, json!({ "startup": { "dock": "git" } })).unwrap();
-        let home = crate::mods::app_dir();
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::write(home.join("windows.json"), json!({ "kept": { "test": { "yuzora-dock": dock_window_spec("files") } } }).to_string()).unwrap();
-        let layout = json!({ "id": "root", "type": "row", "children": [ { "id": "main", "type": "block", "content": { "tab": "active" } } ] });
-        let (view, cx) = open_window(cx, "yuzora-modebar", include_str!("../defaults/mods/yuzora-modebar/main.js"), layout);
-        cx.run_until_parked();
-        assert_eq!(view.update(cx, |this, _| dock_windows(this)), ["git"], "the startup mode's window replaced the kept one");
-    }
-
-    // S5: while the dock is off for a layout, `layout.set` of a shipped layout (the win98 desktop picker) is accepted,
-    // and one of a personal layout writes a file without the dock that a later save leaves alone.
-    #[test]
-    fn layout_set_while_the_dock_is_off_is_read_with_the_persons_choice() {
-        in_own_process("dock_set_while_off");
-    }
-
-    #[gpui::test]
-    fn dock_set_while_off(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_set_while_off") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        yuzora_core::settings::set_section(crate::yuzora::dock::SHELL, json!({ "dock": { "layouts": { "win98": "off", "test": "off" } } })).unwrap();
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        // Shipped (win98), as its desktop picker does it: layout() with another background.
-        view.update(cx, |this, _| this.load_layout("win98"));
-        let mut tree = view.update(cx, |this, _| serde_json::to_value(&this.chrome).unwrap());
-        tree["background"] = json!("teal");
-        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.set", json!({ "layout": tree }), window, cx)));
-        let painted = view.update(cx, |this, _| this.chrome.background == Some(crate::layout::Background::Color("teal".into())));
-        assert!(painted, "an off dock is no edit: the shipped layout's set is accepted");
-        // Personal: no dock in the tree (off), none in the file, and a save rewrites nothing.
-        view.update(cx, |this, _| this.load_layout("test"));
-        let mut tree = view.update(cx, |this, _| serde_json::to_value(&this.chrome).unwrap());
-        tree["children"].as_array_mut().unwrap().push(json!({ "id": "extra", "type": "block", "content": { "mod": "unused" } }));
-        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.set", json!({ "layout": tree }), window, cx)));
-        let written = layout_file();
-        assert!(written.contains("extra") && !written.contains("yuzora-dock"), "{written}");
-        // What was written reads back as the person's off shows it (the dock's own nodes are none of its tree). A save
-        // right after `layout.set` makes up for a wrong answer here, so this asks `as_read` itself.
-        let tree: crate::layout::Node = serde_json::from_str(&written).unwrap();
-        let read = crate::yuzora::dock::as_read(&tree, "test", None);
-        assert!(read.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")) && read.floating.is_empty(), "off for `test`: nothing of the dock");
-        assert!(crate::yuzora::dock::as_read(&tree, "another", None).find("yuzora-dock-bar").is_some(), "no choice for `another`: the dock");
-        view.update(cx, |this, _| this.save());
-        assert_eq!(layout_file(), written);
-        view.update(cx, |this, _| assert!(this.chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")) && this.file_chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock"))));
-    }
-
-    // The panel the dock opened is the dock's: off or a drawer, the layout's own Files panel does not show
-    // beside the drawer (in any order of the choices, in one run), and the dock's return finds it as it was.
-    #[test]
-    fn the_panel_the_dock_opened_closes_with_it() {
-        in_own_process("dock_panel_follows_choice");
-    }
-
-    #[gpui::test]
-    fn dock_panel_follows_choice(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_panel_follows_choice") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        let choose = |w: &str| yuzora_core::settings::set_section(crate::yuzora::dock::SHELL, json!({ "dock": { "layouts": { "test": w } } })).unwrap();
-        let switch = |cx: &mut gpui::VisualTestContext| {
-            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.switch", json!({ "name": "test" }), window, cx)));
-            cx.run_until_parked();
-        };
-        let panel_hidden = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.chrome.find("panel").unwrap().hidden);
-        let open_git = |cx: &mut gpui::VisualTestContext| {
-            cx.update(|window, cx| view.update(cx, |this, cx| {
-                this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx);
-                this.run("layout.show", json!({ "id": "panel" }), window, cx);
-            }));
-        };
-        for order in [vec!["off", "auto", "drawer"], vec!["off", "drawer"], vec!["drawer", "off", "auto"], vec!["drawer", "auto", "off", "drawer"]] {
-            choose("auto");
-            switch(cx);
-            open_git(cx);
-            for word in &order {
-                choose(word);
-                switch(cx);
-                let want_hidden = *word != "auto";
-                assert_eq!(panel_hidden(cx), want_hidden, "{order:?} at {word}");
-            }
-            // Back on auto: the panel is on Git as the person left it.
-            choose("auto");
-            switch(cx);
-            assert_eq!(view.update(cx, |this, _| dock_view(&this.chrome)), (Some("yuzora-dock-git".to_string()), false, false), "{order:?}: back");
-        }
-    }
-
-    // SF1: a layout.set that makes the dock be rebuilt (not kept as it came) keeps the file's own stack choice and the dock's click.
-    #[test]
-    fn a_rebuilt_dock_keeps_the_files_stack_choice() {
-        in_own_process("dock_rebuilt_keeps_choice");
-    }
-
-    #[gpui::test]
-    fn dock_rebuilt_keeps_choice(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_rebuilt_keeps_choice") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let mut layout = panel_layout();
-        layout["children"][1]["children"][0]["active"] = json!("changes");
-        let (view, cx) = open_window(cx, "unused", "", layout.clone());
-        let file_choice = || {
-            let n: crate::layout::Node = serde_json::from_str(&layout_file()).unwrap();
-            dock_choice(&n)
-        };
-        fn dock_choice(n: &crate::layout::Node) -> Option<String> {
-            match &n.find("panel-body").unwrap().kind {
-                crate::layout::Kind::Stack { active, .. } => active.clone(),
-                _ => None,
-            }
-        }
-        // (trigger, does the dock's Git click survive: the panel's dock nodes are still there)
-        type Edit = fn(&mut serde_json::Value);
-        let triggers: [(&str, Edit, bool); 3] = [
-            ("the row reversed", |t| t["children"].as_array_mut().unwrap().reverse(), true),
-            ("a dock node dropped", |t| t["children"][1]["children"][0]["children"].as_array_mut().unwrap().retain(|c| c["id"] != "yuzora-dock-ssh"), true),
-            ("opted into the drawer", |t| t["yuzora"] = json!({ "dock": "drawer" }), false),
-        ];
-        for (what, edit, click_kept) in triggers {
-            std::fs::write(super::layout_path("test"), layout.to_string()).unwrap();
-            let _ = std::fs::remove_file(super::state_path("test"));
-            view.update(cx, |this, _| this.load_layout("test"));
-            cx.update(|window, cx| view.update(cx, |this, cx| {
-                this.run("layout.select", json!({ "stack": "panel-body", "child": "yuzora-dock-git" }), window, cx);
-                let mut tree = serde_json::to_value(&this.chrome).unwrap();
-                edit(&mut tree);
-                this.run("layout.set", json!({ "layout": tree }), window, cx);
-                this.save();
-            }));
-            assert_eq!(file_choice().as_deref(), Some("changes"), "{what}: the file keeps its own choice");
-            assert!(!layout_file().contains("yuzora-dock"), "{what}");
-            let want = Some(if click_kept { "yuzora-dock-git" } else { "changes" }.to_string());
-            let shown = view.update(cx, |this, _| dock_choice(&this.chrome));
-            assert_eq!(shown, want, "{what}: shown");
-            let after = view.update(cx, |this, _| {
-                this.load_layout("test");
-                dock_choice(&this.chrome)
-            });
-            assert_eq!(after, want, "{what}: after a restart");
-        }
-    }
-
-    // B2: a layout the dock can't place by position (repeated ids), or a layout.set tree without ids, is no crash.
-    #[test]
-    fn dock_in_a_layout_with_repeated_ids_is_shown_not_a_crash() {
-        in_own_process("dock_repeated_ids");
-    }
-
-    #[gpui::test]
-    fn dock_repeated_ids(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_repeated_ids") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let layout = json!({ "id": "root", "type": "row", "children": [
-            { "id": "r", "type": "row", "children": [{ "id": "a", "type": "block", "content": { "tab": "active" } }] },
-            { "id": "c", "type": "column", "children": [{ "id": "r", "type": "row", "children": [
-                { "id": "main", "type": "block", "content": { "tab": "active" } },
-                { "id": "panel", "type": "column", "children": [{ "id": "panel-body", "type": "stack", "children": [] }] }] }] }] });
-        let (view, cx) = open_window(cx, "unused", "", layout);
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some()));
-        // layout.set on a personal layout with the tree gone without ids.
-        let bare = json!({ "type": "row", "children": [{ "type": "column", "children": [{ "type": "row", "children": [
-            { "id": "panel", "type": "column", "children": [{ "id": "panel-body", "type": "stack", "children": [] }] }] }] }] });
-        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.set", json!({ "layout": bare.clone() }), window, cx)));
-        view.update(cx, |this, _| assert!(this.chrome.find("yuzora-dock-bar").is_some()));
-        assert!(!layout_file().contains("yuzora-dock"));
-        // And on a shipped layout (win98's side: no ids, nothing to keep).
-        view.update(cx, |this, _| this.load_layout("main"));
-        cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.set", json!({ "layout": bare }), window, cx)));
-        view.update(cx, |this, _| assert!(this.chrome.find("main").is_some(), "still shows a layout"));
-    }
-
-    #[test]
-    fn layout_set_on_a_shipped_layout_accepts_the_dock() {
-        in_own_process("dock_layout_set_shipped");
-    }
-
-    /// win98's `setDesktop`: a mod sets the look on a shipped layout with the
-    /// tree it read from `layout()`, or one built without the dock.
-    #[gpui::test]
-    fn dock_layout_set_shipped(cx: &mut gpui::TestAppContext) {
-        use serde_json::json;
-        if !running_alone("dock_layout_set_shipped") {
-            return;
-        }
-        crate::yuzora::dock::force_for_tests();
-        let (view, cx) = open_window(cx, "unused", "", panel_layout());
-        view.update(cx, |this, _| this.load_layout("win98"));
-        let set = |tree: serde_json::Value, cx: &mut gpui::VisualTestContext| {
-            cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.set", json!({ "layout": tree }), window, cx)));
-        };
-        let painted = |color: &str, cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.chrome.background == Some(crate::layout::Background::Color(color.into())));
-        view.update(cx, |this, _| assert!(this.chrome.floating.iter().any(|f| f.id == "yuzora-dock")));
-        let mut with_dock = view.update(cx, |this, _| serde_json::to_value(&this.chrome).unwrap());
-        with_dock["background"] = json!("teal");
-        set(with_dock, cx);
-        assert!(painted("teal", cx), "the tree read from layout() is accepted");
-        let mut without = view.update(cx, |this, _| serde_json::to_value(crate::yuzora::dock::strip(&this.chrome, None)).unwrap());
-        without["background"] = json!("navy");
-        set(without, cx);
-        assert!(painted("navy", cx), "a tree built without the dock is accepted too");
-        view.update(cx, |this, _| assert!(this.chrome.floating.iter().any(|f| f.id == "yuzora-dock")));
-    }
-
-    /// The layout files are written in four places only; a new one (an upstream
-    /// change) fails here until someone decides whether the dock may reach it.
-    /// Matches the text of the code, not what it does: the tests above are the
-    /// guard of what it does.
-    #[test]
-    fn dock_guard_the_layout_file_is_written_from_known_places_only() {
-        let src = include_str!("window.rs");
-        let code = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
-        // keep_ids, layout.set (a person's layout), layout.reset (the shipped text).
-        assert_eq!(code.matches("write_atomic(&layout_path(").count(), 3, "a new layout file write: should the dock be stripped from it?");
-        // save: the edited tree, stripped.
-        assert_eq!(code.matches("write_atomic(&path, &layout)").count(), 1);
-        assert!(code.contains("text_of(&crate::yuzora::dock::strip(&edited, Some(&self.file_chrome)))"));
-        assert!(code.contains("text_of(&crate::yuzora::dock::strip(&n, Some(&self.file_chrome)))"));
-        // Every load injects after keep_ids; every other read of a file is a copy (clone_layout) or only looks (missing_mods).
-        assert_eq!(code.matches("crate::yuzora::dock::inject(").count(), 2);
-        assert_eq!(code.matches("crate::yuzora::dock::ensure(&mut n, &self.layout_name, Some(&self.file_chrome))").count(), 2);
-        // Every write of the clicks (save, and a file edit's) keeps the ones on a dock part that isn't shown; every apply of them skips the dock's panel click when the dock isn't in the panel.
-        assert_eq!(code.matches("crate::yuzora::dock::keep_clicks(&mut state, &read_state(&self.layout_name), &").count(), 2);
-        assert_eq!(code.matches("crate::yuzora::dock::without_panel_click(&state, &").count(), 2);
-        assert_eq!(code.matches("std::fs::read_to_string(layout_path(").count(), 4, "a new read of a layout file: should it inject?");
-        // The submodules of window never touch a layout file.
-        for (name, sub) in [
-            ("floats", include_str!("window/floats.rs")),
-            ("movable", include_str!("window/movable.rs")),
-            ("pane_drag", include_str!("window/pane_drag.rs")),
-            ("pane_size", include_str!("window/pane_size.rs")),
-            ("titlebar", include_str!("window/titlebar.rs")),
-        ] {
-            assert!(!sub.contains("layout_path(") && !sub.contains("\"layouts\""), "window/{name}.rs touches a layout file: should the dock be stripped/injected?");
-        }
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        let bounds = visual.debug_bounds("POPUP").expect("the popup body never laid out");
+        // The right edge sits exactly 8 px inside the window: SwitchAnchor alone
+        // would turn the anchor around and stop 220 px short (right at 770), so
+        // this range pins the margin, not just "somewhere inside". A pixel of
+        // rounding is allowed.
+        assert!(
+            bounds.right() >= gpui::px(780.) && bounds.right() <= gpui::px(793.),
+            "popup is not snapped to the right margin: right = {:?}",
+            bounds.right(),
+        );
+        assert!(
+            bounds.left() >= gpui::px(8.),
+            "popup lost its left margin: left = {:?}",
+            bounds.left(),
+        );
     }
 }

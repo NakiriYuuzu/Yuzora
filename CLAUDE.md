@@ -23,7 +23,8 @@ cargo test --locked                  # 全 workspace；單一 crate：cargo test
 scripts/yuzora/check-mods            # 在複本上對每個 yuzora-* mod 跑 herdr-app check
 scripts/yuzora/bundle-macos /tmp/yz  # 包成 /tmp/yz/Yuzora.app（本機用，非正式打包）
 scripts/yuzora/package               # 發布用安裝檔到 dist/（細節見 L7 補充）
-scripts/yuzora/sync-check            # subtree pull 之後的上游同步檢查（--quick 不跑 cargo test）
+scripts/yuzora/sync-pull v0.1.16     # 同步上游的一個 tag：subtree pull 加固定衝突的解法
+scripts/yuzora/sync-check            # 同步的 merge commit 之後的檢查（--quick 不跑 cargo test）
 ```
 
 上游 herdr-app 的其他工具（`scripts/sandbox`、`bun scripts/docs.ts check`、`justfile`）見 `app/AGENTS.md`。

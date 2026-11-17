@@ -1,6 +1,7 @@
 // Windows: a window app, but tests inherit Cargo's console for their child processes.
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
+mod badge;
 mod bench;
 mod commands;
 mod control;
@@ -16,7 +17,8 @@ mod mirror;
 mod mirror_sync;
 mod place;
 mod persist;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod macos;
 #[cfg(target_os = "macos")]
 mod macos_check;
@@ -53,7 +55,7 @@ Usage:
   herdr-app feedback <text>        draft feedback for the person to review and send
   herdr-app commands               every command, its arguments, what it does
   herdr-app status                 what the window shows, and any errors
-  herdr-app shot [file.png]        save the last window frame (default: herdr-shot.png)
+  herdr-app shot [file.png]        save the current window frame (default: herdr-shot.png)
   herdr-app check <mod folder>     load a mod once and report what's wrong
   herdr-app --skill                Agent Skill: driving the window, and where hc fits
   herdr-app --version
@@ -64,6 +66,12 @@ agents. The app shows them and arranges them in spaces and tabs.
 
 Home: ~/.config/yuzora (YUZORA_APP_HOME picks another).
 ";
+
+/// The folder tests put their scratch data in: `HERDR_TEST_TMPDIR` if set, else /var/tmp.
+#[cfg(test)]
+fn test_tmp() -> std::path::PathBuf {
+    std::env::var_os("HERDR_TEST_TMPDIR").map_or_else(|| "/var/tmp".into(), Into::into)
+}
 
 /// A Windows window app has no console: answers to `herdr-app ls` and the
 /// like go to the terminal it was started from. Output already piped (agents,
@@ -153,8 +161,8 @@ fn main() {
     core_bin::install_cli_link();
     #[cfg(target_os = "macos")]
     yuzora::release::install_cli_link(); // yuzora(L7): ~/.local/bin/yuzora for Yuzora.app
-    if core.is_ok() {
-        update::after_update();
+    if let Ok(core) = &core {
+        update::after_update(core.clone());
     }
     update::start();
     telemetry::start(settings::telemetry_setting(&person));
@@ -189,7 +197,7 @@ fn main() {
                 }
                 mods::finish_shared();
                 telemetry::quit();
-                update::apply();
+                let _ = update::apply();
                 async {}
             })
             .detach();

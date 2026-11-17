@@ -109,8 +109,8 @@ fn pane_replace_limits(cx: &mut gpui::TestAppContext) {
             let tab = this.model.tab("zoom").unwrap();
             assert_eq!(
                 (tab.zoomed.as_deref(), tab.focused.as_deref()),
-                (Some("d1"), Some(new.as_str())),
-                "zooming it again, which needs the pane's id too, leaves the focus under the zoom"
+                (Some("d1"), Some("d1")),
+                "zooming it again, which needs the pane's id too, gives it the focus (herdr-app v0.1.16: a zoom takes the keyboard)"
             );
         })
     });

@@ -1,10 +1,10 @@
 #!/bin/bash
-# yuzora(L9): the five checks after `git subtree pull --prefix=app …`
-# (docs/beta2/architecture.md, "上游同步流程"). Run from anywhere in the repo,
-# after the subtree merge is committed:
+# yuzora(L9): the six checks after `git subtree pull --prefix=app …`, which
+# scripts/yuzora/sync-pull runs (docs/beta2/architecture.md, "上游同步流程").
+# Run from anywhere in the repo, after the subtree merge is committed:
 #
-#   app/scripts/yuzora/sync-check            # all five, tests included
-#   app/scripts/yuzora/sync-check --quick    # 1–4, the URL scan and bun tests, no cargo
+#   app/scripts/yuzora/sync-check            # all six, tests included
+#   app/scripts/yuzora/sync-check --quick    # the same without cargo test and check-mods
 #
 # It compares three trees, all already in the repo (no network):
 #   OLD   the upstream tree of the previous squash commit (git-subtree-split)
@@ -137,6 +137,29 @@ else
   (cd app && bun test scripts) || fail "bun test scripts"
   app/scripts/yuzora/check-mods || fail "scripts/yuzora/check-mods"
 fi
+
+# --- 6. the files Yuzora keeps its own version of ------------------------------------
+# Written beside upstream's under another name, so a merge never conflicts on
+# them and nothing above sees upstream's side move on. Upstream's path, then
+# Yuzora's files that follow it.
+echo "6. upstream files Yuzora keeps its own version of"
+moved=0
+while read -r theirs ours; do
+  [[ -n $(git diff --name-only "$old" "$new" -- "$theirs") ]] || continue
+  moved=1
+  warn "upstream changed $theirs (git diff ${old:0:12} ${new:0:12} -- $theirs): does $ours need the same?"
+done <<'COPIES'
+.github/workflows/ci.yml .github/workflows/app-ci.yml
+.github/workflows/release.yml .github/workflows/app-package.yml, .github/workflows/app-release.yml
+scripts/package app/scripts/yuzora/package, app/distribution/yuzora/macos/Info.plist
+scripts/mac-dmg app/scripts/yuzora/mac-dmg
+distribution/macos/dmg app/scripts/yuzora/mac-dmg
+distribution/install.ps1 app/distribution/yuzora/windows/path.ps1, app/distribution/yuzora/windows/yuzora.nsi
+scripts/install-windows.ps1 app/distribution/yuzora/windows/yuzora.nsi
+distribution/install.sh app/distribution/yuzora/linux/install
+scripts/install-linux app/distribution/yuzora/linux/install
+COPIES
+[[ $moved == 0 ]] && ok "upstream changed none of them"
 
 echo
 if [[ $failed == 0 ]]; then echo "sync-check: all checks passed"; else echo "sync-check: some checks failed"; fi

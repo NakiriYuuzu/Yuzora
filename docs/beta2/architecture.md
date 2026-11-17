@@ -17,7 +17,8 @@ beta.2 改以 [herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)（Rust
 
 - 指令：`git subtree add --prefix=app https://github.com/herdrdev/herdr-app.git master --squash`。
 - 上游 commit：`9c678b0fc84625b57ba7be4f56319802ee366765`（herdr-app v0.1.12 之後的 master）。squash commit `32fd5c6f`、merge commit `b486feb0` 帶有 `git-subtree-dir: app`／`git-subtree-split` metadata。
-- 最近一次同步（v0.1.0）：上游 `a547b16c`，即正式 tag **v0.1.15**（`99508873`）加 tag 之後的兩個修正（squash `f618a292`、merge `21eba59d`；`distribution/core-version` 仍是 0.1.11、`hc::GENERATION` 仍是 1）。細節見 [herdr-compat.md](herdr-compat.md) 的 C1c。
+- 最近一次同步（2026-11-17）：上游正式 tag **v0.1.16**（`034f8b85`，squash `e6f62cac`；`distribution/core-version` 仍是 0.1.11、`hc::GENERATION` 仍是 1）。細節見 [herdr-compat.md](herdr-compat.md) 的 C1d。
+- 上一次同步（v0.1.0）：上游 `a547b16c`，即正式 tag **v0.1.15**（`99508873`）加 tag 之後的兩個修正（squash `f618a292`、merge `21eba59d`；`distribution/core-version` 仍是 0.1.11、`hc::GENERATION` 仍是 1）。細節見 [herdr-compat.md](herdr-compat.md) 的 C1c。
 - 上一次同步（beta.4）：上游正式 tag **v0.1.14**（`2405bf38`，`distribution/core-version` 仍是 0.1.11、`hc::GENERATION` 仍是 1）。squash commit `f33087e0`、merge commit `15b4426d`。之前停在 `f6fe216e`（v0.1.12 之後）。
 - ghostty 是上游的 submodule。subtree 只帶進 gitlink（`app/vendor/ghostty` → `291fd050b9e9c293c8adb6a140742649b7e42d3a`），所以 root `.gitmodules` 另外登記同一個 URL：
 
@@ -172,9 +173,14 @@ mod 在自己的 `mod.json` 宣告，不需要任何人去改共用清單：
 由總指揮或指定 session 在自己的分支執行，以 PR（merge commit）併入 `beta2/integration`：
 
 ```bash
-git subtree pull --prefix=app https://github.com/herdrdev/herdr-app.git master --squash
-git submodule update --init app/vendor/ghostty
+app/scripts/yuzora/sync-pull v0.1.16   # 上游的 tag；也可以給 branch 或 commit
 ```
+
+`sync-pull` 做三件事：
+
+- `git subtree pull --prefix=app https://github.com/herdrdev/herdr-app.git <ref> --squash`，再更新 ghostty submodule。
+- 解掉上游每次發版都會帶來的衝突（規則在 `app/scripts/yuzora/sync-resolve.ts`）：`app/Cargo.toml` 與 `app/Cargo.lock` 的套件版本保留 Yuzora 的、`app/CHANGELOG.md` 頂端把 Yuzora 的條目排在上游新條目之前、`app/THIRD-PARTY-NOTICES` 在裝有 cargo-about 0.9.3 時重產（見 lanes.md）。
+- 沒有其他衝突就完成 merge commit。還有衝突時結束碼是 3 並列出檔案：解完後 `git commit --no-edit`。
 
 同步後檢查：
 
@@ -183,8 +189,9 @@ git submodule update --init app/vendor/ghostty
 3. `app/.gitmodules` 與 root `.gitmodules` 的 ghostty URL 一致。
 4. `app/Cargo.lock` 有變動時，重產 `app/THIRD-PARTY-NOTICES`（見 lanes.md）。
 5. 跑完整的 app 測試（`cargo test --locked`、`bun test scripts`，後者含守護 L2c 信任閘門的 `yuzora-trust-mods.test.ts`）與 `scripts/yuzora/check-mods`。上游新增的 telemetry、feedback、更新等外連端點要補上 D3 的開關。
+6. Yuzora 另寫一份的檔（`app-ci.yml`、`app-package.yml`、`app/scripts/yuzora/package`、`app/distribution/yuzora/*` 等）：上游對應的檔有變動時，merge 不會衝突，要自己對照。對照表在 `sync-check` 裡。
 
-subtree pull commit 之後執行 `app/scripts/yuzora/sync-check`，會依序做上面五項，並擋下只用 `HERDR_APP_HOME` 隔離的測試。加 `--quick` 不跑 cargo test 與 check-mods（bun 測試只要約 2 秒，仍會跑）。說明見 [herdr-compat.md](herdr-compat.md) C2。
+merge commit 之後執行 `app/scripts/yuzora/sync-check`，會依序做上面六項，並擋下只用 `HERDR_APP_HOME` 隔離的測試。加 `--quick` 不跑 cargo test 與 check-mods（bun 測試只要約 2 秒，仍會跑）。說明見 [herdr-compat.md](herdr-compat.md) C2。
 
 ## 合併規則
 

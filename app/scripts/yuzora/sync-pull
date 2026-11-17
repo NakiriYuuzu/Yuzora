@@ -1,0 +1,79 @@
+#!/bin/bash
+# yuzora(L9): one herdr-app release into app/ (docs/beta2/architecture.md, "上游同步流程").
+# Run on a branch of your own, with nothing uncommitted:
+#
+#   app/scripts/yuzora/sync-pull v0.1.16      # a tag; a branch or commit of upstream works too
+#
+# It runs the subtree pull, then answers the conflicts every release brings
+# (sync-resolve.ts): the package version in Cargo.toml and Cargo.lock, the top of
+# CHANGELOG.md, and THIRD-PARTY-NOTICES, which it writes again when cargo-about
+# 0.9.3 is there (CARGO_ABOUT, as in lanes.md). The merge is committed only when
+# nothing is left in conflict.
+#
+# Exit status: 0 the merge is committed (or app/ is already there); 3 conflicts
+# are left: resolve them, `git commit --no-edit`, then run sync-check; 2 it
+# could not start. SYNC_URL names another upstream.
+set -euo pipefail
+
+ref=${1:?usage: sync-pull <upstream tag, branch or commit>}
+url=${SYNC_URL:-https://github.com/herdrdev/herdr-app.git}
+cd "$(git rev-parse --show-toplevel)"
+[[ -z $(git status --porcelain --untracked-files=no) ]] || { echo "sync-pull: commit or stash your changes first" >&2; exit 2; }
+
+before=$(git rev-parse HEAD)
+if ! git subtree pull --prefix=app "$url" "$ref" --squash -m "Merge herdr-app $ref into app/"; then
+  git rev-parse -q --verify MERGE_HEAD >/dev/null || { echo "sync-pull: the subtree pull failed before the merge" >&2; exit 2; }
+fi
+merging() { git rev-parse -q --verify MERGE_HEAD >/dev/null; }
+if ! merging && [[ $(git rev-parse HEAD) == "$before" ]]; then echo "sync-pull: app/ already has $ref"; exit 0; fi
+conflicted() { git diff --name-only --diff-filter=U -- "$@"; }
+
+if merging; then
+  for f in Cargo.toml Cargo.lock CHANGELOG.md THIRD-PARTY-NOTICES; do
+    [[ -n $(conflicted "app/$f") ]] || continue
+    if bun app/scripts/yuzora/sync-resolve.ts "$f" "app/$f"; then
+      git add "app/$f"
+      echo "sync-pull: app/$f resolved"
+    else
+      echo "sync-pull: app/$f has a conflict that is not one of the usual ones"
+    fi
+  done
+fi
+
+git submodule update --init app/vendor/ghostty
+
+# Cargo.lock follows the merged manifests, and the notices follow the lock. Both
+# need every manifest free of conflicts, so a conflict in one waits for a person.
+unsettled=""
+if [[ -n $(conflicted 'app/*Cargo.toml' app/Cargo.lock) ]]; then
+  unsettled="a Cargo manifest is in conflict: Cargo.lock and THIRD-PARTY-NOTICES are not written again"
+elif ! (cd app && cargo metadata --format-version 1 >/dev/null); then
+  unsettled="cargo could not settle app/Cargo.lock"
+else
+  about=${CARGO_ABOUT:-cargo-about}
+  if [[ $("$about" --version 2>/dev/null) != "cargo-about 0.9.3" ]]; then
+    git diff --quiet "$before" -- app/Cargo.lock || echo "sync-pull: Cargo.lock changed and cargo-about 0.9.3 is not installed: write app/THIRD-PARTY-NOTICES again (lanes.md), or tests/notices.rs fails"
+  elif ! (cd app && CARGO_ABOUT=$about bun scripts/notices.ts); then
+    unsettled="scripts/notices.ts could not write app/THIRD-PARTY-NOTICES"
+  fi
+  if merging; then
+    git add app/Cargo.lock app/THIRD-PARTY-NOTICES
+  elif ! git diff --quiet -- app/Cargo.lock app/THIRD-PARTY-NOTICES; then
+    echo "sync-pull: the merge had no conflict and is committed; app/Cargo.lock or app/THIRD-PARTY-NOTICES changed after it and is yours to commit"
+  fi
+fi
+
+if merging; then
+  left=$(conflicted)
+  if [[ -n $left || -n $unsettled ]]; then
+    [[ -z $unsettled ]] || echo "sync-pull: $unsettled"
+    [[ -z $left ]] || { echo "sync-pull: in conflict, for you:"; sed 's/^/  /' <<<"$left"; }
+    echo "then: git commit --no-edit && app/scripts/yuzora/sync-check"
+    exit 3
+  fi
+  git commit --no-edit
+elif [[ -n $unsettled ]]; then
+  echo "sync-pull: $unsettled"
+  exit 3
+fi
+echo "sync-pull: merged $ref; next: app/scripts/yuzora/sync-check"
