@@ -1361,8 +1361,395 @@ mod tests {
                 let _ = strip(&b, None);
                 let _ = as_read_with(&a, Some(&node), on, personal);
             }
+            // I1 on any tree: reserved ids at any depth, holding anything; and on the shown tree wrapped in a row with a
+            // block beside it, as a mod or a dock does. I2: ensure keeps what shows on every node it keeps.
+            let ctx = |what: &str| format!("{what}: seed 0x2545_F491_4F6C_DD1D, tree {}", shown(&node));
+            if let Err(e) = holds_i1(&node, &strip(&node, None)) {
+                panic!("{}: {e}", ctx("I1"));
+            }
+            let mut wrapped = once.clone();
+            wrap(&mut wrapped, Axis::Row);
+            if let Err(e) = holds_i1(&wrapped, &strip(&wrapped, None)) {
+                panic!("{}: {e}", ctx("I1, wrapped"));
+            }
+            let mut ensured = node.clone();
+            ensure_with(&mut ensured, true, None, None, None);
+            if let Err(e) = holds_i2(&node, &ensured) {
+                panic!("{}: {e}", ctx("I2"));
+            }
         }
         assert!(parsed > 1000, "the generator makes trees: {parsed}");
         assert!(checked > 200 && panels > 50 && bars > 20, "the invariants run on a good share of them, panels and status bars too: {checked} checked, {panels} panels, {bars} status bars");
+    }
+
+    // The three invariants, as properties over trees.
+    // I1: `strip` never deletes a node a person or a mod owns. Every node without a reserved id in a tree is in what
+    //     `strip` gives back, with its fields; a block's content is never lost, a body's included.
+    // I2: whatever places or re-places the chip never loses a click. A node with the same id before and after keeps
+    //     its hidden flag, its size where it means the same, a stack its child, the drawer its edge and alignment.
+    // I3: the tree shown and the app's copy of the file are placed by one rule from the file's sizes, after a load, a
+    //     set, an app edit and a save: the two differ only by clicks, and a restart shows what the window showed.
+
+    /// How `beside` leaves the node it wraps: what it moved into the body, gone; `resizable: false`.
+    fn beside_left(x: &Node) -> bool {
+        (x.gap, &x.divider, x.resizable, x.window_drag) == (None, &None, Some(false), false)
+    }
+
+    /// `x`'s own fields: everything but what it holds, what `beside` moves, and the dock's floats.
+    fn own_fields(x: &Node) -> serde_json::Map<String, Value> {
+        let mut v = serde_json::to_value(x).unwrap();
+        let o = v.as_object_mut().unwrap();
+        for k in ["type", "children", "content", "active", "header", "gap", "divider", "resizable", "window_drag", "floating"] {
+            o.remove(k);
+        }
+        let floats: Vec<&Float> = x.floating.iter().filter(|f| !reserved(&f.id)).collect();
+        if !floats.is_empty() {
+            o.insert("floating".into(), json!(floats));
+        }
+        std::mem::take(o)
+    }
+
+    /// I1 for `s`, what `strip` gave back for `t`.
+    fn holds_i1(t: &Node, s: &Node) -> Result<(), String> {
+        let left: Vec<&str> = s
+            .walk()
+            .into_iter()
+            .flat_map(|x| {
+                let active = match &x.kind {
+                    Kind::Stack { active: Some(a), .. } => Some(a.as_str()),
+                    _ => None,
+                };
+                std::iter::once(x.id.as_str()).chain(active).chain(x.floating.iter().map(|f| f.id.as_str()))
+            })
+            .filter(|id| reserved(id))
+            .collect();
+        if !left.is_empty() {
+            return Err(format!("reserved ids are left: {left:?}"));
+        }
+        let count = |n: &Node, id: &str| n.walk().iter().filter(|x| x.id == id).count();
+        let shape = |n: &Node| {
+            let v = serde_json::to_value(n).unwrap();
+            ["type", "content", "gap", "divider", "resizable", "window_drag"].map(|k| v.get(k).cloned())
+        };
+        for x in t.walk().into_iter().filter(|x| !reserved(&x.id)) {
+            if count(s, &x.id) < count(t, &x.id) {
+                return Err(format!("{:?} is deleted", x.id));
+            }
+            if x.id.is_empty() || count(t, &x.id) > 1 {
+                continue;
+            }
+            let y = s.find(&x.id).unwrap();
+            let kept = own_fields(y);
+            if let Some((k, v)) = own_fields(x).into_iter().find(|(k, v)| kept.get(k) != Some(v)) {
+                return Err(format!("{:?} lost its {k} {v}", x.id));
+            }
+            // Only a node `beside` left may change what it is and how it lays out its children (it gets its body back).
+            if !beside_left(x) && shape(x) != shape(y) {
+                return Err(format!("{:?} changed from {:?} to {:?}", x.id, shape(x), shape(y)));
+            }
+        }
+        let contents = |n: &Node, all: bool| -> Vec<String> {
+            let theirs = |x: &&&Node| all || !reserved(&x.id) || x.id == BODY || x.id == ROOT;
+            n.walk().iter().filter(theirs).filter_map(|x| x.content()).map(|c| serde_json::to_string(c).unwrap()).collect()
+        };
+        let mut have = contents(s, true);
+        for c in contents(t, false) {
+            let Some(i) = have.iter().position(|h| *h == c) else { return Err(format!("the content {c} is lost")) };
+            have.swap_remove(i);
+        }
+        Ok(())
+    }
+
+    /// The axis of the node that holds `id` (none for a stack's child), or none when `id` is the root or not there.
+    fn laid_out_along(n: &Node, id: &str) -> Option<Option<Axis>> {
+        n.children().iter().find_map(|c| if c.id == id { Some(n.axis()) } else { laid_out_along(c, id) })
+    }
+
+    /// I2 for `after`, `before` placed again: each node and float with an id `before` and `after` have once. A size
+    /// is a width in a row and a height in a column: it is kept where the node is laid out along the same axis.
+    fn holds_i2(before: &Node, after: &Node) -> Result<(), String> {
+        let once = |n: &Node, id: &str| n.walk().iter().filter(|x| x.id == id).count() == 1;
+        for x in before.walk().into_iter().filter(|x| !x.id.is_empty() && once(before, &x.id) && once(after, &x.id)) {
+            let y = after.find(&x.id).unwrap();
+            if y.hidden != x.hidden {
+                return Err(format!("{:?} was hidden {}, is {}", x.id, x.hidden, y.hidden));
+            }
+            if laid_out_along(before, &x.id) == laid_out_along(after, &x.id) && y.size != x.size {
+                return Err(format!("{:?} was {:?}, is {:?}", x.id, x.size, y.size));
+            }
+            if let (Kind::Stack { active: Some(a), .. }, Kind::Stack { active: b, .. }) = (&x.kind, &y.kind)
+                && y.children().iter().any(|c| c.id == *a)
+                && b.as_ref() != Some(a)
+            {
+                return Err(format!("{:?} showed {a}, shows {b:?}", x.id));
+            }
+        }
+        let after_floats = floats(after);
+        for f in floats(before) {
+            if let Some(g) = after_floats.iter().find(|g| g.id == f.id)
+                && (g.edge, g.align, g.hidden) != (f.edge, f.align, f.hidden)
+            {
+                return Err(format!("the float {:?} moved from {:?} {:?} to {:?} {:?}", f.id, f.edge, f.align, g.edge, g.align));
+            }
+        }
+        Ok(())
+    }
+
+    /// A window over a person's layout, as `window.rs` keeps it: the tree shown, the app's copy of the file
+    /// (`file_chrome`), and the file.
+    struct Window {
+        chrome: Node,
+        copy: Node,
+        file: Node,
+        personal: Option<Choice>,
+    }
+
+    impl Window {
+        fn load(file: &Node, personal: Option<Choice>) -> Window {
+            let mut chrome = file.clone();
+            inject_with(&mut chrome, true, personal);
+            Window { copy: chrome.clone(), chrome, file: file.clone(), personal }
+        }
+
+        /// A mod's `layout.set` on a person's layout: the file becomes the tree, the clicks start over.
+        fn set(&mut self, mut n: Node) -> Result<(), String> {
+            holds_i1(&n, &strip(&n, Some(&self.copy))).map_err(|e| format!("I1 on the tree sent: {e}"))?;
+            let sent = n.clone();
+            ensure_with(&mut n, true, self.personal, Some(&self.copy), None);
+            holds_i2(&sent, &n).map_err(|e| format!("I2 on the set: {e}"))?;
+            self.file = strip(&n, Some(&self.copy));
+            holds_i1(&n, &self.file).map_err(|e| format!("I1 on the file written: {e}"))?;
+            self.copy = as_read_with(&n, Some(&self.copy), true, self.personal);
+            self.chrome = n;
+            Ok(())
+        }
+
+        /// `save()`: an edit (anything but a click) to the file, the clicks to `.state`.
+        fn save(&mut self) -> Result<State, String> {
+            let edited = without_clicks(&self.copy, &self.chrome);
+            if edited != self.copy {
+                self.file = strip(&edited, Some(&self.copy));
+                holds_i1(&edited, &self.file).map_err(|e| format!("I1 on the file saved: {e}"))?;
+                self.copy = as_read_with(&edited, Some(&self.copy), true, self.personal);
+            }
+            if without_clicks(&self.copy, &self.chrome) != self.copy {
+                return Err("I3: the window and the app's copy of the file differ by more than clicks".into());
+            }
+            Ok(State::between(&self.copy, &self.chrome))
+        }
+
+        /// A restart: the file read and placed, the saved clicks put on it.
+        fn restart(&self, state: &State) -> Node {
+            let mut shown: Node = serde_json::from_str(&text_of(&self.file)).unwrap();
+            inject_with(&mut shown, true, self.personal);
+            let mut saved = state.clone();
+            saved.file = serde_json::to_value(&self.copy).ok();
+            saved.forget_since_saved(&shown);
+            without_panel_click(&saved, &shown).apply(&mut shown);
+            shown
+        }
+    }
+
+    fn merge(v: &mut Value, with: Value) {
+        for (k, x) in with.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+    }
+
+    /// The person's layouts the properties run on: a root of each type, with no status bar or one on either side of
+    /// 32px, the fields `beside` moves set on the bar or on the root, and reserved ids the person wrote.
+    fn person_layouts() -> Vec<(String, Node)> {
+        let tab = json!({ "id": "main", "type": "block", "content": { "tab": "active" } });
+        let side = json!({ "id": "side", "type": "block", "size": { "px": 200 }, "content": { "mod": "side" } });
+        let panel = json!({ "id": "panel", "type": "column", "hidden": true, "size": { "px": 368 }, "children": [
+            { "id": "panel-body", "type": "stack", "active": "files", "children": [
+                { "id": "files", "type": "block", "content": { "mod": "files" } },
+                { "id": "changes", "type": "block", "content": { "mod": "changes" } }] }] });
+        let moved = |resizable: bool| json!({ "gap": 3, "divider": { "width": 1, "color": "border" }, "resizable": resizable, "window_drag": true });
+        let mut out = Vec::new();
+        for px in [None, Some(32), Some(33)] {
+            for fields_on in ["nothing", "the bar", "the root"] {
+                let mut bar = px.map(|px| json!({ "id": "status", "type": "block", "size": { "px": px }, "content": { "mod": "status" } }));
+                match (fields_on, bar.as_mut()) {
+                    ("the bar", Some(bar)) => merge(bar, moved(true)),
+                    ("the bar", None) => continue,
+                    _ => {}
+                }
+                let held: Vec<Value> = [tab.clone()].into_iter().chain(bar.clone()).collect();
+                let column = |id: &str| json!({ "id": id, "type": "column", "children": held.clone() });
+                let mut roots = vec![
+                    ("column", column("root")),
+                    ("row", json!({ "id": "root", "type": "row", "children": [side.clone(), column("work")] })),
+                    ("row with a panel", json!({ "id": "root", "type": "row", "children": [column("work"), panel.clone()] })),
+                    ("stack", json!({ "id": "root", "type": "stack", "active": "work", "children": [column("work"), side.clone()] })),
+                ];
+                if px.is_none() {
+                    roots.push(("block", json!({ "id": "root", "type": "block", "content": { "tab": "active" } })));
+                }
+                for (root_kind, mut root) in roots {
+                    merge(&mut root, json!({ "titlebar": "none", "traffic_lights": [12, 16], "background": "canvas" }));
+                    if fields_on == "the root" {
+                        merge(&mut root, moved(false));
+                    }
+                    out.push((format!("{root_kind} root, status bar {px:?}, beside's fields on {fields_on}"), serde_json::from_value(root).unwrap()));
+                }
+            }
+        }
+        // Reserved ids a person wrote: the root named like the chip's, the column holding the tab and the status bar
+        // named like the dock's.
+        let reserved_named = [
+            json!({ "id": "yuzora-dock-root", "type": "row", "children": [side.clone(), { "id": "work", "type": "column", "children": [tab.clone()] }] }),
+            json!({ "id": "yuzora-dock-root", "type": "column", "padding": [6, 6], "children": [tab.clone()] }),
+            json!({ "id": "root", "type": "row", "children": [side.clone(), { "id": "yuzora-dock-work", "type": "column", "children": [tab.clone(),
+                { "id": "status", "type": "block", "size": { "px": 28 }, "content": { "mod": "status" } }] }] }),
+            json!({ "id": "root", "type": "column", "children": [tab.clone(), { "id": "yuzora-dock-body", "type": "block", "size": { "px": 28 }, "content": { "mod": "status" } }] }),
+        ];
+        out.extend(reserved_named.into_iter().map(|root| (format!("reserved ids in {root}"), serde_json::from_value(root).unwrap())));
+        out
+    }
+
+    fn added() -> Node {
+        let mut b = Node::block("added", Content::Mod { name: "added".into(), props: Value::Null });
+        b.size = Some(Size::Px { px: 300.0 });
+        b
+    }
+
+    fn wrap(n: &mut Node, axis: Axis) {
+        let inner = std::mem::replace(n, Node::new("", Kind::Row { children: Vec::new() }));
+        *n = Node::container("wrap", axis, vec![inner, added()]);
+    }
+
+    fn path_of(n: &Node, id: &str) -> Option<Vec<usize>> {
+        if n.id == id {
+            return Some(Vec::new());
+        }
+        n.children().iter().enumerate().find_map(|(i, c)| path_of(c, id).map(|p| [vec![i], p].concat()))
+    }
+
+    /// What holds the chip: the status bar, the root, a column root.
+    fn chip_holder(n: &mut Node) -> Option<&mut Node> {
+        let at = path_of(n, PERF)?;
+        node_at_mut(n, &at[..at.len() - 1])
+    }
+
+    /// What a mod's `layout.set` does to the tree it read from `layout()`, and the same change to the person's file
+    /// where the file has what it changes.
+    type Change = fn(&mut Node);
+
+    fn nothing(_: &mut Node) {}
+
+    fn in_a_row(n: &mut Node) {
+        wrap(n, Axis::Row);
+    }
+
+    fn in_a_column(n: &mut Node) {
+        wrap(n, Axis::Column);
+    }
+
+    /// The node the chip wraps (a status bar's body, what a root showed) in a row of its own, or the chip itself.
+    fn placed_in_a_row(n: &mut Node) {
+        let at = path_of(n, BODY).or_else(|| path_of(n, ROOT).map(|_| vec![0])).or_else(|| path_of(n, PERF));
+        if let Some(x) = at.and_then(|at| node_at_mut(n, &at)) {
+            let inner = std::mem::replace(x, Node::new("", Kind::Row { children: Vec::new() }));
+            *x = Node::container("wrap", Axis::Row, vec![inner]);
+        }
+    }
+
+    fn added_beside_the_chip(n: &mut Node) {
+        if let Some(c) = chip_holder(n).and_then(Node::children_mut) {
+            c.push(added());
+        }
+    }
+
+    fn status_bar_above_the_tab(n: &mut Node) {
+        if let Some(at) = path_of(n, "status")
+            && let Some((last, up)) = at.split_last()
+            && let Some(c) = node_at_mut(n, up).and_then(Node::children_mut)
+        {
+            let bar = c.remove(*last);
+            c.insert(0, bar);
+        }
+    }
+
+    fn resizable_on_the_chips_holder(n: &mut Node) {
+        if let Some(x) = chip_holder(n) {
+            x.resizable = Some(true);
+        }
+    }
+
+    const SETS: [(&str, Change, Option<Change>); 7] = [
+        ("nothing", nothing, Some(nothing)),
+        ("the root wrapped in a row", in_a_row, Some(in_a_row)),
+        ("the root wrapped in a column", in_a_column, Some(in_a_column)),
+        ("the placed node wrapped", placed_in_a_row, None),
+        ("a node added beside the chip", added_beside_the_chip, None),
+        ("the status bar moved above the tab", status_bar_above_the_tab, Some(status_bar_above_the_tab)),
+        ("resizable set on what holds the chip", resizable_on_the_chips_holder, None),
+    ];
+
+    /// What a person does first: hides the dock's bar, shows Git in the panel, drags the drawer to the left edge,
+    /// widens their side bar.
+    fn person_clicks(chrome: &mut Node) -> State {
+        let before = chrome.clone();
+        if let Some(bar) = chrome.find_mut("yuzora-dock-bar") {
+            bar.hidden = true;
+        }
+        chrome.select("panel-body", "yuzora-dock-git");
+        if let Some(f) = chrome.find_float_mut(PREFIX) {
+            (f.edge, f.align) = (Edge::Left, Align::End);
+        }
+        if let Some(side) = chrome.find_mut("side") {
+            side.size = Some(Size::Px { px: 260.0 });
+        }
+        State::between(&before, chrome)
+    }
+
+    /// A person's layout loaded, clicked, then a mod's `layout.set` of what it read with one change, then a save and
+    /// a restart.
+    fn after_a_set(file: &Node, personal: Option<Choice>, change: Change, on_file: Option<Change>) -> Result<(), String> {
+        let mut w = Window::load(file, personal);
+        holds_i1(&w.chrome, &strip(&w.chrome, None)).map_err(|e| format!("I1 on the tree shown: {e}"))?;
+        let clicks = person_clicks(&mut w.chrome);
+        let mut sent = w.chrome.clone();
+        change(&mut sent);
+        w.set(sent)?;
+        let state = w.save()?;
+        // The person's own clicks went into the file with the tree; the ones on the dock stay clicks; none is made up.
+        let dock = |(id, c): &(&String, &crate::layout_sync::NodeState)| reserved(id) || c.active.as_deref().is_some_and(reserved);
+        let want = State { nodes: clicks.nodes.iter().filter(dock).map(|(id, c)| (id.clone(), c.clone())).collect(), floats: clicks.floats.clone(), ..State::default() };
+        if state != want {
+            return Err(format!("I2: the clicks are {state:?}, not {want:?}"));
+        }
+        if w.restart(&state) != w.chrome {
+            return Err("I3: a restart shows another tree than the window".into());
+        }
+        if let Some(on_file) = on_file
+            && reserved_ids(file).is_empty()
+        {
+            let mut person = file.clone();
+            person_clicks(&mut person);
+            on_file(&mut person);
+            if w.file != person {
+                return Err(format!("the file is\n{}not\n{}", text_of(&w.file), text_of(&person)));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_mods_set_on_any_layout_holds_the_three_invariants() {
+        let (mut runs, mut failures) = (0, Vec::new());
+        for (layout, file) in person_layouts() {
+            for personal in [None, Some(Choice::Drawer), Some(Choice::Off)] {
+                for (what, change, on_file) in SETS {
+                    runs += 1;
+                    if let Err(e) = after_a_set(&file, personal, change, on_file) {
+                        failures.push(format!("{layout}, dock {personal:?}, {what}: {e}"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{} of {runs} fail:\n{}", failures.len(), failures.join("\n"));
+        assert_eq!(runs, 798, "38 layouts, 3 dock choices, 7 changes");
     }
 }

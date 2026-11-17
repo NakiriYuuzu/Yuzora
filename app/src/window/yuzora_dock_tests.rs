@@ -896,6 +896,155 @@ fn perf_chip_set_tall(cx: &mut gpui::TestAppContext) {
     assert!(shown.find("status").unwrap().content().is_some(), "the status bar is a block again");
 }
 
+/// A person's layout whose chip goes under the whole window: a row root, and a 40px bar under the tab (no status bar).
+fn chip_under_the_root() -> serde_json::Value {
+    serde_json::json!({ "id": "root", "type": "row", "titlebar": "none", "traffic_lights": [12, 16], "background": "canvas", "children": [
+        { "id": "side", "type": "block", "size": { "px": 200 }, "content": { "mod": "unused" } },
+        { "id": "work", "type": "column", "children": [
+            { "id": "main", "type": "block", "content": { "tab": "active" } },
+            { "id": "status", "type": "block", "size": { "px": 40 }, "content": { "mod": "unused" } }] }] })
+}
+
+/// A mod folder in the app home, as `app/defaults/AGENTS.md` tells an agent to write one.
+fn install_mod(name: &str, hint: serde_json::Value) {
+    let folder = crate::mods::app_dir().join("mods").join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("mod.json"), hint.to_string()).unwrap();
+    std::fs::write(folder.join("main.js"), "").unwrap();
+}
+
+fn no_dock_click() -> bool {
+    let state = super::read_state("test");
+    state.nodes.keys().chain(state.floats.keys()).all(|id| !id.starts_with("yuzora-dock"))
+}
+
+/// A mod seen for the first time is docked (`sync_folders`), then a save and a restart. The file is what `main`
+/// writes: the person's layout with the mod's block, docked as `dock()` docks it on that layout; the window keeps the
+/// root's look, saves no click and shows after a restart what it showed.
+fn perf_chip_after_a_dock(cx: &mut gpui::TestAppContext, layout: serde_json::Value, hint: serde_json::Value, docked: fn(&mut crate::layout::Node, crate::layout::Node)) -> crate::layout::Node {
+    use crate::layout::{Content, Node};
+    crate::yuzora::dock::force_for_tests();
+    let (view, cx) = open_window(cx, "unused", "", layout.clone());
+    install_mod("fresh", hint);
+    view.update_in(cx, |this, window, cx| {
+        this.sync_folders(window, cx);
+        this.save();
+    });
+    let written: Node = serde_json::from_str(&layout_file()).unwrap();
+    let block = written.walk().into_iter().find(|n| matches!(n.content(), Some(Content::Mod { name, .. }) if name == "fresh")).cloned().expect("the mod is in the file");
+    let mut want: Node = serde_json::from_value(layout).unwrap();
+    docked(&mut want, block);
+    assert_eq!(written, want, "the person's layout, the mod's block docked on it");
+    let shown = view.update(cx, |this, _| this.chrome.clone());
+    assert_eq!((shown.titlebar, &shown.background), (want.titlebar, &want.background), "the window keeps the root's look");
+    assert!(no_dock_click(), "{:?}", super::read_state("test"));
+    view.update(cx, |this, _| this.load_layout("test"));
+    view.update(cx, |this, _| assert_eq!(this.chrome, shown, "a restart shows what showed"));
+    shown
+}
+
+// B1: a mod placed right on a person's row root that the chip wraps: `dock()` pushes it into the row, as on `main`.
+#[test]
+fn a_mod_docked_beside_a_root_the_chip_wraps_keeps_the_layout() {
+    in_own_process("perf_chip_dock_right");
+}
+
+#[gpui::test]
+fn perf_chip_dock_right(cx: &mut gpui::TestAppContext) {
+    if !running_alone("perf_chip_dock_right") {
+        return;
+    }
+    let shown = perf_chip_after_a_dock(cx, chip_under_the_root(), serde_json::json!({ "place": "right" }), |n, block| n.children_mut().unwrap().push(block));
+    assert_eq!((shown.id.as_str(), shown.children()[0].id.as_str()), ("yuzora-dock-root", "root"), "the chip is under the whole window");
+}
+
+// S1: a 24px mod placed at the bottom of a person's column root is a status bar: the chip moves beside it at once.
+#[test]
+fn a_mod_docked_as_a_status_bar_moves_the_chip_beside_it_and_saves_no_click() {
+    in_own_process("perf_chip_dock_bar");
+}
+
+#[gpui::test]
+fn perf_chip_dock_bar(cx: &mut gpui::TestAppContext) {
+    if !running_alone("perf_chip_dock_bar") {
+        return;
+    }
+    let layout = serde_json::json!({ "id": "root", "type": "column", "children": [
+        { "id": "tabs", "type": "block", "size": { "px": 38 }, "content": { "mod": "unused" } },
+        { "id": "main", "type": "block", "content": { "tab": "active" } }] });
+    let shown = perf_chip_after_a_dock(cx, layout, serde_json::json!({ "place": "bottom", "size": 24 }), |n, block| n.children_mut().unwrap().push(block));
+    let bar = shown.children().last().unwrap();
+    assert_eq!((bar.children().len(), bar.children().last().map(|c| c.id.as_str())), (2, Some("yuzora-dock-perf")), "beside the new bar");
+}
+
+// B1: a mod wraps what it read from layout() in a row and sets it back on a person's layout whose root the chip wraps.
+#[test]
+fn a_set_that_wraps_a_root_the_chip_wraps_keeps_the_layout() {
+    in_own_process("perf_chip_set_wraps");
+}
+
+#[gpui::test]
+fn perf_chip_set_wraps(cx: &mut gpui::TestAppContext) {
+    use crate::layout::Node;
+    if !running_alone("perf_chip_set_wraps") {
+        return;
+    }
+    crate::yuzora::dock::force_for_tests();
+    let (view, cx) = open_window(cx, "unused", "", chip_under_the_root());
+    let added = serde_json::json!({ "id": "added", "type": "block", "size": { "px": 300 }, "content": { "mod": "unused" } });
+    cx.update(|window, cx| view.update(cx, |this, cx| {
+        let tree = serde_json::json!({ "id": "outer", "type": "row", "children": [serde_json::to_value(&this.chrome).unwrap(), added] });
+        this.run("layout.set", serde_json::json!({ "layout": tree }), window, cx);
+        this.save();
+    }));
+    let want: Node = serde_json::from_value(serde_json::json!({ "id": "outer", "type": "row", "children": [chip_under_the_root(), added] })).unwrap();
+    assert_eq!(serde_json::from_str::<Node>(&layout_file()).unwrap(), want, "the file is the person's layout in the mod's row");
+    let shown = view.update(cx, |this, _| this.chrome.clone());
+    assert!(shown.find("main").is_some() && shown.find("side").is_some(), "the tab is still shown");
+    view.update(cx, |this, _| this.load_layout("test"));
+    view.update(cx, |this, _| assert_eq!(this.chrome, shown, "a restart shows what showed"));
+}
+
+// D3: a person hides the dock's bar in their copy of main, then a mod's set moves the chip to a second status bar.
+#[test]
+fn a_set_that_moves_the_chip_keeps_the_hidden_bar() {
+    in_own_process("perf_chip_set_keeps_click");
+}
+
+#[gpui::test]
+fn perf_chip_set_keeps_click(cx: &mut gpui::TestAppContext) {
+    use serde_json::json;
+    if !running_alone("perf_chip_set_keeps_click") {
+        return;
+    }
+    crate::yuzora::dock::force_for_tests();
+    let layout = json!({ "id": "root", "type": "row", "children": [
+        { "id": "work", "type": "column", "children": [
+            { "id": "main", "type": "block", "content": { "tab": "active" } },
+            { "id": "status", "type": "block", "size": { "px": 28 }, "content": { "mod": "unused" } }] },
+        { "id": "panel", "type": "column", "hidden": true, "size": { "px": 368 }, "children": [
+            { "id": "panel-body", "type": "stack", "active": "files", "children": [{ "id": "files", "type": "block", "content": { "mod": "files" } }] }] }] });
+    let (view, cx) = open_window(cx, "unused", "", layout);
+    let bar_hidden = |cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.chrome.find("yuzora-dock-bar").unwrap().hidden);
+    cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.hide", json!({ "id": "yuzora-dock-bar" }), window, cx)));
+    view.update(cx, |this, _| {
+        this.save();
+        this.load_layout("test");
+    });
+    assert!(bar_hidden(cx), "hidden after a switch away and back");
+    cx.update(|window, cx| view.update(cx, |this, cx| {
+        let mut tree = serde_json::to_value(&this.chrome).unwrap();
+        tree["children"][0]["children"].as_array_mut().unwrap().push(json!({ "id": "status2", "type": "block", "size": { "px": 28 }, "content": { "mod": "unused" } }));
+        this.run("layout.set", json!({ "layout": tree }), window, cx);
+        this.save();
+    }));
+    view.update(cx, |this, _| assert_eq!(this.chrome.parent_of("yuzora-dock-perf").unwrap().id, "status2", "the chip moved to the new status bar"));
+    assert!(bar_hidden(cx), "the bar stays hidden after the set");
+    assert_eq!(super::read_state("test").nodes.get("yuzora-dock-bar").and_then(|c| c.hidden), Some(true), "and in .state");
+    view.update(cx, |this, _| this.load_layout("test"));
+    assert!(bar_hidden(cx), "and after a restart");
+}
+
 /// The layout files are written in four places only; a new one (an upstream
 /// change) fails here until someone decides whether the dock may reach it.
 /// Matches the text of the code, not what it does: the tests above are the
