@@ -98,6 +98,11 @@ fn chip_file(view: &gpui::Entity<super::AppWindow>, cx: &mut gpui::VisualTestCon
     cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
 }
 
+/// The number of the copy at `slot`: a copy loaded again gets a new one.
+fn chip_copy_id(view: &gpui::Entity<super::AppWindow>, cx: &mut gpui::VisualTestContext, slot: &str) -> Option<u64> {
+    view.update(cx, |this, _| this.copies.get(slot).map(|c| c.id))
+}
+
 #[test]
 fn the_chip_is_drawn_at_the_right_end_of_the_status_bar() {
     in_own_process("perf_chip_in_the_bar");
@@ -313,24 +318,82 @@ fn perf_chip_in_win98(cx: &mut gpui::TestAppContext) {
     let bar = chip_bounds(&view, cx, "taskbar").unwrap();
     let chip = chip_drawn(&quads, bar, chip_rgb(0xc0c0c0)).expect("still the taskbar's gray");
     assert!(lines(&quads, chip).iter().all(|l| (l.0 - 1.0).abs() < 0.05), "the edge in Win98 pixels: {:?}", lines(&quads, chip));
-    // In a person's copy of win98's layout, win98's fitting is written to the file: 28 × scale / zoom Win98 px, 56 px
-    // with Large Fonts (scale 2) at zoom 1, or at zoom 0.5, and 112 px with both.
+    // In a person's copy of win98's layout, win98 writes its taskbar to the file as 28 × scale / zoom px, to the
+    // thousandth (kit.js fitLayout). At the default font size that is 56 px at zoom 0.5 and less above: one chip, and
+    // the same copy, from zoom 0.5 to 1.6.
     assert!(crate::mods::send_command("yuzora-perf", "toggle"), "the details closed");
     chip_run(&view, cx, "app.zoom_reset", serde_json::json!({}));
-    for (scale, zoom_outs) in [(2.0, 0), (1.0, 5), (2.0, 0)] {
-        for _ in 0..zoom_outs {
-            chip_run(&view, cx, "app.zoom_out", serde_json::json!({}));
+    for _ in 0..5 {
+        chip_run(&view, cx, "app.zoom_out", serde_json::json!({}));
+    }
+    let fitted = |px: f32| {
+        let mut l = layout.clone();
+        l["children"][1]["size"]["px"] = serde_json::json!(px);
+        serde_json::json!({ "layout": l })
+    };
+    let copy = chip_copy_id(&view, cx, "taskbar#yuzora-perf");
+    assert!(copy.is_some());
+    for step in 0..=11 {
+        if step > 0 {
+            chip_run(&view, cx, "app.zoom_in", serde_json::json!({}));
         }
         let zoom = super::settings::zoom();
-        assert!((zoom - [1.0, 0.5][usize::from(zoom < 0.75)]).abs() < 0.01, "zoom {zoom}");
-        let px = 28.0 * scale / zoom;
-        let mut fitted = layout.clone();
-        fitted["children"][1]["size"]["px"] = serde_json::json!(px);
-        chip_run(&view, cx, "layout.set", serde_json::json!({ "layout": fitted }));
+        assert!((zoom - (0.5 + step as f32 / 10.0)).abs() < 0.01, "zoom {zoom}");
+        let px = (28.0 / zoom * 1000.0).round() / 1000.0;
+        chip_run(&view, cx, "layout.set", fitted(px));
         let (_, quads) = chip_frame(cx);
         let bar = chip_bounds(&view, cx, "taskbar").unwrap();
-        assert!(chip_near(bar.3, 28.0 * scale), "{px} px written at zoom {zoom}, drawn {bar:?}");
+        assert!(chip_near(bar.3, 28.0), "{px} px written at zoom {zoom}, drawn {bar:?}");
         assert!(chip_drawn(&quads, bar, chip_rgb(0xc0c0c0)).is_some(), "the chip at the taskbar's right end, {px} px written at zoom {zoom}: {quads:?}");
+        assert_eq!(chip_copy_id(&view, cx, "taskbar#yuzora-perf"), copy, "the same copy at zoom {zoom}");
+    }
+    // With Large Fonts (scale 2) under zoom 1, win98 writes more than 56 px, 112 at zoom 0.5: no chip and no copy, at
+    // any zoom.
+    for step in 0..=11 {
+        if step > 0 {
+            chip_run(&view, cx, "app.zoom_out", serde_json::json!({}));
+        }
+        chip_run(&view, cx, "layout.set", fitted(112.0));
+        let zoom = super::settings::zoom();
+        assert_eq!(chip_copies(&view, cx), [], "112 px written, at zoom {zoom}");
+    }
+    assert!((super::settings::zoom() - 0.5).abs() < 0.01);
+}
+
+#[test]
+fn the_chip_goes_by_a_bars_written_height_at_any_zoom() {
+    in_own_process("perf_chip_at_any_zoom");
+}
+
+#[gpui::test]
+fn perf_chip_at_any_zoom(cx: &mut gpui::TestAppContext) {
+    use serde_json::json;
+    if !running_alone("perf_chip_at_any_zoom") {
+        return;
+    }
+    // A note last under the tab, in a column inside one that ends in the status bar; and a layout with the note last
+    // and no status bar.
+    let tab = json!({ "id": "main", "type": "block", "content": { "tab": "active" } });
+    let note = |px: f32| json!({ "id": "note", "type": "block", "size": { "px": px }, "content": { "mod": "bar" } });
+    let under = |px: f32| json!({ "id": "root", "type": "column", "children": [
+        { "id": "work", "type": "column", "children": [tab, note(px)] },
+        { "id": "status", "type": "block", "size": { "px": 28 }, "content": { "mod": "bar" } }] });
+    let alone = |px: f32| json!({ "id": "root", "type": "column", "children": [tab, note(px)] });
+    let (view, cx) = open_window(cx, "bar", CHIP_BAR_JS, chip_layout());
+    for (zoom_outs, zoom) in [(0, 1.0), (2, 0.8), (3, 0.5)] {
+        for _ in 0..zoom_outs {
+            chip_run(&view, cx, "app.zoom_out", json!({}));
+        }
+        assert!((super::settings::zoom() - zoom).abs() < 0.01);
+        for px in [64.0, 100.0] {
+            chip_file(&view, cx, &under(px));
+            assert_eq!(chip_copies(&view, cx), [("status#yuzora-perf".to_owned(), json!({ "bar": "bar" }))], "a {px} px note at zoom {zoom}");
+            let (_, quads) = chip_frame(cx);
+            let status = chip_bounds(&view, cx, "status").unwrap();
+            assert!(chip_drawn(&quads, status, chip_theme("chrome")).is_some(), "in the status bar, a {px} px note at zoom {zoom}: {quads:?}");
+            chip_file(&view, cx, &alone(px));
+            assert_eq!(chip_copies(&view, cx), [], "a {px} px note last and no status bar, at zoom {zoom}");
+        }
     }
 }
 
