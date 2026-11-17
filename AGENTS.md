@@ -110,7 +110,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 
 - crate `app/crates/yuzora-settings`（`yuzora:settings`）：`templates`（與 hc 0.1.13 對齊的模板解析、檢查、寫入、遠端 sh 腳本）、`launch`（`hc run` 參數與 label）、`mods`（mods／layouts 分類、還原、從資料夾安裝）、`source`／`fetch`（從 GitHub repo 或 herdr.dev 連結安裝：只向 codeload.github.com 下載，在 Rust 解開到暫存資料夾，再走同一份安裝計畫）、`trash`（各平台垃圾桶）。
 - mods：`yuzora-settings-general`、`-mods`（設定頁；`-mods` 是「Mods & Templates」，Mods／Layouts／Templates 三個分頁，Templates 在 `templates.js`）與 `-launch`（「從模板啟動」對話框，`place: none`）。
-- 上游改動只有帶 `yuzora(L6)` 的行：`app/defaults/frame/settings/main.js` 的那幾行、`app/src/mods/render_tests.rs` 的 `mod settings_library_tests;` 一行（測試在新檔 `render_tests/settings_library_tests.rs`）、`app/scripts/settings.test.ts` 的一行；frame 的邏輯在新檔 `frame/settings/yuzora.js`，字串在 `frame/settings/i18n/`。
+- 上游改動只有這些：帶 `yuzora(L6)` 的行（`app/defaults/frame/settings/main.js` 的那幾行、`app/src/mods/render_tests.rs` 的 `mod settings_library_tests;` 一行，測試在新檔 `render_tests/settings_library_tests.rs`、`app/scripts/settings.test.ts` 的一行），以及 `app/defaults/AGENTS.md:479` 在既有的 `yuzora(L1)` 標記之間把頁名改成「Settings > Mods & Templates > Layouts」（沿用 L1 的標記）；frame 的邏輯在新檔 `frame/settings/yuzora.js`，字串在 `frame/settings/i18n/`。
 - 測試：`cargo test --locked -p yuzora-settings`；mods 用 `scripts/yuzora/check-mods yuzora-settings-general yuzora-settings-launch yuzora-settings-mods`；頁面與 frame 由 `app/src/mods/render_tests.rs` 與 `render_tests/settings_library_tests.rs` 守，測試環境沒有任何 Yuzora 設定頁，frame 在 `settingsPages()` 為空時也要照常畫出。
 - 測遠端模板腳本時不得碰到真正的垃圾桶：測試的 PATH 只放 cat／mkdir／mv／rm／date／ln。
 - 設計與決策：`docs/beta2/settings.md`。

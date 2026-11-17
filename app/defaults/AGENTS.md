@@ -1616,8 +1616,9 @@ with these differences.
   archive into a temporary folder that is gone again before the plan
   returns, and plans it as a folder install, with the GitHub address and the
   commit in the plan, and `github` (`{repo, ref, folder}`: what it asked
-  GitHub for) beside it, on an error too. Nothing reaches the home before
-  the person picks "I trust it: install" (`installFolder(plan.token)`).
+  GitHub for) beside it, on every error but `bad_source` too. Nothing
+  reaches the home before the person picks "I trust it: install"
+  (`installFolder(plan.token)`).
 - In a `tree/<ref>/<folder>` address the ref is one name: a branch whose
   name has `/` (`feature/x`) is read as the branch `feature` and the folder
   `x/…`. Give a form without the branch's name instead: its commit,
