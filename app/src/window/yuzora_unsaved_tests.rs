@@ -1,7 +1,9 @@
 // yuzora(unsaved): included into `window::tests`. On a real window with a real unsaved document: a person's close
 // that would leave it with no pane (a pane, a tab, a confirmed Space) opens the shipped `yuzora-unsaved` dialog
 // instead, the Files sidebar's split-then-close does not, a script's close goes ahead as before, Quit (macOS's menu
-// item and cmd-q) asks and quits at once with nothing unsaved, and app.update asks only with an update ready.
+// item and cmd-q) asks, and app.update asks only with an update ready. With nothing unsaved, `unsaved::quit` runs the
+// quit it is handed at once. No test reaches the quit the menu hands it (`cx.quit()`): the test platform's quit does
+// nothing.
 
 #[test]
 fn a_persons_close_that_would_lose_unsaved_changes_asks_first() {
