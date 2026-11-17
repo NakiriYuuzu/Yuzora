@@ -57,8 +57,6 @@ jobs:
         with:
           # The squash commits of app/ are in the history.
           fetch-depth: 0
-          # For one run: main has v0.1.16 since #284, this branch's head does not.
-          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - name: Newest release
         id: newest
