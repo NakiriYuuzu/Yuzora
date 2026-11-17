@@ -25,7 +25,7 @@ use gpui_base::input::{EditorState, InputEvent, Position, Rope};
 use yuzora_core::{HostObject, HostValue};
 
 use crate::editor::{self, CodeEditorOptions, Look};
-use crate::fsops::{self, Eol, Seen, Stamp, TextFile, WriteError};
+use crate::fsops::{self, Eol, Expected, Seen, Stamp, TextFile, WriteError};
 use crate::remote_write::posix_crc;
 use crate::highlight::{self, Lang};
 
@@ -843,18 +843,20 @@ impl DocView {
         let rope = state.read(cx).text().clone();
         let text = rope.to_string();
         // `deleted` is as of the last look at the disk. Forced, such a file is
-        // put back only if it is still gone when the worker looks again; one
-        // written again since is held to what was read, as without force. The
-        // look and the write are two steps (two `hc exec` on a machine), and a
-        // file written back between them is replaced.
+        // put back only while it is still gone: the worker looks, and the
+        // writer looks again right before its rename, as it does for a file
+        // held to what was read. One written again before the worker looks is
+        // held to what was read, as without force.
         let restore = force && self.deleted;
         let expected = if force && !restore {
             None
         } else {
-            self.disk.map(|stamp| Seen {
-                stamp,
-                hash: self.disk_hash,
-                crc: self.disk_crc,
+            self.disk.map(|stamp| {
+                Expected::Seen(Seen {
+                    stamp,
+                    hash: self.disk_hash,
+                    crc: self.disk_crc,
+                })
             })
         };
         let (path, on) = (self.key.path.clone(), self.key.on.clone());
@@ -868,7 +870,11 @@ impl DocView {
                 let gone = restore && matches!(fsops::stat(&path, on.as_deref()), Ok(None));
                 #[cfg(test)]
                 tests::after_the_look(&path);
-                let expected = if gone { None } else { expected };
+                let expected = if gone {
+                    Some(Expected::Missing)
+                } else {
+                    expected
+                };
                 fsops::write_on(&path, on.as_deref(), &text, eol, bom, expected)
             })
                 .await
@@ -1474,7 +1480,8 @@ mod tests {
 
     /// Files to write between a save's look at the disk and its write: (path, text). The write runs on a worker
     /// thread, so this is not a thread local.
-    static AFTER_THE_LOOK: std::sync::Mutex<Vec<(String, &str)>> = std::sync::Mutex::new(Vec::new());
+    static AFTER_THE_LOOK: std::sync::Mutex<Vec<(String, &str)>> =
+        std::sync::Mutex::new(Vec::new());
 
     pub(super) fn after_the_look(path: &str) {
         let mut waiting = AFTER_THE_LOOK.lock().unwrap();
@@ -2086,7 +2093,9 @@ mod tests {
 
     #[cfg(unix)]
     #[gpui::test]
-    fn a_deleted_file_written_back_after_the_save_looked_is_not_replaced(cx: &mut gpui::TestAppContext) {
+    fn a_deleted_file_written_back_after_the_save_looked_is_not_replaced(
+        cx: &mut gpui::TestAppContext,
+    ) {
         for machine in [None, Some("lab")] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("a.txt");
@@ -2101,16 +2110,27 @@ mod tests {
             cx.run_until_parked();
             cx.update(|cx| assert!(view.read(cx).deleted, "{machine:?}"));
             // Still gone when the save looks, written back before it writes. Refused, as a changed file is.
-            AFTER_THE_LOOK.lock().unwrap().push((path.to_string_lossy().into_owned(), "theirs\n"));
+            AFTER_THE_LOOK
+                .lock()
+                .unwrap()
+                .push((path.to_string_lossy().into_owned(), "theirs\n"));
             let saved = view.update(cx, |doc, cx| doc.save(true, cx));
             cx.run_until_parked();
             let saved = futures::executor::block_on(saved).unwrap();
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n", "{machine:?}");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "theirs\n",
+                "{machine:?}"
+            );
             assert_eq!((saved.ok, saved.conflict), (false, true), "{machine:?}");
             cx.update(|cx| {
                 let doc = view.read(cx);
                 assert!(doc.conflict && doc.dirty && !doc.deleted, "{machine:?}");
-                assert_eq!(doc.incoming.as_ref().map(|f| f.text.as_str()), Some("theirs\n"), "{machine:?}");
+                assert_eq!(
+                    doc.incoming.as_ref().map(|f| f.text.as_str()),
+                    Some("theirs\n"),
+                    "{machine:?}"
+                );
             });
         }
     }
