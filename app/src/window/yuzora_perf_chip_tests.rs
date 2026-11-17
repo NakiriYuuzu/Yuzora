@@ -103,6 +103,17 @@ fn chip_copy_id(view: &gpui::Entity<super::AppWindow>, cx: &mut gpui::VisualTest
     view.update(cx, |this, _| this.copies.get(slot).map(|c| c.id))
 }
 
+/// The chip's text in the copy at `slot`, as its last render describes it.
+fn chip_text(view: &gpui::Entity<super::AppWindow>, cx: &mut gpui::VisualTestContext, slot: &str) -> Option<String> {
+    chip_frame(cx);
+    view.update(cx, |this, cx| {
+        let root = this.copies.get(slot)?.root.clone()?;
+        let script = root.read(cx).content().clone().downcast::<gpui_shell::ScriptView>().ok()?;
+        let tree = script.read(cx).snapshot()?.debug_tree();
+        tree.lines().find_map(|l| Some(l.split_once("text \"")?.1.split('"').next()?.to_owned()).filter(|t| t.contains('%')))
+    })
+}
+
 #[test]
 fn the_chip_is_drawn_at_the_right_end_of_the_status_bar() {
     in_own_process("perf_chip_in_the_bar");
@@ -149,6 +160,21 @@ fn perf_chip_in_the_bar(cx: &mut gpui::TestAppContext) {
     assert!(chip_near(bar.3, 28.0 * zoom), "{bar:?} at zoom {zoom}");
     let chip = chip_drawn(&quads, bar, chip_theme("chrome")).expect("still at the bar's right end");
     assert!(chip_near(chip.w, 150.0 * zoom), "{chip:?} at zoom {zoom}");
+    // What a person reads in it once yuzora:perf has sampled, which it does on a worker thread (so a real thread wakes
+    // the test) while the window is in front, at most once every 1.5 s of real time.
+    cx.executor().allow_parking();
+    cx.update(|window, _| window.activate_window());
+    let numbers = |t: &str| t.strip_suffix("MB").and_then(|t| t.split_once("% · ")).is_some_and(|(c, m)| c.parse::<u32>().is_ok() && m.parse::<u32>().is_ok());
+    let mut text = None;
+    for _ in 0..100 {
+        cx.executor().advance_clock(std::time::Duration::from_secs(2));
+        text = chip_text(&view, cx, "status#yuzora-perf");
+        if text.as_deref().is_some_and(numbers) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(text.as_deref().is_some_and(numbers), "the chip shows its CPU and memory: {text:?}");
 }
 
 #[test]
@@ -240,11 +266,19 @@ fn perf_chip_follows_the_bar(cx: &mut gpui::TestAppContext) {
     assert_eq!(chip_copies(&view, cx), chip);
     assert!(drawn(&view, cx).is_some(), "drawn again");
 
-    // A click makes the bar taller than any status bar: it still is the layout's, and the chip stays in it.
+    // A click makes the bar taller than any status bar: it still is the layout's, and the chip stays in it, the same
+    // copy with its details open through the window's next sync.
+    let details = |cx: &mut gpui::VisualTestContext| chip_frame(cx).1.iter().any(|q| chip_near(q.w, 420.0));
+    assert!(crate::mods::send_command("yuzora-perf", "toggle"));
+    assert!(details(cx), "the details open");
+    let copy = chip_copy_id(&view, cx, "status#yuzora-perf");
     chip_run(&view, cx, "layout.resize", json!({ "id": "status", "px": 120 }));
+    cx.update(|window, cx| view.update(cx, |this, cx| this.sync(window, cx)));
     let bar = chip_bounds(&view, cx, "status").unwrap();
     assert_eq!(bar.3, 120.0);
     assert_eq!(chip_copies(&view, cx), chip);
+    assert_eq!(chip_copy_id(&view, cx, "status#yuzora-perf"), copy, "the same copy, not one loaded again");
+    assert!(details(cx), "its details still open");
     assert_eq!(drawn(&view, cx).map(|q| q.h), Some(120.0), "drawn the bar's height");
 }
 
