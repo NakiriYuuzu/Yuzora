@@ -406,6 +406,24 @@ fn folders_count_against_the_cap_as_files_do() {
     }
 }
 
+/// Counting the folders of a path one by one costs the square of its depth (a debug build took 78 s on a file
+/// 40,000 folders deep). A file ten times deeper than the cap is refused before any of that.
+#[test]
+fn a_member_far_deeper_than_the_cap_is_refused_at_once() {
+    let lab = Lab::new("deep");
+    let deep = format!("{TOP}/{}x.js", "d/".repeat(MAX_WRITTEN * 10));
+    let (base, _) = serving(gz_of(tar_of(&[(&format!("{TOP}/main.js"), b'0', b"m", ""), ("pax", b'x', &pax_path(&deep), ""), ("deep", b'0', b"x", "")])));
+    let (temp, home) = (lab.root.join("temp"), lab.root.join("home"));
+    let (done, planned) = std::sync::mpsc::channel();
+    std::thread::spawn(move || done.send(plan(&crate::source::parse("acme/demo").unwrap(), &base, &temp, &home).map(|p| p.to_json())));
+    match planned.recv_timeout(Duration::from_secs(60)) {
+        Ok(Err(InstallError::TooBig)) => {}
+        Ok(other) => panic!("{other:?}"),
+        Err(_) => panic!("still counting after 60 s"),
+    }
+    assert!(lab.temp_is_empty());
+}
+
 #[test]
 fn a_download_over_the_limit_is_too_big() {
     let lab = Lab::new("big");

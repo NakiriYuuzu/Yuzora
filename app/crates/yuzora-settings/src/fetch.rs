@@ -250,6 +250,10 @@ fn unpack(tar: &[u8], source: &Source, into: &Path) -> Result<(PathBuf, String),
     // Every folder counts, the ones a file's path makes too: a few deep names could otherwise make thousands.
     let (mut folders, mut files) = (std::collections::HashSet::new(), 0);
     for (rel, m) in &picked {
+        // Each folder of a path is hashed whole, so a path costs the square of its depth: one that alone is over the cap goes first.
+        if rel.len() > MAX_WRITTEN {
+            return Err(InstallError::TooBig);
+        }
         let file = usize::from(matches!(m, Member::File(..)));
         files += file;
         for depth in (1..=rel.len() - file).rev() {
