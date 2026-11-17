@@ -91,8 +91,13 @@ export function createFile(path: string, options?: On): Promise<null>;
 export function createFolder(path: string, options?: On): Promise<null>;
 /** Renaming also moves the documents open at that path (or under that folder) to the new one. */
 export function rename(from: string, to: string, options?: On): Promise<null>;
-/** Moves a file or folder to the system's trash (this machine only). */
-export function trash(path: string): Promise<null>;
+/** Copies a file or folder (links stay links) into the folder `into` under the first free name of
+ *  `<name>`, `<name> copy`, `<name> copy 2`, … (a file keeps its extension) and gives the copy's path.
+ *  Refused where that name has a document still open (its file deleted). */
+export function copy(from: string, into: string, options?: On): Promise<string>;
+/** Moves a file or folder to the trash: this machine's, or on another machine gio, a trash command or
+ *  the freedesktop trash; refused (nothing deleted) when none of them can take it. */
+export function trash(path: string, options?: On): Promise<null>;
 /** Shows it in Finder / the file manager / Explorer (this machine only). */
 export function reveal(path: string): null;
 export function copyText(text: string): null;
@@ -383,9 +388,17 @@ pub fn host_module() -> HostModule {
                 }
             })
         })
+        .async_function("copy", |a| {
+            let (from, into, on) = (a.string(0)?.to_owned(), a.string(1)?.to_owned(), on(a, 2));
+            let held = app(|cx| docs::held(&into, on.as_deref(), cx))?;
+            Ok(job(
+                move || fsops::copy(&from, &into, on.as_deref(), &held),
+                HostValue::Str,
+            ))
+        })
         .async_function("trash", |a| {
-            let path = a.string(0)?.to_owned();
-            Ok(job(move || fsops::trash(&path), null))
+            let (path, on) = (a.string(0)?.to_owned(), on(a, 1));
+            Ok(job(move || fsops::trash(&path, on.as_deref()), null))
         })
         .function("reveal", |a| {
             fsops::reveal(a.string(0)?).map_err(error)?;
@@ -785,6 +798,19 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "The folder is not writable",
             ));
             std::fs::set_permissions(at("ro"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            // A copy refused inside the tree it copies names the entry, here and by this machine's cp.
+            let (tree, out) = (at("tree"), at("out"));
+            std::fs::create_dir_all(at("tree/sub")).unwrap();
+            std::fs::create_dir(&out).unwrap();
+            std::fs::write(at("tree/sub/secret.txt"), "").unwrap();
+            let shut = std::fs::Permissions::from_mode(0o000);
+            std::fs::set_permissions(at("tree/sub/secret.txt"), shut).unwrap();
+            let denied = "Permission denied: secret.txt";
+            let here = failed(fsops::copy(&tree, &out, None, &[]).map(drop));
+            cases.push((here, "tree", "copy", denied));
+            let by_cp = crate::remote_entry::copy_by(&tree, &out, &[], None, fsops::run);
+            let by_cp = Act::Copy(&tree, &out, &[]).describe(&by_cp.unwrap_err(), "lab");
+            cases.push((by_cp, "tree", "copy", denied));
         }
         let timed = interpret(Err(ExecError::TimedOut {
             seconds: 30.0,
@@ -795,8 +821,77 @@ return JSON.stringify([a, b, c, d]); }})()"#
             "machine lab is not connected".into(),
         )))
         .unwrap_err();
+        std::fs::create_dir(at("box")).unwrap();
+        cases.push((
+            failed(fsops::copy(&at("box"), &at("box"), None, &[]).map(drop)),
+            "box",
+            "copy",
+            "A folder can't go into itself",
+        ));
+        // 65 folders inside each other, one more than a copy here goes through.
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(at(&["deep"; 65].join("/"))).unwrap();
+            cases.push((
+                failed(fsops::copy(&at("deep"), &at("box"), None, &[]).map(drop)),
+                "deep",
+                "copy",
+                "Too many folders inside each other",
+            ));
+        }
+        let held = ["a.txt".to_owned()];
+        cases.push((
+            failed(fsops::copy(&at("a.txt"), &at("box"), None, &held).map(drop)),
+            "a.txt",
+            "copy",
+            "A document of that name is still open",
+        ));
         let make = Act::Make("/srv/n.txt", Kind::File);
         let rename = Act::Move("/srv/a.txt", "/srv/b.txt");
+        let copy = Act::Copy("/srv/a.txt", "/srv/c", &held);
+        let trash = Act::Trash("/srv/a.txt");
+        // Stopped at its timeout, and the machine does not answer the clear that follows.
+        let unreachable = "lab is unreachable: cannot reach /srv/via: ssh: connect to host lab: Connection refused";
+        let mut asked = 0;
+        let partial = crate::remote_entry::copy_by("/srv/a.txt", "/srv/c", &held, Some("lab"), |_| {
+            asked += 1;
+            Err(match asked {
+                1 => ExecError::TimedOut {
+                    seconds: 120.0,
+                    machine: Some("lab".into()),
+                },
+                _ => ExecError::Remote(unreachable.into()),
+            })
+        })
+        .unwrap_err();
+        // The machine cannot be reached (hc 0.1.21's words): nothing was sent, so nothing may be left.
+        let never_sent = crate::remote_entry::copy_by("/srv/a.txt", "/srv/c", &held, Some("lab"), |_| {
+            Err(ExecError::Remote(unreachable.into()))
+        })
+        .unwrap_err();
+        // hc no longer knows the machine (removed while a Space on it is open): told as Move to Trash tells it.
+        let unknown = || ExecError::Remote("unknown machine \"lab\"".into());
+        let not_known = crate::remote_entry::copy_by("/srv/a.txt", "/srv/c", &held, Some("lab"), |_| {
+            Err(unknown())
+        })
+        .unwrap_err();
+        let trash_not_known = interpret(Err(unknown())).unwrap_err();
+        // The line lost during the call, and the clear after it answers: the copy may be there.
+        let mut asked = 0;
+        let maybe = crate::remote_entry::copy_by("/srv/a.txt", "/srv/c", &held, Some("lab"), |_| {
+            asked += 1;
+            if asked == 1 {
+                return Err(ExecError::Remote(
+                    "lost the line to lab during the call".into(),
+                ));
+            }
+            Ok(yuzora_core::remote::ExecOutput {
+                code: 0,
+                stdout: b"done\n".to_vec(),
+                stderr: Vec::new(),
+            })
+        })
+        .unwrap_err();
         for (act, problem, name, kind, want) in [
             (
                 &make,
@@ -855,6 +950,112 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 "A machine can't use that path",
             ),
             (&make, offline, "n.txt", "new-file", "Can't reach lab"),
+            (
+                &copy,
+                Problem::IntoItself,
+                "a.txt",
+                "copy",
+                "A folder can't go into itself",
+            ),
+            (
+                &copy,
+                Problem::StillOpen(0),
+                "a.txt",
+                "copy",
+                "A document of that name is still open",
+            ),
+            (
+                &copy,
+                Problem::NoTool("cp"),
+                "a.txt",
+                "copy",
+                "lab has no cp",
+            ),
+            (
+                &copy,
+                Problem::FolderNotWritable,
+                "a.txt",
+                "copy",
+                "The folder is not writable",
+            ),
+            (
+                &copy,
+                partial,
+                "a.txt",
+                "copy",
+                "A partial copy may be in .yuzora-save-…",
+            ),
+            (&copy, never_sent, "a.txt", "copy", "Can't reach lab"),
+            (&copy, not_known, "a.txt", "copy", "unknown machine \"lab\""),
+            (
+                &trash,
+                trash_not_known,
+                "a.txt",
+                "trash",
+                "unknown machine \"lab\"",
+            ),
+            (
+                &copy,
+                maybe,
+                "a.txt",
+                "copy",
+                "Not sure it was done: check again",
+            ),
+            (
+                &copy,
+                Problem::Gone,
+                "a.txt",
+                "copy",
+                "That item is no longer there",
+            ),
+            (
+                &trash,
+                Problem::NoTrash,
+                "a.txt",
+                "trash",
+                "lab has no trash to use",
+            ),
+            (
+                &trash,
+                Problem::OtherDevice,
+                "a.txt",
+                "trash",
+                "The trash is on another disk",
+            ),
+            (
+                &trash,
+                Problem::FolderNotWritable,
+                "a.txt",
+                "trash",
+                "The folder is not writable",
+            ),
+            (
+                &trash,
+                Problem::Gone,
+                "a.txt",
+                "trash",
+                "That item is no longer there",
+            ),
+            (
+                &copy,
+                Problem::Failed(
+                    "/srv/c/.yuzora-save-0123456789abcdef0123456789abcdef is not the folder just made"
+                        .into(),
+                ),
+                "a.txt",
+                "copy",
+                "The copy's hidden folder was changed",
+            ),
+            (
+                &trash,
+                Problem::Failed(
+                    "the trash information for a.txt could not be written: sh: printf: write error: Disk quota exceeded"
+                        .into(),
+                ),
+                "a.txt",
+                "trash",
+                "The disk is full",
+            ),
             (
                 &rename,
                 timed,

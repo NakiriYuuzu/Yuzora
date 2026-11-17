@@ -5,17 +5,22 @@ import { View, div, svg, uniform_list } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
 import { spaces, panes, focused, theme, run, home, props, openOverlay, closeOverlay, shared, setShared, notify, watchFolder, window } from "herdr";
 import { t, tokens } from "yuzora:core";
-import { listDir, gitStatus, stat, createFile, createFolder, rename, trash, reveal, copyText, findFiles, grep, unsavedCount } from "yuzora:files";
+import { listDir, gitStatus, stat, createFile, createFolder, rename, copy, trash, reveal, copyText, findFiles, grep, unsavedCount } from "yuzora:files";
 import { openFile, moved, join, parent, base, rel } from "./open.js";
 import { fileIcon } from "./icons.js";
 import { heading } from "./paths.js";
 import { readGit } from "./git-state.js";
-import { reason } from "./failure.js";
+import { reason, mayBeCopied } from "./failure.js";
 import { createStore, panel, info } from "./tree-state.js";
 
 const ME = "yuzora-sidebar-files";
 const PER_FOLDER = 2000, ROWS = 20000;
 const REQUEST = "yuzora.files.request", REFRESH = "yuzora.files.refresh";
+// What Copy put aside, { on, path, seq }: the host's clipboard holds text only.
+const CLIPBOARD = "yuzora.files.clipboard";
+// A sidebar answers only while it is drawn: with the Files mode hidden, a request would wait and run when it is
+// shown again. A copy or a move to the trash that late would come as a surprise; after this long it is not done.
+const LATE_MS = 5000;
 // How long a click waits to learn that the file is still there; after that it opens, and the pane says what is wrong.
 const CHECK_MS = 1500;
 
@@ -60,7 +65,7 @@ export default class FilesSidebar extends View {
     this.edit = null;
     this.lastRequest = shared(REQUEST)?.seq ?? 0;
     this.lastRefresh = shared(REFRESH) ?? 0;
-    this.loc = null; this.here = null; this.watching = null; this.watchedRoot = null; this.watchSeq = 0;
+    this.loc = null; this.here = null; this.watching = null; this.watchedRoot = null; this.watchSeq = 0; this.pendingWatch = null;
     // The last file click whose check is not over: files open in the order they were clicked.
     this.opening = null;
     this.relocate(cx);
@@ -89,7 +94,7 @@ export default class FilesSidebar extends View {
     this.loc = next;
     this.here = next ? this.store.enter(next) : null;
     this.version++;
-    this.watching = null;
+    this.unwatch();
     // A name being typed is for the folder it was started in.
     this.edit = null;
     // Results belong to the folder they were found in: the search runs again there.
@@ -120,18 +125,26 @@ export default class FilesSidebar extends View {
   // Watches are recursive on macOS: the home folder (or /) itself is left to the timer.
   watch(here, cx) {
     const root = here.root;
-    if (here.on || (this.watching === here && this.watchedRoot === root) || root === "/" || root === home()) return;
+    if (this.watching === here && this.watchedRoot === root) return;
+    this.unwatch();
+    if (here.on || root === "/" || root === home()) return;
     this.watching = here; this.watchedRoot = root;
     const token = ++this.watchSeq;
     const same = () => this.watching === here && this.watchSeq === token;
     cx.spawn(async cx => {
       try {
         while (same()) {
-          await watchFolder(root);
+          await (this.pendingWatch = watchFolder(root));
           if (same()) this.reload(cx);
         }
       } catch { if (same()) this.watching = null; }
     });
+  }
+
+  // A folder no longer shown lets go of its watch: they are shared by every mod, at most 64 at once.
+  unwatch() {
+    this.pendingWatch?.cancel();
+    this.watching = this.pendingWatch = null;
   }
 
   // `row`: from the tree on screen; the folder is opened under the root that tree was listed from.
@@ -226,7 +239,7 @@ export default class FilesSidebar extends View {
     cx.notify();
   }
 
-  // Requests from the popup copy (rename, new file …) and refreshes after its actions.
+  // Requests from the popup copy (rename, new file, copy, trash …) and refreshes after its actions.
   requests(cx) {
     const req = shared(REQUEST);
     if (req?.seq && req.seq > this.lastRequest) {
@@ -242,8 +255,23 @@ export default class FilesSidebar extends View {
 
   // The popup's request, for the machine and the folder this tree is.
   answer(req, cx) {
+    if (req.action === "copy" || req.action === "trash") { this.act(req); return; }
     const here = this.here;
     if (here?.root && (req.on ?? null) === (here.on ?? null) && this.store.owns(here, req.root)) this.startEdit(req.action, req.path, req.dir, cx);
+  }
+
+  // A copy or a move to the trash from the popup, done here: closing the popup ends its copy and every call it
+  // started. The paths are whole, so any copy of the sidebar can do it; the first one to answer takes it, once.
+  act(req) {
+    const now = shared(REQUEST);
+    if (now?.seq !== req.seq || now.taken) return;
+    setShared(REQUEST, { ...now, taken: true });
+    if (Date.now() - req.seq > LATE_MS) {
+      notify({ title: t(`error.${req.action}`), body: t("reason.late"), level: "warning" });
+      return;
+    }
+    if (req.action === "copy") copyInto(req.from, req.into, req.on);
+    else trashIt(req.path, req.on);
   }
 
   startEdit(kind, path, dir, cx) {
@@ -502,10 +530,28 @@ function revealLabel() {
   return t(p === "macos" ? "menu.reveal_mac" : p === "windows" ? "menu.reveal_windows" : "menu.reveal");
 }
 
+function copyInto(from, into, on) {
+  copy(from, into, { on }).then(made => {
+    setShared(REFRESH, Date.now());
+    const name = base(from), as = base(made);
+    notify({ title: as === name ? t("toast.copied", { name }) : t("toast.copied_as", { name, copy: as }), level: "success", timeout: 3000 });
+  }).catch(e => {
+    // The tree shows whether a copy that may have been made is there.
+    if (mayBeCopied(e)) setShared(REFRESH, Date.now());
+    notify({ title: t("error.copy"), body: reason(e, { name: base(from), machine: on, kind: "copy" }), level: "error" });
+  });
+}
+
+function trashIt(path, on) {
+  trash(path, { on }).then(() => { setShared(REFRESH, Date.now()); notify({ title: t("toast.trashed", { name: base(path) }), level: "success", timeout: 3000 }); })
+    .catch(e => notify({ title: t("error.trash"), body: reason(e, { name: base(path), machine: on, kind: "trash" }), level: "error" }));
+}
+
 // The popup's items for a row: { label, run, enabled?, danger? }, null a divider.
 function menuItems(m) {
-  const local = !m.on, folder = m.dir ? m.abs : parent(m.abs);
+  const on = m.on ?? null, local = !on, folder = m.dir ? m.abs : parent(m.abs);
   const relPath = rel(m.root, m.abs) ?? m.abs;
+  const clip = shared(CLIPBOARD);
   return [
     m.dir ? null : { label: t("menu.open"), run: () => openFile(m.abs, m.on) },
     m.dir ? null : { label: t("menu.open_side"), run: () => openFile(m.abs, m.on, { place: "side" }) },
@@ -514,10 +560,12 @@ function menuItems(m) {
     { label: t("menu.new_file"), run: () => request("new-file", m, { dir: folder }) },
     { label: t("menu.new_folder"), run: () => request("new-folder", m, { dir: folder }) },
     { label: t("menu.rename"), run: () => request("rename", m, { path: m.abs }) },
-    { label: t("menu.trash"), enabled: local, danger: true, run: () => {
-      trash(m.abs).then(() => { setShared(REFRESH, Date.now()); notify({ title: t("toast.trashed", { name: base(m.abs) }), level: "success", timeout: 3000 }); })
-        .catch(e => notify({ title: t("error.trash"), body: reason(e, { name: base(m.abs), kind: "trash" }), level: "error" }));
-    } },
+    { label: t("menu.trash"), danger: true, run: () => request("trash", m, { path: m.abs }) },
+    null,
+    { label: t("menu.copy"), run: () => setShared(CLIPBOARD, { on, path: m.abs, seq: Date.now() }) },
+    // Only onto the machine it was copied on: a copy does not cross machines.
+    { label: t("menu.paste"), enabled: Boolean(clip?.path) && (clip.on ?? null) === on, run: () => request("copy", m, { from: clip.path, into: folder }) },
+    { label: t("menu.duplicate"), run: () => request("copy", m, { from: m.abs, into: parent(m.abs) }) },
     null,
     { label: t("menu.copy_path"), run: () => copyText(m.abs) },
     { label: t("menu.copy_relative"), run: () => copyText(relPath) },

@@ -29,11 +29,12 @@ const two = (a: string, b: string, machine: string | null = null) => [
 
 // A sidebar whose host is the test's: every listing, git status and stat waits to be answered. `real`: files are
 // opened by open.js itself (what it runs is in `world.runs`) instead of a stub that notes the Space shown.
-function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
+// `shared`: the store of the app, which another sidebar (another window's) may see too.
+function sidebar(spaces: any[] = two("/a", "/b"), real = false, shared = new Map<string, any>()) {
   const world = {
     spaces,
     toasts: [] as any[], opened: [] as { path: string; on: string | null; space: string }[], log: [] as string[], lists: [] as { id: string; count: number }[],
-    query: "", keys: [] as string[], onClick: null as any, onSecondary: null as any, menus: [] as any[], shared: new Map<string, any>(),
+    query: "", keys: [] as string[], onClick: null as any, onSecondary: null as any, menus: [] as any[], shared,
     timers: [] as { ms: number; fn: () => void; fired: boolean }[],
     calls: { list: [] as Call[], git: [] as Call[], stat: [] as Call[], watch: [] as Call[], make: [] as Call[], find: [] as Call[], grep: [] as Call[] },
     every: [] as { ms: number; fn: () => void }[],
@@ -88,7 +89,13 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     InputState: { new: makeInput }, Input: { new: maker }, Scrollbar: { vertical: maker },
     spaces: () => world.spaces, panes: () => world.paneList, focused: () => world.focus, theme: () => new Proxy({}, { get: () => "#000000" }),
     run: (name: string, args: any) => { world.runs.push([name, args]); }, home: () => "/home/me", props: () => world.props, openOverlay: (o: any) => world.menus.push(o), closeOverlay() {},
-    shared: (key: string) => world.shared.get(key) ?? null, setShared: (key: string, value: any) => world.shared.set(key, value), notify: (n: any) => world.toasts.push(n), watchFolder: (path: string) => ask("watch", [path]),
+    shared: (key: string) => world.shared.get(key) ?? null, setShared: (key: string, value: any) => world.shared.set(key, value), notify: (n: any) => world.toasts.push(n),
+    // As the host's: cancel() ends the wait with [] and lets go of the folder.
+    watchFolder: (path: string) => {
+      const watch: any = ask("watch", [path]), call = world.calls.watch.at(-1)!;
+      watch.cancel = () => { if (!call.answered) { call.answered = true; call.resolve([]); } };
+      return watch;
+    },
     window: () => ({ platform: "macos" }),
     t: (key: string, vars?: object) => (vars ? `${key} ${JSON.stringify(vars)}` : key), tokens: () => ({}),
     listDir: (path: string, options: object) => ask("list", [path, options]),
@@ -97,7 +104,8 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     createFile: (path: string, options: object) => ask("make", ["createFile", path, options]),
     createFolder: (path: string, options: object) => ask("make", ["createFolder", path, options]),
     rename: (from: string, to: string, options: object) => ask("make", ["rename", from, to, options]),
-    trash: (path: string) => ask("make", ["trash", path]), reveal: () => { if (world.revealError) throw world.revealError; }, copyText() {},
+    copy: (from: string, into: string, options: object) => ask("make", ["copy", from, into, options]),
+    trash: (path: string, options: object) => ask("make", ["trash", path, options]), reveal: () => { if (world.revealError) throw world.revealError; }, copyText() {},
     findFiles: (root: string, query: string, options: object) => ask("find", [root, query, options]),
     grep: (root: string, query: string, options: object) => ask("grep", [root, query, options]),
     unsavedCount: () => 0,
@@ -106,6 +114,8 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     documentFor: () => null, paneDocument: () => null, notePane() {}, focusDocument() {}, revealLine() {},
     fileIcon: () => ({ icon: "file", color: "dim" }),
     localStorage: { getItem: () => null, setItem() {} },
+    // A clock that moves on every reading: two requests made in one test never share a time.
+    Date: { now: () => (shared.set(CLOCK, (shared.get(CLOCK) ?? 1_000_000) + 1), shared.get(CLOCK)) },
   };
   if (real) {
     delete stubs.openFile; delete stubs.moved;
@@ -159,9 +169,42 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false) {
     throw new Error("the host is still being asked");
   };
   const show = (space: string) => { for (const s of world.spaces) s.active = s.id === space; };
-  return { view, cx, world, inputCalls, pending, answer, fail, frame, press, pressRight, fireTimers, fireWithin, tasks, settle, show, menuItems };
+  // The right-click popup: this mod again, as a copy of its own over `menu`. Closing it ends that copy and every call
+  // it started: what it asked the host is never answered, and nothing it would do after runs.
+  const popup = (menu: any) => {
+    const own = { closed: false, asked: [] as any[][], toasts: [] as any[], set: [] as string[], clicks: new Map<string, any>() };
+    let at = "";
+    const drawn: any = new Proxy(function () {}, {
+      get: (_t, prop) => prop === "then" ? undefined : (...args: any[]) => {
+        if (prop === "id") at = args[0];
+        if (prop === "on_click") own.clicks.set(at, args[0]);
+        if (prop === "when") { if (args[0]) args[1](drawn); }
+        return drawn;
+      },
+    });
+    const never = (call: string) => (...args: any[]) => { own.asked.push([call, ...args]); return new Promise(() => {}); };
+    const host = {
+      ...stubs, div: () => drawn, svg: () => drawn, v_flex: () => drawn, h_flex: () => drawn,
+      props: () => ({ menu, overlay: "popup-1" }), closeOverlay: () => { own.closed = true; },
+      copy: never("copy"), trash: never("trash"), createFile: never("createFile"), createFolder: never("createFolder"), rename: never("rename"),
+      notify: (n: any) => own.toasts.push(n), setShared: (key: string, value: any) => { own.set.push(key); world.shared.set(key, value); },
+    };
+    const { FilesSidebar: Popup, menuItems: itemsOf } = new Function(...Object.keys(host), `${real ? sourceWithOpen : source}\nreturn { FilesSidebar, menuItems };`)(...Object.values(host));
+    const gone = { spawn() {}, notify() {}, timer: { every() {}, after() {} } };
+    const view = new Popup();
+    view.init(null, gone);
+    view.render(gone);
+    // A click on the item labelled `label`, as the popup handles it.
+    const click = (label: string) => {
+      const i = itemsOf(menu).findIndex((it: any) => it?.label === label);
+      own.clicks.get(`item-${i}`)(null, gone);
+    };
+    return { own, click };
+  };
+  return { view, cx, world, inputCalls, pending, answer, fail, frame, press, pressRight, fireTimers, fireWithin, tasks, settle, show, menuItems, popup };
 }
 
+const CLOCK = "test.clock";
 const A = { "/a": listing("src/", "x.txt", "gone.txt"), "/a/src": listing("a.js") };
 const B = { "/b": listing("other.txt") };
 const [SRC, X, GONE] = [0, 1, 2];
@@ -722,6 +765,45 @@ test("no watcher is set up by a read whose root could not be listed", async () =
   expect(s.pending("watch")).toHaveLength(0);
 });
 
+// Watches are shared by every mod, at most 64 folders at once.
+test("a folder no longer shown lets go of its watch: another Space's is watched instead, and a remote one's is not", async () => {
+  const s = sidebar([...two("/a", "/b"), { id: "s3", active: false, folder: "/r", machine: "m1" }]);
+  await s.settle(A, repo("/a"));
+  expect(s.pending("watch").map(c => c.args[0])).toEqual(["/a"]);
+  s.show("s2");
+  s.frame();
+  await s.settle(B, repo("/b"));
+  expect(s.pending("watch").map(c => c.args[0])).toEqual(["/b"]);
+  s.show("s3");
+  s.frame();
+  await s.settle({ "/r": listing("r.txt") }, repo("/r"));
+  expect(s.pending("watch")).toHaveLength(0);
+});
+
+test("the folder git moved the root off lets go of its watch", async () => {
+  const s = sidebar(two(SUB, "/b"));
+  await flush();
+  await s.fail(s.pending("git")[0], new Error("git timed out"));
+  await s.answer(s.pending("list")[0], listing("inner.txt"));
+  expect(s.pending("watch").map(c => c.args[0])).toEqual([SUB]);
+  s.view.reload(s.cx);
+  await s.settle({ [SUB]: listing("inner.txt"), "/repo": listing("sub/", "top.txt") }, repo("/repo"));
+  expect(s.pending("watch").map(c => c.args[0])).toEqual(["/repo"]);
+});
+
+test("the folder git moved the root off lets go of its watch, though the home folder it moved to is not watched", async () => {
+  const sub = "/home/me/proj/sub";
+  const s = sidebar(two(sub, "/b"));
+  await flush();
+  await s.fail(s.pending("git")[0], new Error("git timed out"));
+  await s.answer(s.pending("list")[0], listing("inner.txt"));
+  expect(s.pending("watch").map(c => c.args[0])).toEqual([sub]);
+  s.view.reload(s.cx);
+  await s.settle({ [sub]: listing("inner.txt"), "/home/me": listing("proj/") }, repo("/home/me"));
+  expect(s.frame().texts).toContain("proj");
+  expect(s.pending("watch")).toHaveLength(0);
+});
+
 test("an open search follows the files when a read ends, though another read is already asked for", async () => {
   const s = sidebar();
   await s.settle(A, repo("/a"));
@@ -867,6 +949,15 @@ const makes = (s: Awaited<ReturnType<typeof sidebarAt>>) => s.world.calls.make.m
 // What the engine makes of an error the host reports: the call's name in front of what it said.
 const hostError = (call: string, message: string) => new Error(`\`yuzora:files.${call}\`: ${message}`);
 const toasts = (s: Awaited<ReturnType<typeof sidebarAt>>) => s.world.toasts.map(n => [n.title, n.body, n.level]);
+// An item of the popup opened on a row, clicked: the popup closes, and the sidebar does what it asked on its next frame.
+const choose = (s: Awaited<ReturnType<typeof sidebarAt>>, row: number, label: string) => {
+  s.pressRight(s.frame(), row);
+  const popup = s.popup(s.world.menus.at(-1).props.menu);
+  popup.click(label);
+  s.frame();
+  s.tasks();
+  return popup.own;
+};
 
 for (const [where, machine] of [["a remote Space", "lab"], ["this machine", null]] as const) {
   test(`${where}: the toolbar's new file is made where the Space is, and opened there`, async () => {
@@ -971,8 +1062,7 @@ test("a name that is taken is told by the name that was typed, not by the path o
 
 test("a file that cannot be moved to the trash, and a folder that cannot be opened, say the cause first", async () => {
   const s = await sidebarAt(null);
-  s.pressRight(s.frame(), A_ROW);
-  s.menuItems(s.world.menus[0].props.menu).find((i: any) => i?.label === "menu.trash").run();
+  choose(s, A_ROW, "menu.trash");
   await s.fail(s.pending("make")[0], hostError("trash", "cannot move /srv/a.txt to the trash: Permission denied (os error 13)"));
   expect(toasts(s)).toEqual([["error.trash", "reason.denied", "error"]]);
   s.press(s.frame(), SRC_ROW);
@@ -990,13 +1080,167 @@ test("a file that cannot be shown in the file manager says the cause first", asy
   expect(toasts(s)).toEqual([["error.reveal", "Disk on fire", "error"]]);
 });
 
-test("the menu of a remote Space offers new file, new folder and rename, and still not the trash or the file manager", async () => {
+test("the menu lists every item in order, each enabled or not, here and on a remote Space", async () => {
+  const list = (s: Awaited<ReturnType<typeof sidebarAt>>, row: number) => {
+    s.pressRight(s.frame(), row);
+    return s.menuItems(s.world.menus.at(-1).props.menu).map((i: any) => i && [i.label, i.enabled !== false]);
+  };
+  const rest = (reveal: boolean, paste: boolean) => [
+    ["menu.terminal", true], null,
+    ["menu.new_file", true], ["menu.new_folder", true], ["menu.rename", true], ["menu.trash", true], null,
+    ["menu.copy", true], ["menu.paste", paste], ["menu.duplicate", true], null,
+    ["menu.copy_path", true], ["menu.copy_relative", true], ["menu.reveal_mac", reveal],
+  ];
+  const file = (reveal: boolean, paste: boolean) => [["menu.open", true], ["menu.open_side", true], ...rest(reveal, paste)];
+  const here = await sidebarAt(null);
+  expect(list(here, A_ROW)).toEqual(file(true, false));
+  expect(list(here, SRC_ROW)).toEqual(rest(true, false));
+  // The file manager is this machine's: on a remote Space only it is off, and Paste until something is copied there.
+  const remote = await sidebarAt("lab");
+  expect(list(remote, A_ROW)).toEqual(file(false, false));
+  choose(remote, A_ROW, "menu.copy");
+  expect(list(remote, A_ROW)).toEqual(file(false, true));
+  expect(list(remote, SRC_ROW)).toEqual(rest(false, true));
+});
+
+test("an item from the popup is done once, though the sidebar of another window sees the same request", async () => {
   const s = await sidebarAt("lab");
+  const other = sidebar(spacesAt("/srv", "lab"), false, s.world.shared);
+  await other.settle({ "/srv": listing("src/", "a.txt") }, repo("/srv"));
   s.pressRight(s.frame(), A_ROW);
-  const items = s.menuItems(s.world.menus[0].props.menu).filter((i: any) => i);
-  const enabled = Object.fromEntries(items.map((i: any) => [i.label, i.enabled !== false]));
-  expect(enabled).toMatchObject({ "menu.new_file": true, "menu.new_folder": true, "menu.rename": true, "menu.trash": false, "menu.copy_path": true });
-  expect(Object.entries(enabled).filter(([label, on]) => !on).map(([label]) => label).sort()).toEqual(["menu.trash", expect.stringMatching(/^menu\.reveal/)].sort());
+  s.popup(s.world.menus.at(-1).props.menu).click("menu.duplicate");
+  for (const window of [other, s]) window.frame();
+  for (const window of [other, s]) window.tasks();
+  expect([...makes(other), ...makes(s)]).toEqual([["copy", "/srv/a.txt", "/srv", { on: "lab" }]]);
+  await other.answer(other.pending("make")[0], "/srv/a copy.txt");
+  expect(toasts(other)).toEqual([['toast.copied_as {"name":"a.txt","copy":"a copy.txt"}', undefined, "success"]]);
+  expect(toasts(s)).toEqual([]);
+});
+
+test("an item from the popup that waits more than a few seconds for the sidebar to be drawn is not done, and says so once", async () => {
+  for (const label of ["menu.duplicate", "menu.trash"]) {
+    const s = await sidebarAt("lab");
+    const other = sidebar(spacesAt("/srv", "lab"), false, s.world.shared);
+    await other.settle({ "/srv": listing("src/", "a.txt") }, repo("/srv"));
+    s.pressRight(s.frame(), A_ROW);
+    s.popup(s.world.menus.at(-1).props.menu).click(label);
+    // The Files mode is hidden for a while: the sidebar draws, and so answers, only when it is shown again.
+    s.world.shared.set(CLOCK, s.world.shared.get(CLOCK) + 5_001);
+    for (const window of [other, s]) window.frame();
+    for (const window of [other, s]) window.tasks();
+    expect([...makes(other), ...makes(s)]).toEqual([]);
+    expect(s.world.shared.get("yuzora.files.request").taken).toBe(true);
+    // Told once, by the window that saw it first.
+    const action = label === "menu.trash" ? "trash" : "copy";
+    expect([...toasts(other), ...toasts(s)]).toEqual([[`error.${action}`, "reason.late", "warning"]]);
+    // Answered in time, the next one is done.
+    s.pressRight(s.frame(), A_ROW);
+    s.popup(s.world.menus.at(-1).props.menu).click(label);
+    s.frame();
+    s.tasks();
+    expect(makes(s).map(args => args[0])).toEqual([label === "menu.trash" ? "trash" : "copy"]);
+  }
+});
+
+const item = (s: Awaited<ReturnType<typeof sidebarAt>>, row: number, label: string) => {
+  s.pressRight(s.frame(), row);
+  return s.menuItems(s.world.menus.at(-1).props.menu).find((i: any) => i?.label === label);
+};
+
+for (const machine of [null, "lab"]) {
+  const where = machine ? "a remote Space" : "this machine";
+
+  // The popup is a copy of its own, ended when it closes: the work is the sidebar's, and so are the toast and the refresh.
+  test(`${where}: Duplicate copies beside it, says the name it took, and refreshes the tree, though the popup is closed at once`, async () => {
+    const s = await sidebarAt(machine);
+    const popup = choose(s, A_ROW, "menu.duplicate");
+    expect(popup.closed).toBe(true);
+    expect(popup.asked).toEqual([]);
+    expect(makes(s)).toEqual([["copy", "/srv/a.txt", "/srv", { on: machine }]]);
+    expect(s.world.shared.get("yuzora.files.refresh")).toBeUndefined();
+    await s.answer(s.pending("make")[0], "/srv/a copy.txt");
+    expect(toasts(s)).toEqual([['toast.copied_as {"name":"a.txt","copy":"a copy.txt"}', undefined, "success"]]);
+    expect(s.world.shared.get("yuzora.files.refresh")).toEqual(expect.any(Number));
+    expect(popup.toasts).toEqual([]);
+    expect(popup.set).not.toContain("yuzora.files.refresh");
+  });
+
+  test(`${where}: Duplicate on a folder copies the folder beside it, not into itself`, async () => {
+    const s = await sidebarAt(machine);
+    choose(s, SRC_ROW, "menu.duplicate");
+    expect(makes(s)).toEqual([["copy", "/srv/src", "/srv", { on: machine }]]);
+  });
+
+  test(`${where}: Copy then Paste on a folder copies into it, and on a file into the folder it is in`, async () => {
+    const s = await sidebarAt(machine);
+    choose(s, A_ROW, "menu.copy");
+    expect(s.world.calls.make).toEqual([]);
+    expect(s.world.shared.get("yuzora.files.clipboard")).toMatchObject({ on: machine, path: "/srv/a.txt" });
+    const popups = [choose(s, SRC_ROW, "menu.paste"), choose(s, A_ROW, "menu.paste")];
+    expect(popups.map(p => [p.closed, p.asked])).toEqual([[true, []], [true, []]]);
+    expect(makes(s)).toEqual([["copy", "/srv/a.txt", "/srv/src", { on: machine }], ["copy", "/srv/a.txt", "/srv", { on: machine }]]);
+    await s.answer(s.pending("make")[0], "/srv/src/a.txt");
+    expect(toasts(s)).toEqual([['toast.copied {"name":"a.txt"}', undefined, "success"]]);
+  });
+
+  test(`${where}: Move to Trash is asked of the Space's own machine`, async () => {
+    const s = await sidebarAt(machine);
+    const popup = choose(s, A_ROW, "menu.trash");
+    expect([popup.closed, popup.asked]).toEqual([true, []]);
+    expect(makes(s)).toEqual([["trash", "/srv/a.txt", { on: machine }]]);
+    await s.answer(s.pending("make")[0], null);
+    expect(toasts(s)).toEqual([['toast.trashed {"name":"a.txt"}', undefined, "success"]]);
+    expect(s.world.shared.get("yuzora.files.refresh")).toEqual(expect.any(Number));
+    expect(popup.toasts).toEqual([]);
+    expect(popup.set).not.toContain("yuzora.files.refresh");
+  });
+}
+
+test("a machine with nothing to take a file to the trash says so", async () => {
+  const s = await sidebarAt("lab");
+  choose(s, A_ROW, "menu.trash");
+  await s.fail(s.pending("make")[0], hostError("trash", "cannot move /srv/a.txt to the trash: nothing on lab can take it to a trash (no gio or trash command that does, and no trash folder on its disk that can be written)"));
+  expect(toasts(s)).toEqual([["error.trash", 'reason.no_trash {"machine":"lab"}', "error"]]);
+});
+
+test("what was copied on one machine is not offered to Paste on another", async () => {
+  const s = sidebar([{ id: "s1", active: true, folder: "/srv", machine: "lab" }, { id: "s2", active: false, folder: "/srv", machine: null }]);
+  await s.settle({ "/srv": listing("src/", "a.txt") }, repo("/srv"));
+  item(s, A_ROW, "menu.copy").run();
+  expect(item(s, A_ROW, "menu.paste").enabled).toBe(true);
+  s.show("s2");
+  s.frame();
+  await s.settle({ "/srv": listing("src/", "a.txt") }, repo("/srv"));
+  expect(item(s, A_ROW, "menu.paste").enabled).toBe(false);
+  item(s, A_ROW, "menu.copy").run();
+  expect(item(s, A_ROW, "menu.paste").enabled).toBe(true);
+  s.show("s1");
+  s.frame();
+  await s.settle({ "/srv": listing("src/", "a.txt") }, repo("/srv"));
+  expect(item(s, A_ROW, "menu.paste").enabled).toBe(false);
+});
+
+test("a copy that cannot be made says the cause first", async () => {
+  const s = await sidebarAt("lab");
+  choose(s, SRC_ROW, "menu.copy");
+  choose(s, SRC_ROW, "menu.paste");
+  await s.fail(s.pending("make")[0], hostError("copy", "cannot copy /srv/src into /srv/src: a folder cannot go into itself"));
+  expect(toasts(s)).toEqual([["error.copy", "reason.into_itself", "error"]]);
+  choose(s, A_ROW, "menu.duplicate");
+  await s.fail(s.pending("make")[0], hostError("copy", "cannot copy /srv/a.txt: you may not change /srv on lab"));
+  expect(toasts(s).at(-1)).toEqual(["error.copy", "reason.writable", "error"]);
+});
+
+test("a copy that may have been made before its line was lost says so and reads the tree again; one never sent leaves the tree", async () => {
+  const s = await sidebarAt("lab");
+  choose(s, A_ROW, "menu.duplicate");
+  await s.fail(s.pending("make")[0], hostError("copy", "cannot copy /srv/a.txt on lab: lab is unreachable: cannot reach /srv/via: ssh: connect to host lab: Connection refused"));
+  expect(toasts(s)).toEqual([["error.copy", 'reason.unreachable {"machine":"lab"}', "error"]]);
+  expect(s.world.shared.get("yuzora.files.refresh")).toBeUndefined();
+  choose(s, A_ROW, "menu.duplicate");
+  await s.fail(s.pending("make")[0], hostError("copy", "cannot copy /srv/a.txt on lab: lost the line to lab during the call. The copy may or may not have been made: look in /srv before copying again"));
+  expect(toasts(s).at(-1)).toEqual(["error.copy", "reason.unsure", "error"]);
+  expect(s.world.shared.get("yuzora.files.refresh")).toEqual(expect.any(Number));
 });
 
 test("the toolbar of a remote Space has no read-only tooltip, and nothing is refused", async () => {

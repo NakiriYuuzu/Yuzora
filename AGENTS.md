@@ -23,10 +23,11 @@ v0.1.0-beta.2 以 [herdr-app](https://github.com/herdrdev/herdr-app)（Rust＋GP
 | `app/defaults/layouts/yuzora.json` | 新安裝的預設 layout（248px 側欄＋5 模式 stack＋右側 tab 區與狀態列） |
 | `app/defaults/themes/yuzora-{dark,light}.json`、`app/defaults/yuzora/tokens.json` | 深淺兩套 theme 色名與 theme 沒有的設計 tokens（`light` 區塊是淺色覆寫值） |
 | `app/vendor/` | 上游 vendored crates、ghostty submodule、Yuzora 的 russh／russh-sftp／tiberius patches |
-| `app/scripts/yuzora/` | `check-mods`（在複本上跑 `herdr-app check`）、`bundle-macos`（本機包成 `Yuzora.app`）、`package`／`mac-dmg`（發布用安裝檔）、`manifest.ts`（更新 manifest）、`sync-pull`／`sync-resolve.ts`（上游同步與固定衝突的解法）、`sync-check`（上游同步檢查） |
+| `app/scripts/yuzora/` | `check-mods`（在複本上跑 `herdr-app check`）、`bundle-macos`（本機包成 `Yuzora.app`）、`package`／`mac-dmg`（發布用安裝檔）、`manifest.ts`（更新 manifest）、`sync-pull`／`sync-resolve.ts`（上游同步與固定衝突的解法）、`sync-check`（上游同步檢查）、`sync-watch`（上游有沒有 `app/` 還沒有的 release，給 `upstream-watch.yml` 用） |
 | `app/distribution/yuzora/` | 各平台打包範本：macOS `Info.plist`、Windows NSIS（`yuzora.nsi`）、Linux `install` 與桌面檔 |
 | `site/`、`tests/`、`.github/workflows/site.yml` | 官網（GitHub Pages）、它的 lint、測試與部署；`tests/changelog.test.js` 守兩份根目錄 CHANGELOG 的對應；`tests/database/` 是 app 資料庫測試的容器設定 |
 | `.github/workflows/app-ci.yml`、`app-package.yml` | app 的 CI（base 為 `beta2/integration` 的 PR，Linux＋macOS，另有一個只跑 console 視窗測試的 Windows job）與四平台打包檢查（不建 tag、不發布） |
+| `.github/workflows/upstream-watch.yml` | 每天檢查 herdr-app 有沒有 `app/` 還沒同步的 release；有就試跑 `sync-pull`，開一張列出衝突檔案的 issue。不 push、不開 PR、不讀 secret |
 
 ### 建置與測試
 

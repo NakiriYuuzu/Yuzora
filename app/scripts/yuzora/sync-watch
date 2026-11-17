@@ -1,0 +1,139 @@
+#!/bin/bash
+# yuzora(L9): is there a herdr-app release that app/ does not have? The daily
+# .github/workflows/upstream-watch.yml asks, and opens one issue per release
+# (docs/beta2/architecture.md, "上游同步流程").
+#
+#   app/scripts/yuzora/sync-watch              # the newest upstream release, and what app/ has
+#   app/scripts/yuzora/sync-watch try <tag>    # run sync-pull here and say how it went
+#   app/scripts/yuzora/sync-watch issue <dir>  # write <dir>/title and <dir>/body.md
+#
+# The first two print name=value lines. `try` leaves sync-pull's merge, or its
+# conflicts, in the checkout: it is for one that is thrown away afterwards. A
+# person who wants the merge runs sync-pull.
+#
+# `issue` takes what the other two printed from the environment (TAG, COMMIT,
+# HAVE, RESULT, COMMITS, FILES, GENERATION, GENERATION_HAVE) and RUN, the link
+# to the run. Those values come from a job that has run sync-pull on upstream's
+# tree, so every one is checked before it is printed: a value that is not what
+# it should be stops the issue. SYNC_URL names another upstream.
+set -euo pipefail
+
+url=${SYNC_URL:-https://github.com/herdrdev/herdr-app.git}
+release='^v[0-9]+[.][0-9]+[.][0-9]+$'
+die() { echo "sync-watch: $*" >&2; exit 2; }
+split() { git log -1 --format=%B "$@" | sed -n 's/^git-subtree-split: //p'; }
+generation() { sed -n 's/^pub const GENERATION: u64 = \([0-9]*\);.*/\1/p'; }
+
+case ${1:-} in
+"")
+  cd "$(git rev-parse --show-toplevel)"
+  have=$(split --grep='^git-subtree-dir: app$' HEAD)
+  [[ -n $have ]] || die "no squash commit of app/ in this history (a shallow clone?)"
+  # Releases are vX.Y.Z tags; ls-remote lists them as text, so 0.1.9 comes
+  # after 0.1.16. A tag with a message has a second line, name^{}, for its commit.
+  newest=$(git ls-remote --tags "$url" 'v*' | awk -v release="$release" '
+    { name = $2; sub("^refs/tags/", "", name); peeled = sub(/\^\{\}$/, "", name) }
+    name ~ release && (peeled || !(name in commit)) { commit[name] = $1 }
+    END { for (name in commit) print name, commit[name] }' | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -1)
+  [[ -n $newest ]] || die "$url has no release tag"
+  commit=${newest#* }
+  new=true
+  if [[ $commit == "$have" ]]; then
+    new=false
+  # app/ may be past the release, synced to a branch or a commit after it: then
+  # the release is in the history of what app/ has. An upstream that no longer
+  # has that commit cannot say, and the release counts as new.
+  elif git fetch -q --no-tags "$url" "$have" 2>/dev/null && git merge-base --is-ancestor "$commit" "$have" 2>/dev/null; then
+    new=false
+  fi
+  echo "tag=${newest% *}"
+  echo "commit=$commit"
+  echo "have=$have"
+  echo "new=$new"
+  ;;
+try)
+  tag=${2:?usage: sync-watch try <tag>}
+  [[ $tag =~ $release ]] || die "$tag is not a release tag"
+  cd "$(git rev-parse --show-toplevel)"
+  before=$(git rev-parse HEAD)
+  have=$(split --grep='^git-subtree-dir: app$' HEAD)
+  status=0
+  app/scripts/yuzora/sync-pull "$tag" >&2 || status=$?
+  squash=$(git rev-parse -q --verify MERGE_HEAD || true)
+  [[ -n $squash || $(git rev-parse HEAD) == "$before" ]] || squash=$(git rev-parse HEAD^2)
+  files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+  if [[ $status == 0 && -z $squash ]]; then
+    echo "result=current" # app/ is already past the tag
+  elif [[ $status == 0 ]]; then
+    echo "result=merged"
+  elif [[ $status == 3 && -n ${files// /} ]]; then
+    echo "result=conflicts"
+  else
+    echo "result=unfinished"
+  fi
+  if [[ -n $squash ]]; then
+    commit=$(split "$squash")
+    echo "commits=$(git rev-list --count "$have..$commit")"
+    echo "generation=$(git show "$commit:src/hc.rs" 2>/dev/null | generation)"
+    echo "generation_have=$(git show "$before:app/src/hc.rs" 2>/dev/null | generation)"
+  fi
+  echo "files=${files% }"
+  ;;
+issue)
+  dir=${2:?usage: sync-watch issue <dir>}
+  sha='^[0-9a-f]{40}$'
+  number='^[0-9]*$'
+  [[ ${TAG:-} =~ $release ]] || die "TAG is not a release tag"
+  [[ ${COMMIT:-} =~ $sha && ${HAVE:-} =~ $sha ]] || die "COMMIT and HAVE are commits"
+  [[ ${RESULT:-} =~ ^(merged|conflicts|unfinished)$ ]] || die "RESULT is merged, conflicts or unfinished"
+  [[ ${COMMITS:-} =~ $number && ${GENERATION:-} =~ $number && ${GENERATION_HAVE:-} =~ $number ]] || die "COMMITS and the generations are numbers"
+  web=${url%.git}
+  listed=""
+  unusual=0
+  set -f # a name is a name, not a pattern
+  for f in ${FILES:-}; do
+    if [[ $f =~ ^app/[A-Za-z0-9._/-]+$ ]]; then listed+="$f"$'\n'; else unusual=$((unusual + 1)); fi
+  done
+  mkdir -p "$dir"
+  echo "Sync herdr-app $TAG into app/" >"$dir/title"
+  {
+    echo "herdr-app $TAG is out, and \`app/\` does not have it."
+    echo
+    echo "- Upstream: [changelog]($web/blob/$TAG/CHANGELOG.md), [${COMMITS:-the} commits since the last sync]($web/compare/${HAVE:0:8}...$TAG)"
+    echo "- \`app/\` has upstream \`${HAVE:0:8}\`; $TAG is \`${COMMIT:0:8}\`."
+    if [[ -n ${GENERATION:-} && -n ${GENERATION_HAVE:-} && $GENERATION != "$GENERATION_HAVE" ]]; then
+      echo "- **herdr-core generation $GENERATION_HAVE → $GENERATION.** Yuzora needs a release of its own to work with a core of the new generation: sync and release soon."
+    fi
+    echo
+    echo "## Trial merge"
+    echo
+    case $RESULT in
+    merged) echo "\`app/scripts/yuzora/sync-pull $TAG\` merged with no conflict left for a person. The tests have not run." ;;
+    conflicts)
+      echo "\`app/scripts/yuzora/sync-pull $TAG\` left these in conflict:"
+      echo
+      echo '```text'
+      printf %s "$listed"
+      [[ $unusual == 0 ]] || echo "(and $unusual more, with names this report does not print)"
+      echo '```'
+      ;;
+    unfinished) echo "\`app/scripts/yuzora/sync-pull $TAG\` did not finish, and not because of a conflict in a file. The run's log says why." ;;
+    esac
+    echo
+    echo "## To sync"
+    echo
+    echo "On a branch of your own, with nothing uncommitted:"
+    echo
+    echo '```bash'
+    echo "app/scripts/yuzora/sync-pull $TAG"
+    echo "# resolve what it lists, then:"
+    echo "git commit --no-edit"
+    echo "app/scripts/yuzora/sync-check"
+    echo '```'
+    echo
+    echo "A resolved merge is the start: upstream's new behavior usually breaks tests on Yuzora's side too. Merge the pull request with a merge commit (\`docs/beta2/architecture.md\`, 上游同步流程)."
+    [[ -z ${RUN:-} ]] || { echo; echo "Opened by the [upstream watch]($RUN)."; }
+  } >"$dir/body.md"
+  ;;
+*) die "usage: sync-watch [try <tag> | issue <dir>]" ;;
+esac
