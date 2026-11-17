@@ -13,7 +13,7 @@
   "local": "This computer",
   "reading": "Reading templates…",
   "read_failed": "Couldn't read the templates.",
-  "none": "No templates on this machine yet: add one in Settings > Templates.",
+  "none": "No templates on this machine yet: add one in Settings > Mods & Templates > Templates.",
   "broken": "Won't run",
   "cancel": "Cancel",
   "start": "Start",

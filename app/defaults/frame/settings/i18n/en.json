@@ -10,7 +10,7 @@
     "off": "Off",
     "feedback": "Feedback",
     "feedback_about": "Send feedback opens a GitHub issue in your browser; you read it and send it yourself.",
-    "network": "Yuzora goes online only when you ask it to (a remote machine, a database, git) and every hour to look for updates: Yuzora's on GitHub Releases, herdr-core's from its own. Looking sends none of your files or usage."
+    "network": "Yuzora goes online only when you ask it to (a remote machine, a database, git, a mod installed from a link, which comes from GitHub) and every hour to look for updates: Yuzora's on GitHub Releases, herdr-core's from its own. Looking sends none of your files or usage."
   },
   "updates": {
     "failed": "The update could not be installed",

@@ -1,29 +1,30 @@
-// Settings > Yuzora > Templates: herdr-core's agent templates on each
-// machine (`hc templates`, <config>/herdr-core/templates/<name>.md). Add and
-// edit them (the header as a form, the body in an editor, checked before
+// Settings > Mods & Templates > Templates: herdr-core's agent templates on
+// each machine (`hc templates`, <config>/herdr-core/templates/<name>.md). Add
+// and edit them (the header as a form, the body in an editor, checked before
 // saving), move them to the trash, start an agent from one. Owned by lane L6.
 //
 // Reading and writing go through yuzora:settings (Rust), which reads the
 // header as hc does and reaches other machines with `hc exec --on`.
 // Starting one opens yuzora-settings-launch (space, tab, task).
 //
-// Props (all optional): { machine, edit } — `edit`: a template's name opens
-// its form at once ("" a new one), e.g. tab.new {mod: "yuzora-settings-templates", props: {edit: "reviewer"}}.
+// Not a view of its own: the page (main.js) makes one when its Templates tab
+// first shows and draws it there. Its inputs and tasks belong to that view.
+// Options (all optional): { machine, edit }: `edit`, a template's name, opens
+// its form at once ("" a new one), e.g. tab.new {mod: "yuzora-settings-mods", props: {tab: "templates", edit: "reviewer"}}.
 
-import { View, div } from "gpui-kit";
+import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, EditorState, Editor } from "gpui-base";
-import { theme, machines, knownAgents, openOverlay, props } from "herdr";
+import { machines, knownAgents, openOverlay, props } from "herdr";
 import { t } from "yuzora:core";
 import { listTemplates, checkTemplate, templateText, saveTemplate, trashTemplate, reveal } from "yuzora:settings";
-import { page, title, heading, button, segmented, note, badge, spinner, field, input } from "./ui.js";
+import { heading, button, segmented, note, badge, spinner, field, input } from "./ui.js";
 
 const MONO = "JetBrains Mono";
 const BLANK = { command: "", description: "", ready: "", submit: "", stop: "", paste_gap_ms: "" };
 const INPUTS = ["name", "command", "description", "submit", "stop", "paste_gap_ms"];
 
-export default class Templates extends View {
-  init(_props, cx) {
-    const p = props() ?? {};
+export class Templates {
+  constructor(p, cx) {
     this.machine = typeof p.machine === "string" && p.machine ? p.machine : null; // null: this computer
     this.pendingEdit = typeof p.edit === "string" ? p.edit : null;
     this.list = null;
@@ -249,7 +250,7 @@ export default class Templates extends View {
           .gap(8)
           .items_center()
           .child(div().flex_1().min_w(0).font_family(MONO).text_size(11.5).text_color(th.dim).child(l.dir))
-          .when(!this.machine, (el) => el.child(button(th, "tp-folder", t("open_folder"), (_e, cx) => { this.openFolder(l.dir); cx.notify(); }))),
+          .when(!this.machine, (el) => el.child(button(th, "tp-folder", t("tpl_open_folder"), (_e, cx) => { this.openFolder(l.dir); cx.notify(); }))),
       );
     if (!l.error && !l.templates.length) body.child(v_flex().py(14).gap(4).child(note(th, t("empty"))).child(note(th, t("empty_about"))));
     return body.children(l.templates.map((e) => this.entryRow(th, e)));
@@ -387,34 +388,29 @@ export default class Templates extends View {
       );
   }
 
-  render(cx) {
-    const th = theme();
+  render(th, cx) {
     const m = this.message;
-    return page(
-      th,
-      "tp-body",
-      v_flex()
-        .w_full()
-        .gap(6)
-        .child(title(th, t("page.title"), t("page.about")))
-        .child(this.machineBar(th, cx))
-        .when(Boolean(m), (el) =>
-          el.child(
-            h_flex()
-              .gap(8)
-              .items_center()
-              .child(note(th, m.text, m.tone))
-              .when(Boolean(m.changed), (el) =>
-                el.child(button(th, "tp-reread", t("reread"), (_e, cx) => {
-                  this.editing = null;
-                  this.message = null;
-                  this.reload(cx);
-                })),
-              ),
-          ),
-        )
-        .child(heading(th, this.editing ? t("form") : t("list")))
-        .child(this.editing ? this.editView(th, cx) : this.listView(th, cx)),
-    );
+    return v_flex()
+      .w_full()
+      .gap(6)
+      .child(note(th, t("tpl_page.about")))
+      .child(this.machineBar(th, cx))
+      .when(Boolean(m), (el) =>
+        el.child(
+          h_flex()
+            .gap(8)
+            .items_center()
+            .child(note(th, m.text, m.tone))
+            .when(Boolean(m.changed), (el) =>
+              el.child(button(th, "tp-reread", t("reread"), (_e, cx) => {
+                this.editing = null;
+                this.message = null;
+                this.reload(cx);
+              })),
+            ),
+        ),
+      )
+      .child(heading(th, this.editing ? t("form") : t("list")))
+      .child(this.editing ? this.editView(th, cx) : this.listView(th, cx));
   }
 }

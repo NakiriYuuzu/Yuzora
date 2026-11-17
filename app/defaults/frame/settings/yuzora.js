@@ -36,10 +36,18 @@ export function pages() {
   }
 }
 
-/** A Yuzora page by mod name or section key (app.settings {section: "git"}). */
-export function find(asked) {
+// Pages that became a tab of another page, by their old section and mod name.
+const MOVED = new Map([["templates", "templates"], ["yuzora-settings-templates", "templates"]]);
+
+/** A Yuzora page by mod name or section key (app.settings {section: "git"}).
+ *  Templates is a tab of Mods & Templates now: asking for it opens that tab,
+ *  unless a page of its own still claims it (an edited copy left in the home). */
+export function find(asked, list = pages()) {
   if (!asked) return null;
-  return pages().find((p) => p.mod === asked || p.section === asked) ?? null;
+  const page = list.find((p) => p.mod === asked || p.section === asked);
+  if (page || !MOVED.has(asked)) return page ?? null;
+  const merged = list.find((p) => p.mod === "yuzora-settings-mods");
+  return merged ? { ...merged, tab: MOVED.get(asked) } : null;
 }
 
 /** Shows `page` beside the nav, in place of the dialog `overlay`. `height`:
@@ -56,7 +64,7 @@ export function open(page, overlay, height) {
       type: "row",
       children: [
         { type: "block", size: { px: NAV }, content: { mod: "frame-settings", props: { yuzora: page.mod } } },
-        { type: "block", content: { mod: page.mod, props: { section: page.section } } },
+        { type: "block", content: { mod: page.mod, props: page.tab ? { section: page.section, tab: page.tab } : { section: page.section } } },
       ],
     },
   });
