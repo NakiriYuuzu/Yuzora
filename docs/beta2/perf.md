@@ -1,6 +1,6 @@
 # L8 效能監控（資源用量）
 
-lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popover 移植到 beta.2，放在**視窗最右下角**（狀態列最右端，指令面板快捷鍵的右邊）。點 chip 往上展開明細，右緣對齊。beta.1 的程式（`src-tauri/src/perf_service.rs`、`src/state/perfStore.ts`、`src/workbench/PerfBridge.tsx`、`ResourceUsagePopover.tsx`）是移植來源，已從 repo 移除（見 tag `v0.1.2`）。架構規則見 [architecture.md](architecture.md)，lane 流程見 [lanes.md](lanes.md)。
+lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popover 移植到 beta.2，放在**視窗最右下角**：`yuzora` layout 在狀態列最右端（指令面板快捷鍵的右邊），其他每個 layout 在視窗畫在 layout 下方的一條帶裡（見「放置」）。點 chip 往上展開明細，右緣對齊。beta.1 的程式（`src-tauri/src/perf_service.rs`、`src/state/perfStore.ts`、`src/workbench/PerfBridge.tsx`、`ResourceUsagePopover.tsx`）是移植來源，已從 repo 移除（見 tag `v0.1.2`）。架構規則見 [architecture.md](architecture.md)，lane 流程見 [lanes.md](lanes.md)。
 
 ## 範圍與檔案
 
@@ -8,6 +8,8 @@ lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popove
 | --- | --- |
 | `app/crates/yuzora-perf/` | `yuzora:perf`：取樣 worker、行程樹聚合與分類、找 herdr-core、滾動視窗 |
 | `app/defaults/mods/yuzora-perf/` | 右下角的 chip 與 popover；`i18n/en.json`；Lucide 圖示（`cpu`、`memory-stick`、`app-window`、`wrench`、`chevron-up`） |
+| `app/src/yuzora/band.rs` | 視窗在 layout 下方畫的帶：什麼時候畫（`slot`）、怎麼疊在 layout 下面（`under`）；規則的單元測試 |
+| `app/src/window/yuzora_band_tests.rs` | 帶在視窗裡的測試：畫在哪、讓位給 layout 自己放的 chip、點 chip 開明細、layout 檔與 `.state` 和沒有帶時相同 |
 | `app/crates/yuzora-perf/examples/cost.rs` | 從外部對執行中的 app 量測單次取樣成本 |
 
 自己目錄以外的改動（總指揮特准）：
@@ -15,7 +17,8 @@ lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popove
 | 檔案 | 改動 |
 | --- | --- |
 | `app/Cargo.toml` | yuzora crate 區塊加 `yuzora-perf = { path = "crates/yuzora-perf" }` |
-| `app/src/yuzora/mod.rs` | `host_modules()` 加 `yuzora_perf::host_module(),`；同檔測試的模組數 7 → 8（加模組的必然結果） |
+| `app/src/yuzora/mod.rs` | `host_modules()` 加 `yuzora_perf::host_module(),`；同檔測試的模組數 7 → 8（加模組的必然結果）；帶再加一行 `pub mod band;` |
+| `app/src/window.rs`（上游） | 帶：5 行，每行都以 `// yuzora(L8):` 註記。`visible()` 與 `owned_mods()` 各 1 行 `mods.extend`／`out.extend(band::slot(&self.chrome))`；`render()` 1 行，把 `render_node` 畫出的根交給 `band::under` 再交給 `window_frame`；測試區 1 行 `include!("window/yuzora_band_tests.rs")`，以及 `open_heavy` 1 行 `band::set_for_tests(false)`（上游量 VM 記憶體的測試只數自己的 copy） |
 | `app/defaults/layouts/yuzora.json` | `status` 由 block 改成 row：`yuzora-statusbar`（佔滿）＋`yuzora-perf`（150px），`resizable: false` |
 | `app/Cargo.lock`、`app/THIRD-PARTY-NOTICES` | 新增 workspace package `yuzora-perf`；沒有新的第三方套件（sysinfo 0.37.2 已由 gpui-fps 帶入） |
 
@@ -84,10 +87,13 @@ beta.2 沒有 WebView，分成三類：
 
 ### 放置
 
-- `layout` 只有 `px` 與 `weight` 兩種大小，沒有「依內容寬度」。所以 `status` 改成 row，`yuzora-perf` 固定 150px、chip 靠右；左邊空白與狀態列同為 `chrome` 背景、同一條 `divider` 上緣線，看起來是同一條狀態列。
-- row 設 `resizable: false`、不設 `divider`，兩個 block 之間沒有分隔線也沒有拖拉把手。
-- 不需要改 L1 的 `yuzora-statusbar/main.js`。
-- 只有新安裝（沒有既有 layout 的 app home）會用到新的預設 layout。已經有 layout 的 app home 要重設 layout，或自己在 `status` 加上 `yuzora-perf` block。
+- **`yuzora` layout**：`status` 是 row：`yuzora-statusbar`（佔滿）＋`yuzora-perf`（150px），chip 靠右。`layout` 只有 `px` 與 `weight` 兩種大小，沒有「依內容寬度」，所以 chip 的 block 固定寬度；左邊空白與狀態列同為 `chrome` 背景、同一條 `divider` 上緣線，看起來是同一條狀態列。row 設 `resizable: false`、不設 `divider`，兩個 block 之間沒有分隔線也沒有拖拉把手。不需要改 L1 的 `yuzora-statusbar/main.js`。
+- **其他每個 layout**（`main`、`terminals`、`win98`、使用者自己做的、從連結安裝的）：視窗在 layout 的根下面畫一條 26px 高（隨 zoom 縮放）的帶，裡面是一份 `yuzora-perf`，chip 靠右，帶裡沒有別的東西。帶**不是 layout 的節點**：`layout()`、layout 檔、`.state`、`strip`／`ensure`、`layout.set`、dock、`remove_slot` 都看不到它，所以這些操作寫出的檔案與點選，和沒有帶時逐位元組相同。
+- **什麼時候畫**：顯示中的樹（`chrome`）沒有任何 `yuzora-perf`（block 或 float，隱藏的、不在前面的 stack 子節點也算）時才畫。判斷在 `band::slot`，由 `window.rs` 的 `visible()` 與 `owned_mods()` 呼叫。這兩處把樹變成 mod 的 slot，`sync()` 在每次樹變動之後（載入、layout 檔被改、`layout.set`、mod 自動 dock、layout 裡的終端機結束而移除 slot）都會跑它們，所以帶和每個 layout 裡的 mod 一樣，沒有哪條路徑會漏掉。成本是一次走訪樹、不讀檔。`render()` 只在帶的 copy 存在時畫它。
+- **與 dock 開關無關**：layout 的 `"yuzora": {"dock": "off"}` 與設定頁的個人 dock 選擇都不影響帶，使用者無法關掉它。layout 作者自己放一個 `yuzora-perf` block（或 float），帶就不畫。
+- **顏色**：帶裡的 copy 收到 `props().band`。主題（或 layout 的 `colors`）讓 `surface` 和 `background` 不同時，底色用 `surface`（win98 的灰 `#c0c0c0`，和 win98 mod 工作列的 face 同色；`terminals` layout 自己的 `surface` `#17191c`）；否則用 `chrome`，和各 layout 的狀態列相同（兩個 Yuzora 主題、`main` 的預設主題）。win98 主題沒有寫 `chrome`，由它白色的終端底色推導出來的是接近白色，所以不用它。`yuzora` 狀態列裡的 chip 照舊用 `chrome`。
+- **代價**：layout 少了帶的高度，終端機少一到兩列；`main` 本來就有狀態列，帶在它下面，所以有上下兩條；上游 `window.rs` 多 5 行（見上表）。
+- 帶的 copy 和 layout 裡的 mod 一樣：點 chip 開明細、`yuzora-perf.toggle` 送得到（它是顯示中的 copy）、只在視窗位於前景時取樣。換 layout 時它和其他 layout mod 一起重新開始，第一個畫面就是上一次的樣本（取樣狀態在 `yuzora:perf`）。
 
 ## 不做
 
@@ -101,7 +107,8 @@ beta.2 沒有 WebView，分成三類：
 ```bash
 cd app
 cargo test --locked -p yuzora-perf          # 聚合、分類、不變式、hc server 辨識與快取、滾動視窗、模組宣告
-cargo test --locked --bin herdr-app yuzora  # 模組數、layout 引用的 mod 都有出貨
+cargo test --locked --bin herdr-app yuzora  # 模組數、layout 引用的 mod 都有出貨、帶的規則（yuzora::band::）
+scripts/yuzora/test-isolated -p herdr-app -- window::tests::the_band window::tests::a_chip_the window::tests::a_click_on_the_band  # 帶在視窗裡
 scripts/yuzora/check-mods yuzora-perf
 cargo run --release -p yuzora-perf --example cost -- <app pid> 30   # 在 app 的隔離環境變數下執行
 ```
@@ -121,7 +128,7 @@ popover 由 `herdr-app do yuzora-perf.toggle` 打開。排序切換與關閉按�
 ## 已知限制
 
 - popover 約 640px 高（zoom 1.0）。視窗比這更矮時，popover 會貼齊視窗上緣，下半部可能蓋到 chip。
-- 已經有 layout 的 app home 不會自動出現 chip（見「放置」）。
+- 帶無法關掉；要拿掉只能在 layout 裡自己放 `yuzora-perf`（見「放置」）。
 - 一個行程被 re-parent 離開它的樹（Windows 的 re-parent、自己 daemon 化的輔助程式）就不會再被計入。
 
 ## Windows 效能（beta.3）

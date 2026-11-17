@@ -1624,6 +1624,9 @@ with these differences.
 - The chip in the bottom-right corner is `yuzora-perf`: what this computer's Yuzora uses (the app, its herdr-core
   with the terminals and agents in it, and the tools the app starts). `yuzora-perf.toggle` (a key in keys.json, or
   `herdr-app do`) opens or closes the details. Remote (SSH) Spaces are not measured.
+- A layout with no `yuzora-perf` block or float of its own gets the chip in a 26px band the window draws under the
+  layout. The band is not in `layout()` and never reaches the layout file; place your own `yuzora-perf` block to
+  drop it.
 - `yuzora:perf`: `tick(focused)` samples on a worker thread (at most once every 1.5 s, whatever the number of
   callers) and `state()` reads the last sample without sampling: `{snapshot: {total, app, core, tools, core_pid,
   core_error}, health: {attempts, failures, empty, skipped, last_error}, cost}`. Each category is
