@@ -575,6 +575,27 @@ mod tests {
     }
 
     #[test]
+    fn a_status_bar_is_the_last_mod_block_of_32px_or_less_in_the_column_nearest_the_tab() {
+        let tab = json!({ "id": "main", "type": "block", "content": { "tab": "active" } });
+        let bar = |px: f32| json!({ "id": "bar", "type": "block", "size": { "px": px }, "content": { "mod": "m" } });
+        let under_tab = |last: Value| json!({ "id": "root", "type": "column", "children": [tab.clone(), last] }).to_string();
+        let (_, n, _) = injected(&under_tab(bar(32.0)));
+        assert_eq!(ids(n.find("bar").unwrap()), CHIP, "32px is a status bar");
+        let row = json!({ "id": "bar", "type": "row", "size": { "px": 28 }, "children": [{ "id": "m", "type": "block", "content": { "mod": "m" } }] });
+        let other_tab = json!({ "id": "bar", "type": "block", "size": { "px": 28 }, "content": { "tab": "active" } });
+        for last in [bar(33.0), row, other_tab] {
+            let (_, n, _) = injected(&under_tab(last.clone()));
+            assert_eq!(ids(&n), ["main", "bar", "yuzora-dock-perf"], "no status bar: {last}");
+        }
+        // An outer column's 40px bar doesn't hide the status bar of the column that holds the tab.
+        let nested = json!({ "id": "root", "type": "column", "children": [
+            { "id": "screen", "type": "row", "children": [{ "id": "work", "type": "column", "children": [tab.clone(), bar(28.0)] }] },
+            { "id": "taskbar", "type": "block", "size": { "px": 40 }, "content": { "mod": "m" } }] });
+        let (_, n, _) = injected(&nested.to_string());
+        assert_eq!(ids(n.find("bar").unwrap()), CHIP);
+    }
+
+    #[test]
     fn a_layout_that_shows_the_chip_itself_gets_no_second() {
         let float = json!({ "id": "root", "type": "column", "children": [{ "id": "main", "type": "block", "content": { "tab": "active" } }],
             "floating": [{ "id": "mine", "content": { "mod": "yuzora-perf" } }] }).to_string();
