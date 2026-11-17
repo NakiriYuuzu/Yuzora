@@ -344,6 +344,19 @@ fn a_missing_repo_or_no_server_fails_to_fetch() {
     assert!(lab.temp_is_empty());
 }
 
+#[test]
+fn a_download_cut_short_says_why() {
+    let lab = Lab::new("cut");
+    let (base, _) = serve(|_, s| {
+        let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nConnection: close\r\n\r\nonly this much");
+    });
+    match lab.plan("acme/demo", &base) {
+        Err(InstallError::FetchFailed(why)) => assert!(why.starts_with("curl: (18)") && !why.contains("HTTP 200"), "{why}"),
+        other => panic!("{:?}", other.map(|p| p.to_json())),
+    }
+    assert!(lab.temp_is_empty());
+}
+
 /// What bsdtar reads besides a gzip of a tar: handed one as the body, it planned each (the mtree one with a file
 /// of this computer's as main.js). Read as a gzip of a tar and nothing else, none is planned.
 #[test]

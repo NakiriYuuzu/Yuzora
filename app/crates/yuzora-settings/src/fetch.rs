@@ -88,6 +88,8 @@ fn download(url: &str) -> Result<Vec<u8>, InstallError> {
     Err(InstallError::FetchFailed(match status {
         _ if !moved.is_empty() => format!("HTTP {status}, to {moved}"),
         "" | "000" => curl.to_owned(),
+        // The answer began and then broke off (cut short, too slow): curl says why.
+        "200" if !curl.is_empty() => curl.to_owned(),
         _ => format!("HTTP {status}"),
     }))
 }
