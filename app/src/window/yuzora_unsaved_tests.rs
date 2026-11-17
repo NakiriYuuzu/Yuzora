@@ -1,7 +1,9 @@
 // yuzora(unsaved): included into `window::tests`. On a real window with a real unsaved document: a person's close
 // that would leave it with no pane (a pane, a tab, a confirmed Space) opens the shipped `yuzora-unsaved` dialog
 // instead, the Files sidebar's split-then-close does not, a script's close goes ahead as before, Quit (macOS's menu
-// item and cmd-q) asks and quits at once with nothing unsaved, and app.update asks only with an update ready.
+// item and cmd-q) asks, and app.update asks only with an update ready. With nothing unsaved, `unsaved::quit` runs the
+// quit it is handed at once. No test reaches the quit the menu hands it (`cx.quit()`): the test platform's quit does
+// nothing.
 
 #[test]
 fn a_persons_close_that_would_lose_unsaved_changes_asks_first() {
@@ -165,6 +167,16 @@ export default class Probe extends View {
     assert_eq!(spec["props"]["command"], json!({ "name": "app.update", "args": {} }));
     assert_eq!(spec["props"]["docs"][0]["name"], json!("a.txt"));
     assert_eq!(asks_update(false, cx), None);
+    // A person's app.update with one ready: the window hands in whether one is.
+    super::yuzora_unsaved::UPDATE_READY.set(true);
+    let reply = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("app.update", json!({}), true, window, cx)));
+    super::yuzora_unsaved::UPDATE_READY.set(false);
+    settle(cx);
+    assert_eq!(reply, json!({ "asked": "unsaved" }));
+    let asked = dialogs(cx);
+    assert_eq!(asked.len(), 1, "app.update asked: {asked:?}");
+    assert_eq!(asked[0].1["command"], json!({ "name": "app.update", "args": {} }));
+    close_dialogs(cx);
 
     // The window's own close button, where it closes (macOS hides the app instead, which the test platform can't).
     if !cfg!(target_os = "macos") {
