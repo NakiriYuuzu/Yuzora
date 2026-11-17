@@ -165,6 +165,16 @@ export default class Probe extends View {
     assert_eq!(spec["props"]["command"], json!({ "name": "app.update", "args": {} }));
     assert_eq!(spec["props"]["docs"][0]["name"], json!("a.txt"));
     assert_eq!(asks_update(false, cx), None);
+    // A person's app.update with one ready: the window hands in whether one is.
+    super::yuzora_unsaved::UPDATE_READY.set(true);
+    let reply = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("app.update", json!({}), true, window, cx)));
+    super::yuzora_unsaved::UPDATE_READY.set(false);
+    settle(cx);
+    assert_eq!(reply, json!({ "asked": "unsaved" }));
+    let asked = dialogs(cx);
+    assert_eq!(asked.len(), 1, "app.update asked: {asked:?}");
+    assert_eq!(asked[0].1["command"], json!({ "name": "app.update", "args": {} }));
+    close_dialogs(cx);
 
     // The window's own close button, where it closes (macOS hides the app instead, which the test platform can't).
     if !cfg!(target_os = "macos") {
