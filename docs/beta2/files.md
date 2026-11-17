@@ -21,7 +21,23 @@ beta.2 的檔案模式、程式碼編輯器、Markdown 預覽與圖片檢視。�
 | `app/defaults/mods/yuzora-markdown` | Markdown pane（預覽／原始碼切換） |
 | `app/defaults/mods/yuzora-files-image` | 圖片與 SVG 檢視 pane |
 
-上游程式碼的改動都有 `// yuzora(L5):` 註記：`app/src/main.rs`（SVG 子行程的入口，在 `main()` 的開頭）、vendored gpui-pre 的 `svg_renderer.rs`（`<image>` 一律不載入、`ParsedSvg::tree()`）與 `assets.rs`（`RenderImage::with_scale_factor`）；v0.1.0 開檔改版（#259）動了兩個上游檔，都標了 `// yuzora(v0.1.0 files-open):`：`app/src/window.rs` 的 `publish`（mod pane 的 `props` 與 `started` 也放進 `panes()`；產品程式 4 行新增、2 行刪除，都在 1742–1745 行，另在 `#[cfg(test)]` 裡有 133 行測試 `pane_props_listed`、`pane_replaced_in_place`，與 1 行 `include!` 加上新檔 `app/src/window/pane_replace_tests.rs`），與 `app/defaults/herdr.d.ts` 的 `PaneInfo`（`props`、`started` 與它們的說明：10 行新增、1 行刪除）。#259 也動了 L5 自己的 crate 裡的 Rust 產品程式 `app/crates/yuzora-files/src/docs.rs`（不是上游檔：產品程式 29 行新增、7 行刪除，`here_is_windows`、`backslash_separates`、`renamed(…, backslash)`，讓 Windows 路徑的改名認 `\`；測試另有 104 行新增、7 行刪除），所以「沒有動 Rust 產品程式與上游檔」不成立。共用檔只改了各自的 L5 標記區：`README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md`，以及 `app/CHANGELOG.md` 的 0.1.0-beta.2 條目。
+上游檔的每一處改動列在下面〈上游改動〉的表裡。v0.1.0 開檔改版（#259）動了兩個上游檔，都標了 `// yuzora(v0.1.0 files-open):`：`app/src/window.rs` 的 `publish`（mod pane 的 `props` 與 `started` 也放進 `panes()`；產品程式 4 行新增、2 行刪除，都在 1742–1745 行，另在 `#[cfg(test)]` 裡有 133 行測試 `pane_props_listed`、`pane_replaced_in_place`，與 1 行 `include!` 加上新檔 `app/src/window/pane_replace_tests.rs`），與 `app/defaults/herdr.d.ts` 的 `PaneInfo`（`props`、`started` 與它們的說明：10 行新增、1 行刪除）。#259 也動了 L5 自己的 crate 裡的 Rust 產品程式 `app/crates/yuzora-files/src/docs.rs`（不是上游檔：產品程式 29 行新增、7 行刪除，`here_is_windows`、`backslash_separates`、`renamed(…, backslash)`，讓 Windows 路徑的改名認 `\`；測試另有 104 行新增、7 行刪除），所以「沒有動 Rust 產品程式與上游檔」不成立。共用檔只改了各自的 L5 標記區：`README.md`、`AGENTS.md`、`CLAUDE.md`、`app/defaults/AGENTS.md`，以及 `app/CHANGELOG.md` 的 0.1.0-beta.2 條目。
+
+### 上游改動
+
+L5 在上游檔（`app/src`、上游 mods、`app/defaults/herdr.d.ts`、vendored gpui-pre）裡改的每一處都帶註記：`yuzora(L5)`、`yuzora(v0.1.0 files-open)` 或 `yuzora(unsaved)`。`git grep -n -e 'yuzora(L5)' -e 'yuzora(v0.1.0 files-open)' -e 'yuzora(unsaved)' app/` 列得出全部，連同 Yuzora 自己的檔（例如 `app/src/window/yuzora_unsaved.rs`、`app/scripts/yuzora-unsaved.test.ts`）。同步上游時保留它們。
+
+| 檔案 | 改動 |
+| --- | --- |
+| `app/src/main.rs`（L5） | `main()` 開頭：帶 `--yuzora-rasterize-svg` 啟動時改當 SVG 子行程，repo 的 SVG 在子行程點陣化，受父行程給的上限約束 |
+| `app/vendor/gpui-pre/src/svg_renderer.rs`（L5） | `ParsedSvg::tree()`，讓呼叫端在點陣化之前先檢查解析出來的樹；`image_href_resolver` 什麼都不載入，因為這裡的 SVG 來自 repo 與 agent，usvg 預設會讀 `<image>` 指到的任何本機路徑、解開 data URI |
+| `app/vendor/gpui-pre/src/assets.rs`（L5） | `RenderImage::with_scale_factor`，子行程送回的像素才會照 `render_parsed` 給的大小顯示 |
+| `app/src/files.rs`（L5） | `next_change` 的根目錄經 `yuzora_core::paths::plain`：Windows 的 `canonicalize` 帶 `\\?\`，不拿掉的話回報的路徑永遠不等於 mod 認得的路徑；測試的 `test_repo` 用同樣的路徑，`a_watched_windows_folder_reports_plain_paths_within_a_second` 在 Windows 上守住這一點 |
+| `app/src/window.rs`（v0.1.0 files-open） | `publish` 讓 `panes()` 也列出 mod pane 的 `props` 與 `started`：還原的 layout 只啟動顯示中的 tab，其他 tab 的 pane 開著哪個檔案只有這裡知道；`mod tests` 的兩行 `include!` 帶入 Yuzora 的測試檔 `window/yuzora_pane_list_tests.rs` 與 `window/pane_replace_tests.rs` |
+| `app/defaults/herdr.d.ts`（v0.1.0 files-open） | `PaneInfo` 的 `props` 與 `started`，上一列兩個欄位的型別與說明 |
+| `app/src/window.rs`（unsaved） | `mod yuzora_unsaved;`，子模組 `window/yuzora_unsaved.rs` 的 `ask_unsaved` 要讀 `AppWindow` 的私有欄位；`run_as` 一行，人執行的關閉、結束或更新會丟掉未儲存的變更時，先開對話框並回 `{"asked":"unsaved"}`，不執行；`on_window_should_close` 一行，Linux 與 Windows 的視窗關閉鈕和 `window.close` 一樣先問；`mod tests` 的 `include!` 帶入 `window/yuzora_unsaved_tests.rs` |
+| `app/src/macos.rs`（unsaved） | `Quit` action 改呼叫 `yuzora::unsaved::quit`：選單的 Quit Yuzora 與 Cmd+Q 不經過 `run_as`，有未儲存的變更時要在這裡先問 |
+| `app/defaults/mods/worktree/main.js`（unsaved，上游 mod） | `work()` 把 `cx` 交給 `remove(cx)`；`remove` 只對還在的 Space 送 `space.close`，等 100 ms 後 Space 還在（對話框正在問）就不刪資料夾。mod 的 `run()` 拿不到 `{"asked":"unsaved"}`，所以看 `spaces()` |
 
 ## 設計
 
