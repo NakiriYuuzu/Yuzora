@@ -10,7 +10,8 @@
 //! handed over its shipped files ([`set_shipped_mods`]).
 //!
 //! Installing from a folder copies a mod folder (one with `main.js`) or a
-//! shared layout (a folder with `layouts/` and `mods/`) into the home. It
+//! shared layout (a folder with `layouts/` and `mods/`) into the home; a link
+//! is unpacked into such a folder first ([`crate::fetch`]). It
 //! never overwrites: a taken name gets `-2`, `-3`…, and the paths and `mod`
 //! names that pointed at the old name are rewritten, as `mod.clone` does.
 
@@ -24,6 +25,7 @@ type Files = BTreeMap<String, String>;
 /// Folders bigger than this aren't a mod someone meant to install.
 const MAX_FILES: usize = 2000;
 const MAX_BYTES: u64 = 64 << 20;
+const OVER: &str = "It has over 2000 files or 64 MB.";
 
 /// FNV-1a, as Herdr fingerprints installed files.
 pub fn fingerprint(bytes: &[u8]) -> String {
@@ -259,7 +261,10 @@ pub fn rewrite(text: &str, from: &str, to: &str) -> String {
 pub struct Plan {
     /// `mod` (one mod folder) or `bundle` (`layouts/` and `mods/`).
     pub kind: &'static str,
-    pub source: PathBuf,
+    /// The folder's path, or the GitHub address it came from.
+    pub source: String,
+    /// The commit, when it came from GitHub.
+    pub commit: Option<String>,
     /// `(folder, installed as)`.
     pub mods: Vec<(PathBuf, String)>,
     pub layouts: Vec<(PathBuf, String)>,
@@ -283,7 +288,8 @@ impl Plan {
         };
         json!({
             "kind": self.kind,
-            "source": self.source.to_string_lossy(),
+            "source": self.source,
+            "commit": self.commit,
             "mods": pairs(&self.mods),
             "layouts": pairs(&self.layouts),
             "keys": self.keys,
@@ -300,8 +306,13 @@ pub enum InstallError {
     NotAMod,
     /// It's already in the home.
     Inside,
-    TooBig,
+    /// Over a limit; it says which.
+    TooBig(&'static str),
     Io(std::io::Error),
+    /// Not a link to a GitHub repository (or a herdr.dev gallery page).
+    BadSource,
+    FetchFailed(String),
+    UnpackFailed(String),
 }
 
 impl InstallError {
@@ -309,8 +320,11 @@ impl InstallError {
         match self {
             InstallError::NotAMod => "not_a_mod",
             InstallError::Inside => "inside_home",
-            InstallError::TooBig => "too_big",
+            InstallError::TooBig(_) => "too_big",
             InstallError::Io(_) => "io",
+            InstallError::BadSource => "bad_source",
+            InstallError::FetchFailed(_) => "fetch_failed",
+            InstallError::UnpackFailed(_) => "unpack_failed",
         }
     }
 }
@@ -319,6 +333,8 @@ impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InstallError::Io(e) => write!(f, "io: {e}"),
+            InstallError::TooBig(why) => f.write_str(why),
+            InstallError::FetchFailed(why) | InstallError::UnpackFailed(why) => f.write_str(why),
             other => f.write_str(other.code()),
         }
     }
@@ -428,7 +444,7 @@ fn plan_for(source: &Path, home: &Path, windows: bool) -> Result<Plan, InstallEr
     if source.starts_with(&home_real) {
         return Err(InstallError::Inside);
     }
-    let mut plan = Plan { source: source.clone(), ..Plan::default() };
+    let mut plan = Plan { source: source.to_string_lossy().into_owned(), ..Plan::default() };
     let windows_ok = |n: &str| !windows || crate::templates::windows_name(n);
     let mod_dirs: Vec<PathBuf> = if real_file(&source.join("main.js")) {
         plan.kind = "mod";
@@ -457,7 +473,7 @@ fn plan_for(source: &Path, home: &Path, windows: bool) -> Result<Plan, InstallEr
     let mut entries: Vec<(PathBuf, PathBuf, Vec<(String, String)>)> = Vec::new();
     for (dir, to) in &plan.mods {
         let mut files = Vec::new();
-        files_in(dir, true, &mut files).map_err(|_| InstallError::TooBig)?;
+        files_in(dir, true, &mut files).map_err(|_| InstallError::TooBig(OVER))?;
         let own: Vec<(String, String)> = renames.iter().filter(|(a, _)| *a == folder_name(dir)).cloned().collect();
         for f in files {
             let rel = f.strip_prefix(dir).map_err(std::io::Error::other)?.to_path_buf();
@@ -469,7 +485,7 @@ fn plan_for(source: &Path, home: &Path, windows: bool) -> Result<Plan, InstallEr
     }
     plan.files = entries.len();
     if plan.files > MAX_FILES || entries.iter().map(|(f, ..)| std::fs::metadata(f).map_or(0, |m| m.len())).sum::<u64>() > MAX_BYTES {
-        return Err(InstallError::TooBig);
+        return Err(InstallError::TooBig(OVER));
     }
     let mut reaches = std::collections::BTreeSet::new();
     for (from, to, renames) in entries {
@@ -480,7 +496,7 @@ fn plan_for(source: &Path, home: &Path, windows: bool) -> Result<Plan, InstallEr
         };
         plan.bytes += bytes.len() as u64;
         if plan.bytes > MAX_BYTES {
-            return Err(InstallError::TooBig);
+            return Err(InstallError::TooBig(OVER));
         }
         let is_code = to.extension().is_some_and(|e| matches!(e.to_str(), Some("js" | "mjs" | "ts")));
         if is_code && let Ok(text) = std::str::from_utf8(&bytes) {
@@ -684,6 +700,27 @@ mod tests {
         assert!(!home.join("mods/board-2/RECIPE.md").exists() && !home.join("mods/board-2/.git").exists());
         assert!(matches!(plan(&home.join("mods/board"), &home), Err(InstallError::Inside)));
         assert!(matches!(plan(&root.join("share"), &home), Err(InstallError::NotAMod)));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// What would be installed is held to 2000 files or 64 MB, and the page is told which limit that is.
+    #[test]
+    fn a_folder_over_the_cap_is_too_big_and_says_which_cap() {
+        let root = tmp("too-big");
+        let home = root.join("home");
+        let many = root.join("many");
+        write(&many.join("main.js"), "m");
+        for i in 0..MAX_FILES {
+            write(&many.join(format!("lib/{i}.js")), "");
+        }
+        let large = root.join("large");
+        write(&large.join("main.js"), "m");
+        // Sparse: 64 MiB on paper, nothing on disk.
+        std::fs::File::create(large.join("big.bin")).unwrap().set_len(MAX_BYTES).unwrap();
+        for dir in [&many, &large] {
+            let e = plan(dir, &home).unwrap_err();
+            assert_eq!((e.code(), e.to_string().as_str()), ("too_big", "It has over 2000 files or 64 MB."), "{}", dir.display());
+        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 

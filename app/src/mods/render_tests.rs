@@ -12,6 +12,7 @@ use std::{
 
 // yuzora(motion): the tests of Yuzora's mod animations, a child so they use these fixtures.
 mod motion_tests;
+mod settings_library_tests; // yuzora(L6): the Mods & Templates page's tests, a child so they use these fixtures.
 
 // yuzora(git-perf): how every test here starts. The shipped yuzora mods call yuzora:* host functions
 // (the status bar asks git about its folder in its first frame) that finish on threads of their own and wake

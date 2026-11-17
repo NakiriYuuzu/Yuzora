@@ -113,7 +113,7 @@ v0.1.0-beta.1 以前的 Tauri 2＋React 版不在 repo 裡。要對照舊實作�
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->
-- L6 實機看設定頁：`<app> do app.settings '{"section":"templates"}'`（section 可以是 Yuzora 頁的 mod 名或 section key）；直接開模板表單：`<app> do tab.new '{"mod":"yuzora-settings-templates","props":{"edit":"<name>"}}'`；再 `shot` 留證。
+- L6 實機看設定頁：`<app> do app.settings '{"section":"mods"}'`（Mods & Templates；section 可以是 Yuzora 頁的 mod 名或 section key，`templates` 開它的 Templates 分頁）；直接開模板表單：`<app> do tab.new --mod yuzora-settings-mods --props '{"tab":"templates","edit":"<name>"}'`；再 `shot` 留證。從連結安裝的實機測試用 debug build 加 `YUZORA_INSTALL_URL=<仿 codeload 的本機伺服器>`（release build 不讀）。
 - 隔離 home 第一次啟動會跳 Herdr 的 welcome 視窗擋住 shot：app 停止時在隔離 home 的 `shared.json` 寫入 `"frame.welcomed": "skipped"`。
 <!-- yuzora:lane:L6:end -->
 

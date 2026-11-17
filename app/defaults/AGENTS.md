@@ -476,7 +476,7 @@ folder on GitHub):
 4. A mod's `keys.json`: merge it into the person's. Add its sections and
    keys, and ask before replacing a key they already use.
 5. `herdr-app check` each mod; for a layout, then `layout.switch {name}`.
-   The person's own layout stays as it was; <!-- yuzora(L1): -->`layout.switch {name}` (or Settings > Mods > Layouts)<!-- /yuzora(L1) -->
+   The person's own layout stays as it was; <!-- yuzora(L1): -->`layout.switch {name}` (or Settings > Mods & Templates > Layouts)<!-- /yuzora(L1) -->
    switches back, and deleting the files removes it.
 
 To share one: put that folder in a public GitHub repo (one folder each if
@@ -1201,7 +1201,7 @@ with these differences.
   `yuzora-modebar.files`, `.git`, `.database`, `.ssh` and `.toggle` (bind them
   in `keys.json`). A layout opts out with `"yuzora": {"dock": "off"}` at its
   root (`"drawer"` forces the drawer). A person's own choice per layout beats
-  the layout file's: Settings > Mods > Layouts has Auto / Drawer / Off on every
+  the layout file's: Settings > Mods & Templates > Layouts has Auto / Drawer / Off on every
   layout, saved in Yuzora's `settings.json` as
   `{"shell": {"dock": {"layouts": {"win98": "off"}}}}` (shipped layouts can't
   be edited, so this is how to turn the dock off for one). The default keys
@@ -1239,6 +1239,8 @@ with these differences.
 - Nothing goes to herdr.dev: telemetry is off, feedback opens a GitHub issue
   on NakiriYuuzu/Yuzora, and the app doesn't update itself from Herdr. Only
   herdr-core's own install and update still come from `releases.herdr.dev`.
+  A herdr.dev gallery link given to Install from link is only read as text:
+  the files are downloaded from GitHub (`codeload.github.com`).
 - Yuzora has no Browser and no language server (LSP).
 
 <!-- yuzora:lane:L1:start -->
@@ -1250,7 +1252,7 @@ with these differences.
   in `keys.json`; a colon makes the whole file fail to load; or `herdr-app do yuzora-shell-tabs.new-pane`) and puts
   a tool pane, a terminal or an agent right of or below the focused pane (`pane.split {direction, pane, mod, props}`).
   A mod is listed there when its `mod.json` has `"yuzora": {"pane": {"title": "pane.title"}}`.
-  The left side (Herdr's `workspace-chrome`) has no "next layout" row: switch layouts in Settings > Mods > Layouts. Yuzora ignores the old
+  The left side (Herdr's `workspace-chrome`) has no "next layout" row: switch layouts in Settings > Mods & Templates > Layouts. Yuzora ignores the old
   default `cmd-shift-l`/`ctrl-shift-l` → `layout.switch` in `global` (also in a keys.json written before it was removed):
   bind another key, or a named `layout.switch:<name>`.
 - A person's `space.new` with no arguments but `machine` (a key, a click, a menu, a mod's `run()`) opens the
@@ -1578,13 +1580,24 @@ with these differences.
 ### Settings, mods and templates (`yuzora:settings`)
 
 - Settings (`app.settings`, ⌘,) open on Yuzora's General page;
-  `{"section": "templates"}` opens another (a Yuzora page's section or mod
+  `{"section": "mods"}` opens another (a Yuzora page's section or mod
   name, or one of Herdr's sections). A mod becomes a page with
   `"yuzora": {"settings": {"title": "settings.title", "icon": "icon.svg", "order": 500, "section": "git"}}`
   and is shown beside the settings nav with `props.section`. General is order
-  0, Templates 800, Mods 900.
+  0, Mods & Templates 900.
+- Mods & Templates (`yuzora-settings-mods`) is one page with three tabs:
+  Mods, Layouts and Templates. `herdr-app do app.settings '{"section":"mods"}'`
+  opens it on Mods; `'{"section":"templates"}'` (or the old page's name,
+  `yuzora-settings-templates`) opens its Templates tab;
+  `herdr-app do tab.new --mod yuzora-settings-mods --props '{"tab":"templates","edit":"<name>"}'`
+  opens that template's form in a tab (`"edit": ""` a new one, `"machine"`
+  another machine's templates; `"tab": "layouts"` the Layouts tab).
+- The old Templates page's mod is gone: `tab.new --mod yuzora-settings-templates`
+  answers `no mod "yuzora-settings-templates" in mods/`; use the command
+  above. A tab left open on the old page shows "did not load" after the
+  update until it is closed.
 - Agent templates are herdr-core's (`~/.config/herdr-core/templates/<name>.md`,
-  `hc templates`). The Templates settings page edits them on any machine.
+  `hc templates`). The Templates tab edits them on any machine.
   `yuzora-settings-launch` starts one:
   `openOverlay({mod: "yuzora-settings-launch", kind: "dialog", width: 560, props: {template, machine, space, tab, task}})`,
   every prop optional. Without the dialog, `yuzora:settings`
@@ -1596,6 +1609,21 @@ with these differences.
   (`planInstall(path)` reads it and shows what it would install;
   `installFolder(plan.token)` installs exactly what that plan read). Mods
   are trusted code: show the person the plan and ask before installing.
+- Install from link (the Mods and Layouts tabs, or `planFetch(link)`) takes `owner/repo`,
+  `https://github.com/<owner>/<repo>`, `…/tree/<branch, tag or commit>/<folder>`,
+  or a `https://herdr.dev/mods/…` or `https://herdr.dev/layouts/…` page. It
+  asks GitHub only (`codeload.github.com`, never herdr.dev), unpacks the
+  archive into a temporary folder that is gone again before the plan
+  returns, and plans it as a folder install, with the GitHub address and the
+  commit in the plan, and `github` (`{repo, ref, folder}`: what it asked
+  GitHub for) beside it, on every error but `bad_source` too. Nothing
+  reaches the home before the person picks "I trust it: install"
+  (`installFolder(plan.token)`).
+- In a `tree/<ref>/<folder>` address the ref is one name: a branch whose
+  name has `/` (`feature/x`) is read as the branch `feature` and the folder
+  `x/…`. Give a form without the branch's name instead: its commit,
+  `https://github.com/<owner>/<repo>/tree/<40-hex commit>/<folder>`, or,
+  when it is the default branch, `…/tree/HEAD/<folder>` or `owner/repo`.
 <!-- yuzora:lane:L6:end -->
 
 <!-- yuzora:lane:L7:start -->
@@ -1644,7 +1672,7 @@ and machines are shared; templates are shared whatever the session.
   program in its terminals ends. To stop it for good, the person quits both apps first.
 - Herdr's mods and settings aren't imported. A Herdr mod works here once its folder is copied from `mods/<name>` in
   Herdr's home to `mods/<name>` in this folder (never `installed.json`). If `mods/<name>` is already here, don't copy
-  over it: ask the person, or point them to Settings › Mods › Install from folder…, which picks a free name. Herdr's
+  over it: ask the person, or point them to Settings › Mods & Templates › Install from folder…, which picks a free name. Herdr's
   home is `$XDG_CONFIG_HOME/herdr-app` when that is set, else `~/.config/herdr-app`, unless the person moved it with
   `HERDR_APP_HOME` (ask if it isn't there). A copied mod's `fs` writes under Herdr's home are refused here, but the commands it runs aren't limited.
   `yuzora-*` mods don't load in Herdr.

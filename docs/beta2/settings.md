@@ -9,9 +9,9 @@
 | --- | --- | --- |
 | 設定框架接上 Yuzora（品牌、隱私、「Yuzora」分組） | `app/defaults/frame/settings/yuzora.js`（新檔）＋ `main.js` 帶 `// yuzora(L6):` 的改動 | 完成 |
 | `general` 設定頁：外觀（主題、字型、字級、縮放）、啟動行為、終端機剪貼簿 | `yuzora-settings-general` | 完成；「啟動」區塊（右側 dock 的開啟模式）在 dock 的 bar 或抽屜套用後設 `yuzora.startup.honored` 才顯示（beta.4 PR-4 已串接） |
-| Template 管理：各 machine 列出、表單＋body 編輯、存前驗證、移到垃圾桶 | `yuzora-settings-templates`、`yuzora-settings` 的 `templates`／`trash` | 完成 |
+| Template 管理：各 machine 列出、表單＋body 編輯、存前驗證、移到垃圾桶 | `yuzora-settings-mods` 的 Templates 分頁（`templates.js`）、`yuzora-settings` 的 `templates`／`trash` | 完成；原本的 `yuzora-settings-templates` 頁已併入「Mods & Templates」（見下方〈Mods & Templates 頁〉） |
 | 以模板啟動 agent（選 Space／tab、輸入任務、`hc run` 帶 label） | `yuzora-settings-launch`、`yuzora-settings` 的 `launch` | 完成；「＋」選單入口由 L1 串接 |
-| MOD 管理：mods／layouts 清單、clone、開資料夾、check、還原內建、切換 layout、從資料夾安裝（含信任警告） | `yuzora-settings-mods`、`yuzora-settings` 的 `mods` | 完成；「以編輯器開啟」與 mod 立即還原需整合（見後續整合） |
+| MOD 管理：mods／layouts 清單、clone、開資料夾、check、還原內建、切換 layout、從資料夾或連結安裝（含信任警告） | `yuzora-settings-mods`、`yuzora-settings` 的 `mods`、`source`／`fetch` | 完成；「以編輯器開啟」與 mod 立即還原需整合（見後續整合） |
 
 ## 決策：改上游 settings frame，而不是另做 overlay
 
@@ -29,8 +29,8 @@
 ### 行為
 
 - `app.settings` 不帶 section：開 Yuzora「一般」頁（`yz.DEFAULT_PAGE`）。frame 先畫一個空白底，量到對話框實際高度（620，視窗太矮時是視窗的 85%）後換成同寬同高的 layout overlay，換頁不會跳動；量不到時 500 ms 後以 620 開。
-- `app.settings {section}`：Herdr 的分頁（look、keyboard、machines、alerts、updates、privacy）照舊；也可以是 Yuzora 頁的 mod 名稱或 section key（`{section: "templates"}`），直接開該頁。Herdr 的分頁名稱優先。
-- 分組來源是 `settingsPages()`（各 mod 的 `mod.json` `yuzora.settings`），依 `order` 排序。L6 自己的頁：`general` 0、`templates` 800、`mods` 900；其他 lane 的頁放在 1–799 之間就會排在中間。
+- `app.settings {section}`：Herdr 的分頁（look、keyboard、machines、alerts、updates、privacy）照舊；也可以是 Yuzora 頁的 mod 名稱或 section key（`{section: "git"}`），直接開該頁。Herdr 的分頁名稱優先。`templates` 與舊的 mod 名稱 `yuzora-settings-templates` 開「Mods & Templates」頁的 Templates 分頁（`yz.find` 的 `MOVED`；頁的 props 帶 `tab`），除非 home 裡還有一頁自己宣告它（改過而留下的舊 Templates 頁）。
+- 分組來源是 `settingsPages()`（各 mod 的 `mod.json` `yuzora.settings`），依 `order` 排序。L6 自己的頁：`general` 0、`mods` 900（Mods & Templates）；其他 lane 的頁放在 1–899 之間就會排在中間。
 - 同時只有一個設定對話框：`app.settings` 只認得 id 為 `settings` 的 overlay，所以 Yuzora 頁的 overlay 記在 `shared("yuzora.settings.overlay")`（`{id, run}`）；frame 每次開啟（⌘,、選單、齒輪）都先關掉它。不必改 `window.rs`。overlay id 每次啟動都從 `o1` 重新編號，而 `shared` 會存檔，所以只有 `run` 等於本次啟動的 `session()` 時才關，否則只清掉這個值（避免關到重啟後拿到同一個 id 的別的 overlay）。
 - 從 nav 點回 Herdr 分頁、從 Herdr 分頁點 Yuzora 頁，都以目前對話框的高度開新的那一個。
 
@@ -65,7 +65,7 @@
 | `locale`（已移除） | 舊版存的 `system`／`en`／`zh-TW` | 不再讀取：介面只有英文，檔案裡留著也照常啟動 |
 | `startup.dock` | `last`（預設，維持離開時的樣子）／`none`（收起）／`files`／`git`／`database`／`ssh`（沒有 workspace：工作區模式不在 dock，Q6） | `yuzora-modebar` 的第一個 bar 或抽屜在每次啟動時呼叫 `yuzora:settings` 的 `startup()` 套用一次：bar 對 `panel-body` `layout.select` 該模式並顯示 panel（`none` 時 `layout.hide`），抽屜開該模式的 window；成功套用後設 `yuzora.startup.applied`（本次 `session()`）與 `yuzora.startup.honored`。舊的 `startup.sidebar` 不再讀 |
 
-同一個檔案另有 `shell` section（L1 的 dock 擁有、設定 › Mods 的 Layouts 頁寫入）：`{"shell": {"dock": {"layouts": {"<layout 名稱>": "auto"｜"drawer"｜"off"}}}}`，個人對每個 layout 的右側 dock 選擇，優先於 layout 檔的 `yuzora.dock`（見 shell.md「個人 dock 開關」）。
+同一個檔案另有 `shell` section（L1 的 dock 擁有、設定 › Mods & Templates 的 Layouts 分頁寫入）：`{"shell": {"dock": {"layouts": {"<layout 名稱>": "auto"｜"drawer"｜"off"}}}}`，個人對每個 layout 的右側 dock 選擇，優先於 layout 檔的 `yuzora.dock`（見 shell.md「個人 dock 開關」）。
 
 外觀與剪貼簿寫的是 Herdr 自己的 `settings.json`，寫法與上游 frame 相同（讀 → 改 → 只在沒人改過時寫回）：`appearance`、`font`、`ui_font`、`font_size`、`clipboard_write`；主題用 `app.theme`、縮放用 `app.zoom_*`。主題與字型本身由 L1 提供，L6 只負責挑選 UI。
 
@@ -131,6 +131,17 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 - 對話框等 pane 出現後 `pane.focus` 它，再關掉自己（與開啟它的設定對話框）。
 - 注意：官方 Herdr 若連在同一個 core，也會看到這個帶 label 的 terminal；它不認得這個 space id，會替它開一個新 space（D4 的已知代價）。
 
+## Mods & Templates 頁
+
+一頁三個分頁：Mods、Layouts、Templates（`yuzora-settings-mods`，標題「Mods & Templates」，section `mods`）。
+
+- props（都可省略）：`{tab: "mods" | "layouts" | "templates", machine, edit}`；`machine`、`edit` 交給 Templates 分頁（`edit` 是模板名稱，`""` 開新模板的表單）。不認得的 `tab` 開 Mods。
+- 開啟方式：nav 的「Mods & Templates」；`app.settings {section: "mods"}`；`app.settings {section: "templates"}`（Templates 分頁）；`tab.new --mod yuzora-settings-mods --props '{"tab":"templates","edit":"reviewer"}'`（直接開某個模板的表單）。
+- Templates 分頁就是原本的 Templates 頁，搬進 `templates.js`，成為一般 class（不是 View），由頁面在第一次顯示該分頁時建立並一直保留；它的輸入框、編輯器與非同步工作都屬於這個頁面的 view。沒顯示過 Templates 分頁就不會讀 `hc templates`；Mods 每 5 秒重讀清單，在 Templates 分頁時不讀。
+- 原本的 `yuzora-settings-templates` mod 已刪除。舊安裝裡沒改過的那份會在啟動時照 Herdr 的規則移除（`installed.json` 記得它是 shipped，指紋相符）；改過的那份留在 home，成為使用者自己的 mod，nav 仍會列出它，`{section: "templates"}` 也仍開它（自己宣告的頁優先）。
+- 唯一變了的開法：`tab.new --mod yuzora-settings-templates --props '{"edit":"<name>"}'` 現在回 `no mod "yuzora-settings-templates" in mods/`，改用 `tab.new --mod yuzora-settings-mods --props '{"tab":"templates","edit":"<name>"}'`。更新前開著舊頁的 tab，更新後顯示「did not load」，關掉就好（不留空殼 mod）。
+- 字串合併進 `yuzora-settings-mods/i18n/en.json`；與 Mods 重名的鍵改名為 `tpl_page`、`tpl_open_folder`。
+
 ## Mods
 
 - 清單來源：`<home>/mods/*`、`<home>/layouts/*.json`，以及 Herdr 的 `<home>/installed.json`（shipped mod 的每個檔案與 FNV-1a 指紋、shipped layout 的 `layout:<name>`）。
@@ -141,13 +152,21 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 - 右側 dock 開關（beta.4 PR-4）：Layouts 頁每一列有「Yuzora dock」的 Auto／Drawer／Off 三段切換（頁面是 Yuzora 自己的 `yuzora-settings-mods`，由上游 frame 的 nav 以 layout overlay 承載，不改上游 mod）。選擇寫進 `shell.dock.layouts.<name>`（`getSetting`／`setSetting("shell")`），目前顯示的 layout 接著 `layout.switch {name}` 立即生效，其他 layout 只存設定；未設定時顯示 layout 檔自己的 `yuzora.dock`（`listMods()` 的 layout 的 `dock` 欄位），沒有就是 Auto。
 - 還原內建：layout 用 `layout.reset {name}`。mod 沒有對應指令：`yuzora_settings::mods::reset_mod` 先把 edited 的資料夾移到 `<name>-edited`（與啟動時相同），再寫回 shipped 檔案。它需要 app 交出內嵌的 shipped 檔案（`set_shipped_mods(crate::mods::DEFAULT_MODS)`），目前尚未串接（見後續整合），所以 UI 只說明「下次啟動會還原」，不顯示按鈕。
 - 從資料夾安裝：`pickFolder` → `planInstall`（只讀）→ 顯示「mods 是受信任的程式碼」警告、會裝成什麼名稱、程式碼會不會執行程式／連網／讀寫檔案（字串掃描，只是提示）、有沒有 `keys.json` → 使用者按「我信任它，安裝」→ `installFolder(plan.token)`。
-  - 裝的就是看過的：`planInstall` 讀進來的檔案（已改寫名稱）留在 Rust（只留最新一份），`installFolder` 只寫這一份，不再讀資料夾；token 不符（例如另一個視窗又規劃了一次）回 `stale`，要重新選。
+  - 裝的就是看過的：`planInstall` 讀進來的檔案（已改寫名稱）留在 Rust（只留最新一份），`installFolder` 只寫這一份，不再讀資料夾；token 不符（例如另一個視窗又規劃了一次）回 `stale`，要重新選。留下的是最後讀成功的那份：`planInstall`／`planFetch` 在呼叫時編號，較早呼叫的那次若比較晚讀完，不會取代較新的那份，而是回 `stale`（下載可能比後來選的資料夾還晚結束）；較新的那次若失敗，先前那份仍留著（它的面板已換成錯誤，只有還顯示它的另一個視窗能裝）。
   - 一個 mod 資料夾（有 `main.js`），或 shared layout 的資料夾（`layouts/*.json`＋`mods/*/`）。
   - 不覆寫：名稱被占用就用 `-2`、`-3`…（連結、壞掉的連結也算占用；同一包裡的名稱不分大小寫比對，`Foo` 與 `foo` 在 Windows／macOS 是同一個資料夾），並把 `mods/<資料夾原名>/` 路徑與 `mod: "<資料夾原名>"` 改寫成安裝的名稱（`my mod` 裝成 `my-mod` 時也改；冒號前後可有任意空白），layout 內引用也一起改。寫入時 mod 資料夾用 `create_dir`、每個檔案用 `create_new`，名稱在這之間被占用就失敗，不會跟著連結寫到 home 外。新名稱也避開同一包裡其他 mod 的名稱（home 有 `x`、包裡有 `x` 與 `x-2` 時，`x` 裝成 `x-3`），改寫才不會連鎖。
   - 不經過連結：`mods/`、`layouts/` 本身或其中的 mod 資料夾、layout 檔是連結時都略過，檔案層的連結也不複製，不會讀到所選資料夾外的東西。
   - home 在 Windows 時，layout 名稱的 `< > : " | ? *` 換成 `-`，`CON`／`NUL` 等裝置名稱加 `-2`（mod 名稱本來就只有英數與 `-`／`_`）。
   - 不複製 `.git`、`node_modules`、隱藏檔、根目錄的 `RECIPE.md`／`preview.png`；超過 2000 個檔案或 64 MB 拒絕；來源在 app home 內拒絕；失敗時刪掉這次寫入的東西。
   - `keys.json` 不自動合併（AGENTS.md 要求替換既有按鍵前先問人），提示使用者自行處理。
+- 從連結安裝（Install from link…）：輸入連結 → `planFetch(link)`（只讀，結果與 `planInstall` 相同的計畫，多了 GitHub 網址與 commit；回應另附 `github: {repo, ref, folder}`，錯誤時也有）→ 同一個信任面板顯示「From: <GitHub 網址>」、Repository、Branch, tag or commit、Folder 各一行，與「Commit: <sha>」→「I trust it: install」→ `installFolder(plan.token)`。按下之前什麼都不會寫進 home。下載中面板有 Cancel：收掉面板，之後才到的回應不屬於畫面上的安裝，直接丟掉。
+  - 接受四種寫法（`source.rs`）：`owner/repo`；`https://github.com/<owner>/<repo>`；`https://github.com/<owner>/<repo>/tree/<ref>/<folder…>`；`https://herdr.dev/mods/<owner>/<slug>`、`https://herdr.dev/layouts/<owner>/<slug>`（gallery 的 slug 是 `<repo>--<folder>--<folder>`）。主機名稱不分大小寫、可有 `www.`、可省略 `https://`（只有 `owner/repo` 一定不能帶 scheme）；`?`、`#` 之後與結尾的 `/` 不看。名稱照 GitHub 的規則檢查（owner 1–39 個英數與 `-`；repo、資料夾不能是 `.`／`..`、不能以 `-` 開頭；ref 不能有 `..`、`//`），其他一律 `bad_source`。
+  - 只連 GitHub：下載 `https://codeload.github.com/<owner>/<repo>/legacy.tar.gz/<ref 或 HEAD>`。herdr.dev 只當文字解析，任何程式路徑都不連 herdr.dev。legacy archive 的唯一資料夾是 `<owner>-<repo>-<commit>`，commit 從這裡取得（`tar.gz/HEAD` 的資料夾是 `<repo>-HEAD`，沒有 commit）。
+  - 下載：`curl -q -gfsS --max-time 60 --max-filesize 64MiB`，進記憶體、不跟隨 redirect（改名或搬走的 repo 會失敗，訊息附上 GitHub 的狀態碼與新位置）、只認 HTTP 200。超過 64 MiB 是 `too_big`。回應中途斷掉或 60 秒內沒傳完，訊息是 curl 自己的原因（例如 `curl: (18) …`），不是「HTTP 200」。curl 是唯一執行的程式，只負責下載。
+  - 解開：下載的內容在 Rust 裡只當成 gzip 壓縮的 tar 讀（`flate2`，三個平台同一條路，不交給系統的 tar 或 gzip），讀到 128 MiB 為止，再多就是 `too_big`，不寫磁碟。bsdtar 會讀的其他格式（mtree、zstd、lz4、zip…）一律 `unpack_failed`，也不會因此執行 `PATH` 上的任何程式。tar 由 Rust 讀（`fetch.rs` 的 `members`：ustar、pax `path`／`size`、GNU `L`、ustar `prefix`），只寫資料夾與一般檔案；連結、hardlink、裝置、FIFO 不論名稱一律略過；資料夾或檔案的名稱有空段、`.`、`..`、`\`、控制字元就整包拒絕（`unpack_failed`）。每個資料夾與檔案都必須在 `<owner>-<repo>-<commit>/` 底下，否則整包拒絕；連結指定完整 40 碼的 commit 時，資料夾名稱裡的 commit 必須是它的開頭，否則 `unpack_failed`。寫入前先數：資料夾與檔案合計最多 20000 個（檔案路徑上會建出的資料夾也算），超過就 `too_big`，什麼都不寫；寫入用 `create_new`。
+  - 暫存：系統暫存資料夾裡新建的 `yuzora-fetch-<pid>-<n>`（0700，`create` 而非沿用；名稱被占用（含 symlink）就換下一個），只放連結指的那個資料夾。之後交給 `mods::plan`（與資料夾安裝相同的規則與上限），計畫回傳前暫存資料夾就刪掉；安裝寫的是計畫讀進記憶體的檔案。
+  - 錯誤：`bad_source`、`fetch_failed`（附上原因：HTTP 狀態、redirect 的新位置，或 curl 的原因）、`unpack_failed`、`too_big`（訊息說是哪個上限：整個 repo 的下載超過 64 MB、解開超過 128 MB、連結指的資料夾超過 20000 個資料夾與檔案，或要安裝的超過 2000 個檔案或 64 MB）、`not_a_mod`、`io`、`stale`。除了 `bad_source`，回應都附上 `github`，面板逐項顯示問了 GitHub 什麼（repo、ref、資料夾）。
+  - `YUZORA_INSTALL_URL`：只有 debug build 會讀，取代 codeload 的網址，給測試用的本機伺服器；release build 一律連 GitHub。沒有測試證明 release build 不讀它：測試都是 debug build。守住它的是 `lib.rs` 把 `cfg!(debug_assertions)` 交給 `source::base` 的那一行，以及 `source::tests::only_a_debug_build_reads_the_override`（`base` 在不是 debug build 時不看這個變數）。
 
 ## JS API（`yuzora:settings`）
 
@@ -162,7 +181,7 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 | `runTemplate(launch)` | 以模板啟動（async） |
 | `listMods()`、`resetMod(name)` | mods／layouts 清單（async：每次都讀過 shipped mod 的檔案並算指紋）、還原內建 mod |
 | `appStatus()`、`checkMod(name)` | 視窗 status、`check`（async） |
-| `planInstall(path)`、`installFolder(plan.token)` | 安裝計畫、安裝那份計畫讀到的檔案（async） |
+| `planInstall(path)`、`planFetch(link)`、`installFolder(plan.token)` | 資料夾或連結的安裝計畫、安裝那份計畫讀到的檔案（async） |
 | `reveal(path)` | 在檔案管理員顯示 |
 | `startup()` | `general.startup.dock` 要求的右側 dock 模式（`{dock: "git"｜"none"｜null}`，null 是維持原樣） |
 | `session()` | 本次啟動的識別值（給存在 `shared` 但重啟後就沒意義的值用，例如 overlay id） |
@@ -171,14 +190,15 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 
 1. **（已完成，beta.4 PR-4）L1 模式列套用啟動模式**——原計畫如下，實際做法見上表 `startup.dock`：模式列 init 時 `const s = startup().sidebar; if (s) run("layout.select", {stack: "yuzora-sidebar", child: s})`，每次 app 啟動只做一次（可用 `session()` 記本次啟動），並 `setShared("yuzora.startup.honored", true)`。一般頁要看到這個旗標才顯示「啟動」區塊，避免出現一個沒有作用的設定。
 2. **L1「＋」選單／側欄「新增」加「從模板啟動」**：`openOverlay({mod: "yuzora-settings-launch", kind: "dialog", width: 560, props: {space, tab}})`，或不帶 props 用 `run("mod.open", {name: "yuzora-settings-launch"})`（預設目前的 space 與 tab）。
-3. **L5 編輯器**：MOD 頁已預留「編輯」按鈕：偵測到 `yuzora:core` `panes()` 裡有 `yuzora-editor` 或 `yuzora-editor-*` 時，以 `tab.new {mod, props: {path}}` 開 `main.js`。L5 定案 props 介面後請對齊（`path` 是假設）。
-4. **mod 立即還原**（總指揮）：新增 `app/src/yuzora/settings.rs`：`pub fn init() { yuzora_settings::mods::set_shipped_mods(crate::mods::DEFAULT_MODS); }`，在 `mod.rs` 加 `mod settings;` 並在 `init_once()` 呼叫 `settings::init()`。lanes.md 只允許 lane 加 `mod <lane>;` 那一行，所以留給總指揮決定；串上之後 MOD 頁的「還原」按鈕就會出現。
+3. **L5 編輯器**：Mods 分頁已預留「編輯」按鈕：偵測到 `yuzora:core` `panes()` 裡有 `yuzora-editor` 或 `yuzora-editor-*` 時，以 `tab.new {mod, props: {path}}` 開 `main.js`。L5 定案 props 介面後請對齊（`path` 是假設）。
+4. **mod 立即還原**（總指揮）：新增 `app/src/yuzora/settings.rs`：`pub fn init() { yuzora_settings::mods::set_shipped_mods(crate::mods::DEFAULT_MODS); }`，在 `mod.rs` 加 `mod settings;` 並在 `init_once()` 呼叫 `settings::init()`。lanes.md 只允許 lane 加 `mod <lane>;` 那一行，所以留給總指揮決定；串上之後 Mods 分頁的「還原」按鈕就會出現。
 5. **OSC 52 預設值**：是否把 `clipboard_write` 預設改成 `false`（改上游 `settings.rs` 與測試），由總指揮決定。OSC 8 連結 scheme 白名單（L0 交接的另一項）未處理。
 
 ## 測試
 
-- `cargo test --locked -p yuzora-settings`：模板解析與 hc 對齊、存檔衝突、遠端 sh 腳本（在本機 sh 上以暫存 config／trash 跑過，PATH 裡沒有 gio／trash，不會碰到真正的垃圾桶）、freedesktop trash、日期、mods 分類與 `as_shipped`、還原、安裝計畫與改名改寫、`hc run` 參數與回應解析、HostModule 宣告一致。
-- `scripts/yuzora/check-mods yuzora-settings-general yuzora-settings-templates yuzora-settings-launch yuzora-settings-mods`。
+- `cargo test --locked -p yuzora-settings`：模板解析與 hc 對齊、存檔衝突、遠端 sh 腳本（在本機 sh 上以暫存 config／trash 跑過，PATH 裡沒有 gio／trash，不會碰到真正的垃圾桶）、freedesktop trash、日期、mods 分類與 `as_shipped`、還原、安裝計畫與改名改寫、`hc run` 參數與回應解析、HostModule 宣告一致；連結的解析（`source::tests`）與下載、解開（`fetch::tests`：在 127.0.0.1 起假的 codeload，用本機真正的 curl；gzip 只用來做測試用的壓縮檔）。
+- `app/src/mods/render_tests/settings_library_tests.rs`：三個分頁、Templates 分頁收到的 props、從連結安裝的畫面、從連結讀到按下安裝（`planFetch`、`installFolder` 換成替身）、frame 把 `templates` 導到分頁。
+- `scripts/yuzora/check-mods yuzora-settings-general yuzora-settings-launch yuzora-settings-mods`。
 - 隔離實機：見 PR 描述的截圖與步驟。
 
 ## 待辦
@@ -187,3 +207,4 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 - 外觀頁與上游 Look 頁功能重疊；L1 確定 Yuzora 的主題／字型方案後，可考慮在 `LOOKS` 之外收斂。
 - 模板 body 編輯器沒有 frontmatter 語法提示；hc 的按鍵名稱清單是近似值（只會警告）。
 - macOS 沒有 `/usr/bin/trash`（macOS 15 以前）時改用 Finder；Finder 對 symlink 是否只移走連結未實測。
+- 從連結安裝：`tree/<ref>/<folder>` 的 ref 若含 `/`（`feature/x`）無法與資料夾分開，會當成 ref 的第一段，面板逐項顯示讀到的 ref 與資料夾；這種分支改用它的 commit（`…/tree/<40 碼 commit>/<folder>`），預設分支可用 `…/tree/HEAD/<folder>` 或 `owner/repo`。herdr.dev 的 slug 以 `--` 切開，repo 名稱本身含 `--` 時會切錯（同樣看得到讀到的 repo 與資料夾）。解開到一半 app 當掉時，系統暫存資料夾會留下 `yuzora-fetch-*`；先佔好接下來 100 個暫存名稱，連結安裝就會以 `io` 失敗（macOS、Windows 的暫存資料夾屬於使用者自己，只有同一個使用者佔得到；Linux 沒設 `TMPDIR` 時是共用的 `/tmp`，其他本機使用者也佔得到）。佔用只會讓安裝失敗，不會讓 Yuzora 寫進別人準備好的資料夾。Windows 只有 CI 編譯，未實機下載解開。
