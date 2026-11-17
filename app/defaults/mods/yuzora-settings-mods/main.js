@@ -212,7 +212,7 @@ export default class Mods extends View {
       cx.notify();
       const r = await planInstall(path);
       if (this.install !== install) return;
-      this.install = r.ok ? { path, plan: r.plan } : { path, error: r.code };
+      this.install = r.ok ? { path, plan: r.plan } : { path, error: r.code, message: r.message };
       cx.notify();
     });
   }

@@ -26,27 +26,35 @@ fn scenario(staged: &Staged, setup: &str) {
     )).unwrap();
 }
 
-/// The page as `page` makes it with no props, yuzora:settings' planFetch and installFolder stood in for as
-/// `module` stands in for herdr: planFetch answers `answer`, installFolder `{ok, plan: answer.plan}`, and every
-/// call is kept. What it drew and the calls so far, once the answers have come and again a second later.
+/// The page as `page` makes it with no props, yuzora:settings' planFetch, planInstall and installFolder stood in
+/// for as `module` stands in for herdr: planFetch and planInstall answer `answer`, installFolder
+/// `{ok, plan: answer.plan}`, herdr's pickFolder `/fixture/picked`, and every yuzora:settings call is kept. What it
+/// drew and the calls so far, once the answers have come and again a second later.
 fn answered(cx: &mut TestAppContext, staged: &Staged, answer: Value, setup: &str) -> [(String, Vec<Value>); 2] {
     scenario(staged, setup);
     let calls: Rc<RefCell<Vec<Value>>> = Rc::default();
-    let (fetches, installs, installed) = (calls.clone(), calls.clone(), json!({"ok": true, "plan": answer["plan"]}));
+    let (fetches, plans, installs, installed) = (calls.clone(), calls.clone(), calls.clone(), json!({"ok": true, "plan": answer["plan"]}));
+    let folder = answer.clone();
     let settings = yuzora_settings::host_module()
         .async_function("planFetch", move |a| {
             fetches.borrow_mut().push(json!(["planFetch", a.string(0)?]));
             Ok(std::future::ready(Ok(to_host(&answer))))
+        })
+        .async_function("planInstall", move |a| {
+            plans.borrow_mut().push(json!(["planInstall", a.string(0)?]));
+            Ok(std::future::ready(Ok(to_host(&folder))))
         })
         .async_function("installFolder", move |a| {
             installs.borrow_mut().push(json!(["installFolder", a.string(0)?]));
             Ok(std::future::ready(Ok(to_host(&installed))))
         });
     let herdr = Rc::new(RefCell::new(Calls::default()));
+    let picks = module(fixture(true, json!({}), updates("current", "current")), herdr.clone())
+        .async_function("pickFolder", |_| Ok(async { Ok(HostValue::Str("/fixture/picked".into())) }));
     let policy = Policy::new()
         .with_storage_path(staged.0.join("store-answered.json"))
         .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
-        .with_host_module(module(fixture(true, json!({}), updates("current", "current")), herdr.clone()))
+        .with_host_module(picks)
         .unwrap();
     let policy = crate::yuzora::with_modules(policy, "").with_host_module(settings).unwrap();
     let window = cx.add_window(|_, _| Empty);
@@ -166,6 +174,21 @@ fn a_link_that_fails_shows_what_was_asked_of_github(cx: &mut TestAppContext) {
     let [(shown, read), _] = answered(cx, &staged, answer, &typed);
     assert_eq!(read, [json!(["planFetch", link])]);
     for part in ["install_errors.fetch_failed", "HTTP 404", "github_repo acme/kit", "github_ref feature", "github_folder x/side"] {
+        assert!(shown.contains(part), "{part}: {shown}");
+    }
+    assert!(!shown.contains("in-go"), "{shown}");
+}
+
+// Install from folder: a folder over the cap says which limit it is over, as a link does. The answer is the
+// one planInstall gives such a folder (mods::tests::a_folder_over_the_cap_is_too_big_and_says_which_cap).
+#[gpui::test]
+fn a_folder_too_big_to_install_says_which_limit(cx: &mut TestAppContext) {
+    shell_init(cx);
+    let staged = Staged::new();
+    let answer = json!({"ok": false, "code": "too_big", "message": "It has over 2000 files or 64 MB."});
+    let [(shown, asked), _] = answered(cx, &staged, answer, "this.pickInstall(cx);");
+    assert_eq!(asked, [json!(["planInstall", "/fixture/picked"])]);
+    for part in ["install_errors.too_big", "It has over 2000 files or 64 MB."] {
         assert!(shown.contains(part), "{part}: {shown}");
     }
     assert!(!shown.contains("in-go"), "{shown}");

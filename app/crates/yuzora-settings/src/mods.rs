@@ -703,6 +703,27 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// What would be installed is held to 2000 files or 64 MB, and the page is told which limit that is.
+    #[test]
+    fn a_folder_over_the_cap_is_too_big_and_says_which_cap() {
+        let root = tmp("too-big");
+        let home = root.join("home");
+        let many = root.join("many");
+        write(&many.join("main.js"), "m");
+        for i in 0..MAX_FILES {
+            write(&many.join(format!("lib/{i}.js")), "");
+        }
+        let large = root.join("large");
+        write(&large.join("main.js"), "m");
+        // Sparse: 64 MiB on paper, nothing on disk.
+        std::fs::File::create(large.join("big.bin")).unwrap().set_len(MAX_BYTES).unwrap();
+        for dir in [&many, &large] {
+            let e = plan(dir, &home).unwrap_err();
+            assert_eq!((e.code(), e.to_string().as_str()), ("too_big", "It has over 2000 files or 64 MB."), "{}", dir.display());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn writes_what_was_planned_not_what_changed_since() {
         let root = tmp("install-snapshot");
