@@ -17,9 +17,13 @@
 //!   `yuzora`): nothing is injected.
 //! - [`Placed::Off`]: the dock is off (the root's `"yuzora": {"dock": "off"}`,
 //!   or [`RIGHT_DOCK`] is false).
+//!
+//! The resource chip (`yuzora-perf`) goes in the same way, into every layout
+//! that doesn't show it, the dock on or off: beside the status bar under the
+//! tab, else at the bottom of the window ([`place_perf`]).
 
 use crate::layout::{Align, Axis, Content, Edge, Float, Kind, Node, Size};
-use crate::layout_sync::State;
+use crate::layout_sync::{State, without_clicks};
 use serde_json::{Value, json};
 
 /// The switch: while false, [`inject`] and [`ensure`] do nothing (only a save
@@ -50,6 +54,18 @@ pub const SHELL: &str = "shell";
 const BAR_PX: f32 = 40.0;
 /// How much of the drawer shows at the edge until hovered, px.
 const PEEK_PX: f32 = 40.0;
+/// The resource chip's mod, and the node that shows it.
+const PERF_MOD: &str = "yuzora-perf";
+const PERF: &str = "yuzora-dock-perf";
+/// What a node showed before the chip went beside it (see [`beside`]).
+const BODY: &str = "yuzora-dock-body";
+/// A root's id once its own went to its body (see [`place_perf`]).
+const ROOT: &str = "yuzora-dock-root";
+/// The chip's width beside a status bar, and its bar's height at the bottom of a window, px.
+const PERF_WIDE: f32 = 150.0;
+const PERF_TALL: f32 = 26.0;
+/// The tallest bar under the tab that counts as a status bar, px.
+const STATUS_MAX: f32 = 32.0;
 
 /// What [`inject`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,11 +177,125 @@ fn place_panel(x: &mut Node) -> bool {
     x.children_mut().is_some_and(|cs| cs.iter_mut().any(place_panel))
 }
 
+/// Whether a block or a float of `n` shows the resource chip.
+fn shows_perf(n: &Node) -> bool {
+    n.walk().iter().any(|x| x.content().and_then(mod_of) == Some(PERF_MOD) || x.floating.iter().any(|f| mod_of(&f.content) == Some(PERF_MOD)))
+}
+
+/// Puts the resource chip into a layout that doesn't show it: beside the
+/// status bar (a mod block of at most [`STATUS_MAX`], last in the column that
+/// holds the tab), else at the bottom of the root. Found by position, as in
+/// [`place_panel`]. Sizes are clicks, so with `file` (the tree as the file has
+/// it) its sizes decide: a tree a mod sends back gets the chip where the window
+/// shows it, though win98 fits its taskbar to a status bar's height.
+fn place_perf(n: &mut Node, file: Option<&Node>) {
+    if shows_perf(n) {
+        return;
+    }
+    let sized = file.map(|f| without_clicks(f, n));
+    let bar = status_bar(sized.as_ref().unwrap_or(n));
+    if let Some(bar) = bar.and_then(|at| node_at_mut(n, &at)) {
+        beside(bar, Axis::Row, PERF_WIDE);
+    } else if let Kind::Column { children } = &mut n.kind {
+        children.push(perf_block(PERF_TALL));
+    } else {
+        beside(n, Axis::Column, PERF_TALL);
+        // The root fills the window, so no click on it is a size: its id goes with what it showed, which is what an id
+        // finds (a stack to select, a terminal's pane, a mod's copy).
+        let id = std::mem::replace(&mut n.id, ROOT.into());
+        if let Some(body) = n.children_mut().and_then(|c| c.first_mut()) {
+            body.id = if reserved(&id) { String::new() } else { id };
+        }
+    }
+}
+
+/// The path (child indices) to the status bar under the tab, if there is one.
+fn status_bar(n: &Node) -> Option<Vec<usize>> {
+    fn to_tab(x: &Node) -> Option<Vec<usize>> {
+        if matches!(x.content(), Some(Content::Context { .. })) {
+            return Some(Vec::new());
+        }
+        x.children().iter().enumerate().find_map(|(i, c)| to_tab(c).map(|p| [vec![i], p].concat()))
+    }
+    let tab = to_tab(n)?;
+    let above = (0..tab.len()).rev().find(|&k| node_at(n, &tab[..k]).and_then(Node::axis) == Some(Axis::Column))?;
+    let column = node_at(n, &tab[..above])?;
+    let last = column.children().len().checked_sub(1)?;
+    let bar = &column.children()[last];
+    let thin = matches!(bar.size, Some(Size::Px { px }) if px <= STATUS_MAX);
+    if !thin || !matches!(bar.content(), Some(Content::Mod { .. })) {
+        return None;
+    }
+    let mut at = tab[..above].to_vec();
+    at.push(last);
+    Some(at)
+}
+
+fn node_at<'a>(n: &'a Node, at: &[usize]) -> Option<&'a Node> {
+    at.iter().try_fold(n, |x, &i| x.children().get(i))
+}
+
+fn node_at_mut<'a>(n: &'a mut Node, at: &[usize]) -> Option<&'a mut Node> {
+    at.iter().try_fold(n, |x, &i| x.children_mut()?.get_mut(i))
+}
+
+fn perf_block(px: f32) -> Node {
+    let mut chip = Node::block(PERF, Content::Mod { name: PERF_MOD.into(), props: Value::Null });
+    chip.size = Some(Size::Px { px });
+    chip
+}
+
+/// Shows the chip beside `x` along `axis`. `x` keeps its place: its id, size
+/// and look, so the clicks on it (a status bar hidden or resized) still mean
+/// the whole of it, and a root keeps the fields only a root has. What `x`
+/// showed, with how it lays out its own children, moves into a child
+/// [`BODY`]. [`take_body_back`] undoes it.
+fn beside(x: &mut Node, axis: Axis, px: f32) {
+    let mut body = Node::new(BODY, std::mem::replace(&mut x.kind, Kind::Row { children: Vec::new() }));
+    body.gap = x.gap.take();
+    body.divider = x.divider.take();
+    body.resizable = x.resizable.replace(false);
+    body.window_drag = std::mem::take(&mut x.window_drag);
+    let children = vec![body, perf_block(px)];
+    x.kind = match axis {
+        Axis::Row => Kind::Row { children },
+        Axis::Column => Kind::Column { children },
+    };
+}
+
+/// [`beside`] undone: a node holding a body (a [`BODY`], or the one child of a
+/// [`ROOT`] without a reserved id) and nothing else of its own shows the body
+/// itself again. Anything else beside a body (a mod's `layout.set` put it
+/// there) keeps the body a child and drops the reserved ids, so nothing that
+/// isn't the injection's is ever lost.
+fn take_body_back(x: &mut Node) {
+    let rooted = x.id == ROOT;
+    if rooted {
+        x.id.clear();
+    }
+    let Some(children) = x.children_mut() else { return };
+    let is_body = |c: &Node| if rooted { !reserved(&c.id) } else { c.id == BODY };
+    if children.iter().filter(|c| is_body(c)).count() != 1 || !children.iter().all(|c| is_body(c) || reserved(&c.id)) {
+        children.iter_mut().filter(|c| c.id == BODY).for_each(|c| c.id.clear());
+        return;
+    }
+    let Some(body) = std::mem::take(children).into_iter().find(is_body) else { return };
+    if rooted {
+        x.id = body.id;
+    }
+    x.kind = body.kind;
+    x.gap = body.gap;
+    x.divider = body.divider;
+    x.resizable = body.resizable;
+    x.window_drag = body.window_drag;
+}
+
 /// `n` without anything the injection put there. A stack that showed a
 /// removed child shows what `fallback` (the tree as the file has it) chose.
 pub fn strip(n: &Node, fallback: Option<&Node>) -> Node {
     fn go(x: &mut Node, fallback: Option<&Node>) {
         x.floating.retain(|f| !reserved(&f.id));
+        take_body_back(x);
         let id = x.id.clone();
         if let Kind::Stack { active, .. } = &mut x.kind
             && active.as_deref().is_some_and(reserved)
@@ -199,12 +329,18 @@ pub fn inject(n: &mut Node, layout: &str) -> Placed {
 }
 
 fn inject_with(n: &mut Node, on: bool, personal: Option<Choice>) -> Placed {
+    inject_sized(n, on, personal, None)
+}
+
+/// [`inject_with`], the chip placed by the sizes `file` has for the nodes it has (see [`place_perf`]).
+fn inject_sized(n: &mut Node, on: bool, personal: Option<Choice>, file: Option<&Node>) -> Placed {
     // Off, the tree is the file's own, whatever ids it uses.
     if !on {
         return Placed::Off;
     }
     // A reserved id in a file is ignored: the dock is rebuilt, never doubled.
     *n = strip(n, None);
+    place_perf(n, file);
     let choice = personal.unwrap_or_else(|| choice(n));
     if choice == Choice::Off {
         return Placed::Off;
@@ -253,7 +389,7 @@ fn ensure_with(n: &mut Node, on: bool, personal: Option<Choice>, fallback: Optio
         return;
     }
     let mut want = strip(n, fallback);
-    inject_with(&mut want, true, personal);
+    inject_sized(&mut want, true, personal, fallback);
     if reserved_ids(n) != reserved_ids(&want) {
         // The stacks keep what they showed, where that child is still there.
         for x in n.walk() {
@@ -328,7 +464,7 @@ fn reserved_ids(n: &Node) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout_sync::{State, text_of, without_clicks};
+    use crate::layout_sync::text_of;
 
     const MAIN: &str = include_str!("../../defaults/layouts/main.json");
     const TERMINALS: &str = include_str!("../../defaults/layouts/terminals.json");
@@ -357,6 +493,141 @@ mod tests {
 
     fn floats(n: &Node) -> Vec<&Float> {
         n.walk().into_iter().flat_map(|x| x.floating.iter()).collect()
+    }
+
+    /// The reserved ids of a status bar with the chip beside it, in tree order.
+    const CHIP: [&str; 2] = ["yuzora-dock-body", "yuzora-dock-perf"];
+
+    /// How many blocks and floats of `n` show the resource chip.
+    fn chips(n: &Node) -> usize {
+        let blocks = n.walk().iter().filter(|x| x.content().and_then(mod_of) == Some("yuzora-perf")).count();
+        blocks + floats(n).iter().filter(|f| mod_of(&f.content) == Some("yuzora-perf")).count()
+    }
+
+    fn ids(n: &Node) -> Vec<&str> {
+        n.children().iter().map(|c| c.id.as_str()).collect()
+    }
+
+    #[test]
+    fn every_layout_shows_one_chip_whatever_the_dock() {
+        let off = MAIN.replacen("\"id\": \"root\",", "\"id\": \"root\", \"yuzora\": { \"dock\": \"off\" },", 1);
+        for text in [MAIN, TERMINALS, WIN98, YUZORA, YUZORA_BETA3, off.as_str()] {
+            for personal in [None, Some(Choice::Auto), Some(Choice::Drawer), Some(Choice::Off)] {
+                let mut n = parse(text);
+                inject_with(&mut n, true, personal);
+                assert_eq!(chips(&n), 1, "{personal:?}: {text:.60}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_status_bar_keeps_its_place_and_its_clicks() {
+        let (file, shown, _) = injected(MAIN);
+        assert_eq!(shown.parent_of("status").unwrap().id, "work", "where the file has it: last in the column above the tab");
+        let status = shown.find("status").unwrap();
+        assert_eq!((status.axis(), status.size, status.resizable), (Some(Axis::Row), Some(Size::Px { px: 28.0 }), Some(false)));
+        assert_eq!(ids(status), CHIP);
+        assert!(matches!(status.children()[0].content(), Some(Content::Mod { name, .. }) if name == "workspace-status"));
+        let chip = &status.children()[1];
+        assert!(matches!(chip.content(), Some(Content::Mod { name, .. }) if name == "yuzora-perf"));
+        assert_eq!(chip.size, Some(Size::Px { px: 150.0 }));
+        // A click on the status bar (hidden, another height) is the whole bar's, the chip's too.
+        let state: State = serde_json::from_value(json!({ "nodes": { "status": { "hidden": true, "size": { "px": 40 } } } })).unwrap();
+        let mut clicked = shown.clone();
+        state.apply(&mut clicked);
+        let status = clicked.find("status").unwrap();
+        assert_eq!((status.hidden, status.size, status.axis()), (true, Some(Size::Px { px: 40.0 }), Some(Axis::Row)));
+        assert!(clicked.visible_blocks().iter().all(|b| !CHIP.contains(&b.id.as_str())), "hidden with the bar");
+        assert_eq!(State::between(&shown, &clicked), state, "saved as the same click");
+        assert_eq!(strip(&without_clicks(&shown, &clicked), Some(&shown)), file, "and the file is as it was");
+    }
+
+    #[test]
+    fn without_a_status_bar_the_chip_goes_to_the_bottom() {
+        for (text, rows) in [(TERMINALS, ["tabs", "main", "yuzora-dock-perf"]), (WIN98, ["screen", "taskbar", "yuzora-dock-perf"])] {
+            let (_, n, _) = injected(text);
+            assert_eq!(ids(&n), rows);
+            assert_eq!(n.children()[2].size, Some(Size::Px { px: 26.0 }));
+        }
+        // A root that isn't a column keeps what only a root has and becomes one: what it showed (with the root's id,
+        // which finds it), then the chip.
+        let row = json!({ "id": "root", "type": "row", "titlebar": "none", "traffic_lights": [12, 16], "theme": "graphite", "background": "canvas",
+            "gap": 4, "divider": { "width": 1, "color": "border" }, "yuzora": { "dock": "drawer" }, "children": [
+            { "id": "side", "type": "block", "size": { "px": 200 }, "content": { "mod": "spaces" } },
+            { "id": "main", "type": "block", "content": { "tab": "active" } }] });
+        let block = json!({ "id": "root", "type": "block", "window_drag": true, "content": { "tab": "active" } });
+        for tree in [row, block] {
+            let (file, n, _) = injected(&tree.to_string());
+            assert_eq!((n.id.as_str(), n.axis(), n.resizable), ("yuzora-dock-root", Some(Axis::Column), Some(false)));
+            assert_eq!((n.titlebar, n.traffic_lights, &n.look.theme, &n.background, &n.yuzora), (file.titlebar, file.traffic_lights, &file.look.theme, &file.background, &file.yuzora));
+            assert_eq!(ids(&n), ["root", "yuzora-dock-perf"]);
+            let body = &n.children()[0];
+            assert_eq!((&body.kind, body.gap, &body.divider, body.window_drag), (&file.kind, file.gap, &file.divider, file.window_drag));
+            assert_eq!((n.gap, &n.divider, n.window_drag), (None, &None, false), "the root's own children are the body and the chip");
+            assert_eq!(n.children()[1].size, Some(Size::Px { px: 26.0 }));
+            assert_eq!(strip(&n, None), file);
+        }
+    }
+
+    #[test]
+    fn a_layout_that_shows_the_chip_itself_gets_no_second() {
+        let float = json!({ "id": "root", "type": "column", "children": [{ "id": "main", "type": "block", "content": { "tab": "active" } }],
+            "floating": [{ "id": "mine", "content": { "mod": "yuzora-perf" } }] }).to_string();
+        let tucked = json!({ "id": "root", "type": "column", "children": [
+            { "id": "main", "type": "block", "content": { "tab": "active" } },
+            { "id": "s", "type": "stack", "active": "a", "children": [
+                { "id": "a", "type": "block", "content": { "mod": "m" } },
+                { "id": "b", "type": "block", "size": { "px": 20 }, "content": { "mod": "yuzora-perf" } }] }] }).to_string();
+        for text in [YUZORA, YUZORA_BETA3, float.as_str(), tucked.as_str()] {
+            let (_, n, _) = injected(text);
+            assert!(n.walk().iter().all(|x| ![BODY, PERF, ROOT].contains(&x.id.as_str())), "{text:.60}");
+            assert_eq!(chips(&n), 1, "{text:.60}");
+        }
+    }
+
+    #[test]
+    fn strip_keeps_what_a_mod_put_beside_the_chip() {
+        // A mod docked a block at the bottom of what it read (a row root shown as a column of the row and the chip):
+        // the file gets that column without the chip, and what the root showed stays, with its id; the root has none.
+        let row = json!({ "id": "root", "type": "row", "gap": 4, "children": [{ "id": "main", "type": "block", "content": { "tab": "active" } }] });
+        let (_, mut n, _) = injected(&row.to_string());
+        n.children_mut().unwrap().push(Node::block("docked", Content::Mod { name: "m".into(), props: Value::Null }));
+        let out = strip(&n, None);
+        assert!(!text_of(&out).contains("yuzora-dock"), "{}", text_of(&out));
+        assert_eq!((out.id.as_str(), ids(&out)), ("", vec!["root", "docked"]));
+        assert_eq!((out.children()[0].gap, out.find("main").is_some()), (Some(4.0), true));
+        let mut again = out.clone();
+        inject_with(&mut again, true, None);
+        assert_eq!(chips(&again), 1);
+        // The same beside main's status bar: the bar keeps what it showed and what the mod put there.
+        let (_, mut n, _) = injected(MAIN);
+        n.find_mut("status").unwrap().children_mut().unwrap().push(Node::block("docked", Content::Mod { name: "m".into(), props: Value::Null }));
+        let out = strip(&n, None);
+        assert!(!text_of(&out).contains("yuzora-dock"), "{}", text_of(&out));
+        let status = out.find("status").unwrap();
+        assert_eq!(ids(status), ["", "docked"]);
+        assert!(matches!(status.children()[0].content(), Some(Content::Mod { name, .. }) if name == "workspace-status"));
+    }
+
+    #[test]
+    fn a_tree_a_mod_sends_back_has_the_chip_where_the_file_puts_it() {
+        // win98's taskbar fits itself to 28px with a click, then win98 sets layout() back (or a tree built without the
+        // dock): a status bar's height now, but the file's sizes say the chip is below it, as the window shows it. Beside
+        // it would be a change of structure, which a shipped layout refuses.
+        let (_, file, _) = injected(WIN98);
+        let mut clicked = file.clone();
+        clicked.find_mut("taskbar").unwrap().size = Some(Size::Px { px: 28.0 });
+        let mut chipless = clicked.clone();
+        chipless.children_mut().unwrap().retain(|c| c.id != PERF);
+        for sent in [clicked.clone(), strip(&clicked, None), chipless] {
+            let mut set = sent;
+            ensure_with(&mut set, true, None, Some(&file));
+            assert_eq!(set, clicked);
+        }
+        // A file that says 28px has a status bar there: the chip goes beside it.
+        let mut reread = strip(&clicked, None);
+        inject_with(&mut reread, true, None);
+        assert_eq!(ids(reread.find("taskbar").unwrap()), CHIP);
     }
 
     /// What a person does to the dock: opens it on Git, widens it and hides the bar (panel), or drags the drawer to the other edge.
@@ -401,6 +672,9 @@ mod tests {
         assert_eq!((bar.size, bar.min, bar.max), (Some(Size::Px { px: 40.0 }), Some(40.0), Some(40.0)));
         assert!(matches!(bar.content(), Some(Content::Mod { name, props }) if name == MODEBAR_MOD && props["dock"] == "bar"));
         assert!(floats(&main).is_empty());
+        // And the resource chip, at the end of the status bar.
+        let ids: Vec<&str> = main.find("status").unwrap().children().iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["yuzora-dock-body", "yuzora-dock-perf"]);
 
         for text in [TERMINALS, WIN98] {
             let (_, n, placed) = injected(text);
@@ -409,13 +683,15 @@ mod tests {
             assert_eq!((drawer.edge, drawer.align, drawer.peek), (Edge::Right, Align::Center, Some(40.0)));
             assert!(n.floating.iter().any(|f| f.id == PREFIX), "the drawer floats over the root");
             assert!(matches!(&drawer.content, Content::Mod { name, props } if name == MODEBAR_MOD && props["dock"] == "drawer"));
-            assert!(n.walk().iter().all(|x| !reserved(&x.id)), "no node, only the float");
+            let nodes: Vec<&str> = n.walk().iter().map(|x| x.id.as_str()).filter(|id| reserved(id)).collect();
+            assert_eq!(nodes, ["yuzora-dock-perf"], "no node of the dock, only the float (and the chip)");
         }
 
         // yuzora.json's left side is the upstream's, so the modes go to the right: a Panel, like main.
         let (_, yuzora, placed) = injected(YUZORA);
         assert_eq!(placed, Placed::Panel);
         assert!(yuzora.find("yuzora-dock-bar").is_some() && yuzora.find("yuzora-dock-git").is_some());
+        assert!(yuzora.find("yuzora-dock-perf").is_none(), "it has a chip of its own");
         // The beta.3 file places the modes itself: left alone.
         assert_eq!(injected(YUZORA_BETA3).2, Placed::Own);
     }
@@ -569,7 +845,8 @@ mod tests {
         let mut off = parse(&MAIN.replacen("\"id\": \"root\",", "\"id\": \"root\", \"yuzora\": { \"dock\": \"off\" },", 1));
         let before = off.clone();
         ensure_with(&mut off, true, None, None);
-        assert_eq!(off, before);
+        assert_eq!(reserved_ids(&off), CHIP, "the dock stays out; the chip is no part of it");
+        assert_eq!(strip(&off, None), before);
     }
 
     #[test]
@@ -582,7 +859,7 @@ mod tests {
         }
         let (_, n, placed) = injected(&with("off"));
         assert_eq!(placed, Placed::Off);
-        assert!(reserved_ids(&n).is_empty());
+        assert_eq!(reserved_ids(&n), CHIP, "no dock, only the chip");
         let (file, n, placed) = injected(&with("drawer"));
         assert_eq!(placed, Placed::Drawer, "main, with a panel, takes the drawer when asked");
         assert!(n.find("yuzora-dock-bar").is_none() && n.floating.iter().any(|f| f.id == PREFIX));
@@ -619,13 +896,13 @@ mod tests {
         // The choice reaches what a mod's layout.set and a save's read-back make, not only a load.
         let mut bare = parse(MAIN);
         ensure_with(&mut bare, true, Some(Choice::Off), None);
-        assert!(reserved_ids(&bare).is_empty(), "off: a tree built without the dock stays without");
+        assert_eq!(reserved_ids(&bare), CHIP, "off: a tree built without the dock stays without (the chip is no part of it)");
         let mut shown = parse(MAIN);
         inject_with(&mut shown, true, None);
         ensure_with(&mut shown, true, Some(Choice::Off), None);
-        assert!(reserved_ids(&shown).is_empty(), "off: a tree that had the dock loses it, as a load would");
+        assert_eq!(reserved_ids(&shown), CHIP, "off: a tree that had the dock loses it, as a load would");
         let file = parse(MAIN);
-        assert!(reserved_ids(&as_read_with(&shown, Some(&file), true, Some(Choice::Off))).is_empty());
+        assert_eq!(reserved_ids(&as_read_with(&shown, Some(&file), true, Some(Choice::Off))), CHIP);
         assert!(as_read_with(&file, Some(&file), true, Some(Choice::Drawer)).floating.iter().any(|f| f.id == PREFIX));
     }
 
@@ -889,11 +1166,20 @@ mod tests {
         };
         // Half the trees draw from ids with the dock's among them, half from ids without (those are what the invariants below run on).
         const CLEAN: [&str; 6] = ["", "root", "r", "panel", "panel-body", "x"];
-        const IDS: [&str; 9] = ["", "root", "r", "panel", "panel-body", "yuzora-dock", "yuzora-dock-git", "yuzora-dock-bar", "x"];
+        const IDS: [&str; 12] = ["", "root", "r", "panel", "panel-body", "yuzora-dock", "yuzora-dock-git", "yuzora-dock-bar", "yuzora-dock-body", "yuzora-dock-perf", "yuzora-dock-root", "x"];
         fn rand_tree(next: &mut impl FnMut(u64) -> u64, ids: &[&str], depth: u32) -> Value {
             let id = ids[next(ids.len() as u64) as usize];
             let mut node = match next(if depth == 0 { 1 } else { 4 }) {
-                0 => json!({ "type": "block", "content": { "mod": if next(3) == 0 { "yuzora-sidebar-git" } else { "m" } } }),
+                // Blocks: the tab, a status bar (thin or not), a mod of the dock's, now and then the chip itself.
+                0 => match next(8) {
+                    0 | 1 => json!({ "type": "block", "content": { "tab": "active" } }),
+                    2 | 3 => {
+                        let px = [20, 28, 40][next(3) as usize];
+                        json!({ "type": "block", "size": { "px": px }, "content": { "mod": "m" } })
+                    }
+                    4 if next(4) == 0 => json!({ "type": "block", "content": { "mod": "yuzora-perf" } }),
+                    _ => json!({ "type": "block", "content": { "mod": if next(3) == 0 { "yuzora-sidebar-git" } else { "m" } } }),
+                },
                 k => {
                     let kids: Vec<Value> = (0..next(4)).map(|_| rand_tree(next, ids, depth - 1)).collect();
                     match k {
@@ -903,6 +1189,13 @@ mod tests {
                             json!({ "type": "row", "children": [{ "type": "block", "content": { "tab": "active" } }, { "id": "panel", "type": "column", "children": [body] }] })
                         }
                         1 => json!({ "type": "row", "children": kids }),
+                        // A third of the columns end in the tab and a bar under it.
+                        2 if next(3) == 0 => {
+                            let mut kids = kids;
+                            kids.push(json!({ "type": "block", "content": { "tab": "active" } }));
+                            kids.push(json!({ "type": "block", "size": { "px": 28 }, "content": { "mod": "m" } }));
+                            json!({ "type": "column", "children": kids })
+                        }
                         2 => json!({ "type": "column", "children": kids }),
                         _ => json!({ "type": "stack", "children": kids, "active": ids[next(ids.len() as u64) as usize] }),
                     }
@@ -920,7 +1213,7 @@ mod tests {
             }
             node
         }
-        let (mut parsed, mut panels, mut checked) = (0, 0, 0);
+        let (mut parsed, mut panels, mut checked, mut bars) = (0, 0, 0, 0);
         for i in 0..3000 {
             let tree = rand_tree(&mut next, if i % 2 == 0 { &IDS } else { &CLEAN }, 4);
             let Ok(node) = serde_json::from_value::<Node>(tree) else { continue };
@@ -942,7 +1235,9 @@ mod tests {
                 let mut shown_tree = node.clone();
                 let placed = inject_with(&mut shown_tree, true, None);
                 panels += usize::from(placed == Placed::Panel);
+                bars += usize::from(shown_tree.walk().iter().any(|x| x.axis() == Some(Axis::Row) && ids(x).first() == Some(&BODY)));
                 let ctx = |what: &str| format!("{what}: seed 0x2545_F491_4F6C_DD1D, tree {}", shown(&node));
+                assert_eq!(chips(&shown_tree), chips(&node).max(1), "{}", ctx("one chip, or the file's own"));
                 assert_eq!(strip(&shown_tree, None), node, "{}", ctx("strip(inject(F)) == F"));
                 let mut ensured = shown_tree.clone();
                 ensure_with(&mut ensured, true, None, None);
@@ -960,6 +1255,6 @@ mod tests {
             }
         }
         assert!(parsed > 1000, "the generator makes trees: {parsed}");
-        assert!(checked > 200 && panels > 50, "the invariants run on a good share of them, panels too: {checked} checked, {panels} panels");
+        assert!(checked > 200 && panels > 50 && bars > 20, "the invariants run on a good share of them, panels and status bars too: {checked} checked, {panels} panels, {bars} status bars");
     }
 }

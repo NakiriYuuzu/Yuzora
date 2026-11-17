@@ -15,6 +15,12 @@ fn panel_layout() -> serde_json::Value {
     })
 }
 
+/// No node of the dock's, and the resource chip (in every layout, the dock on or off).
+fn chip_without_dock(n: &crate::layout::Node) -> bool {
+    let chip = ["yuzora-dock-root", "yuzora-dock-body", "yuzora-dock-perf"];
+    n.walk().iter().all(|x| !x.id.starts_with("yuzora-dock") || chip.contains(&x.id.as_str())) && n.find("yuzora-dock-perf").is_some()
+}
+
 fn layout_file() -> String {
     std::fs::read_to_string(super::layout_path("test")).unwrap()
 }
@@ -108,7 +114,7 @@ fn dock_follows_file_edit(cx: &mut gpui::TestAppContext) {
     std::fs::write(super::layout_path("test"), off.to_string()).unwrap();
     cx.update(|window, cx| view.update(cx, |this, cx| this.check_layout_file(window, cx)));
     view.update(cx, |this, _| {
-        assert!(this.chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")) && this.file_chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")));
+        assert!(chip_without_dock(&this.chrome) && chip_without_dock(&this.file_chrome));
         assert!(!super::file("layout.error").exists(), "the opt-out is a valid layout");
     });
     // And back: taking the opt-out out brings the dock back.
@@ -303,7 +309,7 @@ fn dock_personal_choice(cx: &mut gpui::TestAppContext) {
     choose(Some("off"));
     switch(cx);
     view.update(cx, |this, _| {
-        assert!(this.chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")) && this.file_chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")));
+        assert!(chip_without_dock(&this.chrome) && chip_without_dock(&this.file_chrome));
     });
     assert_eq!(layout_file(), original);
     // Saved while it is off (a click elsewhere, a switch to the same layout): still nothing in the file.
@@ -621,11 +627,11 @@ fn dock_set_while_off(cx: &mut gpui::TestAppContext) {
     // right after `layout.set` makes up for a wrong answer here, so this asks `as_read` itself.
     let tree: crate::layout::Node = serde_json::from_str(&written).unwrap();
     let read = crate::yuzora::dock::as_read(&tree, "test", None);
-    assert!(read.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")) && read.floating.is_empty(), "off for `test`: nothing of the dock");
+    assert!(chip_without_dock(&read) && read.floating.is_empty(), "off for `test`: nothing of the dock but the chip");
     assert!(crate::yuzora::dock::as_read(&tree, "another", None).find("yuzora-dock-bar").is_some(), "no choice for `another`: the dock");
     view.update(cx, |this, _| this.save());
     assert_eq!(layout_file(), written);
-    view.update(cx, |this, _| assert!(this.chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock")) && this.file_chrome.walk().iter().all(|n| !n.id.starts_with("yuzora-dock"))));
+    view.update(cx, |this, _| assert!(chip_without_dock(&this.chrome) && chip_without_dock(&this.file_chrome)));
 }
 
 // The panel the dock opened is the dock's: off or a drawer, the layout's own Files panel does not show
@@ -698,11 +704,12 @@ fn dock_rebuilt_keeps_choice(cx: &mut gpui::TestAppContext) {
             _ => None,
         }
     }
-    // (trigger, does the dock's Git click survive: the panel's dock nodes are still there)
+    // (trigger, does the dock's Git click survive: the panel's dock nodes are still there). The row is shown first in a
+    // column, the resource chip under it.
     type Edit = fn(&mut serde_json::Value);
     let triggers: [(&str, Edit, bool); 3] = [
-        ("the row reversed", |t| t["children"].as_array_mut().unwrap().reverse(), true),
-        ("a dock node dropped", |t| t["children"][1]["children"][0]["children"].as_array_mut().unwrap().retain(|c| c["id"] != "yuzora-dock-ssh"), true),
+        ("the row reversed", |t| t["children"][0]["children"].as_array_mut().unwrap().reverse(), true),
+        ("a dock node dropped", |t| t["children"][0]["children"][1]["children"][0]["children"].as_array_mut().unwrap().retain(|c| c["id"] != "yuzora-dock-ssh"), true),
         ("opted into the drawer", |t| t["yuzora"] = json!({ "dock": "drawer" }), false),
     ];
     for (what, edit, click_kept) in triggers {
@@ -782,6 +789,8 @@ fn dock_layout_set_shipped(cx: &mut gpui::TestAppContext) {
     };
     let painted = |color: &str, cx: &mut gpui::VisualTestContext| view.update(cx, |this, _| this.chrome.background == Some(crate::layout::Background::Color(color.into())));
     view.update(cx, |this, _| assert!(this.chrome.floating.iter().any(|f| f.id == "yuzora-dock")));
+    // As win98's fitLayout does first: the taskbar's height is a click, a status bar's height now.
+    cx.update(|window, cx| view.update(cx, |this, cx| this.run("layout.resize", json!({ "id": "taskbar", "px": 28 }), window, cx)));
     let mut with_dock = view.update(cx, |this, _| serde_json::to_value(&this.chrome).unwrap());
     with_dock["background"] = json!("teal");
     set(with_dock, cx);
@@ -791,6 +800,37 @@ fn dock_layout_set_shipped(cx: &mut gpui::TestAppContext) {
     set(without, cx);
     assert!(painted("navy", cx), "a tree built without the dock is accepted too");
     view.update(cx, |this, _| assert!(this.chrome.floating.iter().any(|f| f.id == "yuzora-dock")));
+}
+
+#[test]
+fn every_shipped_layout_shows_the_resource_chip_in_the_corner() {
+    in_own_process("perf_chip_corner");
+}
+
+/// The chip's copy loads once in each shipped layout and is drawn at the window's bottom-right, inside the root's padding.
+#[gpui::test]
+fn perf_chip_corner(cx: &mut gpui::TestAppContext) {
+    if !running_alone("perf_chip_corner") {
+        return;
+    }
+    crate::yuzora::dock::force_for_tests();
+    let (view, cx) = open_window(cx, "unused", "", panel_layout());
+    cx.simulate_resize(gpui::size(gpui::px(1200.0), gpui::px(800.0)));
+    for name in ["main", "terminals", "win98", "yuzora"] {
+        cx.update(|window, cx| view.update(cx, |this, cx| this.switch_layout(Some(name), window, cx)));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let (width, height) = cx.update(|window, _| (window.viewport_size().width.as_f32(), window.viewport_size().height.as_f32()));
+        view.update(cx, |this, _| {
+            let chips: Vec<_> = this.copies.iter().filter(|(_, c)| c.inst.name == "yuzora-perf").collect();
+            assert_eq!(chips.len(), 1, "{name}: one chip");
+            let (slot, copy) = chips[0];
+            assert!(copy.root.is_some() && copy.error.is_none(), "{name}: {:?}", copy.error);
+            let b = this.bounds.borrow()[slot];
+            let (right, bottom) = (f32::from(b.origin.x + b.size.width), f32::from(b.origin.y + b.size.height));
+            assert!(width - right <= 6.0 && height - bottom <= 6.0 && f32::from(b.size.height) >= 26.0, "{name}: {b:?} in {width}x{height}");
+        });
+    }
 }
 
 /// The layout files are written in four places only; a new one (an upstream

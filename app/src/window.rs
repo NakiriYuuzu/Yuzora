@@ -6035,7 +6035,7 @@ mod tests {
         cx.executor().advance_clock(std::time::Duration::from_secs(1));
         cx.run_until_parked();
         view.update(cx, |this, _| (
-            this.copies.values().filter(|c| c.root.is_some()).count(),
+            this.copies.values().filter(|c| c.root.is_some() && c.inst.name != "yuzora-perf").count(), // yuzora(perf-place): the resource chip is in every layout
             this.copies.values().filter_map(|c| c.error.clone()).collect(),
         ))
     }
@@ -6044,7 +6044,7 @@ mod tests {
         // yuzora(dock): no dock here, so the one copy these tests count is the heavy mod's.
         let (view, cx) = open_window(cx, "heavy", &heavy_mod(0, mib), serde_json::json!({ "id": "heavy", "type": "block", "yuzora": { "dock": "off" }, "content": { "mod": "heavy" } }));
         cx.run_until_parked();
-        assert_eq!(view.update(cx, |this, _| this.copies.values().filter(|c| c.root.is_some()).count()), 1, "the mod loads");
+        assert_eq!(view.update(cx, |this, _| this.copies.values().filter(|c| c.root.is_some() && c.inst.name != "yuzora-perf").count()), 1, "the mod loads"); // yuzora(perf-place): the resource chip is in every layout
         (view, cx)
     }
 
@@ -6344,7 +6344,7 @@ mod tests {
                 assert!(std::rc::Rc::ptr_eq(&fresh.upgrade().unwrap(), this.runtime.as_ref().unwrap()), "{layout} must not restart the VM");
                 assert!(this.runtime.as_ref().unwrap().memory_share() >= super::RESTART_MODS_AT);
                 assert_eq!(this.copies.values().filter(|c| c.error.is_some()).count(), 1);
-                assert_eq!(this.copies.values().filter(|c| c.root.is_some()).count(), 1);
+                assert_eq!(this.copies.values().filter(|c| c.root.is_some() && c.inst.name != "yuzora-perf").count(), 1); // yuzora(perf-place): the resource chip is in every layout
             });
         }
         std::fs::write(home.join("mods/broken/main.js"), "throw null;").unwrap();
@@ -6460,7 +6460,7 @@ mod tests {
         assert!(first.upgrade().is_none(), "the old VM is freed");
         assert_eq!(popup(&view, cx), (true, true), "on the new VM the popup shows its mod again");
         assert!(view.update(cx, |this, _| !this.overlays.iter().any(|o| o.id == "note")), "a toast is not shown twice");
-        assert_eq!(view.update(cx, |this, _| this.copies.values().filter(|c| c.root.is_some()).count()), 2, "the block and the popup");
+        assert_eq!(view.update(cx, |this, _| this.copies.values().filter(|c| c.root.is_some() && c.inst.name != "yuzora-perf").count()), 2, "the block and the popup"); // yuzora(perf-place): the resource chip is in every layout
     }
 
     #[test]
