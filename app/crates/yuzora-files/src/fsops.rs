@@ -1,5 +1,5 @@
 //! File-system operations for the Files lane: list, stat, read and write text,
-//! create, rename, trash, reveal. Every function blocks (call it from a worker
+//! create, rename, copy, trash, reveal. Every function blocks (call it from a worker
 //! thread). `on: Some(machine)` runs the operation on a herdr-core machine
 //! through `sh` scripts (POSIX paths, arguments always as argv, never spliced
 //! into the script); `None` works on this machine directly.
@@ -15,7 +15,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
-use crate::remote_entry::{self, Act, Kind};
+use crate::remote_entry::{self, Act, Kind, Problem};
 pub use crate::remote_write::Refusal;
 use crate::remote_write::{MAX_BYTES, posix_crc, resolve_links, save_gate};
 
@@ -914,13 +914,18 @@ pub fn is_scratch_name(name: &str) -> bool {
 }
 
 fn scratch_path(dir: &Path) -> PathBuf {
+    dir.join(format!("{SCRATCH_PREFIX}{}", scratch_id()))
+}
+
+/// 32 lowercase hex digits no other scratch name of this run has.
+pub(crate) fn scratch_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
     let id = (u64::from(std::process::id()) << 32)
         | (COUNTER.fetch_add(1, AtomicOrdering::Relaxed) & 0xffff_ffff);
-    dir.join(format!("{SCRATCH_PREFIX}{id:016x}{nanos:016x}"))
+    format!("{id:016x}{nanos:016x}")
 }
 
 /// Puts `bytes` in `target` when `unchanged` still says so right before the
@@ -1318,9 +1323,815 @@ fn same_entry_other_case(from: &str, to: &str) -> bool {
     }
 }
 
-/// Moves a file or folder on this machine to the trash.
-pub fn trash(path: &str) -> Result<(), String> {
+/// Moves a file or folder to the trash: this machine's, or on another machine `gio trash`, a
+/// `trash` command or the freedesktop trash in its home ([`crate::remote_entry`]); never deleted
+/// when none of them can take it.
+pub fn trash(path: &str, on: Option<&str>) -> Result<(), String> {
+    if let Some(m) = machine(on) {
+        return remote_entry::on_machine(Act::Trash(path), m);
+    }
     ::trash::delete(path).map_err(|e| format!("cannot move {path} to the trash: {e}"))
+}
+
+// ---- copy ----
+
+/// How many names a copy tries before it gives up.
+const COPY_NAMES: u32 = 1000;
+/// How many folders inside each other a copy here goes through, the one copied counted. Each holds two
+/// descriptors (about 120 deep fill the 256 a process may have by default) and a frame of the walk on
+/// the stack (some 600 deep fill the 2 MiB of the thread on a debug build).
+#[cfg(unix)]
+const COPY_DEPTH: usize = 64;
+
+/// A file's name as stem and extension: the extension starts at the last dot, unless that dot
+/// starts the name (`.env` has none).
+pub(crate) fn split_ext(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(at) if at > 0 => name.split_at(at),
+        _ => (name, ""),
+    }
+}
+
+/// The `k`th name a copy of `name` may take in a folder: `name` itself, then `<stem> copy<ext>`,
+/// `<stem> copy 2<ext>`, and on. A folder (`whole`) keeps its name whole.
+pub(crate) fn copy_name(name: &str, whole: bool, k: u32) -> String {
+    let (stem, ext) = if whole { (name, "") } else { split_ext(name) };
+    match k {
+        0 => name.to_owned(),
+        1 => format!("{stem} copy{ext}"),
+        k => format!("{stem} copy {k}{ext}"),
+    }
+}
+
+/// Copies `from` (a file, a folder with all it holds, a link as a link) into the folder `into`
+/// under the first free name [`copy_name`] gives, and says where. Nothing there is replaced.
+/// The copy is made in a scratch folder in `into` and renamed in once whole: a copy that fails
+/// leaves nothing, and one that is done shows at once. `held`: names in `into` where a document
+/// is still open (its file deleted); taking one is refused, as a rename onto it is.
+pub fn copy(from: &str, into: &str, on: Option<&str>, held: &[String]) -> Result<String, String> {
+    if let Some(m) = machine(on) {
+        return remote_entry::copy_on_machine(from, into, held, m);
+    }
+    copy_here(from, into, held)
+        .map_err(|problem| Act::Copy(from, into, held).describe(&problem, "this machine"))
+}
+
+fn copy_here(from: &str, into: &str, held: &[String]) -> Result<String, Problem> {
+    let failed = |e: io::Error| Problem::Failed(e.to_string());
+    let source = Path::new(from);
+    let meta = match std::fs::symlink_metadata(source) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(Problem::Gone),
+        Err(e) => return Err(failed(e)),
+    };
+    match std::fs::metadata(into) {
+        Ok(folder) if folder.is_dir() => {}
+        Ok(_) => return Err(Problem::NoFolder),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(Problem::NoFolder),
+        Err(e) => return Err(failed(e)),
+    }
+    let whole = meta.is_dir();
+    if whole
+        && let (Ok(a), Ok(b)) = (std::fs::canonicalize(source), std::fs::canonicalize(into))
+        && b.starts_with(&a)
+    {
+        return Err(Problem::IntoItself);
+    }
+    let name = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or(Problem::BadPath)?;
+    #[cfg(unix)]
+    {
+        let scratch = anchored::Scratch::make(into)?;
+        let placed = scratch
+            .fill(source, name)
+            .and_then(|()| scratch.place(name, into, whole, held));
+        scratch.finish(placed.is_err().then_some(name));
+        placed
+    }
+    #[cfg(not(unix))]
+    {
+        let scratch = scratch_path(Path::new(into));
+        private_dir(&scratch).map_err(|e| match e.kind() {
+            io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
+                Problem::FolderNotWritable
+            }
+            _ => failed(e),
+        })?;
+        let made = scratch.join(name);
+        let placed = copy_entry(source, &made)
+            .map_err(failed)
+            .and_then(|()| place(&made, into, name, whole, held));
+        if placed.is_ok() {
+            let _ = std::fs::remove_dir(&scratch);
+        } else {
+            unseal(&scratch);
+            let _ = std::fs::remove_dir_all(&scratch);
+        }
+        placed
+    }
+}
+
+/// The local copy on Unix goes through folders it has opened, not through paths. Someone who may
+/// rename in `into` can swap the scratch folder for a link to one of the person's folders once it
+/// is made; a path through that link would write in that folder, or rename it out into `into`.
+/// Inside the scratch folder (the person's, 0700) nobody else can change anything.
+#[cfg(unix)]
+mod anchored {
+    use super::{COPY_DEPTH, COPY_NAMES, Problem, SCRATCH_PREFIX, copy_name, join, scratch_id};
+    use std::ffi::{CStr, CString, OsStr, OsString};
+    use std::io;
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+    use std::path::{Path, PathBuf};
+
+    pub(super) struct Scratch {
+        into: Dir,
+        pub(super) name: OsString,
+        dir: Dir,
+    }
+
+    impl Scratch {
+        /// Makes the scratch folder in `into` and opens it. What is opened is used only if it is
+        /// an empty folder of the person's: until then someone else may have put another one, or
+        /// a link, at its name.
+        pub(super) fn make(into: &str) -> Result<Self, Problem> {
+            let failed = |e: io::Error| Problem::Failed(e.to_string());
+            // A folder that cannot be entered cannot be changed either.
+            let refused = |e: io::Error| match e.kind() {
+                io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
+                    Problem::FolderNotWritable
+                }
+                _ => failed(e),
+            };
+            let parent = Dir::open(Path::new(into)).map_err(refused)?;
+            let name = OsString::from(format!("{SCRATCH_PREFIX}{}", scratch_id()));
+            parent.mkdir(&name, 0o700).map_err(refused)?;
+            Self::take(parent, name, into)
+        }
+
+        /// Opens what is at `name` in `parent` once the scratch folder was made there, and takes it
+        /// for the scratch folder only if it is an empty folder of the person's.
+        fn take(parent: Dir, name: OsString, into: &str) -> Result<Self, Problem> {
+            let not_made = Problem::Failed(format!(
+                "{} is not the folder just made",
+                join(into, &name.to_string_lossy())
+            ));
+            let Ok(dir) = parent.dir(&name) else {
+                return Err(not_made);
+            };
+            let Ok(st) = dir.stat() else {
+                return Err(not_made);
+            };
+            let scratch = Self {
+                into: parent,
+                name,
+                dir,
+            };
+            // SAFETY: geteuid has no preconditions.
+            if st.st_uid != unsafe { libc::geteuid() } {
+                return Err(not_made);
+            }
+            // Empty twice: before its mode is changed, so a folder of the person's put there stays as it
+            // was, and once private, as someone else may have added an entry while it was wider.
+            let empty = || scratch.dir.names().is_ok_and(|n| n.is_empty());
+            let private = || perm(&st) == 0o700 || scratch.dir.chmod(0o700).is_ok();
+            if !(empty() && private() && empty()) {
+                scratch.finish(None);
+                return Err(not_made);
+            }
+            Ok(scratch)
+        }
+
+        pub(super) fn fill(&self, source: &Path, name: &str) -> Result<(), Problem> {
+            Looked::at(source)
+                .and_then(|looked| self.fill_from(&looked, name))
+                .map_err(|e| Problem::Failed(e.to_string()))
+        }
+
+        /// Copies what was `looked` at into the scratch folder as `name`.
+        pub(super) fn fill_from(&self, looked: &Looked, name: &str) -> io::Result<()> {
+            copy_from(
+                &looked.dir,
+                &looked.name,
+                &looked.st,
+                &looked.shown,
+                &self.dir,
+                name.as_ref(),
+                0,
+            )
+        }
+
+        /// Renames the copy to the first free name in `into`; never over what is there.
+        pub(super) fn place(
+            &self,
+            name: &str,
+            into: &str,
+            whole: bool,
+            held: &[String],
+        ) -> Result<String, Problem> {
+            let mut last = name.to_owned();
+            for k in 0..COPY_NAMES {
+                last = copy_name(name, whole, k);
+                if self.into.stat_at(last.as_ref()).is_ok() {
+                    continue;
+                }
+                if let Some(at) = held.iter().position(|h| *h == last) {
+                    return Err(Problem::StillOpen(at));
+                }
+                match self.dir.rename_to(name.as_ref(), &self.into, last.as_ref()) {
+                    Ok(()) => return Ok(join(into, &last)),
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(Problem::Failed(e.to_string())),
+                }
+            }
+            Err(Problem::Failed(format!(
+                "every name from {name} to {last} is taken in {into}"
+            )))
+        }
+
+        /// Takes away what a failed copy `left`, then the scratch folder's name while it is still
+        /// that folder.
+        pub(super) fn finish(self, left: Option<&str>) {
+            if let Some(name) = left {
+                remove_at(&self.dir, name.as_ref());
+            }
+            let same = match (self.into.stat_at(&self.name), self.dir.stat()) {
+                (Ok(a), Ok(b)) => (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino),
+                _ => false,
+            };
+            if same {
+                let _ = self.into.unlink(&self.name, true);
+            }
+        }
+    }
+
+    /// The entry a copy is of, looked at once (a link is not followed). The folder it is in is
+    /// opened by its path, links on the way followed as the path says.
+    pub(super) struct Looked {
+        dir: Dir,
+        name: OsString,
+        st: libc::stat,
+        shown: PathBuf,
+    }
+
+    impl Looked {
+        pub(super) fn at(path: &Path) -> io::Result<Self> {
+            let said = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", path.display()));
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                return Err(said(io::ErrorKind::InvalidInput.into()));
+            };
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
+            let dir = Dir::open(parent).map_err(said)?;
+            let st = dir.stat_at(name).map_err(said)?;
+            Ok(Self {
+                dir,
+                name: name.to_owned(),
+                st,
+                shown: path.to_owned(),
+            })
+        }
+    }
+
+    /// Copies `name` in `src`, which was `st` when looked at, into `at` as `to`, and all a folder
+    /// holds. Someone who may rename where it is can swap it for a link, or for another entry,
+    /// after the look: it is opened without following a link and copied only while it is still
+    /// what was looked at, and its mode is read from what was opened. So what is read never
+    /// lands wider than it is. A new entry gets the mode `cp` gives it: the original's, less the
+    /// umask. `above`: how many folders of the copy it is in.
+    fn copy_from(
+        src: &Dir,
+        name: &OsStr,
+        st: &libc::stat,
+        shown: &Path,
+        at: &Dir,
+        to: &OsStr,
+        above: usize,
+    ) -> io::Result<()> {
+        let said = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", shown.display()));
+        let changed =
+            || io::Error::other(format!("{} changed while it was copied", shown.display()));
+        // A link or another kind of entry where the look saw this one.
+        let opened = |e: io::Error| match e.raw_os_error() {
+            Some(libc::ELOOP | libc::ENOTDIR | libc::EINVAL) => changed(),
+            _ => said(e),
+        };
+        let same = |own: &libc::stat| {
+            (own.st_dev, own.st_ino, own.st_mode & libc::S_IFMT)
+                == (st.st_dev, st.st_ino, st.st_mode & libc::S_IFMT)
+        };
+        match st.st_mode & libc::S_IFMT {
+            libc::S_IFLNK => {
+                let target = src.read_link(name).map_err(opened)?;
+                at.symlink(&target, to)?;
+                #[cfg(target_os = "macos")]
+                {
+                    let link = src.open_link(name).map_err(opened)?;
+                    if !same(&stat_of(link.as_raw_fd())?) {
+                        return Err(changed());
+                    }
+                    let made = at.open_link(to)?;
+                    keep(link.as_raw_fd(), made.as_raw_fd(), libc::COPYFILE_XATTR).map_err(said)?;
+                }
+                Ok(())
+            }
+            libc::S_IFDIR => {
+                if above == COPY_DEPTH {
+                    return Err(io::Error::other(format!(
+                        "{}: more than {COPY_DEPTH} folders inside each other",
+                        shown.display()
+                    )));
+                }
+                let from = src.dir(name).map_err(opened)?;
+                let own = from.stat()?;
+                if !same(&own) {
+                    return Err(changed());
+                }
+                // The owner may fill it whatever the original's mode; what it lacks is taken away after.
+                at.mkdir(to, perm(&own) | 0o700)?;
+                let made = at.dir(to)?;
+                #[cfg(target_os = "macos")]
+                keep(from.fd(), made.fd(), libc::COPYFILE_XATTR).map_err(said)?;
+                for n in from.names().map_err(said)? {
+                    let inner = shown.join(&n);
+                    let st = from.stat_at(&n).map_err(|e| {
+                        io::Error::new(e.kind(), format!("{}: {e}", inner.display()))
+                    })?;
+                    copy_from(&from, &n, &st, &inner, &made, &n, above + 1)?;
+                }
+                // The sticky bit is kept, as `cp -RP` keeps it; a setgid the new folder got from
+                // the folder it was made in stays.
+                let mode = bits(&made.stat()?);
+                let want = (mode & !(0o700 & !perm(&own))) | (bits(&own) & 0o1000);
+                if want != mode {
+                    made.chmod(want)?;
+                }
+                Ok(())
+            }
+            libc::S_IFREG => {
+                let source = src.open_file(name).map_err(opened)?;
+                let own = stat_of(source.as_raw_fd())?;
+                if !same(&own) {
+                    return Err(changed());
+                }
+                let copy = at.create(to, perm(&own))?;
+                fill(&source, &copy).map_err(said)
+            }
+            _ => Err(io::Error::other(format!(
+                "{} is not a file, a folder or a link",
+                shown.display()
+            ))),
+        }
+    }
+
+    /// Takes away `name` in `at`, all a folder holds first. A folder copied without write
+    /// permission is given it back; links are not followed.
+    fn remove_at(at: &Dir, name: &OsStr) {
+        let Ok(st) = at.stat_at(name) else {
+            return;
+        };
+        let folder = (st.st_mode & libc::S_IFMT) == libc::S_IFDIR;
+        if folder {
+            let _ = at.chmod_at(name, perm(&st) | 0o700);
+            if let Ok(inner) = at.dir(name)
+                && let Ok(names) = inner.names()
+            {
+                for n in names {
+                    remove_at(&inner, &n);
+                }
+            }
+        }
+        let _ = at.unlink(name, folder);
+    }
+
+    /// Puts what `source` holds in `copy`: on macOS with its extended attributes, through `fcopyfile` as a
+    /// save keeps them ([`super::keep_extended`]), and with the holes of a sparse file kept as holes.
+    #[cfg(target_os = "macos")]
+    fn fill(source: &std::fs::File, copy: &std::fs::File) -> io::Result<()> {
+        let flags = libc::COPYFILE_DATA | libc::COPYFILE_DATA_SPARSE | libc::COPYFILE_XATTR;
+        keep(source.as_raw_fd(), copy.as_raw_fd(), flags)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn fill(mut source: &std::fs::File, mut copy: &std::fs::File) -> io::Result<()> {
+        io::copy(&mut source, &mut copy).map(drop)
+    }
+
+    /// What `flags` name, from one handle onto the other. `COPYFILE_XATTR` is what `cp -RP` keeps:
+    /// extended attributes (Finder tags, a resource fork, the quarantine flag), not the ACL.
+    #[cfg(target_os = "macos")]
+    fn keep(from: libc::c_int, to: libc::c_int, flags: libc::copyfile_flags_t) -> io::Result<()> {
+        // SAFETY: both descriptors are open for the call; no state is passed.
+        sys(unsafe { libc::fcopyfile(from, to, std::ptr::null_mut(), flags) }).map(drop)
+    }
+
+    #[allow(clippy::unnecessary_cast)]
+    fn perm(st: &libc::stat) -> u32 {
+        st.st_mode as u32 & 0o777
+    }
+
+    /// [`perm`] with setuid, setgid and the sticky bit.
+    #[allow(clippy::unnecessary_cast)]
+    fn bits(st: &libc::stat) -> u32 {
+        st.st_mode as u32 & 0o7777
+    }
+
+    fn c_name(name: &OsStr) -> io::Result<CString> {
+        CString::new(name.as_bytes()).map_err(|_| io::ErrorKind::InvalidInput.into())
+    }
+
+    fn stat_of(fd: libc::c_int) -> io::Result<libc::stat> {
+        let mut st = std::mem::MaybeUninit::uninit();
+        // SAFETY: room for one stat, filled when the call succeeds.
+        sys(unsafe { libc::fstat(fd, st.as_mut_ptr()) })?;
+        // SAFETY: the call succeeded.
+        Ok(unsafe { st.assume_init() })
+    }
+
+    fn sys(r: libc::c_int) -> io::Result<libc::c_int> {
+        if r < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(r)
+        }
+    }
+
+    /// A folder opened once: what is done through it stays in that folder, whatever is renamed
+    /// or put at its path meanwhile.
+    struct Dir(OwnedFd);
+
+    impl Dir {
+        const FLAGS: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+        /// Search access only: names are looked up, made, renamed and removed through it, all the
+        /// `*at` calls allow, but it cannot be listed.
+        #[cfg(target_os = "macos")]
+        const SEARCH: libc::c_int = libc::O_SEARCH | libc::O_CLOEXEC;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        const SEARCH: libc::c_int = libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC;
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
+        const SEARCH: libc::c_int = Self::FLAGS;
+
+        /// The folder at `path`, a link to one followed, to work in by name: one the person may enter
+        /// but not read (another account's Drop Box, 0333) is opened too.
+        fn open(path: &Path) -> io::Result<Self> {
+            let path = c_name(path.as_os_str())?;
+            // SAFETY: a NUL-terminated path that outlives the call.
+            let open = |flags| Self::own(unsafe { libc::open(path.as_ptr(), flags) });
+            match open(Self::SEARCH) {
+                // A system without search-only opens may refuse the flag: read access, as before.
+                Err(e) if e.raw_os_error() == Some(libc::EINVAL) => open(Self::FLAGS),
+                opened => opened,
+            }
+        }
+
+        /// The folder `name` in this one; a link is refused.
+        fn dir(&self, name: &OsStr) -> io::Result<Self> {
+            let name = c_name(name)?;
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            Self::own(unsafe {
+                libc::openat(self.fd(), name.as_ptr(), Self::FLAGS | libc::O_NOFOLLOW)
+            })
+        }
+
+        fn own(fd: libc::c_int) -> io::Result<Self> {
+            let fd = sys(fd)?;
+            // SAFETY: a descriptor just opened, owned by nothing else.
+            Ok(Self(unsafe { OwnedFd::from_raw_fd(fd) }))
+        }
+
+        fn fd(&self) -> libc::c_int {
+            self.0.as_raw_fd()
+        }
+
+        fn stat(&self) -> io::Result<libc::stat> {
+            stat_of(self.fd())
+        }
+
+        /// What is at `name` here; a link is not followed.
+        fn stat_at(&self, name: &OsStr) -> io::Result<libc::stat> {
+            let name = c_name(name)?;
+            let mut st = std::mem::MaybeUninit::uninit();
+            // SAFETY: as in `stat`, with a NUL-terminated name.
+            sys(unsafe {
+                libc::fstatat(
+                    self.fd(),
+                    name.as_ptr(),
+                    st.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            })?;
+            // SAFETY: the call succeeded.
+            Ok(unsafe { st.assume_init() })
+        }
+
+        fn mkdir(&self, name: &OsStr, mode: u32) -> io::Result<()> {
+            let name = c_name(name)?;
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            sys(unsafe { libc::mkdirat(self.fd(), name.as_ptr(), mode as libc::mode_t) }).map(drop)
+        }
+
+        /// A new file `name` here: never one that is there, nor through a link.
+        fn create(&self, name: &OsStr, mode: u32) -> io::Result<std::fs::File> {
+            let name = c_name(name)?;
+            let flags =
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            let fd = sys(unsafe {
+                libc::openat(self.fd(), name.as_ptr(), flags, mode as libc::c_uint)
+            })?;
+            // SAFETY: a descriptor just opened, owned by nothing else.
+            Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+        }
+
+        /// The file `name` here, to read: a link is refused, and a FIFO put there is not waited on.
+        fn open_file(&self, name: &OsStr) -> io::Result<std::fs::File> {
+            let name = c_name(name)?;
+            let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            let fd = sys(unsafe { libc::openat(self.fd(), name.as_ptr(), flags) })?;
+            // SAFETY: a descriptor just opened, owned by nothing else.
+            Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+        }
+
+        /// The link `name` here itself, for its attributes; anything else there is opened as it is, and a
+        /// FIFO is not waited on.
+        #[cfg(target_os = "macos")]
+        fn open_link(&self, name: &OsStr) -> io::Result<std::fs::File> {
+            let name = c_name(name)?;
+            let flags = libc::O_RDONLY | libc::O_SYMLINK | libc::O_NONBLOCK | libc::O_CLOEXEC;
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            let fd = sys(unsafe { libc::openat(self.fd(), name.as_ptr(), flags) })?;
+            // SAFETY: a descriptor just opened, owned by nothing else.
+            Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+        }
+
+        /// What the link `name` here points to.
+        fn read_link(&self, name: &OsStr) -> io::Result<PathBuf> {
+            let name = c_name(name)?;
+            let mut buf = vec![0u8; libc::PATH_MAX as usize + 1];
+            // SAFETY: a NUL-terminated name, a descriptor this owns, and a buffer of that length.
+            let n = unsafe {
+                libc::readlinkat(self.fd(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len())
+            };
+            let n = usize::try_from(n).map_err(|_| io::Error::last_os_error())?;
+            if n >= buf.len() {
+                return Err(io::Error::other("the link points to a path too long"));
+            }
+            buf.truncate(n);
+            Ok(PathBuf::from(OsString::from_vec(buf)))
+        }
+
+        fn symlink(&self, target: &Path, name: &OsStr) -> io::Result<()> {
+            let (target, name) = (c_name(target.as_os_str())?, c_name(name)?);
+            // SAFETY: NUL-terminated strings and a descriptor this owns.
+            sys(unsafe { libc::symlinkat(target.as_ptr(), self.fd(), name.as_ptr()) }).map(drop)
+        }
+
+        fn chmod(&self, mode: u32) -> io::Result<()> {
+            // SAFETY: a descriptor this owns.
+            sys(unsafe { libc::fchmod(self.fd(), mode as libc::mode_t) }).map(drop)
+        }
+
+        /// Follows a link: only for a folder in the scratch folder, which nobody else can change.
+        fn chmod_at(&self, name: &OsStr, mode: u32) -> io::Result<()> {
+            let name = c_name(name)?;
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            sys(unsafe { libc::fchmodat(self.fd(), name.as_ptr(), mode as libc::mode_t, 0) })
+                .map(drop)
+        }
+
+        fn unlink(&self, name: &OsStr, folder: bool) -> io::Result<()> {
+            let name = c_name(name)?;
+            let flags = if folder { libc::AT_REMOVEDIR } else { 0 };
+            // SAFETY: a NUL-terminated name and a descriptor this owns.
+            sys(unsafe { libc::unlinkat(self.fd(), name.as_ptr(), flags) }).map(drop)
+        }
+
+        /// The names in this folder.
+        fn names(&self) -> io::Result<Vec<OsString>> {
+            // fdopendir keeps the descriptor it is given: a copy of this one.
+            // SAFETY: a descriptor this owns.
+            let fd = sys(unsafe { libc::fcntl(self.fd(), libc::F_DUPFD_CLOEXEC, 0) })?;
+            // SAFETY: a descriptor just made, handed over.
+            let listing = unsafe { libc::fdopendir(fd) };
+            if listing.is_null() {
+                let e = io::Error::last_os_error();
+                // SAFETY: fdopendir did not take it.
+                unsafe { libc::close(fd) };
+                return Err(e);
+            }
+            let mut names = Vec::new();
+            // SAFETY: `listing` is open until closedir; each entry is read before the next call.
+            unsafe {
+                libc::rewinddir(listing);
+                loop {
+                    let entry = libc::readdir(listing);
+                    if entry.is_null() {
+                        break;
+                    }
+                    let name = CStr::from_ptr((*entry).d_name.as_ptr()).to_bytes();
+                    if name != b"." && name != b".." {
+                        names.push(OsStr::from_bytes(name).to_owned());
+                    }
+                }
+                libc::closedir(listing);
+            }
+            Ok(names)
+        }
+
+        /// Renames `name` here to `to` in `into`; never over what is there.
+        fn rename_to(&self, name: &OsStr, into: &Dir, to: &OsStr) -> io::Result<()> {
+            let (a, b) = (c_name(name)?, c_name(to)?);
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            {
+                // SAFETY: NUL-terminated names and descriptors these own.
+                #[cfg(target_os = "macos")]
+                let done = unsafe {
+                    libc::renameatx_np(
+                        self.fd(),
+                        a.as_ptr(),
+                        into.fd(),
+                        b.as_ptr(),
+                        libc::RENAME_EXCL,
+                    )
+                };
+                // SAFETY: as above.
+                #[cfg(target_os = "linux")]
+                let done = unsafe {
+                    libc::renameat2(
+                        self.fd(),
+                        a.as_ptr(),
+                        into.fd(),
+                        b.as_ptr(),
+                        libc::RENAME_NOREPLACE,
+                    )
+                };
+                if done == 0 {
+                    return Ok(());
+                }
+                let e = io::Error::last_os_error();
+                if !matches!(
+                    e.raw_os_error(),
+                    Some(libc::EINVAL | libc::ENOTSUP | libc::ENOSYS)
+                ) {
+                    return Err(e);
+                }
+            }
+            // Where the system cannot refuse to replace, what is there is looked at first.
+            if into.stat_at(to).is_ok() {
+                return Err(io::ErrorKind::AlreadyExists.into());
+            }
+            // SAFETY: NUL-terminated names and descriptors these own.
+            sys(unsafe { libc::renameat(self.fd(), a.as_ptr(), into.fd(), b.as_ptr()) }).map(drop)
+        }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn a_rename_onto_a_taken_name_is_refused_and_both_stay() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a"), b"a").unwrap();
+        std::fs::write(d.path().join("b"), b"b").unwrap();
+        let here = Dir::open(d.path()).unwrap();
+        let e = here
+            .rename_to("a".as_ref(), &here, "b".as_ref())
+            .unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(d.path().join("a")).unwrap(), b"a");
+        assert_eq!(std::fs::read(d.path().join("b")).unwrap(), b"b");
+    }
+
+    /// A folder of the person's found at the scratch name once it was made (someone renamed it there)
+    /// is not taken, and its mode and what it holds stay as they were.
+    #[cfg(test)]
+    #[test]
+    fn a_folder_of_the_persons_at_the_scratch_name_is_not_taken_and_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let name = format!("{SCRATCH_PREFIX}{}", scratch_id());
+        let theirs = d.path().join(&name);
+        std::fs::create_dir(&theirs).unwrap();
+        std::fs::write(theirs.join("keep.txt"), b"mine").unwrap();
+        std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let into = d.path().to_string_lossy();
+        let taken = Scratch::take(Dir::open(d.path()).unwrap(), name.into(), &into);
+        assert!(
+            matches!(&taken, Err(Problem::Failed(m)) if m.ends_with("is not the folder just made"))
+        );
+        let mode = std::fs::metadata(&theirs).unwrap().permissions().mode();
+        assert_eq!(mode & 0o7777, 0o755);
+        assert_eq!(std::fs::read(theirs.join("keep.txt")).unwrap(), b"mine");
+    }
+}
+
+/// Lets the owner remove what a failed copy made: a read-only file keeps what it holds until
+/// then. Links are not followed.
+#[cfg(not(unix))]
+fn unseal(path: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if meta.file_type().is_symlink() {
+        return;
+    }
+    if meta.permissions().readonly() {
+        let mut writable = meta.permissions();
+        writable.set_readonly(false);
+        let _ = std::fs::set_permissions(path, writable);
+    }
+    if meta.is_dir()
+        && let Ok(entries) = std::fs::read_dir(path)
+    {
+        for entry in entries.flatten() {
+            unseal(&entry.path());
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn private_dir(path: &Path) -> io::Result<()> {
+    std::fs::DirBuilder::new().create(path)
+}
+
+/// Copies one entry, and all a folder holds.
+#[cfg(not(unix))]
+fn copy_entry(from: &Path, to: &Path) -> io::Result<()> {
+    let said = |e: io::Error| io::Error::new(e.kind(), format!("{}: {e}", from.display()));
+    let meta = std::fs::symlink_metadata(from).map_err(said)?;
+    let kind = meta.file_type();
+    if kind.is_symlink() {
+        return link_like(from, to).map_err(said);
+    }
+    if kind.is_dir() {
+        std::fs::create_dir(to)?;
+        for entry in std::fs::read_dir(from).map_err(said)? {
+            let entry = entry.map_err(said)?;
+            copy_entry(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    if !kind.is_file() {
+        return Err(io::Error::other(format!(
+            "{} is not a file, a folder or a link",
+            from.display()
+        )));
+    }
+    let mut source = open_regular(from).map_err(said)?;
+    let mut copy = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)?;
+    io::copy(&mut source, &mut copy).map_err(said)?;
+    if meta.permissions().readonly() {
+        std::fs::set_permissions(to, meta.permissions())?;
+    }
+    Ok(())
+}
+
+/// A link to a folder is made as one; a link to nothing, as a link to a file.
+#[cfg(windows)]
+fn link_like(from: &Path, to: &Path) -> io::Result<()> {
+    let target = std::fs::read_link(from)?;
+    if std::fs::metadata(from).is_ok_and(|m| m.is_dir()) {
+        std::os::windows::fs::symlink_dir(target, to)
+    } else {
+        std::os::windows::fs::symlink_file(target, to)
+    }
+}
+
+/// Renames the copy made at `made` to the first free name in `into`; never over what is there.
+#[cfg(not(unix))]
+fn place(
+    made: &Path,
+    into: &str,
+    name: &str,
+    whole: bool,
+    held: &[String],
+) -> Result<String, Problem> {
+    let mut last = name.to_owned();
+    for k in 0..COPY_NAMES {
+        last = copy_name(name, whole, k);
+        let to = join(into, &last);
+        if std::fs::symlink_metadata(&to).is_ok() {
+            continue;
+        }
+        if let Some(at) = held.iter().position(|h| *h == last) {
+            return Err(Problem::StillOpen(at));
+        }
+        match rename_no_replace(made, Path::new(&to)) {
+            Ok(()) => return Ok(to),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(Problem::Failed(e.to_string())),
+        }
+    }
+    Err(Problem::Failed(format!(
+        "every name from {name} to {last} is taken in {into}"
+    )))
 }
 
 // ---- reveal ----
@@ -2943,10 +3754,620 @@ mod tests {
         assert_eq!(join("", "c"), "c");
     }
 
-    // `trash` and `reveal` act on the real desktop: they only need to exist.
+    #[test]
+    fn a_file_is_copied_beside_itself_and_into_another_folder_and_never_over_anything() {
+        let d = tempfile::tempdir().unwrap();
+        let a = put(&d, "a.txt", b"mine");
+        let here = p(&d, "");
+        let here = here.trim_end_matches('/');
+        assert_eq!(copy(&a, here, None, &[]), Ok(p(&d, "a copy.txt")));
+        assert_eq!(copy(&a, here, None, &[]), Ok(p(&d, "a copy 2.txt")));
+        assert_eq!(read_bytes(&p(&d, "a copy 2.txt")), b"mine");
+        // Pasted twice where a.txt is already: the one there keeps its bytes.
+        std::fs::create_dir(p(&d, "other")).unwrap();
+        let theirs = put(&d, "other/a.txt", b"theirs");
+        let other = p(&d, "other");
+        assert_eq!(copy(&a, &other, None, &[]), Ok(p(&d, "other/a copy.txt")));
+        assert_eq!(copy(&a, &other, None, &[]), Ok(p(&d, "other/a copy 2.txt")));
+        assert_eq!(read_bytes(&theirs), b"theirs");
+        assert_eq!(read_bytes(&a), b"mine");
+        // Into a folder where the name is free, the name itself.
+        std::fs::create_dir(p(&d, "empty")).unwrap();
+        assert_eq!(
+            copy(&a, &p(&d, "empty"), None, &[]),
+            Ok(p(&d, "empty/a.txt"))
+        );
+        let Listing { entries, .. } = list_dir(here, None, 20).unwrap();
+        assert_eq!(
+            names(&entries),
+            ["empty", "other", "a copy 2.txt", "a copy.txt", "a.txt"]
+        );
+    }
+
+    fn read_bytes(path: &str) -> Vec<u8> {
+        std::fs::read(path).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_is_copied_with_all_it_holds_its_links_as_links_and_no_wider_than_it_was() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(p(&d, "src/one/two/three")).unwrap();
+        put(&d, "src/one/two/three/deep.txt", b"deep");
+        put(&d, "src/run.sh", b"#!/bin/sh\n");
+        std::fs::set_permissions(p(&d, "src/run.sh"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        symlink("run.sh", p(&d, "src/to-file")).unwrap();
+        symlink("one", p(&d, "src/to-folder")).unwrap();
+        symlink("nowhere", p(&d, "src/dangling")).unwrap();
+        std::fs::create_dir(p(&d, "src/private")).unwrap();
+        std::fs::set_permissions(p(&d, "src/private"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        std::fs::create_dir(p(&d, "src/sealed")).unwrap();
+        put(&d, "src/sealed/kept", b"kept");
+        std::fs::set_permissions(p(&d, "src/sealed"), std::fs::Permissions::from_mode(0o555))
+            .unwrap();
+        let root = p(&d, "");
+        let made = copy(&p(&d, "src"), root.trim_end_matches('/'), None, &[]).unwrap();
+        assert_eq!(made, p(&d, "src copy"));
+        assert_eq!(read(&format!("{made}/one/two/three/deep.txt")), "deep");
+        for (link, to) in [
+            ("to-file", "run.sh"),
+            ("to-folder", "one"),
+            ("dangling", "nowhere"),
+        ] {
+            let at = format!("{made}/{link}");
+            assert!(
+                std::fs::symlink_metadata(&at).unwrap().is_symlink(),
+                "{link}"
+            );
+            assert_eq!(std::fs::read_link(&at).unwrap(), Path::new(to));
+        }
+        let mode = |path: &str| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&format!("{made}/run.sh")) & 0o111, 0o111);
+        assert_eq!(mode(&format!("{made}/private")), 0o700);
+        assert_eq!(mode(&format!("{made}/sealed")) & 0o200, 0);
+        assert_eq!(read(&format!("{made}/sealed/kept")), "kept");
+        for sealed in [p(&d, "src/sealed"), format!("{made}/sealed")] {
+            std::fs::set_permissions(sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(
+            held(&d).iter().all(|n| !is_scratch_name(n)),
+            "{:?}",
+            held(&d)
+        );
+    }
+
+    /// An extended attribute of the entry at `path` itself (a link is not followed); false where it cannot be set.
+    #[cfg(target_os = "macos")]
+    fn set_attr(path: &str, name: &str, value: &[u8]) -> bool {
+        let new = |s: &str| std::ffi::CString::new(s).unwrap();
+        let (path, name) = (new(path), new(name));
+        let (at, len) = (value.as_ptr().cast(), value.len());
+        let flags = libc::XATTR_NOFOLLOW;
+        // SAFETY: NUL-terminated strings and a value as long as said.
+        unsafe { libc::setxattr(path.as_ptr(), name.as_ptr(), at, len, 0, flags) == 0 }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn attr(path: &str, name: &str) -> Option<Vec<u8>> {
+        let new = |s: &str| std::ffi::CString::new(s).unwrap();
+        let (path, name) = (new(path), new(name));
+        let mut value = vec![0u8; 256];
+        let (at, len) = (value.as_mut_ptr().cast(), value.len());
+        let flags = libc::XATTR_NOFOLLOW;
+        // SAFETY: NUL-terminated strings and a buffer as long as said.
+        let got = unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), at, len, 0, flags) };
+        value.truncate(usize::try_from(got).ok()?);
+        Some(value)
+    }
+
+    /// What `cp -RP` and Finder keep of a folder, a file and a link in it: an attribute of the person's, a
+    /// Finder tag and the quarantine flag (its flags: the time in it becomes the copy's, as `cp -RP` writes it).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_copy_keeps_the_extended_attributes_finder_tags_and_quarantine_flag_of_what_it_copies() {
+        use std::os::unix::fs::symlink;
+        const TAGS: &str = "com.apple.metadata:_kMDItemUserTags";
+        const QUARANTINE: &str = "com.apple.quarantine";
+        // A binary property list of one tag: "Red", color 6.
+        let tag = b"bplist00\xa1\x01URed\x0a6\x08\x0a\x00\x00\x00\x00\x00\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10";
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(p(&d, "box")).unwrap();
+        put(&d, "box/a.txt", b"a");
+        symlink("a.txt", p(&d, "box/link")).unwrap();
+        for entry in ["box", "box/a.txt", "box/link"] {
+            let at = p(&d, entry);
+            for (name, value) in [
+                ("user.note", &b"mine"[..]),
+                (TAGS, &tag[..]),
+                (QUARANTINE, b"0081;5f000000;Safari;"),
+            ] {
+                assert!(set_attr(&at, name, value), "{entry}: {name}");
+            }
+        }
+        let root = p(&d, "");
+        let made = copy(&p(&d, "box"), root.trim_end_matches('/'), None, &[]).unwrap();
+        for entry in ["", "/a.txt", "/link"] {
+            let at = format!("{made}{entry}");
+            let mine = attr(&at, "user.note");
+            assert_eq!(mine.as_deref(), Some(&b"mine"[..]), "{at}");
+            assert_eq!(attr(&at, TAGS).as_deref(), Some(&tag[..]), "{at}");
+            let flag = attr(&at, QUARANTINE);
+            let flagged = flag.as_ref().is_some_and(|q| q.starts_with(b"0081;"));
+            assert!(flagged, "{at}: {flag:?}");
+        }
+        let link = std::fs::symlink_metadata(format!("{made}/link")).unwrap();
+        assert!(link.is_symlink());
+    }
+
+    /// A sparse file of 64 MiB holding one byte is copied with its holes: it takes no more room than it did.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sparse_file_is_copied_sparse() {
+        use std::os::unix::fs::MetadataExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let sparse = p(&d, "sparse.bin");
+        let file = std::fs::File::create(&sparse).unwrap();
+        file.set_len(64 << 20).unwrap();
+        std::os::unix::fs::FileExt::write_at(&file, b"x", (64 << 20) - 1).unwrap();
+        drop(file);
+        let room = |path: &str| std::fs::metadata(path).unwrap().blocks() * 512;
+        assert!(room(&sparse) < 1 << 20, "not sparse to begin with");
+        let root = p(&d, "");
+        let made = copy(&sparse, root.trim_end_matches('/'), None, &[]).unwrap();
+        assert_eq!(std::fs::metadata(&made).unwrap().len(), 64 << 20);
+        assert!(room(&made) < 1 << 20, "{} bytes taken", room(&made));
+    }
+
+    /// A copy here goes through [`COPY_DEPTH`] folders inside each other, the one copied counted, and
+    /// refuses a tree one deeper with nothing left. At the limit it fits in half the stack of the
+    /// thread it runs on (2 MiB, `docs::blocking`) on a debug build: it needs some 350 KiB on macOS.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_goes_as_deep_as_its_limit_and_refuses_one_folder_more() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().to_owned();
+        let deepest = |top: &str, levels: usize| {
+            let mut path = root.join(top);
+            path.extend(std::iter::repeat_n("d", levels - 1));
+            path
+        };
+        let mut said = Vec::new();
+        for (top, levels) in [("fits", COPY_DEPTH), ("deep", COPY_DEPTH + 1)] {
+            std::fs::create_dir_all(deepest(top, levels)).unwrap();
+            std::fs::write(deepest(top, levels).join("f"), "f").unwrap();
+            let (from, out) = (root.join(top), root.join(format!("{top} out")));
+            std::fs::create_dir(&out).unwrap();
+            let (from, out) = (from.display().to_string(), out.display().to_string());
+            let run = std::thread::Builder::new().stack_size(1 << 20);
+            let run = run.spawn(move || copy(&from, &out, None, &[])).unwrap();
+            said.push(run.join().unwrap());
+        }
+        let copied = deepest("fits out/fits", COPY_DEPTH).join("f");
+        assert_eq!(std::fs::read(copied).unwrap(), b"f");
+        let Err(why) = &said[1] else {
+            panic!("{said:?}")
+        };
+        let deep = "more than 64 folders inside each other";
+        assert!(why.ends_with(deep), "{why}");
+        assert_eq!(std::fs::read_dir(root.join("deep out")).unwrap().count(), 0);
+    }
+
+    /// A shared folder's sticky bit (there, only an entry's owner may rename or remove it) is kept, on the
+    /// folder copied and on one inside it; a file's setuid and setgid are not. The file is empty: a write
+    /// clears them anyway, and macOS never sets them on a file someone other than root makes.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_keeps_a_folders_sticky_bit_and_never_a_files_setuid_or_setgid() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(p(&d, "shared/inner")).unwrap();
+        put(&d, "shared/run", b"");
+        let mode = |rel: &str| std::fs::metadata(p(&d, rel)).unwrap().permissions().mode() & 0o7777;
+        let set = |rel: &str, mode| {
+            std::fs::set_permissions(p(&d, rel), std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        set("shared", 0o1777);
+        set("shared/inner", 0o1755);
+        set("shared/run", 0o6755);
+        assert_ne!(mode("shared/run") & 0o4000, 0, "a setuid to copy");
+        let root = p(&d, "");
+        let made = copy(&p(&d, "shared"), root.trim_end_matches('/'), None, &[]).unwrap();
+        assert_eq!(made, p(&d, "shared copy"));
+        assert_eq!(mode("shared copy") & 0o1000, 0o1000);
+        assert_eq!(mode("shared copy/inner") & 0o1000, 0o1000);
+        assert_eq!(mode("shared copy/run") & 0o6000, 0);
+        assert_eq!(mode("shared copy/run") & 0o111, 0o111);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_that_cannot_be_made_says_why_and_leaves_nothing() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let a = put(&d, "a.txt", b"mine");
+        let root = p(&d, "");
+        let root = root.trim_end_matches('/');
+        let e = copy(&p(&d, "ghost.txt"), root, None, &[]).unwrap_err();
+        assert!(
+            e.contains("ghost.txt") && e.contains("no longer there"),
+            "{e}"
+        );
+        let e = copy(&a, &p(&d, "no/where"), None, &[]).unwrap_err();
+        assert!(
+            e.contains(&p(&d, "no/where")) && e.contains("does not exist"),
+            "{e}"
+        );
+        let e = copy(&p(&d, ""), &p(&d, "sub"), None, &[]).unwrap_err();
+        assert!(e.contains("does not exist"), "{e}");
+        if unsafe { libc::geteuid() } != 0 {
+            std::fs::create_dir(p(&d, "locked")).unwrap();
+            std::fs::set_permissions(p(&d, "locked"), std::fs::Permissions::from_mode(0o555))
+                .unwrap();
+            let e = copy(&a, &p(&d, "locked"), None, &[]).unwrap_err();
+            assert!(
+                e.contains("you may not change") && e.contains(&p(&d, "locked")),
+                "{e}"
+            );
+            std::fs::set_permissions(p(&d, "locked"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            assert_eq!(std::fs::read_dir(p(&d, "locked")).unwrap().count(), 0);
+        }
+        // A pipe is not a file to read: the copy of its folder stops, and leaves nothing.
+        std::fs::create_dir(p(&d, "box")).unwrap();
+        put(&d, "box/note", b"n");
+        let fifo = std::ffi::CString::new(p(&d, "box/pipe")).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let e = copy(&p(&d, "box"), root, None, &[]).unwrap_err();
+        assert!(
+            e.contains("pipe") && e.contains("not a file, a folder or a link"),
+            "{e}"
+        );
+        // A folder into itself, or into one inside it.
+        std::fs::create_dir(p(&d, "box/inner")).unwrap();
+        for into in [p(&d, "box"), p(&d, "box/inner")] {
+            let e = copy(&p(&d, "box"), &into, None, &[]).unwrap_err();
+            assert!(e.contains("cannot go into itself"), "{e}");
+        }
+        assert_eq!(
+            held(&d),
+            ["a.txt", "box"]
+                .into_iter()
+                .chain((unsafe { libc::geteuid() } != 0).then_some("locked"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(held_in(&p(&d, "box")), ["inner", "note", "pipe"]);
+    }
+
+    /// Someone who may rename in a shared folder swaps the scratch folder of a copy into it for a
+    /// link to the person's home: before the copy is written (the home has no folder of that
+    /// name), or after it and before it is renamed in (the home has one).
+    #[cfg(unix)]
+    #[test]
+    fn a_scratch_folder_swapped_for_a_link_gets_nothing_written_through_it_nor_moved_out_of_it() {
+        use std::os::unix::fs::symlink;
+        for before_the_copy in [true, false] {
+            let d = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(p(&d, "shared/.config/sub")).unwrap();
+            put(&d, "shared/.config/sub/planted", b"theirs");
+            std::fs::create_dir(p(&d, "home")).unwrap();
+            if !before_the_copy {
+                std::fs::create_dir(p(&d, "home/.config")).unwrap();
+                put(&d, "home/.config/secret", b"mine");
+            }
+            let home = held_in(&p(&d, "home"));
+            let into = p(&d, "shared");
+            let swap = |name: &std::ffi::OsStr| {
+                let at = Path::new(&into).join(name);
+                std::fs::rename(&at, p(&d, "moved")).unwrap();
+                symlink(p(&d, "home"), &at).unwrap();
+            };
+            let scratch = anchored::Scratch::make(&into).unwrap();
+            if before_the_copy {
+                swap(&scratch.name);
+            }
+            scratch
+                .fill(Path::new(&p(&d, "shared/.config")), ".config")
+                .unwrap();
+            if !before_the_copy {
+                swap(&scratch.name);
+            }
+            let placed = scratch.place(".config", &into, true, &[]);
+            scratch.finish(placed.is_err().then_some(".config"));
+            let why = format!("swapped before the copy: {before_the_copy}");
+            assert_eq!(placed, Ok(p(&d, "shared/.config copy")), "{why}");
+            assert_eq!(
+                read_bytes(&p(&d, "shared/.config copy/sub/planted")),
+                b"theirs",
+                "{why}"
+            );
+            assert_eq!(held_in(&p(&d, "home")), home, "{why}");
+            if !before_the_copy {
+                assert_eq!(held_in(&p(&d, "home/.config")), ["secret"], "{why}");
+            }
+            assert!(held_in(&p(&d, "moved")).is_empty(), "{why}");
+        }
+    }
+
+    /// Someone who may rename in a shared folder moves the scratch folder aside and renames one of
+    /// the person's own folders there to its name; the copy then fails (a pipe in what is copied, or
+    /// the free name open in a document). Its cleanup takes nothing from the person's folder, not
+    /// even an empty one, and takes away what the copy made in the folder it opened.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_copy_clears_nothing_in_a_folder_of_the_persons_swapped_in_at_its_scratch_name() {
+        use std::os::unix::fs::PermissionsExt as _;
+        for (fails_at, empty) in [("copy", false), ("rename", false), ("rename", true)] {
+            let why = format!("fails at the {fails_at}, the folder empty: {empty}");
+            let d = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(p(&d, "shared/docs")).unwrap();
+            if !empty {
+                put(&d, "shared/docs/notes.txt", b"mine");
+                std::fs::create_dir(p(&d, "shared/docs/sealed")).unwrap();
+                put(&d, "shared/docs/sealed/kept", b"kept");
+                std::fs::set_permissions(
+                    p(&d, "shared/docs/sealed"),
+                    std::fs::Permissions::from_mode(0o555),
+                )
+                .unwrap();
+            }
+            std::fs::create_dir(p(&d, "box")).unwrap();
+            put(&d, "box/note", b"n");
+            if fails_at == "copy" {
+                let fifo = std::ffi::CString::new(p(&d, "box/pipe")).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+            }
+            let into = p(&d, "shared");
+            let scratch = anchored::Scratch::make(&into).unwrap();
+            let at = Path::new(&into).join(&scratch.name);
+            std::fs::rename(&at, p(&d, "aside")).unwrap();
+            std::fs::rename(p(&d, "shared/docs"), &at).unwrap();
+            let held = if fails_at == "rename" {
+                vec!["box".to_owned()]
+            } else {
+                Vec::new()
+            };
+            let placed = scratch
+                .fill(Path::new(&p(&d, "box")), "box")
+                .and_then(|()| scratch.place("box", &into, true, &held));
+            scratch.finish(placed.is_err().then_some("box"));
+            assert!(placed.is_err(), "{why}: {placed:?}");
+            let at = at.to_string_lossy().into_owned();
+            if empty {
+                assert!(held_in(&at).is_empty(), "{why}");
+            } else {
+                assert_eq!(held_in(&at), ["notes.txt", "sealed"], "{why}");
+                assert_eq!(read_bytes(&format!("{at}/notes.txt")), b"mine", "{why}");
+                assert_eq!(read_bytes(&format!("{at}/sealed/kept")), b"kept", "{why}");
+                let sealed = std::fs::metadata(format!("{at}/sealed")).unwrap();
+                assert_eq!(sealed.permissions().mode() & 0o777, 0o555, "{why}");
+                std::fs::set_permissions(
+                    format!("{at}/sealed"),
+                    std::fs::Permissions::from_mode(0o755),
+                )
+                .unwrap();
+            }
+            assert!(held_in(&p(&d, "aside")).is_empty(), "{why}");
+        }
+    }
+
+    /// Someone who may rename in a shared folder swaps what is copied, after it was looked at, for
+    /// a link to a private file or folder of the person's, or for another file. Nothing of what is
+    /// there is read into the copy: the copy fails and leaves nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_source_swapped_after_it_was_looked_at_is_not_copied() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        for swapped_for in [
+            "a link to a private file",
+            "a link to a private folder",
+            "another file",
+        ] {
+            let d = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(p(&d, "home/private")).unwrap();
+            put(&d, "home/secret", b"secret");
+            put(&d, "home/private/id.pub", b"secret");
+            std::fs::set_permissions(p(&d, "home/secret"), std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+            std::fs::set_permissions(
+                p(&d, "home/private"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+            std::fs::create_dir_all(p(&d, "shared/into")).unwrap();
+            let folder = swapped_for.ends_with("folder");
+            let offered = p(&d, "shared/offered");
+            if folder {
+                std::fs::create_dir(&offered).unwrap();
+                put(&d, "shared/offered/a.txt", b"offered");
+            } else {
+                put(&d, "shared/offered", b"offered");
+            }
+            let into = p(&d, "shared/into");
+            let scratch = anchored::Scratch::make(&into).unwrap();
+            let looked = anchored::Looked::at(Path::new(&offered)).unwrap();
+            std::fs::rename(&offered, p(&d, "shared/aside")).unwrap();
+            match swapped_for {
+                "another file" => {
+                    put(&d, "shared/other", b"secret");
+                    std::fs::rename(p(&d, "shared/other"), &offered).unwrap();
+                }
+                _ if folder => symlink(p(&d, "home/private"), &offered).unwrap(),
+                _ => symlink(p(&d, "home/secret"), &offered).unwrap(),
+            }
+            let filled = scratch.fill_from(&looked, "offered");
+            scratch.finish(filled.is_err().then_some("offered"));
+            let e = filled.unwrap_err().to_string();
+            assert!(
+                e.contains("changed while it was copied"),
+                "{swapped_for}: {e}"
+            );
+            assert!(
+                held_in(&into).is_empty(),
+                "{swapped_for}: {:?}",
+                held_in(&into)
+            );
+        }
+    }
+
+    /// A folder renamed to another folder needs write permission on itself (its `..` changes):
+    /// a folder whose owner may not write it (0555) is not copied, and nothing is left. One inside
+    /// the folder copied is (`a_folder_is_copied_with_all_it_holds_...`).
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_its_owner_may_not_write_is_not_copied_and_leaves_nothing() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(p(&d, "sealed")).unwrap();
+        put(&d, "sealed/kept", b"kept");
+        std::fs::set_permissions(p(&d, "sealed"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::fs::create_dir(p(&d, "into")).unwrap();
+        let e = copy(&p(&d, "sealed"), &p(&d, "into"), None, &[]).unwrap_err();
+        assert!(e.contains("Permission denied"), "{e}");
+        assert!(held_in(&p(&d, "into")).is_empty());
+        std::fs::set_permissions(p(&d, "sealed"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A folder the person may write and enter but not read (0333, like another account's Drop Box)
+    /// takes a paste of a file and of a folder from a folder they may only enter (0311). A folder they
+    /// may not enter (0600) cannot be changed, and says so.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_goes_into_a_folder_that_cannot_be_read_from_one_that_can_only_be_entered() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(p(&d, "src/box")).unwrap();
+        put(&d, "src/a.txt", b"mine");
+        put(&d, "src/box/b.txt", b"boxed");
+        std::fs::create_dir(p(&d, "drop")).unwrap();
+        std::fs::create_dir(p(&d, "shut")).unwrap();
+        let set = |rel: &str, mode| {
+            std::fs::set_permissions(p(&d, rel), std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        for (rel, mode) in [("src", 0o311), ("drop", 0o333), ("shut", 0o600)] {
+            set(rel, mode);
+        }
+        let file = copy(&p(&d, "src/a.txt"), &p(&d, "drop"), None, &[]);
+        let folder = copy(&p(&d, "src/box"), &p(&d, "drop"), None, &[]);
+        let shut = copy(&p(&d, "src/a.txt"), &p(&d, "shut"), None, &[]);
+        for rel in ["src", "drop", "shut"] {
+            set(rel, 0o755);
+        }
+        assert_eq!(file, Ok(p(&d, "drop/a.txt")));
+        assert_eq!(folder, Ok(p(&d, "drop/box")));
+        assert_eq!(held_in(&p(&d, "drop")), ["a.txt", "box"]);
+        assert_eq!(read_bytes(&p(&d, "drop/a.txt")), b"mine");
+        assert_eq!(read_bytes(&p(&d, "drop/box/b.txt")), b"boxed");
+        let shut = shut.unwrap_err();
+        assert!(shut.contains("you may not change"), "{shut}");
+        assert!(held_in(&p(&d, "shut")).is_empty());
+    }
+
+    #[cfg(unix)]
+    fn held_in(dir: &str) -> Vec<String> {
+        let mut found: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn a_copy_is_refused_rather_than_take_a_name_a_document_is_open_at() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(p(&d, "src")).unwrap();
+        std::fs::create_dir(p(&d, "dst")).unwrap();
+        let b = put(&d, "src/b.txt", b"pasted");
+        let dst = p(&d, "dst");
+        let held = ["b.txt".to_owned()];
+        assert_eq!(
+            copy(&b, &dst, None, &held),
+            Err(format!(
+                "{} is still open (its file was deleted): close it first",
+                p(&d, "dst/b.txt")
+            ))
+        );
+        assert_eq!(std::fs::read_dir(&dst).unwrap().count(), 0);
+        // Where the file is on disk the name is taken anyway, and the copy takes the next.
+        put(&d, "dst/b.txt", b"there");
+        assert_eq!(copy(&b, &dst, None, &held), Ok(p(&d, "dst/b copy.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_and_a_trash_on_a_machine_that_cannot_be_asked_say_so() {
+        let d = tempfile::tempdir().unwrap();
+        let file = put(&d, "a.txt", b"mine");
+        let into = p(&d, "");
+        let into = into.trim_end_matches('/');
+        crate::remote_write::testing::fake_hc();
+        for (machine, said) in [("offline", "not connected"), ("no-sh", "sh")] {
+            for e in [
+                copy(&file, into, Some(machine), &[]).unwrap_err(),
+                trash(&file, Some(machine)).unwrap_err(),
+            ] {
+                assert!(e.contains(said) && e.contains(&file), "{machine}: {e}");
+            }
+        }
+        assert!(
+            trash("relative", Some("lab"))
+                .unwrap_err()
+                .contains("start with /")
+        );
+        assert!(
+            copy(&file, "relative", Some("lab"), &[])
+                .unwrap_err()
+                .contains("start with /")
+        );
+        assert_eq!(held(&d), ["a.txt"]);
+        // On "lab" the copy is made by the script, through hc.
+        assert_eq!(copy(&file, into, Some("lab"), &[]), Ok(p(&d, "a copy.txt")));
+        assert_eq!(read(&p(&d, "a copy.txt")), "mine");
+    }
+
+    // `reveal`, and `trash` on this machine, act on the real desktop: they only need to exist.
     #[test]
     fn trash_and_reveal_have_the_documented_shapes() {
-        let _: fn(&str) -> Result<(), String> = trash;
+        let _: fn(&str, Option<&str>) -> Result<(), String> = trash;
         let _: fn(&str) -> Result<(), String> = reveal;
+    }
+
+    /// A folder of 1,000 files of 4 KiB copied here, ten times: the median has a budget of 3 s.
+    /// `cargo test --release -p yuzora-files --lib -- --ignored --exact fsops::tests::perf_copy_1000 --nocapture`.
+    #[test]
+    #[ignore = "a timing, for the perf lane"]
+    fn perf_copy_1000() {
+        let d = tempfile::tempdir().unwrap();
+        let src = p(&d, "src");
+        std::fs::create_dir(&src).unwrap();
+        for i in 0..1000 {
+            std::fs::write(format!("{src}/f{i:04}.bin"), [i as u8; 4096]).unwrap();
+        }
+        let into = p(&d, "");
+        let into = into.trim_end_matches('/');
+        let mut ms: Vec<u128> = (0..10)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                let made = copy(&src, into, None, &[]).unwrap();
+                let took = started.elapsed().as_millis();
+                assert_eq!(std::fs::read_dir(&made).unwrap().count(), 1000);
+                std::fs::remove_dir_all(made).unwrap();
+                took
+            })
+            .collect();
+        println!("perf_copy_1000 runs_ms={ms:?}");
+        ms.sort();
+        let median = (ms[4] + ms[5]) / 2;
+        println!("perf_copy_1000 median_ms={median}");
+        assert!(median <= 3000, "median {median} ms is over the 3000 ms budget");
     }
 }

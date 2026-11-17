@@ -186,6 +186,36 @@ pub fn rename(
     rx
 }
 
+/// The names in the folder `into` on `on` where a document is open, itself or inside it: a copy
+/// is refused rather than take one of them while it is free (its file deleted), as [`rename`] is.
+pub fn held(into: &str, on: Option<&str>, cx: &App) -> Vec<String> {
+    let on = on.filter(|m| !m.is_empty());
+    let backslash = backslash_separates(on, here_is_windows());
+    let sep = |c: char| c == '/' || (backslash && c == '\\');
+    let mut names: Vec<String> = all(cx)
+        .into_iter()
+        .filter_map(|d| {
+            let key = &d.read(cx).key;
+            let rest = key
+                .path
+                .strip_prefix(into)
+                .filter(|_| key.on.as_deref() == on)?;
+            let rest = if into.ends_with(sep) {
+                rest
+            } else {
+                rest.strip_prefix(sep)?
+            };
+            rest.split(sep)
+                .next()
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned)
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Re-keys the documents on `on` at `from`, or under it, to `to`.
 fn moved(from: &str, to: &str, on: Option<&str>, cx: &mut App) {
     let backslash = backslash_separates(on, here_is_windows());

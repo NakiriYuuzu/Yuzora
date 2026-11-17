@@ -13,10 +13,25 @@ const short = (text, max) => (text.length <= max ? text : `${text.slice(0, max -
 // A path in a message, as the name it ends in.
 const PATH = /(?<!\w)(?:[A-Za-z]:)?[\\/](?:[^\s\\/:;,]+[\\/])*([^\s\\/:;,]+)/g;
 
+// The entry a copy was refused inside the tree it copies: the name the path before the first "Permission denied" ends
+// in, unless that is the item copied or the copy's hidden folder. GNU cp quotes the path; BSD cp and the copy made
+// here end it with ": ".
+function refusedIn(text, name) {
+  const before = text.slice(0, text.search(/Permission denied|Access is denied/i)).replace(/:\s*$/, "");
+  const quoted = before.match(/['‘]([^'’]*)['’][^'‘’]*$/), at = before.lastIndexOf(": ");
+  const path = quoted ? quoted[1] : at < 0 ? "" : before.slice(at + 2);
+  const last = /[\\/]/.test(path) ? path.split(/[\\/]/).pop() : "";
+  return !last || last === name || /^(?:\.yuzora-save-)?[0-9a-f]{32}$/.test(last) ? "" : last;
+}
+
+// A remote copy whose line was lost during the call, cleared after (remote_entry.rs copy_by): its answer may be all
+// that was lost.
+export const mayBeCopied = error => /The copy may or may not have been made/.test(String(error?.message ?? error ?? ""));
+
 /**
  * The cause of `error` (what a host call rejected with) in a line of at most LIMIT characters.
  * `name`: the name the change was for; `machine`: where, null for this one; `kind`: the toast it is for
- * ("new-file", "new-folder", "rename", "trash", "reveal", "list").
+ * ("new-file", "new-folder", "rename", "copy", "trash", "reveal", "list").
  */
 export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   const text = String(error?.message ?? error ?? "").replace(/^`[^`]*`:\s*/, "").trim();
@@ -26,13 +41,22 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   if (/already exists$|File exists|The file exists/i.test(text)) return tell("exists", { name: short(name, NAME_MAX) });
   if (/is still open/.test(text)) return tell("open");
   if (/is being saved/.test(text)) return tell("saving");
-  if (/not connected|offline|unreachable|connection (?:refused|reset|closed|lost)|could not connect/i.test(text)) return tell("unreachable", { machine: there });
+  if (/cannot go into itself/.test(text)) return tell("into_itself");
+  if (/folders inside each other/.test(text)) return tell("deep");
+  if (/can take it to a trash/.test(text)) return tell("no_trash", { machine: there });
+  if (/partial copy may be left/.test(text)) return tell("partial");
+  if (mayBeCopied(text)) return tell("unsure");
+  // A copy's scratch folder that someone else changed (copy.sh, fsops::anchored): its name says nothing to a person.
+  if (/is not the folder (?:just made|the copy was made in)/.test(text)) return tell("scratch_changed");
+  // trash.sh could not write the .trashinfo; what the shell said follows, and a full disk is the likely cause.
+  if (/trash information for .* could not be written/.test(text)) return tell(/No space left|Disk quota/i.test(text) ? "full" : "trash_info");
+  if (/not connected|offline|unreachable|connection (?:refused|reset|closed|lost)|could not connect|lost the line/i.test(text)) return tell("unreachable", { machine: there });
   if (/took longer than/.test(text)) return tell("timed", { machine: there });
   if (/may or may not/.test(text)) return tell("unsure");
   if (/does not exist on|no longer there|No such file|cannot find the (?:file|path)/i.test(text)) {
     return tell(making || /does not exist on/.test(text) ? "no_folder" : "gone");
   }
-  if (/another file system/.test(text)) return tell("other_disk");
+  if (/another file system/.test(text)) return tell(kind === "trash" ? "trash_disk" : "other_disk");
   // The system would not rename it where it is (a folder out of an image layer, a bind mount): mv's or perl's own words.
   if (/cross-device link/i.test(text)) return tell("no_rename");
   if (/copied instead of renamed/.test(text)) return tell("copied");
@@ -40,7 +64,12 @@ export function reason(error, { name = "", machine = null, kind = "" } = {}) {
   if (tool) return tell("no_tool", { machine: there, tool });
   if (/this needs sh on/.test(text)) return tell("no_shell");
   if (/path has to start with/.test(text)) return tell("bad_path");
-  if (/you may not change|Permission denied|Access is denied/i.test(text)) return tell(making || kind === "rename" ? "writable" : "denied");
+  if (/you may not change/.test(text)) return tell("writable");
+  if (/Permission denied|Access is denied/i.test(text)) {
+    if (making || kind === "rename") return tell("writable");
+    const entry = kind === "copy" ? refusedIn(text, name) : "";
+    return entry ? tell("denied_at", { name: short(entry, NAME_MAX) }) : tell("denied");
+  }
   if (/Read-only file system/.test(text)) return tell("read_only");
   if (/No space left|not enough space/i.test(text)) return tell("full");
   if (/name too long/i.test(text)) return tell("too_long");
