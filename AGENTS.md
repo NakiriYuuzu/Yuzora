@@ -136,7 +136,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 #### L8 效能監控
 
 - 文件：`docs/beta2/perf.md`。mod：`yuzora-perf`（右下角 chip＋popover，指令 `yuzora-perf.toggle`）；crate `yuzora-perf`（`tick()`、`state()`）。
-- 沒有自己放 `yuzora-perf` 的 layout，chip 在視窗畫在 layout 下方的帶裡（`app/src/yuzora/band.rs`）。帶不是 layout 的節點：不要把它放進樹，檔案、`.state` 與 `layout()` 都不能出現它。
+- 沒有自己放 `yuzora-perf` 的 layout，chip 由視窗在畫狀態列時畫在它的右端（`app/src/yuzora/perf_chip.rs`；哪個 block 是狀態列見 `docs/beta2/perf.md`「放置」），沒有狀態列就沒有 chip。chip 不是 layout 的節點：不要把它放進樹，檔案、`.state` 與 `layout()` 都不能出現它。
 - 聚合與分類在 `app/crates/yuzora-perf/src/tree.rs`（純函式＋單元測試）。三類加總＝總量是不變式，改分類先改測試。
 - herdr-core 的 server 在行程樹裡的位置不固定（由 app 的 `hc connect` 啟動時是 app 的孫行程，否則在 launchd 底下），也可能同時有好幾個。一律用 app 的 `hc server status --json` 取 `pid` 與 `holders` 辨識；只在 app 底下有 `hc` 子行程時才問，因為沒有 core 時 `hc server status` 會自己啟動一個。
 - 取樣只在 worker thread。量單次取樣成本：用 app 的隔離環境變數執行 `cargo run --release -p yuzora-perf --example cost -- <app pid>`。

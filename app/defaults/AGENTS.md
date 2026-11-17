@@ -1652,9 +1652,12 @@ with these differences.
 - The chip in the bottom-right corner is `yuzora-perf`: what this computer's Yuzora uses (the app, its herdr-core
   with the terminals and agents in it, and the tools the app starts). `yuzora-perf.toggle` (a key in keys.json, or
   `herdr-app do`) opens or closes the details. Remote (SSH) Spaces are not measured.
-- A layout with no `yuzora-perf` block or float of its own gets the chip in a 26px band the window draws under the
-  layout. The band is not in `layout()` and never reaches the layout file; place your own `yuzora-perf` block to
-  drop it.
+- A layout with no `yuzora-perf` block or float of its own gets the chip at the right end of its status bar: the last
+  child of a column that holds the tab, when it is a mod block of a fixed height of at most 48px (`main`'s `status`,
+  `win98`'s taskbar). The window draws it there, 150px wide, and gives the bar's mod the width that is left. The chip
+  is not in `layout()` and never reaches the layout file. Hiding the bar hides the chip. A layout without such a bar
+  shows no chip, and `yuzora-perf.toggle` then answers `unknown command`; place your own `yuzora-perf` block to choose
+  where the chip goes.
 - `yuzora:perf`: `tick(focused)` samples on a worker thread (at most once every 1.5 s, whatever the number of
   callers) and `state()` reads the last sample without sampling: `{snapshot: {total, app, core, tools, core_pid,
   core_error}, health: {attempts, failures, empty, skipped, last_error}, cost}`. Each category is
