@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use yuzora_core::remote::{ExecError, ExecOutput, ExecRequest, MAX_STDIN};
 
-use crate::fsops::{self, Seen, Stamp, WriteError};
+use crate::fsops::{self, Expected, Stamp, WriteError};
 
 /// The most a save to another machine carries at once.
 pub const MAX_BYTES: usize = MAX_STDIN;
@@ -189,9 +189,10 @@ blocked() {
 }
 pub(crate) use save_gate;
 
-/// `$1` path, `$2` `cas` or `overwrite`, `$3 $4 $5` size, mtime (seconds) and
-/// `cksum` CRC the file was read with (`-` when overwriting), `$6` how many
-/// bytes arrive on stdin. Prints one line and exits 0:
+/// `$1` path, `$2` `cas`, `missing` (only while no file is there) or
+/// `overwrite`, `$3 $4 $5` size, mtime (seconds) and `cksum` CRC the file was
+/// read with (`-` unless `cas`), `$6` how many bytes arrive on stdin. Prints
+/// one line and exits 0:
 /// `saved SIZE MTIME`, `conflict SIZE MTIME`, `conflict gone`,
 /// `refused file|folder|owner|group|acl|notfile`, or `refused stdin RECEIVED`.
 /// Any other end (a failed step, a signal) leaves the file as it was.
@@ -218,8 +219,8 @@ pub(crate) use save_gate;
 /// acl`): `chmod` would give the names in it the access the mode says. The new file gets the
 /// owner, group, mode and, if the old file has an ACL, that ACL (`getfacl | setfacl`, or the
 /// save is refused). Then, as the last step before the swap, the file is compared with what was
-/// read (stat and checksum), and a single `mv` swaps the scratch file in: a rename replaces the
-/// file whole or not at all.
+/// read (stat and checksum), or found still missing, and a single `mv` swaps the scratch file in:
+/// a rename replaces the file whole or not at all.
 const WRITE_SCRIPT: &str = concat!(
     r#"mode=$2 esize=$3 emtime=$4 ecrc=$5 want=$6
 om=$(umask)
@@ -258,6 +259,13 @@ gone() {
   echo 'conflict gone'
   exit 0
 }
+missing() {
+  [ -e "$t" ] || return 0
+  now=$(st "$t") || { echo "cannot read $t" >&2; exit 1; }
+  set -- $now
+  echo "conflict $1 $2"
+  exit 0
+}
 check() {
   now=$(st "$t") || { if [ -e "$t" ]; then echo "cannot read $t" >&2; exit 1; fi; gone; }
   set -- $now
@@ -267,6 +275,7 @@ check() {
   set -- $ck
   [ "$1 $2" = "$ecrc $esize" ] || { echo "conflict $cs $cm"; exit 0; }
 }
+[ "$mode" = missing ] && missing
 if [ -e "$t" ]; then
   why=$(blocked)
   [ "$why" != stat ] || { echo "saving failed: cannot stat $t" >&2; exit 1; }
@@ -320,7 +329,7 @@ chmod "$md" "$tmp" || exit 1
 ts=$(st "$tmp") || exit 1
 set -- $ts
 size=$1 mtime=$2
-if [ "$mode" = cas ]; then check; fi
+case $mode in cas) check ;; missing) missing ;; esac
 [ -d "$t" ] && { echo 'refused notfile'; exit 0; }
 mv -f -- "$tmp" "$t" || exit 1
 if [ -d "$t" ]; then
@@ -340,7 +349,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) fn request(
     path: &str,
     bytes: &[u8],
-    expected: Option<&Seen>,
+    expected: Option<Expected>,
     on: Option<&str>,
 ) -> Result<ExecRequest, Refusal> {
     if bytes.len() > MAX_BYTES {
@@ -353,12 +362,13 @@ pub(crate) fn request(
         return Err(Refusal::BadPath);
     }
     let (mode, size, mtime, crc) = match expected {
-        Some(seen) => (
+        Some(Expected::Seen(seen)) => (
             "cas",
             seen.stamp.len.to_string(),
             seen.stamp.mtime_ms.div_euclid(1000).to_string(),
             seen.crc.to_string(),
         ),
+        Some(Expected::Missing) => ("missing", "-".into(), "-".into(), "-".into()),
         None => ("overwrite", "-".into(), "-".into(), "-".into()),
     };
     let arriving = bytes.len().to_string();
@@ -464,11 +474,12 @@ pub(crate) fn interpret(
 }
 
 /// Saves `bytes` over the file `path` on `on`: only if it is still as
-/// `expected` has it (`None`: whatever it is, a missing file is made).
+/// `expected` has it, or still not there (`None`: whatever it is, a missing
+/// file is made).
 pub(crate) fn write_sh(
     path: &str,
     bytes: &[u8],
-    expected: Option<&Seen>,
+    expected: Option<Expected>,
     on: Option<&str>,
 ) -> Result<Stamp, WriteError> {
     let req = request(path, bytes, expected, on).map_err(WriteError::Refused)?;
@@ -542,7 +553,7 @@ mod tests {
 
     use super::testing::fake_hc;
     use super::*;
-    use crate::fsops::{self, Eol, TextFile, content_hash, is_scratch_name};
+    use crate::fsops::{self, Eol, Seen, TextFile, content_hash, is_scratch_name};
 
     /// Here, through the script alone; and on a machine, through the stand-in `hc`.
     const WHERE: [Option<&str>; 2] = [None, Some("lab")];
@@ -626,7 +637,7 @@ mod tests {
         env: &[(&str, &str)],
         path: &str,
         bytes: &[u8],
-        expected: Option<&Seen>,
+        expected: Option<Expected>,
         on: Option<&str>,
     ) -> Result<Stamp, WriteError> {
         fake_hc();
@@ -657,7 +668,7 @@ mod tests {
             for (i, bytes) in cases.iter().enumerate() {
                 let dir = tempfile::tempdir().unwrap();
                 let path = put(dir.path(), "f", b"old content\n");
-                let got = write_sh(&path, bytes, Some(&seen(&path)), on);
+                let got = write_sh(&path, bytes, Some(Expected::Seen(seen(&path))), on);
                 assert_eq!(fs::read(&path).unwrap(), *bytes, "{on:?} case {i}");
                 assert_eq!(
                     got,
@@ -689,11 +700,22 @@ mod tests {
                 fs::set_permissions(&a, fs::Permissions::from_mode(0o640)).unwrap();
                 fs::set_permissions(&b, fs::Permissions::from_mode(0o640)).unwrap();
                 let read = fsops::read_text(&a, None, 1 << 20).unwrap();
+                let held = Seen {
+                    stamp: read.stamp,
+                    hash: read.hash,
+                    crc: read.crc,
+                };
                 let local =
-                    fsops::write_text(&a, text, eol, bom, Some((read.stamp, read.hash))).unwrap();
-                let remote =
-                    fsops::write_on(&b, on.or(Some("lab")), text, eol, bom, Some(seen(&b)))
-                        .unwrap();
+                    fsops::write_text(&a, text, eol, bom, Some(Expected::Seen(held))).unwrap();
+                let remote = fsops::write_on(
+                    &b,
+                    on.or(Some("lab")),
+                    text,
+                    eol,
+                    bom,
+                    Some(Expected::Seen(seen(&b))),
+                )
+                .unwrap();
                 let direct = write_sh(&b, &fsops::encode_text(text, eol, bom), None, on).unwrap();
                 assert_eq!(
                     fs::read(&a).unwrap(),
@@ -719,10 +741,12 @@ mod tests {
             ("one\ntwo\n", Eol::Crlf, true, false)
         );
         assert_eq!(read.crc, posix_crc(&fs::read(&path).unwrap()));
-        let from_read = |f: &TextFile| Seen {
-            stamp: f.stamp,
-            hash: f.hash,
-            crc: f.crc,
+        let from_read = |f: &TextFile| {
+            Expected::Seen(Seen {
+                stamp: f.stamp,
+                hash: f.hash,
+                crc: f.crc,
+            })
         };
         let saved = fsops::write_on(
             &path,
@@ -765,7 +789,7 @@ mod tests {
             let held = |what: &str, theirs: &[u8], at: u64| {
                 fs::write(&path, theirs).unwrap();
                 set_mtime(&path, at);
-                let got = write_sh(&path, b"mine", Some(&read), on);
+                let got = write_sh(&path, b"mine", Some(Expected::Seen(read)), on);
                 assert_eq!(
                     fs::read(&path).unwrap(),
                     theirs,
@@ -783,7 +807,7 @@ mod tests {
             held("the same stamp, other bytes", b"abce", 1_700_000_000);
             fs::remove_file(&path).unwrap();
             assert_eq!(
-                write_sh(&path, b"mine", Some(&read), on),
+                write_sh(&path, b"mine", Some(Expected::Seen(read)), on),
                 Err(WriteError::Conflict(None)),
                 "{on:?}"
             );
@@ -824,7 +848,7 @@ mod tests {
                 &[("PATH", &path_env), ("YZ_TARGET", &path)],
                 &path,
                 b"mine",
-                Some(&read),
+                Some(Expected::Seen(read)),
                 on,
             );
             assert_eq!(fs::read(&path).unwrap(), b"theirs", "{on:?}");
@@ -834,6 +858,46 @@ mod tests {
                 "{on:?}"
             );
             assert_eq!(names(dir.path()), ["f"], "{on:?}: no scratch file");
+        }
+    }
+
+    #[test]
+    fn a_restore_puts_the_file_back_only_while_it_is_missing() {
+        let (_shims, path_env) = shimmed(&[("cat", "cat \"$@\"; printf theirs > \"$YZ_TARGET\"")]);
+        for on in WHERE {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("f").to_string_lossy().into_owned();
+            // Written back while the save runs: the look right before the swap sees it.
+            let got = save_with(
+                &[("PATH", &path_env), ("YZ_TARGET", &path)],
+                &path,
+                b"mine",
+                Some(Expected::Missing),
+                on,
+            );
+            assert_eq!(fs::read(&path).unwrap(), b"theirs", "{on:?}");
+            assert_eq!(
+                got,
+                Err(WriteError::Conflict(Some(stamp_of(&path)))),
+                "{on:?}"
+            );
+            assert_eq!(names(dir.path()), ["f"], "{on:?}: no scratch file");
+            // Back before the save starts: a conflict, as a changed file is, though this one may
+            // not be written.
+            if !is_root() {
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+                let got = write_sh(&path, b"mine", Some(Expected::Missing), on);
+                assert_eq!(
+                    got,
+                    Err(WriteError::Conflict(Some(stamp_of(&path)))),
+                    "{on:?}"
+                );
+                assert_eq!(fs::read(&path).unwrap(), b"theirs", "{on:?}");
+            }
+            fs::remove_file(&path).unwrap();
+            let got = write_sh(&path, b"mine", Some(Expected::Missing), on);
+            assert_eq!(got, Ok(stamp_of(&path)), "{on:?}");
+            assert_eq!(fs::read(&path).unwrap(), b"mine", "{on:?}");
         }
     }
 
@@ -871,7 +935,7 @@ mod tests {
                     &[("PATH", &path_env)],
                     &path,
                     b"new content",
-                    Some(&read),
+                    Some(Expected::Seen(read)),
                     on,
                 );
                 assert!(
@@ -956,10 +1020,15 @@ mod tests {
         let (_shims, path_env) = shimmed(&[("mv", "sleep 30")]);
         let dir = tempfile::tempdir().unwrap();
         let path = put(dir.path(), "f", b"original");
-        let req = request(&path, b"new content", Some(&seen(&path)), None)
-            .unwrap()
-            .env("PATH", &path_env)
-            .timeout(Duration::from_millis(500));
+        let req = request(
+            &path,
+            b"new content",
+            Some(Expected::Seen(seen(&path))),
+            None,
+        )
+        .unwrap()
+        .env("PATH", &path_env)
+        .timeout(Duration::from_millis(500));
         let got = interpret(fsops::run(req), &path, 11, None);
         assert!(
             matches!(&got, Err(WriteError::Io(e)) if e.contains("took longer")),
@@ -998,7 +1067,7 @@ mod tests {
                 &[("PATH", &path_env), ("YZ_LOG", &log)],
                 &path,
                 b"new",
-                Some(&seen(&path)),
+                Some(Expected::Seen(seen(&path))),
                 on,
             );
             assert!(got.is_ok(), "{on:?}: {got:?}");
@@ -1081,7 +1150,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let path = put(dir.path(), "f", b"old");
                 fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
-                assert!(write_sh(&path, b"new", Some(&seen(&path)), on).is_ok());
+                assert!(write_sh(&path, b"new", Some(Expected::Seen(seen(&path))), on).is_ok());
                 assert_eq!(mode_of(&path), mode, "{on:?} {mode:o}");
             }
         }
@@ -1118,7 +1187,7 @@ mod tests {
             let relative = to("relative", "../real/target.txt");
             let chained = to("chained", &direct);
             for link in [&direct, &relative, &chained] {
-                let got = write_sh(link, b"through", Some(&seen(link)), on);
+                let got = write_sh(link, b"through", Some(Expected::Seen(seen(link))), on);
                 assert!(got.is_ok(), "{on:?} {link}: {got:?}");
                 assert_eq!(fs::read(&file).unwrap(), b"through", "{on:?} {link}");
                 assert_eq!(mode_of(&file), 0o640);
@@ -1190,7 +1259,7 @@ mod tests {
                 let folder = dir.path().join(name);
                 fs::create_dir(&folder).unwrap();
                 let path = put(&folder, name, b"old");
-                let got = write_sh(&path, b"new", Some(&seen(&path)), on);
+                let got = write_sh(&path, b"new", Some(Expected::Seen(seen(&path))), on);
                 assert!(got.is_ok(), "{on:?} {name:?}: {got:?}");
                 assert_eq!(fs::read(&path).unwrap(), b"new", "{on:?} {name:?}");
                 assert_eq!(names(&folder), [name], "{on:?} {name:?}: nothing else made");
@@ -1266,7 +1335,7 @@ mod tests {
             let read = seen(&path);
             fs::remove_file(&path).unwrap();
             fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
-            let held = write_sh(&path, b"new", Some(&read), on);
+            let held = write_sh(&path, b"new", Some(Expected::Seen(read)), on);
             let forced = write_sh(&path, b"new", None, on);
             fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
             assert_eq!(held, Err(WriteError::Conflict(None)), "{on:?}");
@@ -1295,7 +1364,7 @@ mod tests {
                 &[("PATH", &path_env)],
                 &path,
                 b"new",
-                Some(&seen(&path)),
+                Some(Expected::Seen(seen(&path))),
                 on,
             );
             assert_eq!(got, Err(WriteError::Refused(Refusal::OtherOwner)), "{on:?}");
@@ -1370,7 +1439,7 @@ mod tests {
                 shut(dir.path(), &path);
                 let env: Vec<(&str, &str)> = path_env.iter().map(|p| ("PATH", *p)).collect();
                 let flag = opens_as(&path, &env);
-                let saved = save_with(&env, &path, b"new", Some(&read), on);
+                let saved = save_with(&env, &path, b"new", Some(Expected::Seen(read)), on);
                 fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
                 match refused {
@@ -1406,7 +1475,7 @@ mod tests {
             let (read_near, read_far) = (seen(&near), seen(&far));
             for (shut, path, read) in [(&shallow, &near, &read_near), (&shallow, &far, &read_far)] {
                 fs::set_permissions(shut, fs::Permissions::from_mode(0o000)).unwrap();
-                let held = write_sh(path, b"mine", Some(read), on);
+                let held = write_sh(path, b"mine", Some(Expected::Seen(*read)), on);
                 let forced = write_sh(path, b"mine", None, on);
                 fs::set_permissions(shut, fs::Permissions::from_mode(0o755)).unwrap();
                 assert!(
@@ -1421,7 +1490,7 @@ mod tests {
             }
             fs::remove_file(&near).unwrap();
             assert_eq!(
-                write_sh(&near, b"mine", Some(&read_near), on),
+                write_sh(&near, b"mine", Some(Expected::Seen(read_near)), on),
                 Err(WriteError::Conflict(None)),
                 "{on:?}: a file that is gone, in a folder that can be entered"
             );
@@ -1429,7 +1498,7 @@ mod tests {
                 write_sh(
                     &dir.path().join("none/f").to_string_lossy(),
                     b"x",
-                    Some(&read_far),
+                    Some(Expected::Seen(read_far)),
                     on
                 ),
                 Err(WriteError::Conflict(None)),
@@ -1485,7 +1554,7 @@ mod tests {
                         ],
                         &path,
                         b"new",
-                        held.then_some(&read),
+                        held.then_some(Expected::Seen(read)),
                         on,
                     );
                     let said = match (&says, &got) {
@@ -1524,7 +1593,7 @@ mod tests {
             std::os::unix::fs::symlink("releases/5", app.join("current")).unwrap();
             std::os::unix::fs::symlink("../../shared/.env", app.join("releases/5/.env")).unwrap();
             let through = app.join("current/.env").to_string_lossy().into_owned();
-            let got = write_sh(&through, b"NEW\n", Some(&seen(&through)), on);
+            let got = write_sh(&through, b"NEW\n", Some(Expected::Seen(seen(&through))), on);
             assert!(got.is_ok(), "{on:?}: {got:?}");
             assert_eq!(fs::read(&real).unwrap(), b"NEW\n", "{on:?}");
             assert!(
@@ -1631,7 +1700,7 @@ mod tests {
             let path = put(dir.path(), "f", b"old");
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
             inheritable_entry(dir.path());
-            let got = write_sh(&path, b"new", Some(&seen(&path)), on);
+            let got = write_sh(&path, b"new", Some(Expected::Seen(seen(&path))), on);
             assert!(got.is_ok(), "{on:?}: {got:?}");
             assert_eq!(fs::read(&path).unwrap(), b"new");
             assert_eq!(mode_of(&path), 0o600);
@@ -1665,7 +1734,7 @@ mod tests {
                 &[("PATH", &path_env), ("YZ_LOG", &log), ("YZ_TARGET", &path)],
                 &path,
                 b"new",
-                Some(&seen(&path)),
+                Some(Expected::Seen(seen(&path))),
                 on,
             );
             assert!(got.is_ok(), "{on:?}: {got:?}");
@@ -1714,7 +1783,7 @@ mod tests {
             assert!(done.success());
             assert_eq!(opens_as(&path, &[]), "r", "{on:?}");
             assert_eq!(
-                write_sh(&path, b"new", Some(&seen(&path)), on),
+                write_sh(&path, b"new", Some(Expected::Seen(seen(&path))), on),
                 Err(WriteError::Refused(Refusal::AccessRules)),
                 "{on:?}"
             );
@@ -1791,7 +1860,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = put(dir.path(), "big", b"old");
         let bytes = vec![b'q'; MAX_BYTES];
-        let got = write_sh(&path, &bytes, Some(&seen(&path)), Some("lab"));
+        let got = write_sh(
+            &path,
+            &bytes,
+            Some(Expected::Seen(seen(&path))),
+            Some("lab"),
+        );
         assert_eq!(got.map(|s| s.len), Ok(MAX_BYTES as u64));
         assert!(fs::read(&path).unwrap() == bytes);
     }
@@ -1802,7 +1876,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = put(dir.path(), "f", b"old");
         let read = seen(&path);
-        let refused = |machine| write_sh(&path, b"new", Some(&read), Some(machine));
+        let refused = |machine| write_sh(&path, b"new", Some(Expected::Seen(read)), Some(machine));
         assert_eq!(
             refused("old-core"),
             Err(WriteError::Refused(Refusal::CoreTooOld))
@@ -1997,7 +2071,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = put(dir.path(), "real file.txt", b"old\n");
         if std::env::var("YZ_REAL_HC_OLD").is_ok() {
-            let got = write_sh(&path, b"new", Some(&seen(&path)), on);
+            let got = write_sh(&path, b"new", Some(Expected::Seen(seen(&path))), on);
             assert_eq!(got, Err(WriteError::Refused(Refusal::CoreTooOld)));
             assert_eq!(fs::read(&path).unwrap(), b"old\n");
             return;
@@ -2013,12 +2087,27 @@ mod tests {
             hash: read.hash,
             crc: read.crc,
         };
-        let saved = fsops::write_on(&path, on, "one\ntwo\n", Eol::Crlf, true, Some(held)).unwrap();
+        let saved = fsops::write_on(
+            &path,
+            on,
+            "one\ntwo\n",
+            Eol::Crlf,
+            true,
+            Some(Expected::Seen(held)),
+        )
+        .unwrap();
         println!("read + save: {:?}", started.elapsed());
         assert_eq!(fs::read(&path).unwrap(), b"\xef\xbb\xbfone\r\ntwo\r\n");
         assert_eq!(saved, stamp_of(&path));
         fs::write(&path, b"theirs, longer").unwrap();
-        let clash = fsops::write_on(&path, on, "mine", Eol::Lf, false, Some(held));
+        let clash = fsops::write_on(
+            &path,
+            on,
+            "mine",
+            Eol::Lf,
+            false,
+            Some(Expected::Seen(held)),
+        );
         assert_eq!(clash, Err(WriteError::Conflict(Some(stamp_of(&path)))));
         assert_eq!(fs::read(&path).unwrap(), b"theirs, longer");
         let nul: &[u8] = b"a\0b\xff\r\n\x80";
@@ -2055,10 +2144,10 @@ mod tests {
         let folder = dir.path().join("a 'odd' \"dir\" $x");
         fs::create_dir(&folder).unwrap();
         let odd = put(&folder, "-n", b"old");
-        assert!(write_sh(&odd, b"new", Some(&seen(&odd)), on).is_ok());
+        assert!(write_sh(&odd, b"new", Some(Expected::Seen(seen(&odd))), on).is_ok());
         assert_eq!(fs::read(&odd).unwrap(), b"new");
         let none = dir.path().join("none").to_string_lossy().into_owned();
-        let missing = write_sh(&none, b"x", Some(&seen(&path)), on);
+        let missing = write_sh(&none, b"x", Some(Expected::Seen(seen(&path))), on);
         assert_eq!(missing, Err(WriteError::Conflict(None)));
         assert!(
             names(dir.path())

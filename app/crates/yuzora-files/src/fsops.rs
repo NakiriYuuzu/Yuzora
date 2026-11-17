@@ -167,6 +167,15 @@ pub struct Seen {
     pub crc: u32,
 }
 
+/// What a save holds the file to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expected {
+    /// The file as it was read.
+    Seen(Seen),
+    /// No file there: a deleted file is put back only while it is still gone.
+    Missing,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Eol {
     Lf,
@@ -773,12 +782,14 @@ fn read_sh(path: &str, on: Option<&str>, max_bytes: u64) -> Result<TextFile, Str
 // ---- write ----
 
 /// Saves `text` (LF) to a file on this machine, in `eol` and with a BOM when
-/// `bom`. With `expected` (the stamp and [`content_hash`] last read), a file
-/// whose stamp differs, that is gone, or whose bytes changed under the same
-/// stamp (a coarse clock) is not touched: `Conflict` carries its current
-/// stamp. That is checked again right before the swap, so a change made
-/// while the new content was written is kept too (a rename has no compare
-/// and swap: only what lands between that check and the rename is lost).
+/// `bom`. With `expected` [`Expected::Seen`] (the stamp and [`content_hash`]
+/// last read), a file whose stamp differs, that is gone, or whose bytes
+/// changed under the same stamp (a coarse clock) is not touched; with
+/// [`Expected::Missing`], a file that is there is not touched. `Conflict`
+/// carries its current stamp. That is checked again right before the swap,
+/// so a change made while the new content was written is kept too (a rename
+/// has no compare and swap: only what lands between that check and the
+/// rename is lost).
 /// The write goes to a scratch file in the same directory that is
 /// fsynced and renamed over the target, so a failed save leaves the old
 /// content; mode (and owner) are kept. When it cannot be swapped (see
@@ -790,7 +801,7 @@ pub fn write_text(
     text: &str,
     eol: Eol,
     bom: bool,
-    expected: Option<(Stamp, u64)>,
+    expected: Option<Expected>,
 ) -> Result<Stamp, WriteError> {
     let io_err = |e: io::Error| WriteError::Io(format!("cannot write {path}: {e}"));
     let target = resolve_link(Path::new(path)).map_err(io_err)?;
@@ -835,33 +846,29 @@ pub fn write_on(
     text: &str,
     eol: Eol,
     bom: bool,
-    expected: Option<Seen>,
+    expected: Option<Expected>,
 ) -> Result<Stamp, WriteError> {
     match machine(on) {
-        Some(m) => crate::remote_write::write_sh(
-            path,
-            &encode_text(text, eol, bom),
-            expected.as_ref(),
-            Some(m),
-        ),
-        None => write_text(
-            path,
-            text,
-            eol,
-            bom,
-            expected.map(|seen| (seen.stamp, seen.hash)),
-        ),
+        Some(m) => {
+            crate::remote_write::write_sh(path, &encode_text(text, eol, bom), expected, Some(m))
+        }
+        None => write_text(path, text, eol, bom, expected),
     }
 }
 
-/// Whether the file is as `expected` (its stamp and [`content_hash`]) has it;
-/// always, without one.
-fn unchanged(target: &Path, expected: Option<(Stamp, u64)>) -> io::Result<bool> {
-    let Some((want, hash)) = expected else {
+/// Whether the file is as `expected` has it (its stamp and [`content_hash`],
+/// or not there); always, without one.
+fn unchanged(target: &Path, expected: Option<Expected>) -> io::Result<bool> {
+    let Some(expected) = expected else {
         return Ok(true);
     };
     let now = stat_local(target).map_err(io::Error::other)?;
-    Ok(now == Some(want) && holds(target, want.len, hash)?)
+    match expected {
+        Expected::Seen(seen) => {
+            Ok(now == Some(seen.stamp) && holds(target, seen.stamp.len, seen.hash)?)
+        }
+        Expected::Missing => Ok(now.is_none()),
+    }
 }
 
 /// Whether the file still holds the `len` bytes hashed as `hash`. Reads at
@@ -3066,6 +3073,15 @@ mod tests {
         assert_eq!(text, "a\n");
     }
 
+    /// A save held to the file as read here (its stamp and [`content_hash`]).
+    fn as_read(stamp: Stamp, hash: u64) -> Option<Expected> {
+        Some(Expected::Seen(Seen {
+            stamp,
+            hash,
+            crc: 0,
+        }))
+    }
+
     #[test]
     fn write_text_round_trips_crlf_and_bom() {
         let d = tempfile::tempdir().unwrap();
@@ -3077,7 +3093,7 @@ mod tests {
             "one\ntwo\nthree\n",
             read.eol,
             read.bom,
-            Some((read.stamp, read.hash)),
+            as_read(read.stamp, read.hash),
         )
         .unwrap();
         assert_eq!(
@@ -3087,7 +3103,7 @@ mod tests {
         assert_eq!(stat(&f, None).unwrap(), Some(stamp));
         // The new stamp (and the bytes written) are what the next save expects.
         let written = content_hash(b"\xef\xbb\xbfone\r\ntwo\r\nthree\r\n");
-        write_text(&f, "x\n", Eol::Lf, false, Some((stamp, written))).unwrap();
+        write_text(&f, "x\n", Eol::Lf, false, as_read(stamp, written)).unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), b"x\n");
     }
 
@@ -3099,7 +3115,7 @@ mod tests {
         std::fs::write(&f, b"somebody else wrote more\n").unwrap();
         let now = stat(&f, None).unwrap();
         assert_eq!(
-            write_text(&f, "x", Eol::Lf, false, Some(read)),
+            write_text(&f, "x", Eol::Lf, false, as_read(read.0, read.1)),
             Err(WriteError::Conflict(now))
         );
         assert_eq!(std::fs::read(&f).unwrap(), b"somebody else wrote more\n");
@@ -3117,14 +3133,14 @@ mod tests {
             .unwrap();
         assert_eq!(stat(&same, None).unwrap(), Some(read.0));
         assert_eq!(
-            write_text(&same, "x", Eol::Lf, false, Some(read)),
+            write_text(&same, "x", Eol::Lf, false, as_read(read.0, read.1)),
             Err(WriteError::Conflict(Some(read.0)))
         );
         assert_eq!(std::fs::read(&same).unwrap(), b"ours\n");
         // Gone, with a stamp to compare against: a conflict too.
         std::fs::remove_file(&f).unwrap();
         assert_eq!(
-            write_text(&f, "x", Eol::Lf, false, Some(read)),
+            write_text(&f, "x", Eol::Lf, false, as_read(read.0, read.1)),
             Err(WriteError::Conflict(None))
         );
         assert!(!Path::new(&f).exists());
@@ -3258,7 +3274,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = put(&d, "f.txt", b"mine\n");
         let target = PathBuf::from(&f);
-        let read = Some((stat(&f, None).unwrap().unwrap(), content_hash(b"mine\n")));
+        let read = as_read(stat(&f, None).unwrap().unwrap(), content_hash(b"mine\n"));
         // Somebody writes while the new content is being staged: the check
         // right before the swap sees it.
         let raced = || {
@@ -3270,12 +3286,25 @@ mod tests {
         let left: Vec<_> = std::fs::read_dir(d.path()).unwrap().collect();
         assert_eq!(left.len(), 1, "{left:?}");
         // Unchanged: swapped in.
-        let read = Some((
+        let read = as_read(
             stat(&f, None).unwrap().unwrap(),
             content_hash(b"theirs, longer\n"),
-        ));
+        );
         assert!(replace_atomically(&target, b"x\n", &|| unchanged(&target, read)).unwrap());
         assert_eq!(std::fs::read(&f).unwrap(), b"x\n");
+    }
+
+    #[test]
+    fn a_file_back_while_a_restore_is_staged_is_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let target = d.path().join("f.txt");
+        let raced = || {
+            std::fs::write(&target, b"theirs\n")?;
+            unchanged(&target, Some(Expected::Missing))
+        };
+        assert!(!replace_atomically(&target, b"x\n", &raced).unwrap());
+        assert_eq!(std::fs::read(&target).unwrap(), b"theirs\n");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
     }
 
     /// Sets an extended attribute; false where the file system takes none.

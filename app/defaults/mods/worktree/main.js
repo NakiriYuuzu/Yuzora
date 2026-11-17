@@ -208,7 +208,7 @@ export default class Worktree extends View {
       // yuzora(L2c): asked again, as the config may have gained a program since the dialog opened.
       const waits = await untrusted(this.repo.top, this.on);
       if (waits) this.untrusted = tr("untrusted", { keys: waits.join(", ") });
-      else this.error = props().action === "remove" ? await this.remove() : await this.create();
+      else this.error = props().action === "remove" ? await this.remove(cx) : await this.create(); // yuzora(unsaved): cx
     }
     catch (error) { this.error = String(error); }
     this.busy = false;
@@ -243,7 +243,7 @@ export default class Worktree extends View {
     else run("space.new", { folder: c.path, machine: this.on ?? "" });
   }
 
-  async remove() {
+  async remove(cx) { // yuzora(unsaved): cx
     const s = this.space();
     const status = await git(this.repo.top, ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain"], this.on);
     if (!status.ok) return status.err || "git status failed.";
@@ -256,7 +256,9 @@ export default class Worktree extends View {
     this.unpushed = [...new Set([...this.unpushed, ...unpushed])];
     if (changed) return "It changed since this opened. Enter again removes it anyway.";
     // Terminals first: a shell sitting in the folder keeps it busy on Windows.
-    run("space.close", { id: s.id, confirmed: true });
+    if (s?.id) run("space.close", { id: s.id, confirmed: true }); // yuzora(unsaved): no Space once the unsaved dialog's answer closed it
+    if (s?.id) await cx.sleep(100); // yuzora(unsaved): the window runs the close after run() returns
+    if (this.space()?.id) return "Nothing was removed because its space has unsaved changes; answer that dialog, then remove again."; // yuzora(unsaved): it asks and stays open
     const force = this.dirty || mods.length > 0;
     const r = await git(this.repo.main, ["worktree", "remove", ...(force ? ["--force"] : []), this.repo.top], this.on, 600_000);
     return r.ok ? "" : r.err || "git worktree remove failed.";
