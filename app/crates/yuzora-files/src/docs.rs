@@ -866,6 +866,8 @@ impl DocView {
             let (hash, crc) = (fsops::content_hash(&bytes), posix_crc(&bytes));
             let result = blocking(move || {
                 let gone = restore && matches!(fsops::stat(&path, on.as_deref()), Ok(None));
+                #[cfg(test)]
+                tests::after_the_look(&path);
                 let expected = if gone { None } else { expected };
                 fsops::write_on(&path, on.as_deref(), &text, eol, bom, expected)
             })
@@ -1470,6 +1472,18 @@ mod tests {
         pub(super) static FORCED_WINDOWS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     }
 
+    /// Files to write between a save's look at the disk and its write: (path, text). The write runs on a worker
+    /// thread, so this is not a thread local.
+    static AFTER_THE_LOOK: std::sync::Mutex<Vec<(String, &str)>> = std::sync::Mutex::new(Vec::new());
+
+    pub(super) fn after_the_look(path: &str) {
+        let mut waiting = AFTER_THE_LOOK.lock().unwrap();
+        if let Some(at) = waiting.iter().position(|(p, _)| p == path) {
+            let (path, text) = waiting.remove(at);
+            std::fs::write(path, text).unwrap();
+        }
+    }
+
     /// Runs the rest of the test as an app on Windows, whatever system it is on.
     #[cfg(unix)]
     struct AsWindows;
@@ -2067,6 +2081,37 @@ mod tests {
             cx.run_until_parked();
             assert!(futures::executor::block_on(saved).unwrap().ok, "{machine:?}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n", "{machine:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_deleted_file_written_back_after_the_save_looked_is_not_replaced(cx: &mut gpui::TestAppContext) {
+        for machine in [None, Some("lab")] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("a.txt");
+            std::fs::write(&path, "one\n").unwrap();
+            let (view, window) = match machine {
+                Some(m) => editing_on(m, &path, cx),
+                None => editing(&path, cx),
+            };
+            type_text(&view, window, "mine ", cx);
+            std::fs::remove_file(&path).unwrap();
+            drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+            cx.run_until_parked();
+            cx.update(|cx| assert!(view.read(cx).deleted, "{machine:?}"));
+            // Still gone when the save looks, written back before it writes. Refused, as a changed file is.
+            AFTER_THE_LOOK.lock().unwrap().push((path.to_string_lossy().into_owned(), "theirs\n"));
+            let saved = view.update(cx, |doc, cx| doc.save(true, cx));
+            cx.run_until_parked();
+            let saved = futures::executor::block_on(saved).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n", "{machine:?}");
+            assert_eq!((saved.ok, saved.conflict), (false, true), "{machine:?}");
+            cx.update(|cx| {
+                let doc = view.read(cx);
+                assert!(doc.conflict && doc.dirty && !doc.deleted, "{machine:?}");
+                assert_eq!(doc.incoming.as_ref().map(|f| f.text.as_str()), Some("theirs\n"), "{machine:?}");
+            });
         }
     }
 
