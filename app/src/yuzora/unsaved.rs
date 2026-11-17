@@ -132,12 +132,12 @@ fn open_docs(cx: &gpui::App) -> Vec<Doc> {
 }
 
 /// The dialog a person's `command` opens instead of running, if it would
-/// lose unsaved changes. `app.update` with no update ready fails by itself,
-/// losing nothing, so it is not asked.
-pub fn dialog(command: &str, args: &Value, model: &Model, cx: &gpui::App) -> Option<Value> {
+/// lose unsaved changes. `app.update` with no update ready (`update_ready`,
+/// asked only for it) fails by itself, losing nothing, so it is not asked.
+pub fn dialog(command: &str, args: &Value, model: &Model, update_ready: impl FnOnce() -> bool, cx: &gpui::App) -> Option<Value> {
     match command {
         "pane.close" | "tab.close" | "space.close" | "app.quit" | "window.close" => {}
-        "app.update" if crate::update::ready().is_some() => {}
+        "app.update" if update_ready() => {}
         _ => return None,
     }
     let docs = open_docs(cx);
@@ -174,14 +174,16 @@ fn pinned(command: &str, args: &Value, model: &Model) -> Value {
 
 /// The Quit menu item and its key (macOS) are an action, not a command, so
 /// they never pass `run_as`. With something unsaved the window gets a
-/// person's `app.quit`, which asks; without a window to ask in, it quits.
+/// person's `app.quit`, which asks. Otherwise `now` quits. That is also what
+/// happens with no window to ask in (after an agent's `window.close`), and
+/// the changes are lost.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn quit(cx: &mut gpui::App) {
+pub fn quit(cx: &mut gpui::App, now: impl FnOnce(&mut gpui::App)) {
     let window = cx.windows().iter().any(|w| w.downcast::<crate::window::AppWindow>().is_some());
     if window && yuzora_files::docs::unsaved(cx) > 0 {
         crate::mods::request(crate::mods::Request::Run { name: "app.quit".into(), args: json!({}) });
     } else {
-        cx.quit();
+        now(cx);
     }
 }
 

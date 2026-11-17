@@ -1,6 +1,7 @@
 // yuzora(unsaved): included into `window::tests`. On a real window with a real unsaved document: a person's close
-// that would leave it with no pane opens the shipped `yuzora-unsaved` dialog instead, the Files sidebar's
-// split-then-close does not, a script's close goes ahead as before, and Quit (macOS's menu item and cmd-q) asks.
+// that would leave it with no pane (a pane, a tab, a confirmed Space) opens the shipped `yuzora-unsaved` dialog
+// instead, the Files sidebar's split-then-close does not, a script's close goes ahead as before, Quit (macOS's menu
+// item and cmd-q) asks and quits at once with nothing unsaved, and app.update asks only with an update ready.
 
 #[test]
 fn a_persons_close_that_would_lose_unsaved_changes_asks_first() {
@@ -60,6 +61,12 @@ export default class Probe extends View {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let state = state.expect("the editor pane never drew its document");
+    // Quit with the file open and nothing unsaved quits at once (the test platform's own quit does nothing).
+    let quit = std::rc::Rc::new(std::cell::Cell::new(false));
+    let quits = quit.clone();
+    cx.update(|_, cx| crate::yuzora::unsaved::quit(cx, move |_| quits.set(true)));
+    settle(cx);
+    assert!(quit.get(), "Quit with nothing unsaved did not quit");
     cx.update(|window, cx| state.update(cx, |s, cx| gpui::EntityInputHandler::replace_text_in_range(s, None, "mine ", window, cx)));
     settle(cx);
     assert_eq!(cx.update(|_, cx| yuzora_files::docs::unsaved(cx)), 1, "typing made the document unsaved");
@@ -114,6 +121,19 @@ export default class Probe extends View {
     assert_eq!(dialogs(cx), vec![], "the split-then-close asked");
     let new = view.read_with(cx, |this, _| this.model.tab("tb2").unwrap().root.panes()[0].id.clone());
 
+    // Close Space, once confirmed, asks. The Space and the pane holding the document stay.
+    let closing = json!({ "id": "sp1", "confirmed": true });
+    let reply = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("space.close", closing.clone(), true, window, cx)));
+    settle(cx);
+    assert_eq!(reply, json!({ "asked": "unsaved" }));
+    assert!(view.read_with(cx, |this, _| this.model.space("sp1").is_some()), "the Space is still there");
+    assert!(panes(cx).contains(&new), "the pane is still there");
+    let asked = dialogs(cx);
+    assert_eq!(asked.len(), 1, "Close Space asked: {asked:?}");
+    assert_eq!(asked[0].1["command"], json!({ "name": "space.close", "args": closing }));
+    assert_eq!(asked[0].1["docs"][0]["name"], json!("a.txt"));
+    close_dialogs(cx);
+
     // A script's close (`herdr-app do`, an agent) closes as before; the document stays in memory, unsaved.
     let reply = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("pane.close", json!({ "pane": new }), false, window, cx)));
     settle(cx);
@@ -138,6 +158,13 @@ export default class Probe extends View {
     settle(cx);
     assert!(reply.get("error").is_some(), "{reply}");
     assert_eq!(dialogs(cx), vec![]);
+    // With one downloaded it asks, here about the document no pane holds. No test can download one, so whether one
+    // is ready is handed in.
+    let asks_update = |ready: bool, cx: &mut gpui::VisualTestContext| view.read_with(cx, |this, cx| crate::yuzora::unsaved::dialog("app.update", &json!({}), &this.model, || ready, cx));
+    let spec = asks_update(true, cx).expect("an update ready, and app.update did not ask");
+    assert_eq!(spec["props"]["command"], json!({ "name": "app.update", "args": {} }));
+    assert_eq!(spec["props"]["docs"][0]["name"], json!("a.txt"));
+    assert_eq!(asks_update(false, cx), None);
 
     // The window's own close button, where it closes (macOS hides the app instead, which the test platform can't).
     if !cfg!(target_os = "macos") {

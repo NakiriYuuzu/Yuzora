@@ -4,7 +4,7 @@ use gpui_shell::action::ShellAction;
 actions!(herdr, [Quit, Hide, HideOthers, ShowAll, Settings]);
 
 pub fn init(cx: &mut App) {
-    cx.on_action(|_: &Quit, cx| crate::yuzora::unsaved::quit(cx)); // yuzora(unsaved): unsaved changes ask before the app quits
+    cx.on_action(|_: &Quit, cx| crate::yuzora::unsaved::quit(cx, |cx| cx.quit())); // yuzora(unsaved): unsaved changes ask before the app quits
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
