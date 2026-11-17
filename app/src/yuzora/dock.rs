@@ -415,15 +415,44 @@ fn ensure_with(n: &mut Node, on: bool, personal: Option<Choice>, fallback: Optio
     }
     let mut want = strip(n, fallback);
     inject_sized(&mut want, true, personal, file);
-    if placement(n) != placement(&want) {
-        // The stacks keep what they showed, where that child is still there.
-        for x in n.walk() {
-            if let Kind::Stack { active: Some(a), .. } = &x.kind {
-                want.select(&x.id, a);
-            }
-        }
+    // Kept only when it is the placed tree with clicks on it, so the window shows what a load of the file does.
+    if without_clicks(&want, n) != want {
+        keep_shown(n, &mut want);
         *n = want;
     }
+}
+
+/// `to`, the layout placed again, with what `from` shows on the nodes both
+/// have: a node keeps its hidden flag, a stack the child it shows, a float its
+/// edge, alignment and hidden flag, and a node its size where that still means
+/// the same (it is a width in a row, a height in a column).
+fn keep_shown(from: &Node, to: &mut Node) {
+    for x in from.walk() {
+        // A float is found by its own id, on whatever holds it (a root whose reserved id strip left empty included).
+        for f in &x.floating {
+            if let Some(g) = to.find_float_mut(&f.id) {
+                (g.edge, g.align, g.hidden) = (f.edge, f.align, f.hidden);
+            }
+        }
+        if x.id.is_empty() {
+            continue;
+        }
+        if let Kind::Stack { active: Some(a), .. } = &x.kind {
+            to.select(&x.id, a);
+        }
+        let same_axis = holder_axis(from, &x.id) == holder_axis(to, &x.id);
+        if let Some(y) = to.find_mut(&x.id) {
+            y.hidden = x.hidden;
+            if same_axis {
+                y.size = x.size;
+            }
+        }
+    }
+}
+
+/// The axis the first node `id` in tree order is laid out along, its parent's (none in a stack); none for the root.
+fn holder_axis(n: &Node, id: &str) -> Option<Option<Axis>> {
+    n.children().iter().find_map(|c| if c.id == id { Some(n.axis()) } else { holder_axis(c, id) })
 }
 
 /// The clicks of `before` (the layout's `.state` as written) that belong to a
@@ -484,16 +513,6 @@ pub fn stale_window(spec: &Value, chrome: &Node) -> bool {
 /// Every reserved node and float id in `n`, in tree order.
 fn reserved_ids(n: &Node) -> Vec<String> {
     n.walk().iter().flat_map(|x| x.floating.iter().map(|f| f.id.clone()).chain([x.id.clone()])).filter(|id| reserved(id)).collect()
-}
-
-/// Where the injection put its nodes: each reserved id with the id of what holds it (none for the root).
-fn placement(n: &Node) -> Vec<(&str, &str)> {
-    let mut at = vec![("", n.id.as_str())];
-    for x in n.walk() {
-        at.extend(x.floating.iter().map(|f| f.id.as_str()).chain(x.children().iter().map(|c| c.id.as_str())).map(|id| (x.id.as_str(), id)));
-    }
-    at.retain(|(_, id)| reserved(id));
-    at
 }
 
 #[cfg(test)]
