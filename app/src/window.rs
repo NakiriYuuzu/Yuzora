@@ -10,6 +10,7 @@ mod movable;
 mod pane_drag;
 mod pane_size;
 mod titlebar;
+mod yuzora_unsaved; // yuzora(unsaved): a close or quit that would lose unsaved changes asks first
 
 use crate::layout::{Axis, Background as Paint, Content, Fit, HeaderContent, Kind, Line, Node, PaneFrame, Size as Span};
 use crate::model::{self, Tab, Model};
@@ -3017,16 +3018,6 @@ impl AppWindow {
         self.dispatch(name, &args, person, window, cx);
         self.flush_documents(false, window, cx);
         self.reply.take().unwrap_or_else(|| json!({ "ok": true }))
-    }
-
-    // yuzora(unsaved): a close or quit that would lose unsaved changes opens Save / Don't Save / Cancel instead; the answer runs it again.
-    fn ask_unsaved(&mut self, name: &str, args: &Value, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(spec) = self.folders.contains_key(crate::yuzora::unsaved::MOD).then(|| crate::yuzora::unsaved::dialog(name, args, &self.model, cx)).flatten() else { return false };
-        // One at a time, as a macOS sheet: a second close or cmd-q while it is open waits for its answer.
-        if !self.overlays.iter().any(|o| self.copies.get(&o.slot).is_some_and(|c| c.inst.name == crate::yuzora::unsaved::MOD)) {
-            self.open_overlay(mods::new_overlay_id(), spec, window, cx);
-        }
-        true
     }
 
     /// Asks the person for a new name (space.rename, tab.rename), then runs it with it.
