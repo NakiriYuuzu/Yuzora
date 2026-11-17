@@ -3451,8 +3451,8 @@ impl AppWindow {
             // A deliberate edit: the file becomes this tree, clicks start over.
             "layout.set" => match serde_json::from_value::<Node>(a.get("layout").cloned().unwrap_or_default()) {
                 Ok(mut n) => {
-                    crate::yuzora::dock::ensure(&mut n, &self.layout_name, Some(&self.file_chrome)); // yuzora(dock): shown with the dock, written without. yuzora(perf-place): before fill_ids, so a node strip leaves without an id gets one in this write
-                    fill_ids(&mut n, &mut self.model);
+                    crate::yuzora::dock::ensure(&mut n, &self.layout_name, Some(&self.file_chrome)); // yuzora(dock): shown with the dock, written without
+                    fill_ids(&mut n, &mut self.model); // yuzora(perf-place): after dock::ensure, so a node strip leaves without an id is named in this write
                     let text = layout_sync::text_of(&crate::yuzora::dock::strip(&n, Some(&self.file_chrome)));
                     if !write_atomic(&layout_path(&self.layout_name), &text) {
                         return self.fail(format!("cannot write layouts/{}.json", self.layout_name));
