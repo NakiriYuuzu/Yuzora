@@ -2022,6 +2022,45 @@ mod tests {
         cx.update(|cx| assert!(!view.read(cx).deleted && !view.read(cx).dirty));
     }
 
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_forced_save_puts_a_deleted_file_back_only_while_it_is_gone(cx: &mut gpui::TestAppContext) {
+        for machine in [None, Some("lab")] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("a.txt");
+            std::fs::write(&path, "one\n").unwrap();
+            let (view, window) = match machine {
+                Some(m) => editing_on(m, &path, cx),
+                None => editing(&path, cx),
+            };
+            type_text(&view, window, "mine ", cx);
+            std::fs::remove_file(&path).unwrap();
+            drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+            cx.run_until_parked();
+            cx.update(|cx| assert!(view.read(cx).deleted, "{machine:?}"));
+            // Written again before the document looked again. Refused, as a changed file is.
+            std::fs::write(&path, "theirs\n").unwrap();
+            let saved = view.update(cx, |doc, cx| doc.save(true, cx));
+            cx.run_until_parked();
+            let saved = futures::executor::block_on(saved).unwrap();
+            assert_eq!((saved.ok, saved.conflict), (false, true), "{machine:?}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n", "{machine:?}");
+            cx.update(|cx| {
+                let doc = view.read(cx);
+                assert!(doc.conflict && doc.dirty && !doc.deleted, "{machine:?}");
+                assert_eq!(doc.incoming.as_ref().map(|f| f.text.as_str()), Some("theirs\n"), "{machine:?}");
+            });
+            // Gone again, so it is put back.
+            std::fs::remove_file(&path).unwrap();
+            drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+            cx.run_until_parked();
+            let saved = view.update(cx, |doc, cx| doc.save(true, cx));
+            cx.run_until_parked();
+            assert!(futures::executor::block_on(saved).unwrap().ok, "{machine:?}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n", "{machine:?}");
+        }
+    }
+
     #[gpui::test]
     fn dont_save_takes_the_file_from_disk_again(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
