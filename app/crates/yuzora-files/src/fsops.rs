@@ -1937,6 +1937,8 @@ mod anchored {
                     let name = CStr::from_ptr((*entry).d_name.as_ptr()).to_bytes();
                     if name != b"." && name != b".." {
                         names.push(OsStr::from_bytes(name).to_owned());
+                        #[cfg(test)]
+                        unread(listing);
                     }
                 }
                 libc::closedir(listing);
@@ -2026,6 +2028,57 @@ mod anchored {
         let mode = std::fs::metadata(&theirs).unwrap().permissions().mode();
         assert_eq!(mode & 0o7777, 0o755);
         assert_eq!(std::fs::read(theirs.join("keep.txt")).unwrap(), b"mine");
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        /// A folder opened to search only: the listing of it that a test cuts short.
+        static UNREAD: std::cell::RefCell<Option<Dir>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Once `listing` has read a name, if it is of [`UNREAD`]'s folder, puts that descriptor in
+    /// place of its own and drops what it read ahead: its next `readdir` asks the system, on a
+    /// descriptor that may not read, and fails.
+    #[cfg(test)]
+    fn unread(listing: *mut libc::DIR) {
+        // SAFETY: `listing` is open.
+        let fd = unsafe { libc::dirfd(listing) };
+        let same = |dir: &mut Dir| match (dir.stat(), stat_of(fd)) {
+            (Ok(a), Ok(b)) => (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino),
+            _ => false,
+        };
+        if let Some(dir) = UNREAD.with_borrow_mut(|unread| unread.take_if(same)) {
+            // SAFETY: both descriptors and `listing` are open; `fd` stays the listing's.
+            unsafe {
+                assert_eq!(libc::dup2(dir.fd(), fd), fd);
+                libc::rewinddir(listing);
+            }
+        }
+    }
+
+    /// A folder whose listing fails part way (an I/O error on a network mount) is not copied as if
+    /// it held only what was read: the copy fails, names the folder and the failure, and leaves
+    /// nothing. Here the listing of `box/inner` fails once it has read one of its two names.
+    #[cfg(test)]
+    #[test]
+    fn a_folder_whose_listing_fails_part_way_is_not_copied_and_leaves_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let (from, into) = (d.path().join("box"), d.path().join("into"));
+        let inner = from.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::create_dir(&into).unwrap();
+        std::fs::write(from.join("note"), b"n").unwrap();
+        std::fs::write(inner.join("kept"), b"kept").unwrap();
+        std::fs::write(inner.join("lost"), b"lost").unwrap();
+        UNREAD.set(Some(Dir::open(&inner).unwrap()));
+        let copied = super::copy(&from.to_string_lossy(), &into.to_string_lossy(), None, &[]);
+        let e = copied.unwrap_err();
+        let failure = io::Error::from_raw_os_error(libc::EBADF).to_string();
+        assert!(
+            e.contains(&*inner.to_string_lossy()) && e.contains(&failure),
+            "{e}"
+        );
+        assert_eq!(std::fs::read_dir(&into).unwrap().count(), 0);
     }
 }
 
