@@ -1555,9 +1555,12 @@ with these differences.
   so), come back when the file is opened again, and the person is asked
   about them when they quit. A layout change herdr-core sends is the same.
   `herdr-app do app.quit`, `app.update` and `window.close` don't ask either:
-  if Yuzora ends that way, every unsaved change is lost, so leave quitting to
-  the person. Dock › Quit, logging out, `SIGTERM` and a crash end Yuzora at
-  once and lose unsaved changes too.
+  if Yuzora ends that way, every unsaved change is lost. On macOS your
+  `window.close` leaves Yuzora running with no window, and the person's Quit
+  Yuzora then quits without asking. So leave quitting and closing the window
+  to the person. A quit macOS sends itself (the Dock's Quit, Quit in the app
+  switcher, an AppleScript quit, logging out or shutting down), `SIGTERM` and
+  a crash end Yuzora at once and lose unsaved changes too.
 - `yuzora:files` (types in `yuzora.d.ts`): `listDir`, `gitStatus`, `findFiles`,
   `grep`, `openDocument` / `documentState` / `saveDocument`, the native
   components `Editor`, `Markdown`, `ImageView`, and more.
