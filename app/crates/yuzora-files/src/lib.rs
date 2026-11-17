@@ -126,7 +126,7 @@ export function paneDocument(pane: string): DocumentState | null;
 export function unsavedCount(): number;
 /** Resolves with the new `seq` once the document changed after `seq` (0 once it is gone). */
 export function documentChanged(doc: number, seq: number): Promise<number>;
-/** Writes it. `force`: even if the file changed on disk since it was read. */
+/** Writes it. `force`: even if the file changed on disk since it was read; a file it saw deleted, only while it is still gone. */
 export function saveDocument(doc: number, options?: { force?: boolean }): Promise<{ ok: boolean; conflict: boolean; error: string | null }>;
 /** Reads the file again, dropping unsaved changes. */
 export function reloadDocument(doc: number): null;

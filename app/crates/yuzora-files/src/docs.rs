@@ -824,7 +824,8 @@ impl DocView {
         self.bump(cx);
     }
 
-    /// Writes the editor's text. `force`: even if the file changed on disk.
+    /// Writes the editor's text. `force`: even if the file changed on disk; a
+    /// file seen deleted, only if it is still gone.
     pub fn save(&mut self, force: bool, cx: &mut Context<Self>) -> oneshot::Receiver<Saved> {
         let (tx, rx) = oneshot::channel();
         let Some(state) = self.state.clone() else {
@@ -841,7 +842,11 @@ impl DocView {
         }
         let rope = state.read(cx).text().clone();
         let text = rope.to_string();
-        let expected = if force {
+        // `deleted` is as of the last look at the disk. Forced, such a file is
+        // put back only if it is still gone; one written again since is held
+        // to what was read, as without force.
+        let restore = force && self.deleted;
+        let expected = if force && !restore {
             None
         } else {
             self.disk.map(|stamp| Seen {
@@ -858,6 +863,8 @@ impl DocView {
             let bytes = fsops::encode_text(&text, eol, bom);
             let (hash, crc) = (fsops::content_hash(&bytes), posix_crc(&bytes));
             let result = blocking(move || {
+                let gone = restore && matches!(fsops::stat(&path, on.as_deref()), Ok(None));
+                let expected = if gone { None } else { expected };
                 fsops::write_on(&path, on.as_deref(), &text, eol, bom, expected)
             })
                 .await
