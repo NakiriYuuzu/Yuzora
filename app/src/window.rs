@@ -604,6 +604,7 @@ impl AppWindow {
                 cx.hide();
                 return false;
             }
+            if closing.update(cx, |this, cx| this.ask_unsaved("window.close", &json!({}), window, cx)).unwrap_or(false) { return false; } // yuzora(unsaved)
             let _ = closing.update(cx, |this, cx| {
                 this.drain_documents(window, cx);
                 this.close_mods_now(std::time::Instant::now() + Duration::from_millis(250), window, cx);
@@ -3011,10 +3012,21 @@ impl AppWindow {
             && let Some(space) = Self::arg(&args, "id").and_then(|id| self.model.space_of(id))
             && let Err(error) = self.require_document(space.machine.as_deref())
         { return json!({"error":error}); }
+        if person && self.ask_unsaved(name, &args, window, cx) { return json!({ "asked": "unsaved" }); } // yuzora(unsaved)
         self.reply = None;
         self.dispatch(name, &args, person, window, cx);
         self.flush_documents(false, window, cx);
         self.reply.take().unwrap_or_else(|| json!({ "ok": true }))
+    }
+
+    // yuzora(unsaved): a close or quit that would lose unsaved changes opens Save / Don't Save / Cancel instead; the answer runs it again.
+    fn ask_unsaved(&mut self, name: &str, args: &Value, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(spec) = self.folders.contains_key(crate::yuzora::unsaved::MOD).then(|| crate::yuzora::unsaved::dialog(name, args, &self.model, cx)).flatten() else { return false };
+        // One at a time, as a macOS sheet: a second close or cmd-q while it is open waits for its answer.
+        if !self.overlays.iter().any(|o| self.copies.get(&o.slot).is_some_and(|c| c.inst.name == crate::yuzora::unsaved::MOD)) {
+            self.open_overlay(mods::new_overlay_id(), spec, window, cx);
+        }
+        true
     }
 
     /// Asks the person for a new name (space.rename, tab.rename), then runs it with it.
@@ -6881,6 +6893,7 @@ export default class Probe extends View {
     include!("window/overlay_motion_tests.rs"); // yuzora(motion): the arrival of dialogs, popups and toasts
     include!("window/yuzora_pane_list_tests.rs"); // yuzora(v0.1.0 files-open): what panes() lists of a pane not started, and a pane replaced in place
     include!("window/yuzora_dock_tests.rs"); // yuzora(dock): the right dock never reaches a layout file
+    include!("window/yuzora_unsaved_tests.rs"); // yuzora(unsaved): a person's close asks before unsaved changes are lost
 
     /// What a `{"command":"tab.move","args":{"by":-1}}` key runs.
     #[test]
