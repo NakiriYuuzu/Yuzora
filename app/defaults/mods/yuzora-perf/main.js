@@ -1,4 +1,5 @@
-// Resource usage in the window's bottom-right corner, right of the status bar. Owned by lane L8.
+// Resource usage in the window's bottom-right corner: in a layout's status bar (yuzora's), or in the band the
+// window draws under a layout that places no chip of its own (props().band). Owned by lane L8.
 // The chip shows this computer's Yuzora (the app, its herdr-core, the tools it starts) as
 // "{cpu}% · {memory}MB", with ⚠ while sampling has trouble; a press opens the details above it,
 // right edges aligned (also "yuzora-perf.toggle"). yuzora:perf samples on a worker thread; this mod
@@ -6,7 +7,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Popover, ToggleGroup, Toggle } from "gpui-base";
-import { theme, window, settings, nextCommand } from "herdr";
+import { theme, window, settings, nextCommand, props } from "herdr";
 import { t, tokens, motion } from "yuzora:core";
 import { state, tick } from "yuzora:perf";
 
@@ -28,6 +29,7 @@ const processes = (count) => (count === 1 ? t("process_one") : t("process_other"
 
 export default class Perf extends View {
   init(_props, cx) {
+    this.band = Boolean(props()?.band);
     this.state = state();
     this.open = false;
     this.sort = "memory";
@@ -72,8 +74,11 @@ export default class Perf extends View {
       .child(div().whitespace_nowrap().child(text))
       .when(warn, (el) => el.child(div().text_color(tk.status.blocked.color).child("⚠")))
       .child(svg(`${ICONS}/chevron-up.svg`).size(10).flex_none());
+    // The band is the window's own bar: a theme or layout that gives surfaces a face of their own (win98's gray)
+    // paints it that face, the rest in chrome, as their status bars.
+    const face = this.band && th.surface !== th.background ? th.surface : th.chrome;
     return h_flex().id("root").size_full().min_w(0).pr(4).justify_end().items_center()
-      .bg(th.chrome).border_t(1).border_color(th.divider ?? th.border)
+      .bg(face).border_t(1).border_color(th.divider ?? th.border)
       .text_size(11.5).text_color(th.muted)
       .child(Popover.new("usage").anchor("bottom_right").open(this.open)
         .on_open_change((open, cx) => { this.open = open; cx.notify(); })

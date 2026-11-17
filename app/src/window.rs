@@ -1287,6 +1287,7 @@ impl AppWindow {
                 }
             }
         }
+        mods.extend(crate::yuzora::band::slot(&self.chrome)); // yuzora(L8): the resource chip's band under the layout, no node of it
         if self.shows_tab()
             && let Some(c) = self.model.active_tab()
         {
@@ -1341,6 +1342,7 @@ impl AppWindow {
                 }
             }
         }
+        out.extend(crate::yuzora::band::slot(&self.chrome)); // yuzora(L8): the band's copy lives while the band shows
         // The layout's pane header, shown or not (`pane_frame` says what's drawn now).
         let header = self
             .chrome
@@ -5240,6 +5242,7 @@ impl Render for AppWindow {
         }
         let focused = self.focused_path(window, cx);
         let tree = self.render_node(&self.chrome, &focused, None, cx);
+        let tree = crate::yuzora::band::under(tree, self.copies.contains_key(crate::yuzora::band::SLOT).then(|| self.render_slot(crate::yuzora::band::SLOT, cx))); // yuzora(L8)
         let tree = self.window_frame(tree, window, cx);
         let overlays = self.render_overlays(window.viewport_size(), window, cx); // yuzora(motion)
         self.handover.frame_drawn(); // yuzora(motion)
@@ -6045,6 +6048,7 @@ mod tests {
 
     fn open_heavy(cx: &mut gpui::TestAppContext, mib: usize) -> (gpui::Entity<super::AppWindow>, &mut gpui::VisualTestContext) {
         // yuzora(dock): no dock here, so the one copy these tests count is the heavy mod's.
+        crate::yuzora::band::set_for_tests(false); // yuzora(L8): nor the resource chip's band
         let (view, cx) = open_window(cx, "heavy", &heavy_mod(0, mib), serde_json::json!({ "id": "heavy", "type": "block", "yuzora": { "dock": "off" }, "content": { "mod": "heavy" } }));
         cx.run_until_parked();
         assert_eq!(view.update(cx, |this, _| this.copies.values().filter(|c| c.root.is_some()).count()), 1, "the mod loads");
