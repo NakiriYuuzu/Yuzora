@@ -2,19 +2,19 @@
 //! a temp folder of its own, where [`crate::mods::plan`] reads it like any
 //! folder. The temp folder goes with [`Fetched`].
 //!
-//! No program writes to the disk. `curl` hands the archive over on stdout,
-//! `gzip -dc` (Linux) or bsdtar's `tar -cf - @-` (macOS, Windows) hands it
-//! back as a plain tar stream, and the code below writes its folders and
-//! files, and nothing else: links, devices and the rest are left out, and a
-//! member outside the archive's one folder fails the whole archive.
+//! `curl` is the only program run, and it only downloads: it hands the archive
+//! over on stdout. The code below reads that as a gzip of a tar and as nothing
+//! else, on every OS, and writes its folders and files, and nothing else:
+//! links, devices and the rest are left out, and a member outside the
+//! archive's one folder fails the whole archive.
 
 use crate::mods::{InstallError, Plan};
 use crate::source::Source;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use yuzora_core::remote::{ExecError, ExecRequest, run};
+use yuzora_core::remote::{ExecRequest, run};
 
 /// The most the download may be (`curl --max-filesize`).
 const MAX_DOWNLOAD: u64 = 64 << 20;
@@ -59,7 +59,7 @@ fn temp_in(root: &Path) -> std::io::Result<Temp> {
     Err(std::io::Error::other("no free name for a temp folder"))
 }
 
-/// curl and tar: on Windows its own (System32), as the updater's.
+/// curl: on Windows its own (System32), as the updater's.
 fn system(name: &str) -> String {
     match std::env::var_os("SystemRoot").filter(|_| cfg!(windows)) {
         Some(root) => PathBuf::from(root).join("System32").join(format!("{name}.exe")).to_string_lossy().into_owned(),
@@ -92,17 +92,18 @@ fn download(url: &str) -> Result<Vec<u8>, InstallError> {
     }))
 }
 
-/// The archive as a plain tar stream, in memory.
-fn plain_tar(archive: Vec<u8>) -> Result<Vec<u8>, InstallError> {
-    let req = if cfg!(target_os = "linux") { ExecRequest::new("gzip", ["-dc"]) } else { ExecRequest::new(system("tar"), ["-cf", "-", "@-"]) };
-    match run(&req.stdin(archive).timeout(Duration::from_secs(30)).max_output(MAX_UNPACKED + 1)) {
-        Ok(out) if out.stdout.len() as u64 > MAX_UNPACKED => Err(InstallError::TooBig),
-        Ok(out) if out.code == 0 => Ok(out.stdout),
-        Ok(out) => Err(InstallError::UnpackFailed(out.stderr_text().trim().to_owned())),
-        // Past the limit the rest is read and dropped until it ends: only a huge one takes this long.
-        Err(ExecError::TimedOut { .. }) => Err(InstallError::TooBig),
-        Err(e) => Err(InstallError::UnpackFailed(e.to_string())),
+/// The archive as a plain tar stream, in memory: read as a gzip of a tar and
+/// as nothing else, never past [`MAX_UNPACKED`].
+fn plain_tar(archive: &[u8]) -> Result<Vec<u8>, InstallError> {
+    let mut tar = Vec::new();
+    flate2::read::GzDecoder::new(archive)
+        .take(MAX_UNPACKED + 1)
+        .read_to_end(&mut tar)
+        .map_err(|e| InstallError::UnpackFailed(format!("not a gzip archive GitHub would send: {e}")))?;
+    if tar.len() as u64 > MAX_UNPACKED {
+        return Err(InstallError::TooBig);
     }
+    Ok(tar)
 }
 
 /// A member of a tar stream that an install writes.
@@ -258,7 +259,7 @@ fn unpack(tar: &[u8], source: &Source, into: &Path) -> Result<(PathBuf, String),
 
 /// Downloads and unpacks what `source` names into a new folder in `temp_root`.
 pub fn fetch(source: &Source, base: &str, temp_root: &Path) -> Result<Fetched, InstallError> {
-    let tar = plain_tar(download(&source.archive_url(base))?)?;
+    let tar = plain_tar(&download(&source.archive_url(base))?)?;
     let temp = temp_in(temp_root)?;
     let (dir, commit) = unpack(&tar, source, &temp.0)?;
     Ok(Fetched { dir, commit, _temp: temp })

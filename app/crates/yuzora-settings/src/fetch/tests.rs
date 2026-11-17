@@ -1,8 +1,7 @@
 //! Each test serves an archive from a stand-in for codeload on 127.0.0.1 and
-//! runs the real curl, gzip or tar of this machine.
+//! runs the real curl of this machine (and its gzip, to build the archives).
 
 use super::*;
-use std::io::Read as _;
 use std::net::{TcpListener, TcpStream};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -146,6 +145,25 @@ fn gz_of(tar: Vec<u8>) -> Vec<u8> {
     gz(move |w| w.write_all(&tar).unwrap())
 }
 
+/// A zstd frame holding `data` as one raw block (valid zstd, nothing compressed).
+fn zstd_of(data: &[u8]) -> Vec<u8> {
+    let len = data.len() as u32;
+    [&[0x28, 0xb5, 0x2f, 0xfd, 0xa0][..], &len.to_le_bytes(), &(len << 3 | 1).to_le_bytes()[..3], data].concat()
+}
+
+/// A zip holding one file, stored.
+fn zip_of(name: &str, data: &[u8]) -> Vec<u8> {
+    let mut crc = flate2::Crc::new();
+    crc.update(data);
+    let len = (data.len() as u32).to_le_bytes();
+    // version 20, no flags, stored, 1980-01-01, the crc, both sizes, the name's length, no extra field
+    let common = [&[20, 0, 0, 0, 0, 0, 0, 0, 0x21, 0][..], &crc.sum().to_le_bytes(), &len, &len, &(name.len() as u16).to_le_bytes(), &[0, 0]].concat();
+    let local = [&0x0403_4b50u32.to_le_bytes()[..], &common, name.as_bytes(), data].concat();
+    let central = [&0x0201_4b50u32.to_le_bytes()[..], &[20, 0], &common, &[0; 14], name.as_bytes()].concat();
+    let end = [&0x0605_4b50u32.to_le_bytes()[..], &[0, 0, 0, 0, 1, 0, 1, 0], &(central.len() as u32).to_le_bytes(), &(local.len() as u32).to_le_bytes(), &[0, 0]].concat();
+    [local, central, end].concat()
+}
+
 fn names(list: &[(PathBuf, String)]) -> Vec<&str> {
     list.iter().map(|(_, n)| n.as_str()).collect()
 }
@@ -153,7 +171,7 @@ fn names(list: &[(PathBuf, String)]) -> Vec<&str> {
 #[test]
 fn reads_githubs_own_archive() {
     // GitHub's legacy archive of octocat/Hello-World at HEAD, as codeload answered it on 2026-11-17.
-    let tar = plain_tar(include_bytes!("octocat-hello-world.tgz").to_vec()).unwrap();
+    let tar = plain_tar(include_bytes!("octocat-hello-world.tgz")).unwrap();
     assert_eq!(members(&tar).unwrap(), [Member::Folder("octocat-Hello-World-7fd1a60".into()), Member::File("octocat-Hello-World-7fd1a60/README".into(), b"Hello World!\n")]);
 }
 
@@ -229,8 +247,9 @@ fn links_and_devices_are_left_out_and_nothing_leaves_the_folder() {
     ]));
     let (base, _) = serving(archive);
     let before = lab.outside_temp();
-    let p = lab.plan("acme/demo", &base).unwrap();
+    let planned = lab.plan("acme/demo", &base);
     assert_eq!(lab.outside_temp(), before, "nothing outside the temp folder was made or changed");
+    let p = planned.unwrap();
     let mut written: Vec<String> = p.pieces.iter().map(|(to, b)| format!("{} {}", to.to_string_lossy(), String::from_utf8_lossy(b))).collect();
     written.sort();
     assert_eq!(written, ["mods/demo/f over the link", "mods/demo/hl2 over the hard link", "mods/demo/link/pwned through the link", "mods/demo/main.js m", "mods/demo/rel/pwned through the link"], "files only, as plain files of the folder");
@@ -256,7 +275,7 @@ fn reads_long_names_however_they_are_written_and_refuses_the_ones_that_leave() {
     ] {
         assert_eq!(members(&tar), Ok(vec![Member::File(long.clone(), b"m")]));
     }
-    for name in ["/etc/x", &format!("{TOP}//x"), &format!("{TOP}/../x"), &format!("{TOP}/a\\b")] {
+    for name in ["/etc/x", &format!("{TOP}//x"), &format!("{TOP}/../x"), &format!("{TOP}/a\\b"), &format!("{TOP}/a\nb.js")] {
         assert!(members(&tar_of(&[(name, b'0', b"m", "")])).is_err(), "{name}");
         assert!(members(&tar_of(&[("pax", b'x', &pax_path(name), ""), ("short", b'0', b"m", "")])).is_err(), "pax {name}");
     }
@@ -325,6 +344,27 @@ fn a_missing_repo_or_no_server_fails_to_fetch() {
     assert!(lab.temp_is_empty());
 }
 
+/// What bsdtar reads besides a gzip of a tar: handed one as the body, it planned each (the mtree one with a file
+/// of this computer's as main.js). Read as a gzip of a tar and nothing else, none is planned.
+#[test]
+fn a_body_that_is_not_a_gzip_of_a_tar_is_refused() {
+    let lab = Lab::new("formats");
+    let local = lab.root.join("outside/target").to_string_lossy().into_owned();
+    let mtree = format!("#mtree\n{TOP} type=dir\n{TOP}/main.js type=file contents={local}\n").into_bytes();
+    let tar = tar_of(&[(&format!("{TOP}/main.js"), b'0', b"m", "")]);
+    let bodies = [("gzipped mtree", gz_of(mtree.clone())), ("mtree", mtree), ("zstd", zstd_of(&tar)), ("zip", zip_of(&format!("{TOP}/main.js"), b"m"))];
+    let mut planned = Vec::new();
+    for (what, body) in bodies {
+        let (base, _) = serving(body);
+        match lab.plan("acme/demo", &base) {
+            Err(InstallError::UnpackFailed(_)) => {}
+            other => planned.push(format!("{what}: {:?}", other.map(|p| p.to_json()))),
+        }
+        assert!(lab.temp_is_empty(), "{what}");
+    }
+    assert!(planned.is_empty(), "{planned:#?}");
+}
+
 #[test]
 fn a_download_over_the_limit_is_too_big() {
     let lab = Lab::new("big");
@@ -347,8 +387,10 @@ fn a_download_over_the_limit_is_too_big() {
 fn a_small_archive_that_unpacks_huge_is_too_big() {
     let lab = Lab::new("bomb");
     let size = (MAX_UNPACKED + (1 << 20)) as usize;
+    let small = tar_of(&[(&format!("{TOP}/mod/main.js"), b'0', b"m", "")]);
     let archive = gz(move |w| {
-        w.write_all(&header(&format!("{TOP}/main.js"), b'0', size, "")).unwrap();
+        w.write_all(&small[..small.len() - 1024]).unwrap();
+        w.write_all(&header(&format!("{TOP}/big.bin"), b'0', size, "")).unwrap();
         let zeros = vec![0u8; 1 << 20];
         for _ in 0..size >> 20 {
             w.write_all(&zeros).unwrap();
@@ -357,7 +399,8 @@ fn a_small_archive_that_unpacks_huge_is_too_big() {
     });
     assert!(archive.len() < 1 << 20, "a small download: {}", archive.len());
     let (base, _) = serving(archive);
-    assert!(matches!(lab.plan("acme/demo", &base), Err(InstallError::TooBig)));
+    // The huge file is outside the folder the link names, so nothing after the unpack step would see it.
+    assert!(matches!(lab.plan("https://github.com/acme/demo/tree/HEAD/mod", &base), Err(InstallError::TooBig)));
     assert!(lab.temp_is_empty());
 }
 
@@ -370,7 +413,9 @@ fn a_temp_name_already_taken_is_never_used() {
         std::os::unix::fs::symlink(lab.root.join("outside"), root.join(format!("yuzora-fetch-{}-{n}", std::process::id()))).unwrap();
     }
     let temp = temp_in(&root).unwrap();
-    assert!(std::fs::symlink_metadata(&temp.0).unwrap().is_dir(), "a folder of its own, not the link");
+    let meta = std::fs::symlink_metadata(&temp.0).unwrap();
+    assert!(meta.is_dir(), "a folder of its own, not the link");
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777, 0o700, "no one else can look in");
     drop(temp);
     assert_eq!(std::fs::read_to_string(lab.root.join("outside/target")).unwrap(), "original");
 }
