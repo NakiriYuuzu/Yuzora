@@ -430,4 +430,62 @@ mod tests {
         eprintln!("perf_asks_200: median {median:?} per call, runs {times:?}");
         assert!(median < std::time::Duration::from_millis(1), "asks took {median:?}");
     }
+
+    /// All of `dialog` (the open documents read from the registry, then
+    /// `asks`) for a close or quit with 200 documents open and none unsaved,
+    /// as every close and quit is most of the time. Budget: a median under 1 ms.
+    #[gpui::test]
+    #[ignore]
+    fn perf_dialog_200_nothing_unsaved(cx: &mut gpui::TestAppContext) {
+        use std::time::{Duration, Instant};
+        // The documents are read on threads of their own.
+        cx.executor().allow_parking();
+        let dir = crate::test_tmp().join(format!("herdr-unsaved-perf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = |i: usize| dir.join(format!("{i}.txt")).to_string_lossy().into_owned();
+        let mut m = Model::default();
+        m.add_space("s1", "", "/w", tab("t0", vec![terminal("p0")]));
+        for t in 0..20 {
+            m.add_tab("s1", tab(&format!("t{}", t + 1), (0..10).map(|j| editor(&format!("e{}", t * 10 + j), &path(t * 10 + j))).collect()));
+        }
+        for i in 0..200 {
+            std::fs::write(path(i), "x\n").unwrap();
+            cx.update(|cx| yuzora_files::docs::open(yuzora_files::docs::DocKey { on: None, path: path(i) }, cx));
+        }
+        let loaded = |cx: &mut gpui::TestAppContext| cx.update(|cx| yuzora_files::docs::all(cx).iter().filter(|d| d.read(cx).text(cx).as_ref() == "x\n").count());
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if loaded(cx) == 200 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(loaded(cx), 200, "the documents never loaded");
+        let args = json!({ "pane": "e105", "id": "t11" });
+        let commands = ["pane.close", "tab.close", "app.quit"];
+        let per_call = |run: &dyn Fn(&str, &gpui::App), cx: &mut gpui::TestAppContext| -> Vec<Duration> {
+            let mut times: Vec<Duration> = (0..10)
+                .map(|_| {
+                    cx.update(|cx| {
+                        let at = Instant::now();
+                        for _ in 0..10 {
+                            for command in commands {
+                                run(command, cx);
+                            }
+                        }
+                        at.elapsed() / 30
+                    })
+                })
+                .collect();
+            times.sort();
+            times
+        };
+        let whole = per_call(&|c, cx| assert!(std::hint::black_box(dialog(c, &args, &m, || false, cx)).is_none()), cx);
+        let read = per_call(&|_, cx| drop(std::hint::black_box(open_docs(cx))), cx);
+        let snapshot = cx.update(|cx| open_docs(cx));
+        let decide = per_call(&|c, _| drop(std::hint::black_box(asks(c, &args, &m, &snapshot))), cx);
+        eprintln!("perf_dialog_200_nothing_unsaved: dialog median {:?} (runs {whole:?}); open_docs median {:?} (runs {read:?}); asks median {:?} (runs {decide:?})", whole[5], read[5], decide[5]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(whole[5] < Duration::from_millis(1), "dialog took {:?}", whole[5]);
+    }
 }
