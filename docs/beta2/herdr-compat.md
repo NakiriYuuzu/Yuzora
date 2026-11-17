@@ -253,9 +253,19 @@ app/scripts/yuzora/sync-check --quick    # 同上，但不跑 cargo test、check
 
 建議總指揮在 architecture.md「上游同步流程」加一行，指向這個腳本。
 
-### C3. 偵測新版本的 CI（只是提案，沒有改 `.github`）
+### C3. 偵測新版本的 CI
 
-新增一個排程 workflow（例如每天一次，加上 `workflow_dispatch`），只讀，不 push：
+**2026-11-17：下面提案的第 1 項與第 4 項已經做成 `.github/workflows/upstream-watch.yml` 與 `app/scripts/yuzora/sync-watch`**，第 2、3 項（讀 `releases.herdr.dev`）還沒做。實作和提案不同的地方：
+
+- **看 release，不看 `master`**：取上游最高的 `vX.Y.Z` tag，和最新一筆 `git-subtree-split` 比較。同步一向以 tag 為單位。`app/` 若同步到那個 release 之後的上游 commit（`sync-pull` 也接受 branch 或 commit），release 已經在它的歷史裡，不算新版本。
+- **試跑的是 `sync-pull`**：回報它解不掉、留給人的衝突檔案，不跑 `sync-check` 與任何測試。issue 裡寫明測試沒跑過。
+- **不重複回報**：標題裡有 `herdr-app <tag>` 的 issue 或 PR（開著或已關閉）存在時，就不試跑、不開 issue。所以已經有人開了同步 PR 的版本不會再被回報。
+- **core 世代**：只比較上游那個 tag 的 `hc::GENERATION` 和 Yuzora 的，不一樣時 issue 會多一行。這只看得出「這一版 herdr-app 換了世代」，看不到 core 自己先發新版的情況（那是第 2 項）。
+- **權限分兩個 job**：`sync-pull` 會在上游的 tree 上執行 bun 與 cargo，所以跑它的 `look` 只有讀取權限，合併之後的步驟也拿不到 token；它只把幾個值（tag、commit、結果、檔名）交給 `issue`。`issue` 是唯一能寫入的 job，而且只能寫 issue；它不執行上游的任何東西，`sync-watch issue` 會逐一檢查這些值，不合格就不開（檔名只印 `app/` 底下、由一般字元組成的路徑）。
+- **不 push、不開 PR、不用 secret，CI 裡也沒有任何 LLM**（使用者 2026-11-17 決定）。解衝突、跑測試、開 PR 由人在自己的分支做。
+- 改到這個 workflow 或它執行的腳本（`sync-watch`、`sync-pull`、`sync-resolve.ts`）的 PR 會跑一次，但不查重、不開 issue，issue 的內文只寫進該次 run 的 summary。手動執行：Actions 的 Upstream watch → Run workflow。
+
+原提案（每天一次，加上 `workflow_dispatch`，只讀，不 push）：
 
 1. **上游 herdr-app**：
    - 比較 `git ls-remote https://github.com/herdrdev/herdr-app.git master` 和 `git log --grep='git-subtree-dir: app'` 最新的 `git-subtree-split`。
