@@ -1533,6 +1533,36 @@ with these differences.
   changes; with unsaved changes the person is asked. While you (an agent) are
   working in a folder that holds an open file you just changed, its pane shows
   "<agent> is editing too".
+- A person's close that would lose unsaved changes asks first: one dialog
+  (`yuzora-unsaved`, "Save changes to a.txt?") lists the files, with Save,
+  Don't Save and Cancel. Save writes each file, then the close goes ahead; a
+  file that can't be written, or that changed on disk, keeps the dialog open
+  with the reason under its name. Don't Save drops the changes (each file
+  stays as it is on disk), then the close goes ahead. Cancel or Escape closes
+  nothing; Enter is Save. `herdr-app status` lists `yuzora-unsaved` in
+  `overlays` while it is open. With nothing unsaved, nothing is asked.
+- What asks: a person's `pane.close`, `tab.close`, `space.close` (after its
+  "Close space?" confirm), `window.close` (and the window's close button on
+  Linux and Windows; the macOS red button only hides), `app.quit` (and Quit
+  Yuzora, cmd-q on macOS) and `app.update` once an update is downloaded.
+  Closing a pane, tab or Space asks only about files no remaining pane shows,
+  so closing one of two panes on a file asks nothing; quitting, closing the
+  window and updating ask about every unsaved file. A person's command is a
+  key, a click, a menu or any mod's `run()`, also one the mod makes on its
+  own: `run("pane.close", {pane: id})` on such a pane opens the dialog, and
+  the pane stays until the person answers. `run()` returns null either way:
+  read `panes()` again rather than assume it closed.
+- What doesn't ask: your `herdr-app do pane.close …` (and `tab.close`,
+  `space.close`) closes at once. The changes stay in memory (a toast says
+  so), come back when the file is opened again, and the person is asked
+  about them when they quit. A layout change herdr-core sends is the same.
+  `herdr-app do app.quit`, `app.update` and `window.close` don't ask either:
+  if Yuzora ends that way, every unsaved change is lost. On macOS your
+  `window.close` leaves Yuzora running with no window, and the person's Quit
+  Yuzora then quits without asking. So leave quitting and closing the window
+  to the person. A quit macOS sends itself (the Dock's Quit, Quit in the app
+  switcher, an AppleScript quit, logging out or shutting down), `SIGTERM` and
+  a crash end Yuzora at once and lose unsaved changes too.
 - `yuzora:files` (types in `yuzora.d.ts`): `listDir`, `gitStatus`, `findFiles`,
   `grep`, `openDocument` / `documentState` / `saveDocument`, the native
   components `Editor`, `Markdown`, `ImageView`, and more.

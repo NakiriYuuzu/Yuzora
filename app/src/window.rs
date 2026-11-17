@@ -10,6 +10,7 @@ mod movable;
 mod pane_drag;
 mod pane_size;
 mod titlebar;
+mod yuzora_unsaved; // yuzora(unsaved): a close or quit that would lose unsaved changes asks first
 
 use crate::layout::{Axis, Background as Paint, Content, Fit, HeaderContent, Kind, Line, Node, PaneFrame, Size as Span};
 use crate::model::{self, Tab, Model};
@@ -604,6 +605,7 @@ impl AppWindow {
                 cx.hide();
                 return false;
             }
+            if closing.update(cx, |this, cx| this.ask_unsaved("window.close", &json!({}), window, cx)).unwrap_or(false) { return false; } // yuzora(unsaved)
             let _ = closing.update(cx, |this, cx| {
                 this.drain_documents(window, cx);
                 this.close_mods_now(std::time::Instant::now() + Duration::from_millis(250), window, cx);
@@ -3011,6 +3013,7 @@ impl AppWindow {
             && let Some(space) = Self::arg(&args, "id").and_then(|id| self.model.space_of(id))
             && let Err(error) = self.require_document(space.machine.as_deref())
         { return json!({"error":error}); }
+        if person && self.ask_unsaved(name, &args, window, cx) { return json!({ "asked": "unsaved" }); } // yuzora(unsaved)
         self.reply = None;
         self.dispatch(name, &args, person, window, cx);
         self.flush_documents(false, window, cx);
@@ -6881,6 +6884,7 @@ export default class Probe extends View {
     include!("window/overlay_motion_tests.rs"); // yuzora(motion): the arrival of dialogs, popups and toasts
     include!("window/yuzora_pane_list_tests.rs"); // yuzora(v0.1.0 files-open): what panes() lists of a pane not started, and a pane replaced in place
     include!("window/yuzora_dock_tests.rs"); // yuzora(dock): the right dock never reaches a layout file
+    include!("window/yuzora_unsaved_tests.rs"); // yuzora(unsaved): a person's close asks before unsaved changes are lost
 
     /// What a `{"command":"tab.move","args":{"by":-1}}` key runs.
     #[test]
