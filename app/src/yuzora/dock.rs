@@ -267,15 +267,17 @@ fn beside(x: &mut Node, axis: Axis, px: f32) {
 /// [`beside`] undone: a node holding a body (a [`BODY`], or the one child of a
 /// [`ROOT`] without a reserved id) and nothing else of its own shows the body
 /// itself again. Anything else beside a body (a mod's `layout.set` put it
-/// there) keeps the body a child and drops the reserved ids, so nothing that
+/// there), or a node that has a field [`beside`] moves (a reserved id a person
+/// wrote), keeps the body a child and drops the reserved ids, so nothing that
 /// isn't the injection's is ever lost.
 fn take_body_back(x: &mut Node) {
     let rooted = x.id == ROOT;
     if rooted {
         x.id.clear();
     }
+    let left = (x.gap, &x.divider, x.resizable, x.window_drag) == (None, &None, Some(false), false);
     let Some(children) = x.children_mut() else { return };
-    let is_body = |c: &Node| if rooted { !reserved(&c.id) } else { c.id == BODY };
+    let is_body = |c: &Node| left && if rooted { !reserved(&c.id) } else { c.id == BODY };
     if children.iter().filter(|c| is_body(c)).count() != 1 || !children.iter().all(|c| is_body(c) || reserved(&c.id)) {
         children.iter_mut().filter(|c| c.id == BODY).for_each(|c| c.id.clear());
         return;
@@ -633,6 +635,26 @@ mod tests {
         let status = out.find("status").unwrap();
         assert_eq!(ids(status), ["", "docked"]);
         assert!(matches!(status.children()[0].content(), Some(Content::Mod { name, .. }) if name == "workspace-status"));
+    }
+
+    #[test]
+    fn a_root_a_person_named_like_the_chips_keeps_what_it_holds() {
+        // Not what `beside` leaves: a root holding one column with a look of its own, a root with a gap of its own.
+        let one = json!({ "id": "yuzora-dock-root", "type": "column", "titlebar": "none", "children": [
+            { "id": "inner", "type": "column", "padding": [40, 40], "background": "#203040", "gap": 12, "children": [
+                { "id": "main", "type": "block", "content": { "tab": "active" } }] }] });
+        let gap = json!({ "id": "yuzora-dock-root", "type": "column", "gap": 8, "children": [
+            { "id": "main", "type": "block", "content": { "tab": "active" } },
+            { "id": "yuzora-dock-perf", "type": "block", "size": { "px": 26 }, "content": { "mod": "m" } }] });
+        let (file, shown, _) = injected(&one.to_string());
+        for n in [&shown, &strip(&shown, Some(&file))] {
+            let inner = n.find("inner").unwrap();
+            assert_eq!((&inner.padding, &inner.background, inner.gap), (&file.children()[0].padding, &file.children()[0].background, Some(12.0)), "shown and saved");
+        }
+        let (_, shown, _) = injected(&gap.to_string());
+        for n in [&shown, &strip(&shown, None)] {
+            assert_eq!((n.axis(), n.gap, n.children()[0].id.as_str()), (Some(Axis::Column), Some(8.0), "main"), "shown and saved");
+        }
     }
 
     #[test]
