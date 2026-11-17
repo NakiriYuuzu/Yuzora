@@ -402,7 +402,7 @@ export default class Mods extends View {
     if (i.error) {
       return box
         .child(note(th, t(`install_errors.${i.error}`), "error"))
-        .when(Boolean(i.message), (el) => el.child(note(th, i.message)))
+        .when(Boolean(i.message) && i.message !== i.error, (el) => el.child(note(th, i.message)))
         .child(h_flex().child(button(th, "in-close", t("close"), (_e, cx) => { this.install = null; cx.notify(); })));
     }
     const p = i.plan;

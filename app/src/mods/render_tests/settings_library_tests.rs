@@ -86,6 +86,10 @@ fn install_from_link_asks_for_a_link_and_shows_where_the_files_come_from(cx: &mu
         assert!(failed.tree.contains(part), "{part}: {}", failed.tree);
     }
     assert!(!failed.tree.contains("in-go"));
+    // An error with nothing more to say than its code shows its sentence once.
+    let bare = page(cx, &staged, json!({}), "this.install = { link: 'acme/plain', error: 'not_a_mod', message: 'not_a_mod' };");
+    assert!(bare.tree.contains("text \"install_errors.not_a_mod\""), "{}", bare.tree);
+    assert!(!bare.tree.contains("text \"not_a_mod\""), "{}", bare.tree);
 }
 
 // The settings frame: app.settings {section: "templates"} and the old mod name both open the merged page's
