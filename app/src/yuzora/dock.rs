@@ -201,11 +201,14 @@ fn place_perf(n: &mut Node, file: Option<&Node>) {
         children.push(perf_block(PERF_TALL));
     } else {
         beside(n, Axis::Column, PERF_TALL);
-        // The root fills the window, so no click on it is a size: its id goes with what it showed, which is what an id
-        // finds (a stack to select, a terminal's pane, a mod's copy).
+        // The root's id goes with what it showed, which is what an id finds (a stack to select, a terminal's pane, a
+        // mod's copy), and so do the fields `.state` keeps a click on by that id: whatever an edit later wraps around
+        // that node, the window and the app's copy of the file have them on the same node.
         let id = std::mem::replace(&mut n.id, ROOT.into());
+        let clicked = take_clicked(n);
         if let Some(body) = n.children_mut().and_then(|c| c.first_mut()) {
             body.id = if reserved(&id) { String::new() } else { id };
+            put_clicked(body, clicked);
         }
     }
 }
@@ -273,15 +276,16 @@ fn beside(x: &mut Node, axis: Axis, px: f32) {
 /// without its reserved id.
 fn take_body_back(x: &mut Node) {
     let rooted = x.id == ROOT;
-    let left = (x.gap, &x.divider, x.resizable, x.window_drag) == (None, &None, Some(false), false);
+    let left = (x.gap, &x.divider, x.resizable, x.window_drag) == (None, &None, Some(false), false) && (!rooted || take_clicked(&mut x.clone()) == Clicked::default());
     let Some(children) = x.children_mut() else { return };
-    let is_body = |c: &Node| left && bare(c) && if rooted { !reserved(&c.id) } else { c.id == BODY };
+    let is_body = |c: &Node| left && bare(c, rooted) && if rooted { !reserved(&c.id) } else { c.id == BODY };
     if children.iter().filter(|c| is_body(c)).count() != 1 || !children.iter().all(|c| is_body(c) || dropped(c)) {
         return;
     }
-    let Some(body) = std::mem::take(children).into_iter().find(is_body) else { return };
+    let Some(mut body) = std::mem::take(children).into_iter().find(is_body) else { return };
     if rooted {
-        x.id = body.id;
+        x.id = std::mem::take(&mut body.id);
+        put_clicked(x, take_clicked(&mut body));
     }
     x.kind = body.kind;
     x.gap = body.gap;
@@ -290,11 +294,27 @@ fn take_body_back(x: &mut Node) {
     x.window_drag = body.window_drag;
 }
 
-/// Whether `c` has only what [`beside`] gives a body, so taking it back loses nothing.
-fn bare(c: &Node) -> bool {
+/// Whether `c` has only what [`beside`] gives a body (and [`place_perf`] a root's), so taking it back loses nothing.
+fn bare(c: &Node, rooted: bool) -> bool {
     let mut plain = Node::new(c.id.clone(), c.kind.clone());
     (plain.gap, plain.divider, plain.resizable, plain.window_drag) = (c.gap, c.divider.clone(), c.resizable, c.window_drag);
+    if rooted {
+        put_clicked(&mut plain, take_clicked(&mut c.clone()));
+    }
     plain == *c
+}
+
+/// What `.state` keeps a click on by a node's id and a root's body takes with the id: hidden, background, font size,
+/// and the floats (a float's place is a click, kept by the id of what holds it). The size stays: the root fills the
+/// window, and in the chip's column a size would size what it showed.
+type Clicked = (bool, Option<crate::layout::Background>, Option<f32>, Vec<Float>);
+
+fn take_clicked(x: &mut Node) -> Clicked {
+    (std::mem::take(&mut x.hidden), x.background.take(), x.look.font_size.take(), std::mem::take(&mut x.floating))
+}
+
+fn put_clicked(x: &mut Node, (hidden, background, font_size, floating): Clicked) {
+    (x.hidden, x.background, x.look.font_size, x.floating) = (hidden, background, font_size, floating);
 }
 
 /// Whether [`strip`] drops `c`: a reserved node that holds nothing (the chip,
@@ -625,7 +645,7 @@ mod tests {
             assert_eq!(n.children()[2].size, Some(Size::Px { px: 26.0 }));
         }
         // A root that isn't a column keeps what only a root has and becomes one: what it showed (with the root's id,
-        // which finds it), then the chip.
+        // which finds it, and what `.state` keeps a click on by that id), then the chip.
         let row = json!({ "id": "root", "type": "row", "titlebar": "none", "traffic_lights": [12, 16], "theme": "graphite", "background": "canvas",
             "gap": 4, "divider": { "width": 1, "color": "border" }, "yuzora": { "dock": "drawer" }, "children": [
             { "id": "side", "type": "block", "size": { "px": 200 }, "content": { "mod": "spaces" } },
@@ -634,10 +654,11 @@ mod tests {
         for tree in [row, block] {
             let (file, n, _) = injected(&tree.to_string());
             assert_eq!((n.id.as_str(), n.axis(), n.resizable), ("yuzora-dock-root", Some(Axis::Column), Some(false)));
-            assert_eq!((n.titlebar, n.traffic_lights, &n.look.theme, &n.background, &n.yuzora), (file.titlebar, file.traffic_lights, &file.look.theme, &file.background, &file.yuzora));
+            assert_eq!((n.titlebar, n.traffic_lights, &n.look.theme, &n.yuzora), (file.titlebar, file.traffic_lights, &file.look.theme, &file.yuzora));
             assert_eq!(ids(&n), ["root", "yuzora-dock-perf"]);
             let body = &n.children()[0];
-            assert_eq!((&body.kind, body.gap, &body.divider, body.window_drag), (&file.kind, file.gap, &file.divider, file.window_drag));
+            assert_eq!((&body.kind, body.gap, &body.divider, body.window_drag, &body.background), (&file.kind, file.gap, &file.divider, file.window_drag, &file.background));
+            assert_eq!(n.background, None, "the background goes with the id");
             assert_eq!((n.gap, &n.divider, n.window_drag), (None, &None, false), "the root's own children are the body and the chip");
             assert_eq!(n.children()[1].size, Some(Size::Px { px: 26.0 }));
             assert_eq!(strip(&n, None), file);
@@ -1637,7 +1658,8 @@ mod tests {
                     roots.push(("block", json!({ "id": "root", "type": "block", "content": { "tab": "active" } })));
                 }
                 for (root_kind, mut root) in roots {
-                    merge(&mut root, json!({ "titlebar": "none", "traffic_lights": [12, 16], "background": "canvas" }));
+                    merge(&mut root, json!({ "titlebar": "none", "traffic_lights": [12, 16], "background": "canvas",
+                        "floating": [{ "id": "note", "content": { "mod": "note" }, "edge": "bottom", "align": "start" }] }));
                     if fields_on == "the root" {
                         merge(&mut root, moved(false));
                     }
@@ -1737,8 +1759,8 @@ mod tests {
         ("resizable set on what holds the chip", resizable_on_the_chips_holder, None),
     ];
 
-    /// What a person does first: hides the dock's bar, shows Git in the panel, drags the drawer to the left edge,
-    /// widens their side bar.
+    /// What a person does first: hides the dock's bar, shows Git in the panel, drags the drawer and their own float to
+    /// other corners, widens their side bar.
     fn person_clicks(chrome: &mut Node) -> State {
         let before = chrome.clone();
         if let Some(bar) = chrome.find_mut("yuzora-dock-bar") {
@@ -1747,6 +1769,9 @@ mod tests {
         chrome.select("panel-body", "yuzora-dock-git");
         if let Some(f) = chrome.find_float_mut(PREFIX) {
             (f.edge, f.align) = (Edge::Left, Align::End);
+        }
+        if let Some(f) = chrome.find_float_mut("note") {
+            (f.edge, f.align) = (Edge::Top, Align::End);
         }
         if let Some(side) = chrome.find_mut("side") {
             side.size = Some(Size::Px { px: 260.0 });
@@ -1766,7 +1791,11 @@ mod tests {
         let state = w.save()?;
         // The person's own clicks went into the file with the tree; the ones on the dock stay clicks; none is made up.
         let dock = |(id, c): &(&String, &crate::layout_sync::NodeState)| reserved(id) || c.active.as_deref().is_some_and(reserved);
-        let want = State { nodes: clicks.nodes.iter().filter(dock).map(|(id, c)| (id.clone(), c.clone())).collect(), floats: clicks.floats.clone(), ..State::default() };
+        let want = State {
+            nodes: clicks.nodes.iter().filter(dock).map(|(id, c)| (id.clone(), c.clone())).collect(),
+            floats: clicks.floats.iter().filter(|(id, _)| reserved(id)).map(|(id, f)| (id.clone(), f.clone())).collect(),
+            ..State::default()
+        };
         if state != want {
             return Err(format!("I2: the clicks are {state:?}, not {want:?}"));
         }
@@ -1801,5 +1830,66 @@ mod tests {
         }
         assert!(failures.is_empty(), "{} of {runs} fail:\n{}", failures.len(), failures.join("\n"));
         assert_eq!(runs, 798, "38 layouts, 3 dock choices, 7 changes");
+    }
+    /// `window.rs`'s `dock()`, private there, which docks a mod seen for the first time (`sync_folders`); the window
+    /// tests run the real one.
+    fn docked(root: &mut Node, place: &str, px: f32) {
+        let mut block = Node::block("fresh", Content::Mod { name: "fresh".into(), props: Value::Null });
+        block.size = Some(Size::Px { px });
+        let axis = if matches!(place, "top" | "bottom") { Axis::Column } else { Axis::Row };
+        let first = matches!(place, "left" | "top");
+        if root.axis() == Some(axis) {
+            let c = root.children_mut().unwrap();
+            if first { c.insert(0, block) } else { c.push(block) }
+            return;
+        }
+        let mut old = std::mem::replace(root, Node::new("", Kind::Row { children: Vec::new() }));
+        let (toast, terminal_menu) = (old.toast.take(), old.terminal_menu.take());
+        let mut wrapper = Node::container("r", axis, if first { vec![block, old] } else { vec![old, block] });
+        (wrapper.toast, wrapper.terminal_menu) = (toast, terminal_menu);
+        wrapper.divider = Some(crate::layout::Line { width: 1.0, color: "border".into() });
+        *root = wrapper;
+    }
+
+    /// A person's layout loaded and clicked, then a mod seen for the first time docked at `place` (the app's own
+    /// change, made with `edit`), a save and a restart.
+    fn after_a_dock(file: &Node, personal: Option<Choice>, place: &str, px: f32) -> Result<(), String> {
+        let mut w = Window::load(file, personal);
+        let clicks = person_clicks(&mut w.chrome);
+        let before = w.chrome.clone();
+        edit_with(&mut w.chrome, true, personal, &w.copy, |t| docked(t, place, px));
+        holds_i2(&before, &w.chrome).map_err(|e| format!("I2 on the dock: {e}"))?;
+        let state = w.save()?;
+        if state != clicks {
+            return Err(format!("I2: the clicks are {state:?}, not {clicks:?}"));
+        }
+        if w.restart(&state) != w.chrome {
+            return Err("I3: a restart shows another tree than the window".into());
+        }
+        if reserved_ids(file).is_empty() {
+            let mut person = file.clone();
+            docked(&mut person, place, px);
+            if w.file != person {
+                return Err(format!("the file is\n{}not\n{}", text_of(&w.file), text_of(&person)));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_mod_docked_on_any_layout_holds_the_three_invariants() {
+        let (mut runs, mut failures) = (0, Vec::new());
+        for (layout, file) in person_layouts() {
+            for personal in [None, Some(Choice::Drawer), Some(Choice::Off)] {
+                for (place, px) in [("right", 320.0), ("left", 320.0), ("top", 320.0), ("bottom", 320.0), ("bottom", 24.0)] {
+                    runs += 1;
+                    if let Err(e) = after_a_dock(&file, personal, place, px) {
+                        failures.push(format!("{layout}, dock {personal:?}, a {px}px mod docked {place}: {e}"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{} of {runs} fail:\n{}", failures.len(), failures.join("\n"));
+        assert_eq!(runs, 570, "38 layouts, 3 dock choices, 5 docks");
     }
 }

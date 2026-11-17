@@ -936,7 +936,8 @@ fn perf_chip_after_a_dock(cx: &mut gpui::TestAppContext, layout: serde_json::Val
     docked(&mut want, block);
     assert_eq!(written, want, "the person's layout, the mod's block docked on it");
     let shown = view.update(cx, |this, _| this.chrome.clone());
-    assert_eq!((shown.titlebar, &shown.background), (want.titlebar, &want.background), "the window keeps the root's look");
+    let look = |n: &Node, id: &str| n.find(id).map(|x| x.background.clone());
+    assert_eq!((shown.titlebar, look(&shown, &want.id)), (want.titlebar, Some(want.background.clone())), "the window keeps the root's titlebar, and the root's id its background");
     assert!(no_dock_click(), "{:?}", super::read_state("test"));
     view.update(cx, |this, _| this.load_layout("test"));
     view.update(cx, |this, _| assert_eq!(this.chrome, shown, "a restart shows what showed"));
