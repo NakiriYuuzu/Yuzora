@@ -227,6 +227,10 @@ fn unpack(tar: &[u8], source: &Source, into: &Path) -> Result<(PathBuf, String),
         .map(|_| &top[prefix.len()..])
         .filter(|c| (7..=40).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
         .ok_or_else(|| InstallError::UnpackFailed(format!("not GitHub's archive of {}/{}: its folder is {top:?}", source.owner, source.repo)))?;
+    let full_commit = source.reference.as_deref().filter(|r| r.len() == 40 && r.bytes().all(|b| b.is_ascii_hexdigit()));
+    if let Some(asked) = full_commit.filter(|r| !r.to_ascii_lowercase().starts_with(commit)) {
+        return Err(InstallError::UnpackFailed(format!("asked for commit {asked}, but the archive is of {commit}")));
+    }
     let mut picked = Vec::new();
     for m in &members {
         let mut parts = m.path().split('/');

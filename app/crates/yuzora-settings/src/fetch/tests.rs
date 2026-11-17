@@ -378,6 +378,17 @@ fn a_body_that_is_not_a_gzip_of_a_tar_is_refused() {
     assert!(planned.is_empty(), "{planned:#?}");
 }
 
+#[test]
+fn a_link_to_a_commit_gets_that_commit_or_nothing() {
+    let lab = Lab::new("commit");
+    let link = "https://github.com/acme/demo/tree/1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
+    let (base, _) = serving(gz_of(tar_of(&[("acme-demo-2222222/main.js", b'0', b"m", "")])));
+    assert!(matches!(lab.plan(link, &base), Err(InstallError::UnpackFailed(_))), "another commit's archive");
+    let (base, _) = serving(gz_of(tar_of(&[(&format!("{TOP}/main.js"), b'0', b"m", "")])));
+    assert_eq!(lab.plan(link, &base).unwrap().to_json()["commit"], "1a2b3c4");
+    assert!(lab.temp_is_empty());
+}
+
 /// mods::plan holds a mod to 2000 files and counts no folders: these are refused before anything is written.
 #[test]
 fn folders_count_against_the_cap_as_files_do() {
