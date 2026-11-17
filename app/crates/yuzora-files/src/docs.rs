@@ -2136,6 +2136,24 @@ mod tests {
     }
 
     #[gpui::test]
+    fn overwrite_writes_over_a_file_that_changed_on_disk(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let (view, window) = editing(&path, cx);
+        type_text(&view, window, "mine ", cx);
+        std::fs::write(&path, "theirs\n").unwrap();
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(view.read(cx).conflict && !view.read(cx).deleted));
+        let saved = view.update(cx, |doc, cx| doc.save(true, cx));
+        cx.run_until_parked();
+        assert!(futures::executor::block_on(saved).unwrap().ok);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n");
+        cx.update(|cx| assert!(!view.read(cx).conflict && !view.read(cx).dirty));
+    }
+
+    #[gpui::test]
     fn dont_save_takes_the_file_from_disk_again(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.txt");
