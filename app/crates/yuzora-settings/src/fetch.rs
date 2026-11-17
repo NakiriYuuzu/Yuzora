@@ -20,7 +20,7 @@ use yuzora_core::remote::{ExecRequest, run};
 const MAX_DOWNLOAD: u64 = 64 << 20;
 /// The most its plain tar stream may be: a small archive can unpack to a huge one.
 const MAX_UNPACKED: u64 = 128 << 20;
-/// Files written to the temp folder; the plan then holds the folder to 2000.
+/// Folders and files written to the temp folder; the plan then holds the folder to 2000 files.
 const MAX_WRITTEN: usize = 20_000;
 
 /// What a link names, unpacked.
@@ -227,9 +227,7 @@ fn unpack(tar: &[u8], source: &Source, into: &Path) -> Result<(PathBuf, String),
         .map(|_| &top[prefix.len()..])
         .filter(|c| (7..=40).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
         .ok_or_else(|| InstallError::UnpackFailed(format!("not GitHub's archive of {}/{}: its folder is {top:?}", source.owner, source.repo)))?;
-    let root = into.join(source.name());
-    std::fs::create_dir(&root)?;
-    let mut written = 0;
+    let mut picked = Vec::new();
     for m in &members {
         let mut parts = m.path().split('/');
         if parts.next() != Some(top) {
@@ -239,18 +237,33 @@ fn unpack(tar: &[u8], source: &Source, into: &Path) -> Result<(PathBuf, String),
         if rest.len() <= source.path.len() || rest.iter().zip(&source.path).any(|(a, b)| a != b) {
             continue;
         }
-        let rel = &rest[source.path.len()..];
+        let rel = rest[source.path.len()..].to_vec();
         if cfg!(windows) && rel.iter().any(|c| !crate::templates::windows_name(c)) {
             return Err(InstallError::UnpackFailed(format!("{:?} can't be a file on Windows", m.path())));
         }
+        picked.push((rel, m));
+    }
+    // Every folder counts, the ones a file's path makes too: a few deep names could otherwise make thousands.
+    let (mut folders, mut files) = (std::collections::HashSet::new(), 0);
+    for (rel, m) in &picked {
+        let file = usize::from(matches!(m, Member::File(..)));
+        files += file;
+        for depth in (1..=rel.len() - file).rev() {
+            if !folders.insert(&rel[..depth]) {
+                break;
+            }
+        }
+        if files + folders.len() > MAX_WRITTEN {
+            return Err(InstallError::TooBig);
+        }
+    }
+    let root = into.join(source.name());
+    std::fs::create_dir(&root)?;
+    for (rel, m) in &picked {
         let target = rel.iter().fold(root.clone(), |t, c| t.join(c));
         match m {
             Member::Folder(_) => std::fs::create_dir_all(&target)?,
             Member::File(_, data) => {
-                written += 1;
-                if written > MAX_WRITTEN {
-                    return Err(InstallError::TooBig);
-                }
                 std::fs::create_dir_all(target.parent().unwrap_or(&root))?;
                 std::fs::OpenOptions::new().write(true).create_new(true).open(&target)?.write_all(data)?;
             }

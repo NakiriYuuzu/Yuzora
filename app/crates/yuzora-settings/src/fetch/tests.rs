@@ -378,6 +378,23 @@ fn a_body_that_is_not_a_gzip_of_a_tar_is_refused() {
     assert!(planned.is_empty(), "{planned:#?}");
 }
 
+/// mods::plan holds a mod to 2000 files and counts no folders: these are refused before anything is written.
+#[test]
+fn folders_count_against_the_cap_as_files_do() {
+    let lab = Lab::new("folders");
+    let main = format!("{TOP}/main.js");
+    let folders: Vec<String> = (0..MAX_WRITTEN).map(|i| format!("{TOP}/d/{i}/")).collect();
+    let deep: Vec<String> = (0..1900).map(|i| format!("{TOP}/f{i}/1/2/3/4/5/6/7/8/9/10/x.js")).collect();
+    for (what, members) in [
+        ("folders", folders.iter().map(|f| (f.as_str(), b'5', &b""[..], "")).collect::<Vec<_>>()),
+        ("the folders of files' paths", deep.iter().map(|f| (f.as_str(), b'0', &b"x"[..], "")).collect()),
+    ] {
+        let (base, _) = serving(gz_of(tar_of(&[&[(main.as_str(), b'0', &b"m"[..], "")][..], &members].concat())));
+        assert!(matches!(lab.plan("acme/demo", &base), Err(InstallError::TooBig)), "{what}");
+        assert!(lab.temp_is_empty(), "{what}");
+    }
+}
+
 #[test]
 fn a_download_over_the_limit_is_too_big() {
     let lab = Lab::new("big");
