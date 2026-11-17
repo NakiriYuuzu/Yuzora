@@ -65,7 +65,7 @@ export default class FilesSidebar extends View {
     this.edit = null;
     this.lastRequest = shared(REQUEST)?.seq ?? 0;
     this.lastRefresh = shared(REFRESH) ?? 0;
-    this.loc = null; this.here = null; this.watching = null; this.watchedRoot = null; this.watchSeq = 0;
+    this.loc = null; this.here = null; this.watching = null; this.watchedRoot = null; this.watchSeq = 0; this.pendingWatch = null;
     // The last file click whose check is not over: files open in the order they were clicked.
     this.opening = null;
     this.relocate(cx);
@@ -94,7 +94,7 @@ export default class FilesSidebar extends View {
     this.loc = next;
     this.here = next ? this.store.enter(next) : null;
     this.version++;
-    this.watching = null;
+    this.unwatch();
     // A name being typed is for the folder it was started in.
     this.edit = null;
     // Results belong to the folder they were found in: the search runs again there.
@@ -126,17 +126,24 @@ export default class FilesSidebar extends View {
   watch(here, cx) {
     const root = here.root;
     if (here.on || (this.watching === here && this.watchedRoot === root) || root === "/" || root === home()) return;
+    this.unwatch();
     this.watching = here; this.watchedRoot = root;
     const token = ++this.watchSeq;
     const same = () => this.watching === here && this.watchSeq === token;
     cx.spawn(async cx => {
       try {
         while (same()) {
-          await watchFolder(root);
+          await (this.pendingWatch = watchFolder(root));
           if (same()) this.reload(cx);
         }
       } catch { if (same()) this.watching = null; }
     });
+  }
+
+  // A folder no longer shown lets go of its watch: they are shared by every mod, at most 64 at once.
+  unwatch() {
+    this.pendingWatch?.cancel();
+    this.watching = this.pendingWatch = null;
   }
 
   // `row`: from the tree on screen; the folder is opened under the root that tree was listed from.

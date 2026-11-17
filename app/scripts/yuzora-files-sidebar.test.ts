@@ -89,7 +89,13 @@ function sidebar(spaces: any[] = two("/a", "/b"), real = false, shared = new Map
     InputState: { new: makeInput }, Input: { new: maker }, Scrollbar: { vertical: maker },
     spaces: () => world.spaces, panes: () => world.paneList, focused: () => world.focus, theme: () => new Proxy({}, { get: () => "#000000" }),
     run: (name: string, args: any) => { world.runs.push([name, args]); }, home: () => "/home/me", props: () => world.props, openOverlay: (o: any) => world.menus.push(o), closeOverlay() {},
-    shared: (key: string) => world.shared.get(key) ?? null, setShared: (key: string, value: any) => world.shared.set(key, value), notify: (n: any) => world.toasts.push(n), watchFolder: (path: string) => ask("watch", [path]),
+    shared: (key: string) => world.shared.get(key) ?? null, setShared: (key: string, value: any) => world.shared.set(key, value), notify: (n: any) => world.toasts.push(n),
+    // As the host's: cancel() ends the wait with [] and lets go of the folder.
+    watchFolder: (path: string) => {
+      const watch: any = ask("watch", [path]), call = world.calls.watch.at(-1)!;
+      watch.cancel = () => { if (!call.answered) { call.answered = true; call.resolve([]); } };
+      return watch;
+    },
     window: () => ({ platform: "macos" }),
     t: (key: string, vars?: object) => (vars ? `${key} ${JSON.stringify(vars)}` : key), tokens: () => ({}),
     listDir: (path: string, options: object) => ask("list", [path, options]),
@@ -757,6 +763,32 @@ test("no watcher is set up by a read whose root could not be listed", async () =
   await s.answer(s.pending("git")[0], repo("/a"));
   await s.fail(s.pending("list")[0], new Error("EACCES /a"));
   expect(s.pending("watch")).toHaveLength(0);
+});
+
+// Watches are shared by every mod, at most 64 folders at once.
+test("a folder no longer shown lets go of its watch: another Space's is watched instead, and a remote one's is not", async () => {
+  const s = sidebar([...two("/a", "/b"), { id: "s3", active: false, folder: "/r", machine: "m1" }]);
+  await s.settle(A, repo("/a"));
+  expect(s.pending("watch").map(c => c.args[0])).toEqual(["/a"]);
+  s.show("s2");
+  s.frame();
+  await s.settle(B, repo("/b"));
+  expect(s.pending("watch").map(c => c.args[0])).toEqual(["/b"]);
+  s.show("s3");
+  s.frame();
+  await s.settle({ "/r": listing("r.txt") }, repo("/r"));
+  expect(s.pending("watch")).toHaveLength(0);
+});
+
+test("the folder git moved the root off lets go of its watch", async () => {
+  const s = sidebar(two(SUB, "/b"));
+  await flush();
+  await s.fail(s.pending("git")[0], new Error("git timed out"));
+  await s.answer(s.pending("list")[0], listing("inner.txt"));
+  expect(s.pending("watch").map(c => c.args[0])).toEqual([SUB]);
+  s.view.reload(s.cx);
+  await s.settle({ [SUB]: listing("inner.txt"), "/repo": listing("sub/", "top.txt") }, repo("/repo"));
+  expect(s.pending("watch").map(c => c.args[0])).toEqual(["/repo"]);
 });
 
 test("an open search follows the files when a read ends, though another read is already asked for", async () => {
