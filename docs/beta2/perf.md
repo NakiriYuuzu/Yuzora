@@ -17,6 +17,8 @@ lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popove
 | `app/Cargo.toml` | yuzora crate 區塊加 `yuzora-perf = { path = "crates/yuzora-perf" }` |
 | `app/src/yuzora/mod.rs` | `host_modules()` 加 `yuzora_perf::host_module(),`；同檔測試的模組數 7 → 8（加模組的必然結果） |
 | `app/defaults/layouts/yuzora.json` | `status` 由 block 改成 row：`yuzora-statusbar`（佔滿）＋`yuzora-perf`（150px），`resizable: false` |
+| `app/src/yuzora/dock.rs` | `place_perf`：載入時把 chip 放進其他 layout（見「放置」）；`strip` 的還原；`ensure` 依檔案的大小補上 chip |
+| `app/src/mods/render_tests.rs` | 一行 `mod yuzora_perf_place_tests;`（`// yuzora(perf-place):`），測試在 `render_tests/yuzora_perf_place_tests.rs` |
 | `app/Cargo.lock`、`app/THIRD-PARTY-NOTICES` | 新增 workspace package `yuzora-perf`；沒有新的第三方套件（sysinfo 0.37.2 已由 gpui-fps 帶入） |
 
 ## 量測語意
@@ -87,7 +89,11 @@ beta.2 沒有 WebView，分成三類：
 - `layout` 只有 `px` 與 `weight` 兩種大小，沒有「依內容寬度」。所以 `status` 改成 row，`yuzora-perf` 固定 150px、chip 靠右；左邊空白與狀態列同為 `chrome` 背景、同一條 `divider` 上緣線，看起來是同一條狀態列。
 - row 設 `resizable: false`、不設 `divider`，兩個 block 之間沒有分隔線也沒有拖拉把手。
 - 不需要改 L1 的 `yuzora-statusbar/main.js`。
-- 只有新安裝（沒有既有 layout 的 app home）會用到新的預設 layout。已經有 layout 的 app home 要重設 layout，或自己在 `status` 加上 `yuzora-perf` block。
+- 其他 layout（`main`、`terminals`、`win98`、使用者自己的）由 `app/src/yuzora/dock.rs` 的 `place_perf` 在載入時放進去。和 dock 一樣只在畫面上，存檔時 `strip` 拿掉，layout 檔不會出現 `yuzora-dock-*`；dock 設成 off 也照放。layout 裡任何地方（block 或 float）已經有 `yuzora-perf` 時不動：`yuzora.json`、它的複本、`-edited` 檔。
+  - 狀態列：放 tab 的 block 最近的上層 column，最後一個子節點是 32px 以下的 mod block。那個 block 原地變成 row，原本的內容移到子節點 `yuzora-dock-body`，右邊是 `yuzora-dock-perf`（150px）。id、大小、外觀留在原節點，所以 `.state` 對它的點選（隱藏、改高度）仍是整條狀態列的。`main` 走這條，形狀和 `yuzora.json` 的 `status` 相同。
+  - 沒有狀態列：根是 column 時在最後加一條 26px 的 `yuzora-dock-perf`（`terminals`；`win98` 在 taskbar 下方，taskbar 40px 不算狀態列）。根不是 column 時，根原地變成 column（id 改成 `yuzora-dock-root`）：根原本的內容帶著根的 id 成為第一個子節點，下面是 chip。根獨有的欄位（`titlebar`、`theme`、floats 等）留在根上；`layout.select`、終端機 pane、mod 複本照舊用原本的 id 找到內容。
+  - 大小是點選。mod 用 `layout.set` 送回沒有 chip 的樹時（win98 先把 taskbar 縮成 28px），`ensure` 依 layout 檔的大小決定位置，所以和畫面上的一樣，shipped layout 不會把它當成結構變更而拒絕。
+- 既有 app home 裡沒有 `yuzora-perf` 的舊 `yuzora` layout 也會在載入時得到 chip，不用重設 layout。
 
 ## 不做
 
@@ -101,7 +107,8 @@ beta.2 沒有 WebView，分成三類：
 ```bash
 cd app
 cargo test --locked -p yuzora-perf          # 聚合、分類、不變式、hc server 辨識與快取、滾動視窗、模組宣告
-cargo test --locked --bin herdr-app yuzora  # 模組數、layout 引用的 mod 都有出貨
+cargo test --locked --bin herdr-app yuzora  # 模組數、layout 引用的 mod 都有出貨、每個 layout 剛好一個 chip（yuzora::dock）
+cargo test --locked --bin herdr-app yuzora_perf_place  # 出貨的 layout 畫得出 chip
 scripts/yuzora/check-mods yuzora-perf
 cargo run --release -p yuzora-perf --example cost -- <app pid> 30   # 在 app 的隔離環境變數下執行
 ```
@@ -121,7 +128,9 @@ popover 由 `herdr-app do yuzora-perf.toggle` 打開。排序切換與關閉按�
 ## 已知限制
 
 - popover 約 640px 高（zoom 1.0）。視窗比這更矮時，popover 會貼齊視窗上緣，下半部可能蓋到 chip。
-- 已經有 layout 的 app home 不會自動出現 chip（見「放置」）。
+- chip 放在狀態列旁邊時，狀態列原本的 mod（`main` 的 `workspace-status`）在畫面上的 node id 是 `yuzora-dock-body`，layout 檔裡仍是原本的 id。
+- 根不是 column、也沒有狀態列的個人 layout：`.state` 以根的 id 記的背景或字級點選，套用在根原本的內容上，不含下面的 chip。出貨的 layout 都不是這種。
+- 個人不能關掉 chip（預設決定）。
 - 一個行程被 re-parent 離開它的樹（Windows 的 re-parent、自己 daemon 化的輔助程式）就不會再被計入。
 
 ## Windows 效能（beta.3）

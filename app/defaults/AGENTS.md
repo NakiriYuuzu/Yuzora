@@ -1593,6 +1593,13 @@ with these differences.
 - The chip in the bottom-right corner is `yuzora-perf`: what this computer's Yuzora uses (the app, its herdr-core
   with the terminals and agents in it, and the tools the app starts). `yuzora-perf.toggle` (a key in keys.json, or
   `herdr-app do`) opens or closes the details. Remote (SSH) Spaces are not measured.
+- The app adds the chip to every layout that doesn't show `yuzora-perf` (in a block or a float) at load, the dock
+  on or off, and never writes it into a layout file. It goes beside the status bar (the last child of the column
+  that holds the tab, when that is a mod block of 32px or less), else in a 26px row at the bottom of the window.
+  Its node is `yuzora-dock-perf`, and what the status bar showed moves into `yuzora-dock-body`; the status bar keeps
+  its id, so `layout.hide` and `layout.resize` on it act on the whole bar. A root that isn't a column becomes one
+  with the id `yuzora-dock-root`, and what it showed keeps the root's id. These ids are reserved, like the dock's.
+  To place the chip yourself, put a `yuzora-perf` block in the layout: the app then adds none.
 - `yuzora:perf`: `tick(focused)` samples on a worker thread (at most once every 1.5 s, whatever the number of
   callers) and `state()` reads the last sample without sampling: `{snapshot: {total, app, core, tools, core_pid,
   core_error}, health: {attempts, failures, empty, skipped, last_error}, cost}`. Each category is
