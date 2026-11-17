@@ -5,8 +5,8 @@
 //! `curl` is the only program run, and it only downloads: it hands the archive
 //! over on stdout. The code below reads that as a gzip of a tar and as nothing
 //! else, on every OS, and writes its folders and files, and nothing else:
-//! links, devices and the rest are left out, and a member outside the
-//! archive's one folder fails the whole archive.
+//! links, devices and the rest are left out whatever their names, and a
+//! folder or file outside the archive's one folder fails the whole archive.
 
 use crate::mods::{InstallError, Plan};
 use crate::source::Source;
