@@ -478,3 +478,44 @@ fn a_temp_name_already_taken_is_never_used() {
     drop(temp);
     assert_eq!(std::fs::read_to_string(lab.root.join("outside/target")).unwrap(), "original");
 }
+
+/// planFetch's answer, as the page gets it: once the link is read, the answer names what was asked of GitHub,
+/// whatever came of it. Only a debug build reads `YUZORA_INSTALL_URL`, so a release build leaves this test out:
+/// it would ask GitHub itself.
+#[cfg(debug_assertions)]
+#[test]
+fn every_answer_after_the_link_is_read_names_what_was_asked() {
+    let _turn = crate::tests::PLANNING.lock().unwrap_or_else(|e| e.into_inner());
+    let main = format!("{TOP}/main.js");
+    let deep = format!("{TOP}/{}x.js", "d/".repeat(MAX_WRITTEN));
+    let long = format!("{TOP}/{}/main.js", "n".repeat(300));
+    let bodies: std::collections::HashMap<&str, Vec<u8>> = [
+        ("ok", gz_of(tar_of(&[(&main, b'0', b"m", "")]))),
+        ("garbled", b"<html>not an archive</html>".to_vec()),
+        ("deep", gz_of(tar_of(&[("pax", b'x', &pax_path(&deep), ""), ("deep", b'0', b"x", "")]))),
+        ("docs", gz_of(tar_of(&[(&format!("{TOP}/README.md"), b'0', b"docs only", "")]))),
+        ("long", gz_of(tar_of(&[("pax", b'x', &pax_path(&long), ""), ("long", b'0', b"m", "")]))),
+    ]
+    .into();
+    let (base, _) = serve(move |path, s| {
+        let _ = match bodies.get(path.rsplit('/').next().unwrap_or_default()) {
+            Some(body) => s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).and_then(|()| s.write_all(body)),
+            None => s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+        };
+    });
+    unsafe { std::env::set_var("YUZORA_INSTALL_URL", &base) };
+    let link = |r: &str| format!("https://github.com/acme/demo/tree/{r}");
+    let asked = |r: &str| serde_json::json!({"repo": "acme/demo", "ref": r, "folder": ""});
+    let ok = crate::plan_fetch(crate::ask(), &link("ok"));
+    assert_eq!((&ok["ok"], &ok["github"]), (&serde_json::json!(true), &asked("ok")), "{ok}");
+    let older = crate::ask();
+    crate::ask();
+    let mut answers = vec![("ok", "stale", crate::plan_fetch(older, &link("ok")))];
+    for (r, code) in [("gone", "fetch_failed"), ("garbled", "unpack_failed"), ("deep", "too_big"), ("docs", "not_a_mod"), ("long", "io")] {
+        answers.push((r, code, crate::plan_fetch(crate::ask(), &link(r))));
+    }
+    unsafe { std::env::remove_var("YUZORA_INSTALL_URL") };
+    for (r, code, answer) in answers {
+        assert_eq!((&answer["code"], &answer["github"]), (&serde_json::json!(code), &asked(r)), "{answer}");
+    }
+}

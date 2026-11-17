@@ -558,10 +558,14 @@ mod tests {
         assert_eq!(text, "---\ncommand: pi\nmodel: x\n---\nHi\n", "header lines that would break the file are dropped");
     }
 
+    /// ASKED and PLANNED are the process's: tests that ask for plans take turns.
+    pub(crate) static PLANNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     // A slow download that ends after a plan asked later must not replace it,
     // or the plan on screen could never be installed.
     #[test]
     fn a_plan_asked_before_a_newer_one_never_takes_its_place() {
+        let _turn = PLANNING.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("yuzora-settings-asked-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("demo")).unwrap();
