@@ -1045,6 +1045,42 @@ fn perf_chip_set_keeps_click(cx: &mut gpui::TestAppContext) {
     assert!(bar_hidden(cx), "and after a restart");
 }
 
+// W1: a mod's set edits what the status bar shows (padding on yuzora-dock-body). The bar then holds that content, so it
+// is no longer a status bar: the chip leaves it for a 26px band at the bottom, and the content is written with an id.
+#[test]
+fn a_set_that_edits_the_status_bars_content_moves_the_chip_and_writes_an_id() {
+    in_own_process("perf_chip_set_body");
+}
+
+#[gpui::test]
+fn perf_chip_set_body(cx: &mut gpui::TestAppContext) {
+    use serde_json::json;
+    if !running_alone("perf_chip_set_body") {
+        return;
+    }
+    crate::yuzora::dock::force_for_tests();
+    let layout = json!({ "id": "root", "type": "column", "children": [
+        { "id": "main", "type": "block", "content": { "tab": "active" } },
+        { "id": "status", "type": "block", "size": { "px": 28 }, "content": { "mod": "unused" } }] });
+    let (view, cx) = open_window(cx, "unused", "", layout);
+    cx.update(|window, cx| view.update(cx, |this, cx| {
+        let mut tree = this.chrome.clone();
+        tree.find_mut("yuzora-dock-body").unwrap().padding = serde_json::from_value(json!([4, 4])).unwrap();
+        this.run("layout.set", json!({ "layout": tree }), window, cx);
+        this.save();
+    }));
+    let file: crate::layout::Node = serde_json::from_str(&layout_file()).unwrap();
+    assert!(file.walk().iter().all(|n| !n.id.is_empty()), "every node is written with an id: {}", layout_file());
+    let bar = file.find("status").unwrap();
+    assert!(bar.children().len() == 1 && bar.children()[0].padding.is_some(), "the bar holds what the mod edited: {}", layout_file());
+    let shown = view.update(cx, |this, _| this.chrome.clone());
+    let chip = (shown.parent_of("yuzora-dock-perf").map(|p| p.id.as_str()), shown.find("yuzora-dock-perf").and_then(|c| c.size));
+    assert_eq!(chip, (Some("root"), Some(crate::layout::Size::Px { px: 26.0 })), "a 26px band at the bottom");
+    assert!(no_dock_click(), "{:?}", super::read_state("test"));
+    view.update(cx, |this, _| this.load_layout("test"));
+    view.update(cx, |this, _| assert_eq!(this.chrome, shown, "a restart shows what showed"));
+}
+
 /// The layout files are written in four places only; a new one (an upstream
 /// change) fails here until someone decides whether the dock may reach it.
 /// Matches the text of the code, not what it does: the tests above are the

@@ -1174,7 +1174,7 @@ impl AppWindow {
                 let layout = layout_sync::text_of(&crate::yuzora::dock::strip(&edited, Some(&self.file_chrome))); // yuzora(dock): the dock never reaches the file
                 if write_atomic(&path, &layout) {
                     self.written_layout = layout;
-                    self.file_chrome = edited;
+                    self.file_chrome = crate::yuzora::dock::as_read(&edited, &self.layout_name, Some(&self.file_chrome)); // yuzora(perf-place): the file as a load shows it, the chip placed by its sizes
                 }
             }
         }
@@ -3451,8 +3451,8 @@ impl AppWindow {
             // A deliberate edit: the file becomes this tree, clicks start over.
             "layout.set" => match serde_json::from_value::<Node>(a.get("layout").cloned().unwrap_or_default()) {
                 Ok(mut n) => {
+                    crate::yuzora::dock::ensure(&mut n, &self.layout_name, Some(&self.file_chrome)); // yuzora(dock): shown with the dock, written without. yuzora(perf-place): before fill_ids, so a node strip leaves without an id gets one in this write
                     fill_ids(&mut n, &mut self.model);
-                    crate::yuzora::dock::ensure(&mut n, &self.layout_name, Some(&self.file_chrome)); // yuzora(dock): shown with the dock, written without
                     let text = layout_sync::text_of(&crate::yuzora::dock::strip(&n, Some(&self.file_chrome)));
                     if !write_atomic(&layout_path(&self.layout_name), &text) {
                         return self.fail(format!("cannot write layouts/{}.json", self.layout_name));
@@ -4278,7 +4278,7 @@ impl AppWindow {
             if !shown && place != "none" && !shipped_layouts().contains(&self.layout_name.as_str()) {
                 let mut block = Node::block(self.model.fresh_id("b"), Content::Mod { name: f.id.clone(), props: Value::Null });
                 block.size = Some(Span::Px { px: f.hint.size.unwrap_or(320.0) });
-                dock(&mut self.chrome, block, place, self.model.fresh_id("r"));
+                crate::yuzora::dock::edit(&mut self.chrome, &self.layout_name, &self.file_chrome, |t| dock(t, block, place, self.model.fresh_id("r"))); // yuzora(perf-place): docked on the person's tree, never on the root the chip wraps
             }
         }
         if !retry.is_empty() || added || removed {

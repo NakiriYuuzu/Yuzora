@@ -422,6 +422,27 @@ fn ensure_with(n: &mut Node, on: bool, personal: Option<Choice>, fallback: Optio
     }
 }
 
+/// The app changes the layout's structure itself (a mod seen for the first
+/// time docked at a side): the change is made to the person's tree, as the
+/// file will have it, never to the placed one, and the dock and the chip are
+/// placed again by the sizes of `file` (the tree as the file has it), with the
+/// clicks kept. Placed on a wrapped root, the change would wrap the wrapper.
+pub fn edit(n: &mut Node, layout: &str, file: &Node, change: impl FnOnce(&mut Node)) {
+    edit_with(n, enabled(), personal(layout), file, change);
+}
+
+fn edit_with(n: &mut Node, on: bool, personal: Option<Choice>, file: &Node, change: impl FnOnce(&mut Node)) {
+    if !on {
+        change(n);
+        return;
+    }
+    let mut want = strip(n, Some(file));
+    change(&mut want);
+    inject_sized(&mut want, true, personal, Some(file));
+    keep_shown(n, &mut want);
+    *n = want;
+}
+
 /// `to`, the layout placed again, with what `from` shows on the nodes both
 /// have: a node keeps its hidden flag, a stack the child it shows, a float its
 /// edge, alignment and hidden flag, and a node its size where that still means
