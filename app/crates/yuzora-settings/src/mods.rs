@@ -10,7 +10,8 @@
 //! handed over its shipped files ([`set_shipped_mods`]).
 //!
 //! Installing from a folder copies a mod folder (one with `main.js`) or a
-//! shared layout (a folder with `layouts/` and `mods/`) into the home. It
+//! shared layout (a folder with `layouts/` and `mods/`) into the home; a link
+//! is unpacked into such a folder first ([`crate::fetch`]). It
 //! never overwrites: a taken name gets `-2`, `-3`…, and the paths and `mod`
 //! names that pointed at the old name are rewritten, as `mod.clone` does.
 
@@ -259,7 +260,10 @@ pub fn rewrite(text: &str, from: &str, to: &str) -> String {
 pub struct Plan {
     /// `mod` (one mod folder) or `bundle` (`layouts/` and `mods/`).
     pub kind: &'static str,
-    pub source: PathBuf,
+    /// The folder's path, or the GitHub address it came from.
+    pub source: String,
+    /// The commit, when it came from GitHub.
+    pub commit: Option<String>,
     /// `(folder, installed as)`.
     pub mods: Vec<(PathBuf, String)>,
     pub layouts: Vec<(PathBuf, String)>,
@@ -283,7 +287,8 @@ impl Plan {
         };
         json!({
             "kind": self.kind,
-            "source": self.source.to_string_lossy(),
+            "source": self.source,
+            "commit": self.commit,
             "mods": pairs(&self.mods),
             "layouts": pairs(&self.layouts),
             "keys": self.keys,
@@ -302,6 +307,10 @@ pub enum InstallError {
     Inside,
     TooBig,
     Io(std::io::Error),
+    /// Not a link to a GitHub repository (or a herdr.dev gallery page).
+    BadSource,
+    FetchFailed(String),
+    UnpackFailed(String),
 }
 
 impl InstallError {
@@ -311,6 +320,9 @@ impl InstallError {
             InstallError::Inside => "inside_home",
             InstallError::TooBig => "too_big",
             InstallError::Io(_) => "io",
+            InstallError::BadSource => "bad_source",
+            InstallError::FetchFailed(_) => "fetch_failed",
+            InstallError::UnpackFailed(_) => "unpack_failed",
         }
     }
 }
@@ -319,6 +331,7 @@ impl std::fmt::Display for InstallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InstallError::Io(e) => write!(f, "io: {e}"),
+            InstallError::FetchFailed(why) | InstallError::UnpackFailed(why) => f.write_str(why),
             other => f.write_str(other.code()),
         }
     }
@@ -428,7 +441,7 @@ fn plan_for(source: &Path, home: &Path, windows: bool) -> Result<Plan, InstallEr
     if source.starts_with(&home_real) {
         return Err(InstallError::Inside);
     }
-    let mut plan = Plan { source: source.clone(), ..Plan::default() };
+    let mut plan = Plan { source: source.to_string_lossy().into_owned(), ..Plan::default() };
     let windows_ok = |n: &str| !windows || crate::templates::windows_name(n);
     let mod_dirs: Vec<PathBuf> = if real_file(&source.join("main.js")) {
         plan.kind = "mod";
