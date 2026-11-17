@@ -237,7 +237,7 @@ app/scripts/yuzora/sync-check --quick    # 同上，但不跑 cargo test、check
 
 **2026-11-17：下面提案的第 1 項與第 4 項已經做成 `.github/workflows/upstream-watch.yml` 與 `app/scripts/yuzora/sync-watch`**，第 2、3 項（讀 `releases.herdr.dev`）還沒做。實作和提案不同的地方：
 
-- **看 release，不看 `master`**：取上游最高的 `vX.Y.Z` tag，和最新一筆 `git-subtree-split` 比較。同步一向以 tag 為單位。
+- **看 release，不看 `master`**：取上游最高的 `vX.Y.Z` tag，和最新一筆 `git-subtree-split` 比較。同步一向以 tag 為單位。`app/` 若同步到那個 release 之後的上游 commit（`sync-pull` 也接受 branch 或 commit），release 已經在它的歷史裡，不算新版本。
 - **試跑的是 `sync-pull`**：回報它解不掉、留給人的衝突檔案，不跑 `sync-check` 與任何測試。issue 裡寫明測試沒跑過。
 - **不重複回報**：標題裡有 `herdr-app <tag>` 的 issue 或 PR（開著或已關閉）存在時，就不試跑、不開 issue。所以已經有人開了同步 PR 的版本不會再被回報。
 - **core 世代**：只比較上游那個 tag 的 `hc::GENERATION` 和 Yuzora 的，不一樣時 issue 會多一行。這只看得出「這一版 herdr-app 換了世代」，看不到 core 自己先發新版的情況（那是第 2 項）。

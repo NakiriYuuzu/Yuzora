@@ -32,9 +32,10 @@ describe("the newest upstream release", () => {
   git(upstream, "tag", "v0.1.9");
   const ten = commit("two");
   git(upstream, "tag", "-a", "v0.1.10", "-m", "a tag with a message");
-  commit("three");
+  const three = commit("three");
   git(upstream, "tag", "v0.2.0-rc.1");
   git(upstream, "tag", "nightly");
+  commit("four");
 
   const ours = repo("ours");
   const squash = (split: string) => git(ours, "commit", "-q", "--allow-empty", "-m", `Squashed 'app/' changes\n\ngit-subtree-dir: app\ngit-subtree-split: ${split}`);
@@ -48,6 +49,17 @@ describe("the newest upstream release", () => {
   test("is not new once app/ has its commit", () => {
     squash(ten);
     expect(values(run(ours, [WATCH], { SYNC_URL: upstream }).out).new).toBe("false");
+  });
+
+  // sync-pull takes a branch or a commit too.
+  test("is not new when app/ is past it, synced to a commit after the release", () => {
+    squash(three);
+    expect(values(run(ours, [WATCH], { SYNC_URL: upstream }).out)).toEqual({ tag: "v0.1.10", commit: ten, have: three, new: "false" });
+  });
+
+  test("is new when app/ has an earlier release", () => {
+    squash(git(upstream, "rev-parse", "v0.1.9"));
+    expect(values(run(ours, [WATCH], { SYNC_URL: upstream }).out).new).toBe("true");
   });
 
   test("a history without the squash commits of app/ is an error, not 'nothing new'", () => {

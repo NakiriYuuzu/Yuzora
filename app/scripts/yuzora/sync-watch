@@ -36,10 +36,20 @@ case ${1:-} in
     name ~ release && (peeled || !(name in commit)) { commit[name] = $1 }
     END { for (name in commit) print name, commit[name] }' | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -1)
   [[ -n $newest ]] || die "$url has no release tag"
+  commit=${newest#* }
+  new=true
+  if [[ $commit == "$have" ]]; then
+    new=false
+  # app/ may be past the release, synced to a branch or a commit after it: then
+  # the release is in the history of what app/ has. An upstream that no longer
+  # has that commit cannot say, and the release counts as new.
+  elif git fetch -q --no-tags "$url" "$have" 2>/dev/null && git merge-base --is-ancestor "$commit" "$have" 2>/dev/null; then
+    new=false
+  fi
   echo "tag=${newest% *}"
-  echo "commit=${newest#* }"
+  echo "commit=$commit"
   echo "have=$have"
-  [[ ${newest#* } == "$have" ]] && echo "new=false" || echo "new=true"
+  echo "new=$new"
   ;;
 try)
   tag=${2:?usage: sync-watch try <tag>}
