@@ -1539,8 +1539,9 @@ with these differences.
   gives the file wider access than it had). A file that a save could not give
   the same owner, group and ACL opens read-only. Files and folders can be
   created and renamed there too (a name that is taken is refused, and what is
-  made gets what the machine's own `touch` and `mkdir` give). Deleting there is
-  not available yet.
+  made gets what the machine's own `touch` and `mkdir` give). They can be copied
+  there (Paste stays on one machine) and moved to that machine's trash; with no
+  usable trash there, the move is refused and nothing is deleted.
 <!-- yuzora:lane:L5:end -->
 
 <!-- yuzora:lane:L6:start -->

@@ -9,6 +9,9 @@
 //! gives when its own `touch` and `mkdir` make it: the script makes it with
 //! the same calls under the umask it is started with, and changes nothing after.
 //! A rename keeps the very entry, so it keeps all of that.
+//!
+//! A copy is made in a scratch folder of its own beside the names and renamed in, by the rename
+//! script, once it is whole. Moving to the trash asks the machine's own trash first.
 
 use std::time::Duration;
 
@@ -59,8 +62,57 @@ const MOVE_SCRIPT: &str = concat!(
     include_str!("remote_entry/move.sh")
 );
 
+/// `$1` from, `$2` into, `$3` the name, `$4` and `$5` its stem and extension as a file's, `$6` 32
+/// lowercase hex for the scratch folder, `$7` [`MOVE_SCRIPT`], then the names in `into` that no copy
+/// may take. Prints one line and exits 0: `done file|folder K` (the copy is in `into` under the
+/// name [`fsops::copy_name`] gives for K), `gone`, `refused nofolder|folder|inside|rename`,
+/// `refused open J` (the Jth of those names was the next free one) or `refused tool …`. Any other
+/// end leaves no copy in `into`.
+///
+/// `cp -RP` makes the copy (a link stays a link, a new entry gets the mode `cp` gives it) as
+/// `.yuzora-save-<hex>/<hex>` beside the names, in a folder only its owner can enter, which the script
+/// goes into and checks before it changes anything there (`cd -P`, then the entry made, empty and its
+/// own): someone who may write `into` cannot have the copy made, or anything cleared, in a folder of
+/// theirs or of the person's. The rename script then moves it to the first free name, never over what
+/// is there. `into` is looked up by its path once, when the script enters it: the names, the rename
+/// and the scratch folder's removal go through the scratch folder's `..`, so `into` swapped for a link
+/// meanwhile gets the copy put nowhere else. A copy killed before it is done (the timeout) cannot
+/// clear that folder, which the tree does not list: [`CLEAR_SCRIPT`] does.
+const COPY_SCRIPT: &str = concat!(
+    include_str!("remote_entry/common.sh"),
+    include_str!("remote_entry/copy.sh")
+);
+
+/// `$1` into, `$2` the hex of a copy's scratch folder there. Prints `done` when nothing of that copy
+/// is left there, else `left`; `left` too when `into` cannot be entered (renamed away, or shut), since
+/// the copy may still be in it. It removes `.yuzora-save-<hex>` only when that is a folder of the
+/// person's, not a link, and the folder entered; and in it only `<hex>`, which only [`COPY_SCRIPT`]
+/// makes there: a folder put at that name by someone else keeps what it holds.
+const CLEAR_SCRIPT: &str = concat!(
+    include_str!("remote_entry/common.sh"),
+    include_str!("remote_entry/clear.sh")
+);
+
+/// `$1` path. Prints one line and exits 0: `done`, `gone`, `refused folder`, `refused device` (the
+/// entry is on another disk than the trash), `refused tool trash` (nothing here could take it to a
+/// trash) or `refused tool <name>` (a tool it needs, such as `od`, is missing). Any other end leaves
+/// it where it was.
+///
+/// `gio trash` first, then a `trash` command, then the freedesktop trash by hand (its
+/// `.trashinfo` is written first, under a name nobody has, then the entry is moved next to it),
+/// and only on the disk the entry is on: a move to another disk would copy it. The entry's folder
+/// is looked up by its path once, when the script enters it; every later step names the entry in
+/// the folder entered.
+const TRASH_SCRIPT: &str = concat!(
+    include_str!("remote_entry/common.sh"),
+    include_str!("remote_entry/trash.sh")
+);
+
 /// A change is small; a hung one is not worth more than this.
 const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A copy reads and writes everything it copies.
+const COPY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// What the scripts print and the errors `hc` gives are short.
 const MAX_OUTPUT: u64 = 16 << 10;
@@ -76,6 +128,10 @@ pub(crate) enum Kind {
 pub(crate) enum Act<'a> {
     Make(&'a str, Kind),
     Move(&'a str, &'a str),
+    /// `from` into the folder `into`, under the first free name; never under one of the names in
+    /// the list, where a document is still open.
+    Copy(&'a str, &'a str, &'a [String]),
+    Trash(&'a str),
 }
 
 /// Why nothing was done, as the person can be told.
@@ -99,35 +155,47 @@ pub(crate) enum Problem {
     NoShell,
     /// Not a path `sh` there can use: it has to start with `/` and name something.
     BadPath,
+    /// A folder would go into itself.
+    IntoItself,
+    /// The name a copy would take is where a document is still open: the index of that name.
+    StillOpen(usize),
+    /// Nothing there can take it to a trash.
+    NoTrash,
     /// The machine could not be asked, or said something else: its own words.
     Failed(String),
 }
 
 impl Act<'_> {
-    fn verb(&self) -> &'static str {
+    /// What could not be done, as a sentence starts.
+    fn head(&self) -> String {
         match self {
-            Act::Make(..) => "create",
-            Act::Move(..) => "rename",
+            Act::Make(path, _) => format!("cannot create {path}"),
+            Act::Move(from, _) => format!("cannot rename {from}"),
+            Act::Copy(from, ..) => format!("cannot copy {from}"),
+            Act::Trash(path) => format!("cannot move {path} to the trash"),
         }
     }
 
-    /// What the person asked about.
-    fn subject(&self) -> &str {
-        match self {
-            Act::Make(path, _) | Act::Move(path, _) => path,
-        }
-    }
-
-    /// The name that is to be taken.
+    /// The name that is to be taken, or what is to go.
     fn target(&self) -> &str {
         match self {
-            Act::Make(path, _) | Act::Move(_, path) => path,
+            Act::Make(path, _) | Act::Move(_, path) | Act::Copy(_, path, _) | Act::Trash(path) => {
+                path
+            }
+        }
+    }
+
+    /// The folder a name is taken in or given up from.
+    fn folder(&self) -> &str {
+        match self {
+            Act::Copy(_, into, _) => into,
+            _ => folder_of(self.target()),
         }
     }
 
     /// The folders the change is in, each once.
     fn folders(&self) -> Vec<&str> {
-        let mut found = vec![folder_of(self.target())];
+        let mut found = vec![self.folder()];
         if let Act::Move(from, _) = self {
             let source = folder_of(from);
             if !found.contains(&source) {
@@ -139,34 +207,46 @@ impl Act<'_> {
 
     /// What `problem` means for this, said to the person.
     pub(crate) fn describe(&self, problem: &Problem, machine: &str) -> String {
-        let (verb, subject, target) = (self.verb(), self.subject(), self.target());
+        let (head, target) = (self.head(), self.target());
         match problem {
             Problem::Exists => format!("{target} already exists"),
-            Problem::Gone => format!("cannot {verb} {subject}: it is no longer there on {machine}"),
+            Problem::Gone => format!("{head}: it is no longer there on {machine}"),
             Problem::NoFolder => format!(
-                "cannot {verb} {subject}: the folder {} does not exist on {machine}",
-                folder_of(target)
+                "{head}: the folder {} does not exist on {machine}",
+                self.folder()
             ),
             Problem::FolderNotWritable => format!(
-                "cannot {verb} {subject}: you may not change {} on {machine} (a name is added to or removed from a folder only by someone who can write to it and enter it)",
+                "{head}: you may not change {} on {machine} (a name is added to or removed from a folder only by someone who can write to it and enter it)",
                 self.folders().join(" and ")
             ),
             Problem::OtherDevice => format!(
-                "cannot {verb} {subject}: {target} is on another file system on {machine}, and a rename does not copy"
+                "{head}: {target} is on another file system on {machine}, and a rename does not copy"
             ),
-            Problem::NoTool(tool) => {
-                format!("cannot {verb} {subject}: {machine} has no {tool}, which this needs")
-            }
+            Problem::NoTool(tool) => format!("{head}: {machine} has no {tool}, which this needs"),
             Problem::NoSafeRename => format!(
-                "cannot {verb} {subject}: {machine} has no perl, which this needs (or GNU mv, or an mv with -T): a plain mv could follow a link into another folder"
+                "{head}: {machine} has no perl, which this needs (or GNU mv, or an mv with -T): a plain mv could follow a link into another folder"
             ),
             Problem::NoShell => format!(
-                "cannot {verb} {subject}: this needs sh on {machine}, and it has none (Windows machines cannot be changed from here)"
+                "{head}: this needs sh on {machine}, and it has none (Windows machines cannot be changed from here)"
             ),
             Problem::BadPath => format!(
-                "cannot {verb} {subject}: a machine's path has to start with / and name a file or a folder (a Windows path cannot be used)"
+                "{head}: a machine's path has to start with / and name a file or a folder (a Windows path cannot be used)"
             ),
-            Problem::Failed(why) => format!("cannot {verb} {subject} on {machine}: {why}"),
+            Problem::IntoItself => format!("{head} into {target}: a folder cannot go into itself"),
+            Problem::StillOpen(at) => {
+                let name = match self {
+                    Act::Copy(_, into, held) => held.get(*at).map(|n| fsops::join(into, n)),
+                    _ => None,
+                };
+                format!(
+                    "{} is still open (its file was deleted): close it first",
+                    name.as_deref().unwrap_or(target)
+                )
+            }
+            Problem::NoTrash => format!(
+                "{head}: nothing on {machine} can take it to a trash (no gio or trash command that does, and no trash folder on its disk that can be written)"
+            ),
+            Problem::Failed(why) => format!("{head} on {machine}: {why}"),
         }
     }
 }
@@ -193,51 +273,108 @@ fn other_case(from: &str, to: &str) -> bool {
 
 /// The request that does `act` on `on` (`None`: here, through the same script, as the tests do).
 pub(crate) fn request(act: &Act, on: Option<&str>) -> Result<ExecRequest, Problem> {
-    let (script, args): (&str, Vec<&str>) = match *act {
+    let (script, timeout, args): (&str, Duration, Vec<String>) = match *act {
         Act::Make(path, kind) if usable_path(path) => (
             MAKE_SCRIPT,
+            TIMEOUT,
             vec![
-                path,
+                path.into(),
                 match kind {
                     Kind::File => "file",
                     Kind::Folder => "folder",
-                },
+                }
+                .into(),
             ],
         ),
         Act::Move(from, to) if usable_path(from) && usable_path(to) => (
             MOVE_SCRIPT,
-            vec![from, to, if other_case(from, to) { "1" } else { "0" }],
+            TIMEOUT,
+            vec![
+                from.into(),
+                to.into(),
+                if other_case(from, to) { "1" } else { "0" }.into(),
+            ],
         ),
+        Act::Copy(from, into, held) => {
+            return copy_request(from, into, held, &fsops::scratch_id(), on);
+        }
+        Act::Trash(path) if usable_path(path) => (TRASH_SCRIPT, TIMEOUT, vec![path.into()]),
         _ => return Err(Problem::BadPath),
     };
-    Ok(fsops::sh_request(on, script, &args, TIMEOUT, MAX_OUTPUT))
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    Ok(fsops::sh_request(on, script, &args, timeout, MAX_OUTPUT))
+}
+
+/// The request for a copy whose scratch folder is named after `id` (32 lowercase hex).
+fn copy_request(
+    from: &str,
+    into: &str,
+    held: &[String],
+    id: &str,
+    on: Option<&str>,
+) -> Result<ExecRequest, Problem> {
+    if !(usable_path(from) && into.starts_with('/') && !into.contains('\0')) {
+        return Err(Problem::BadPath);
+    }
+    let name = from.rsplit('/').next().unwrap_or(from);
+    let (stem, ext) = fsops::split_ext(name);
+    let mut args = vec![from, into, name, stem, ext, id, MOVE_SCRIPT];
+    args.extend(held.iter().map(String::as_str));
+    Ok(fsops::sh_request(
+        on,
+        COPY_SCRIPT,
+        &args,
+        COPY_TIMEOUT,
+        MAX_OUTPUT,
+    ))
 }
 
 /// What the script said.
 #[derive(Debug, PartialEq)]
 enum Verdict {
     Done,
+    /// A copy is done: whether it was a folder (named whole), and which free name it took.
+    Copied(bool, u32),
     Exists,
     Gone,
     NoFolder,
     FolderNotWritable,
     OtherDevice,
     NoSafeRename,
+    IntoItself,
+    /// The Jth held name (from 1) was the next free one.
+    Open(usize),
+    NoTrash,
     NoTool(&'static str),
 }
+
+/// The programs a script names when one is missing.
+const TOOLS: [&str; 12] = [
+    "mkdir", "mv", "stat", "rm", "rmdir", "cp", "chmod", "ls", "id", "od", "date", "trash",
+];
 
 /// Reads the script's one line; anything but exactly a line of a known shape is `None`.
 fn parse_verdict(stdout: &[u8]) -> Option<Verdict> {
     let line = std::str::from_utf8(stdout).ok()?.strip_suffix('\n')?;
+    fn number<T: std::str::FromStr>(n: &str) -> Option<T> {
+        n.bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| n.parse().ok())?
+    }
     match line.split(' ').collect::<Vec<_>>()[..] {
         ["done"] => Some(Verdict::Done),
+        ["done", "file", k] => Some(Verdict::Copied(false, number(k)?)),
+        ["done", "folder", k] => Some(Verdict::Copied(true, number(k)?)),
         ["exists"] => Some(Verdict::Exists),
         ["gone"] => Some(Verdict::Gone),
         ["refused", "nofolder"] => Some(Verdict::NoFolder),
         ["refused", "folder"] => Some(Verdict::FolderNotWritable),
         ["refused", "device"] => Some(Verdict::OtherDevice),
         ["refused", "rename"] => Some(Verdict::NoSafeRename),
-        ["refused", "tool", tool] => ["mkdir", "mv", "stat", "rm", "rmdir"]
+        ["refused", "inside"] => Some(Verdict::IntoItself),
+        ["refused", "open", j] => Some(Verdict::Open(number(j).filter(|j| *j > 0)?)),
+        ["refused", "tool", "trash"] => Some(Verdict::NoTrash),
+        ["refused", "tool", tool] => TOOLS
             .into_iter()
             .find(|known| *known == tool)
             .map(Verdict::NoTool),
@@ -245,8 +382,29 @@ fn parse_verdict(stdout: &[u8]) -> Option<Verdict> {
     }
 }
 
-/// What the machine's answer means.
-pub(crate) fn interpret(answer: Result<ExecOutput, ExecError>) -> Result<(), Problem> {
+/// What a line that is not the one hoped for means.
+fn problem(verdict: Verdict) -> Problem {
+    match verdict {
+        Verdict::Exists => Problem::Exists,
+        Verdict::Gone => Problem::Gone,
+        Verdict::NoFolder => Problem::NoFolder,
+        Verdict::FolderNotWritable => Problem::FolderNotWritable,
+        Verdict::OtherDevice => Problem::OtherDevice,
+        Verdict::NoSafeRename => Problem::NoSafeRename,
+        Verdict::IntoItself => Problem::IntoItself,
+        Verdict::Open(j) => Problem::StillOpen(j - 1),
+        Verdict::NoTrash => Problem::NoTrash,
+        Verdict::NoTool(tool) => Problem::NoTool(tool),
+        Verdict::Done | Verdict::Copied(..) => unreadable(),
+    }
+}
+
+fn unreadable() -> Problem {
+    Problem::Failed("the answer could not be read; it may or may not have been done".into())
+}
+
+/// What the machine said, when it said one of the known lines.
+fn read(answer: Result<ExecOutput, ExecError>) -> Result<Verdict, Problem> {
     let out = match answer {
         Ok(out) => out,
         Err(ExecError::Remote(m) | ExecError::Protocol(m)) if m.starts_with("cannot start sh") => {
@@ -262,18 +420,22 @@ pub(crate) fn interpret(answer: Result<ExecOutput, ExecError>) -> Result<(), Pro
     if out.code != 0 {
         return Err(Problem::Failed(fsops::failure(&out, "the change")));
     }
-    match parse_verdict(&out.stdout) {
-        Some(Verdict::Done) => Ok(()),
-        Some(Verdict::Exists) => Err(Problem::Exists),
-        Some(Verdict::Gone) => Err(Problem::Gone),
-        Some(Verdict::NoFolder) => Err(Problem::NoFolder),
-        Some(Verdict::FolderNotWritable) => Err(Problem::FolderNotWritable),
-        Some(Verdict::OtherDevice) => Err(Problem::OtherDevice),
-        Some(Verdict::NoSafeRename) => Err(Problem::NoSafeRename),
-        Some(Verdict::NoTool(tool)) => Err(Problem::NoTool(tool)),
-        None => Err(Problem::Failed(
-            "the answer could not be read; it may or may not have been done".into(),
-        )),
+    parse_verdict(&out.stdout).ok_or_else(unreadable)
+}
+
+/// What the machine's answer to a change means.
+pub(crate) fn interpret(answer: Result<ExecOutput, ExecError>) -> Result<(), Problem> {
+    match read(answer)? {
+        Verdict::Done => Ok(()),
+        other => Err(problem(other)),
+    }
+}
+
+/// What the machine's answer to a copy means: whether a folder was copied, and the free name taken.
+fn interpret_copy(answer: Result<ExecOutput, ExecError>) -> Result<(bool, u32), Problem> {
+    match read(answer)? {
+        Verdict::Copied(folder, k) => Ok((folder, k)),
+        other => Err(problem(other)),
     }
 }
 
@@ -285,6 +447,78 @@ pub(crate) fn run_act(act: &Act, on: Option<&str>) -> Result<(), Problem> {
 /// Does `act` on the machine `machine`, and tells the person if it cannot be done.
 pub(crate) fn on_machine(act: Act, machine: &str) -> Result<(), String> {
     run_act(&act, Some(machine)).map_err(|problem| act.describe(&problem, machine))
+}
+
+/// Copies `from` into `into` on `machine` and gives the path of the copy.
+pub(crate) fn copy_on_machine(
+    from: &str,
+    into: &str,
+    held: &[String],
+    machine: &str,
+) -> Result<String, String> {
+    copy_by(from, into, held, Some(machine), fsops::run)
+        .map_err(|problem| Act::Copy(from, into, held).describe(&problem, machine))
+}
+
+/// A copy by [`COPY_SCRIPT`], each request run by `run`, as the path of the copy. A copy stopped before
+/// it is done (the timeout, a signal, the line to the machine lost) leaves its scratch folder:
+/// [`CLEAR_SCRIPT`] is sent after it, and when that cannot clear it the answer says where a partial
+/// copy may be. A line lost after the copy was placed loses only its answer, so when the clear answers,
+/// the answer says the copy may or may not have been made.
+pub(crate) fn copy_by(
+    from: &str,
+    into: &str,
+    held: &[String],
+    on: Option<&str>,
+    mut run: impl FnMut(ExecRequest) -> Result<ExecOutput, ExecError>,
+) -> Result<String, Problem> {
+    let id = fsops::scratch_id();
+    let answer = run(copy_request(from, into, held, &id, on)?);
+    // Whether the script may have been stopped before its trap ran: at the timeout, by a signal
+    // (`hc` gives no exit code, read as -1), or with the line to the machine lost during the call
+    // (the machine then kills it). Only a request that never left needs no clear.
+    let killed = match &answer {
+        Ok(out) => out.code < 0,
+        Err(ExecError::Spawn(_)) => false,
+        Err(ExecError::Remote(m)) => !never_sent(m),
+        Err(_) => true,
+    };
+    let lost = matches!(&answer, Err(ExecError::Remote(m)) if m.starts_with("lost the line to "));
+    let name = from.rsplit('/').next().unwrap_or(from);
+    match interpret_copy(answer) {
+        Ok((folder, k)) => Ok(fsops::join(into, &fsops::copy_name(name, folder, k))),
+        Err(Problem::Failed(why)) if killed => {
+            let clear = fsops::sh_request(on, CLEAR_SCRIPT, &[into, &id], TIMEOUT, MAX_OUTPUT);
+            if matches!(read(run(clear)), Ok(Verdict::Done)) {
+                return Err(Problem::Failed(if lost {
+                    format!(
+                        "{why}. The copy may or may not have been made: look in {into} before copying again"
+                    )
+                } else {
+                    why
+                }));
+            }
+            let scratch = fsops::join(into, &format!("{}{id}", fsops::SCRATCH_PREFIX));
+            Err(Problem::Failed(format!(
+                "{why}. A partial copy may be left in {scratch}, a folder the tree does not show"
+            )))
+        }
+        Err(problem) => Err(problem),
+    }
+}
+
+/// Whether `hc` says a request never reached the machine, so nothing ran there. [`ExecError::Remote`]
+/// carries hc's message and not its `kind`, so this reads the words. hc 0.1.21 answers `<machine> is
+/// unreachable: cannot reach …` when it cannot open the line, and `lost the line to <machine> during
+/// the call` when the line goes once the request is sent; both with the same `"kind": "unavailable"`
+/// and exit status 5. It answers `unknown machine "<machine>"` (`"kind": "machine_unknown"`, exit
+/// status 4) for a machine it no longer knows, such as one removed with `hc machine rm` while a Space
+/// on it is open. A machine with no `sh` is not read here: [`read`] takes `cannot start sh` for
+/// [`Problem::NoShell`], which is never cleared.
+fn never_sent(message: &str) -> bool {
+    message.contains(" is unreachable: ")
+        || message.ends_with("is not connected")
+        || message.starts_with("unknown machine ")
 }
 
 #[cfg(all(test, unix))]
@@ -335,12 +569,12 @@ mod tests {
     }
 
     /// Runs the script of `act` under `shell` the way `hc exec` runs it, with `umask` and `env` set.
-    fn run_under(
+    fn exec_under(
         shell: &[&str],
         umask: Option<&str>,
         env: &[(&str, &str)],
         act: &Act,
-    ) -> Result<(), Problem> {
+    ) -> ExecOutput {
         let req = request(act, None).unwrap();
         let wrapper = format!(
             "{}exec \"$@\"",
@@ -352,11 +586,30 @@ mod tests {
             cmd.env(k, v);
         }
         let out = cmd.stdin(Stdio::null()).output().unwrap();
-        interpret(Ok(ExecOutput {
+        ExecOutput {
             code: out.status.code().unwrap_or(-1),
             stdout: out.stdout,
             stderr: out.stderr,
-        }))
+        }
+    }
+
+    fn run_under(
+        shell: &[&str],
+        umask: Option<&str>,
+        env: &[(&str, &str)],
+        act: &Act,
+    ) -> Result<(), Problem> {
+        interpret(Ok(exec_under(shell, umask, env, act)))
+    }
+
+    /// A copy under `shell`, as the path of the copy.
+    fn copy_under(shell: &[&str], env: &[(&str, &str)], act: &Act) -> Result<String, Problem> {
+        let Act::Copy(from, into, _) = *act else {
+            panic!("not a copy: {act:?}")
+        };
+        let name = from.rsplit('/').next().unwrap();
+        interpret_copy(Ok(exec_under(shell, None, env, act)))
+            .map(|(folder, k)| fsops::join(into, &fsops::copy_name(name, folder, k)))
     }
 
     fn make(shell: &[&str], path: &str, kind: Kind) -> Result<(), Problem> {
@@ -413,9 +666,43 @@ mod tests {
             ("refused tool rmdir\n", Err(Problem::NoTool("rmdir"))),
             ("refused tool mv\n", Err(Problem::NoTool("mv"))),
             ("refused tool mkdir\n", Err(Problem::NoTool("mkdir"))),
+            ("refused tool cp\n", Err(Problem::NoTool("cp"))),
+            ("refused tool trash\n", Err(Problem::NoTrash)),
+            ("refused inside\n", Err(Problem::IntoItself)),
         ] {
             assert_eq!(interpret(answered(0, said, "")), want, "{said:?}");
         }
+        // A copy says which free name it took, and which held name stopped it.
+        for (said, want) in [
+            ("done file 0\n", Ok((false, 0))),
+            ("done folder 12\n", Ok((true, 12))),
+            ("refused open 1\n", Err(Problem::StillOpen(0))),
+            ("refused open 3\n", Err(Problem::StillOpen(2))),
+            ("gone\n", Err(Problem::Gone)),
+        ] {
+            assert_eq!(interpret_copy(answered(0, said, "")), want, "{said:?}");
+        }
+        for said in [
+            "done\n",
+            "done file\n",
+            "done file x\n",
+            "done file -1\n",
+            "done file 1 2\n",
+            "done dir 1\n",
+            "refused open 0\n",
+            "refused open\n",
+        ] {
+            let got = interpret_copy(answered(0, said, ""));
+            assert!(
+                matches!(&got, Err(Problem::Failed(why)) if why.contains("may or may not")),
+                "{said:?}: {got:?}"
+            );
+        }
+        // A change that answers as a copy did is not done.
+        assert!(matches!(
+            interpret(answered(0, "done file 1\n", "")),
+            Err(Problem::Failed(_))
+        ));
         // Anything else is not an answer: the change may or may not have been made, and it says so.
         for said in [
             "",
@@ -490,6 +777,13 @@ mod tests {
             Act::Move("/a", "/b/"),
             Act::Move("/a", "/b/.."),
             Act::Move("/a\0", "/b"),
+            Act::Copy("relative", "/b", &[]),
+            Act::Copy("/a", "b", &[]),
+            Act::Copy("/a/..", "/b", &[]),
+            Act::Copy("/a", "/b\0", &[]),
+            Act::Trash("relative"),
+            Act::Trash("/"),
+            Act::Trash(r"C:\a"),
         ] {
             assert!(
                 matches!(request(&act, Some("offline")), Err(Problem::BadPath)),
@@ -550,6 +844,36 @@ mod tests {
         assert_eq!(
             say(&make, Problem::Failed("No space left on device".into())),
             "cannot create /srv/app/new.txt on lab: No space left on device"
+        );
+        let held = ["b.txt".to_owned()];
+        let copy = Act::Copy("/srv/a/b.txt", "/srv/c", &held);
+        assert_eq!(
+            say(&copy, Problem::Gone),
+            "cannot copy /srv/a/b.txt: it is no longer there on lab"
+        );
+        assert!(say(&copy, Problem::NoFolder).contains("the folder /srv/c does not exist on lab"));
+        let told = say(&copy, Problem::FolderNotWritable);
+        assert!(told.contains("you may not change /srv/c on lab"), "{told}");
+        assert_eq!(
+            say(&copy, Problem::IntoItself),
+            "cannot copy /srv/a/b.txt into /srv/c: a folder cannot go into itself"
+        );
+        assert_eq!(
+            say(&copy, Problem::StillOpen(0)),
+            "/srv/c/b.txt is still open (its file was deleted): close it first"
+        );
+        let trash = Act::Trash("/srv/a/b.txt");
+        assert_eq!(
+            say(&trash, Problem::Gone),
+            "cannot move /srv/a/b.txt to the trash: it is no longer there on lab"
+        );
+        assert!(
+            say(&trash, Problem::FolderNotWritable).contains("you may not change /srv/a on lab")
+        );
+        assert!(say(&trash, Problem::NoTrash).contains("nothing on lab can take it to a trash"));
+        assert_eq!(
+            say(&trash, Problem::Failed("mv: busy".into())),
+            "cannot move /srv/a/b.txt to the trash on lab: mv: busy"
         );
         // A file in the root folder is in "/", not in "".
         let told = Act::Make("/n.txt", Kind::File).describe(&Problem::NoFolder, "lab");
@@ -1870,9 +2194,1365 @@ exec mv -n -- "$from" "$to""#,
         assert_eq!(names(dir), ["folder2", "it's \"renamed\"\nname", "other"]);
     }
 
+    /// A PATH of only these programs (found where `sh` finds them), and stand-ins written as `sh`
+    /// that see the same PATH: nothing else here, and so no trash of this machine, can be reached.
+    fn only(tools: &[&str], stand_ins: &[(&str, &str)]) -> tempfile::TempDir {
+        let bin = tempfile::tempdir().unwrap();
+        for tool in tools {
+            let found = Command::new("/bin/sh")
+                .args(["-c", &format!("command -v {tool}")])
+                .output()
+                .unwrap();
+            symlink(
+                String::from_utf8(found.stdout).unwrap().trim(),
+                bin.path().join(tool),
+            )
+            .unwrap();
+        }
+        for (name, body) in stand_ins {
+            let file = bin.path().join(name);
+            let own = bin.path().display();
+            fs::write(&file, format!("#!/bin/sh\nPATH='{own}'\n{body}\n")).unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        bin
+    }
+
+    /// Every entry under `dir`, by path: its kind, mode and bytes, or where a link points.
+    fn tree(dir: &Path) -> Vec<(String, String)> {
+        fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+            for e in fs::read_dir(dir).unwrap() {
+                let path = e.unwrap().path();
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                let meta = fs::symlink_metadata(&path).unwrap();
+                let mode = meta.mode() & 0o7777;
+                let what = if meta.file_type().is_symlink() {
+                    format!("link {}", fs::read_link(&path).unwrap().display())
+                } else if meta.is_dir() {
+                    walk(root, &path, out);
+                    format!("folder {mode:o}")
+                } else {
+                    format!("file {mode:o} {:?}", fs::read(&path).unwrap())
+                };
+                out.push((rel, what));
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, dir, &mut out);
+        out.sort();
+        out
+    }
+
+    /// A folder of what a copy meets: modes, depth, links of three kinds, names the shell would read.
+    fn sample(dir: &Path) -> String {
+        let src = dir.join("src.d");
+        fs::create_dir_all(src.join("one/two/three")).unwrap();
+        fs::write(src.join("one/two/three/deep.txt"), "deep").unwrap();
+        fs::write(src.join("plain.txt"), "plain").unwrap();
+        fs::write(src.join("run.sh"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(src.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(src.join("it's \"q\" $HOME\ntwo.txt"), "odd").unwrap();
+        fs::create_dir(src.join("private")).unwrap();
+        fs::write(src.join("private/key"), "k").unwrap();
+        fs::set_permissions(src.join("private"), fs::Permissions::from_mode(0o700)).unwrap();
+        symlink("plain.txt", src.join("to-file")).unwrap();
+        symlink("one", src.join("to-folder")).unwrap();
+        symlink("nowhere", src.join("dangling")).unwrap();
+        src.to_string_lossy().into_owned()
+    }
+
+    fn umask_here() -> String {
+        let out = Command::new("/bin/sh")
+            .args(["-c", "umask"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    /// What a folder holds that a copy may have left: scratch folders.
+    fn scratch_left(dir: &Path) -> Vec<String> {
+        names(dir)
+            .into_iter()
+            .filter(|n| n.starts_with(fsops::SCRATCH_PREFIX))
+            .collect()
+    }
+
+    #[test]
+    fn every_shell_copies_as_this_machine_does_and_names_the_copy_the_same() {
+        let d = tempfile::tempdir().unwrap();
+        let src = sample(d.path());
+        let plain = format!("{src}/plain.txt");
+        let odd = format!("{src}/it's \"q\" $HOME\ntwo.txt");
+        for shell in shells() {
+            let here = tempfile::tempdir().unwrap();
+            let there = tempfile::tempdir().unwrap();
+            let into = |t: &tempfile::TempDir| t.path().to_string_lossy().into_owned();
+            // Into another folder: the name itself; a folder with all it holds, as it is.
+            let mine = fsops::copy(&src, &into(&here), None, &[]).unwrap();
+            let theirs = copy_under(&shell, &[], &Act::Copy(&src, &into(&there), &[])).unwrap();
+            assert_eq!(mine, format!("{}/src.d", into(&here)), "{shell:?}");
+            assert_eq!(theirs, format!("{}/src.d", into(&there)), "{shell:?}");
+            assert_eq!(
+                tree(Path::new(&mine)),
+                tree(Path::new(&theirs)),
+                "{shell:?}"
+            );
+            if umask_here() == "0022" {
+                assert_eq!(tree(Path::new(&src)), tree(Path::new(&mine)), "{shell:?}");
+            }
+            // Beside itself: "<name> copy", a folder whole, a file keeping its extension.
+            for (from, want) in [
+                (src.clone(), format!("{src} copy")),
+                (plain.clone(), format!("{src}/plain copy.txt")),
+                (odd.clone(), format!("{src}/it's \"q\" $HOME\ntwo copy.txt")),
+            ] {
+                let folder = from.rsplit_once('/').unwrap().0.to_owned();
+                let got = copy_under(&shell, &[], &Act::Copy(&from, &folder, &[])).unwrap();
+                assert_eq!(got, want, "{shell:?}");
+                assert_eq!(
+                    fs::symlink_metadata(&got).unwrap().is_dir(),
+                    fs::symlink_metadata(&from).unwrap().is_dir()
+                );
+                let again = fsops::copy(&from, &folder, None, &[]).unwrap();
+                assert!(
+                    again.ends_with(" copy 2") || again.contains(" copy 2."),
+                    "{again}"
+                );
+                for made in [&got, &again] {
+                    if Path::new(made).is_dir() {
+                        fs::remove_dir_all(made).unwrap();
+                    } else {
+                        fs::remove_file(made).unwrap();
+                    }
+                }
+            }
+            assert!(scratch_left(d.path()).is_empty() && scratch_left(Path::new(&src)).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_name_is_split_the_same_here_and_there() {
+        let d = tempfile::tempdir().unwrap();
+        for (name, folder, want) in [
+            ("a.txt", false, "a copy.txt"),
+            ("archive.tar.gz", false, "archive.tar copy.gz"),
+            (".env", false, ".env copy"),
+            (".env.local", false, ".env copy.local"),
+            ("Makefile", false, "Makefile copy"),
+            ("v1.2", true, "v1.2 copy"),
+            ("a.", false, "a copy."),
+        ] {
+            let path = d.path().join(name);
+            if folder {
+                fs::create_dir(&path).unwrap();
+            } else {
+                fs::write(&path, name).unwrap();
+            }
+            let from = path.to_string_lossy().into_owned();
+            let into = d.path().to_string_lossy().into_owned();
+            for shell in shells() {
+                let got = copy_under(&shell, &[], &Act::Copy(&from, &into, &[])).unwrap();
+                assert_eq!(got, format!("{into}/{want}"), "{shell:?} {name}");
+                let _ = fs::remove_file(&got).or_else(|_| fs::remove_dir(&got));
+            }
+            assert_eq!(
+                fsops::copy(&from, &into, None, &[]).unwrap(),
+                format!("{into}/{want}")
+            );
+        }
+    }
+
+    #[test]
+    fn a_copy_takes_the_next_free_name_and_never_replaces_anything() {
+        for shell in shells() {
+            let d = tempfile::tempdir().unwrap();
+            let dir = d.path().to_string_lossy().into_owned();
+            let a = put(d.path(), "a.txt", b"mine");
+            put(d.path(), "a copy.txt", b"one");
+            fs::create_dir(d.path().join("a copy 2.txt")).unwrap();
+            symlink("nowhere", d.path().join("a copy 3.txt")).unwrap();
+            let got = copy_under(&shell, &[], &Act::Copy(&a, &dir, &[])).unwrap();
+            assert_eq!(got, format!("{dir}/a copy 4.txt"), "{shell:?}");
+            assert_eq!(fs::read(&got).unwrap(), b"mine");
+            assert_eq!(fs::read(d.path().join("a copy.txt")).unwrap(), b"one");
+            assert_eq!(
+                fs::read_dir(d.path().join("a copy 2.txt")).unwrap().count(),
+                0
+            );
+            assert!(
+                fs::symlink_metadata(d.path().join("a copy 3.txt"))
+                    .unwrap()
+                    .is_symlink()
+            );
+            assert_eq!(
+                names(d.path()),
+                [
+                    "a copy 2.txt",
+                    "a copy 3.txt",
+                    "a copy 4.txt",
+                    "a copy.txt",
+                    "a.txt"
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn a_copy_that_cannot_be_made_is_refused_as_here_and_leaves_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let src = sample(d.path());
+        let empty = tempfile::tempdir().unwrap();
+        let into = empty.path().to_string_lossy().into_owned();
+        let plain = format!("{src}/plain.txt");
+        let held = ["plain.txt".to_owned()];
+        let ghost = format!("{src}/ghost");
+        let missing = format!("{into}/no/where");
+        let deeper = format!("{src}/one/two");
+        let mut cases: Vec<(Act, Problem)> = vec![
+            (Act::Copy(&plain, &into, &held), Problem::StillOpen(0)),
+            (Act::Copy(&ghost, &into, &[]), Problem::Gone),
+            (Act::Copy(&plain, &missing, &[]), Problem::NoFolder),
+            (Act::Copy(&src, &src, &[]), Problem::IntoItself),
+            (Act::Copy(&src, &deeper, &[]), Problem::IntoItself),
+        ];
+        let locked = format!("{}/locked", d.path().display());
+        if !is_root() {
+            fs::create_dir(&locked).unwrap();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+            cases.push((Act::Copy(&plain, &locked, &[]), Problem::FolderNotWritable));
+        }
+        for shell in shells() {
+            for (act, want) in &cases {
+                let got = copy_under(&shell, &[], act);
+                assert_eq!(got.as_ref(), Err(want), "{shell:?} {act:?}");
+            }
+        }
+        // This machine says the same.
+        for (act, want) in &cases {
+            let Act::Copy(from, into, held) = *act else {
+                unreachable!()
+            };
+            assert_eq!(
+                fsops::copy(from, into, None, held),
+                Err(act.describe(want, "this machine")),
+                "{act:?}"
+            );
+        }
+        // A held name taken on disk is not the one the copy takes.
+        put(empty.path(), "plain.txt", b"theirs");
+        let got = copy_under(&shells()[0], &[], &Act::Copy(&plain, &into, &held)).unwrap();
+        assert_eq!(got, format!("{into}/plain copy.txt"));
+        assert_eq!(names(empty.path()), ["plain copy.txt", "plain.txt"]);
+        assert!(scratch_left(d.path()).is_empty() && scratch_left(Path::new(&src)).is_empty());
+        if !is_root() {
+            assert!(names(Path::new(&locked)).is_empty());
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_copy_cut_short_leaves_nothing_and_is_made_where_only_its_owner_can_look() {
+        let d = tempfile::tempdir().unwrap();
+        let src = sample(d.path());
+        let into = tempfile::tempdir().unwrap();
+        let dir = into.path().to_string_lossy().into_owned();
+        let seen = d.path().join("seen");
+        // A cp that copies some, then fails.
+        let (_bin, path) = shimmed(&[(
+            "cp",
+            "ls -ld . > \"$SEEN\"; mkdir -p \"$4/half\"; echo 'cp: disk on fire' >&2; exit 1",
+        )]);
+        for shell in shells() {
+            let env = [("PATH", path.as_str()), ("SEEN", seen.to_str().unwrap())];
+            let got = copy_under(&shell, &env, &Act::Copy(&src, &dir, &[]));
+            assert_eq!(
+                got,
+                Err(Problem::Failed("cp: disk on fire".into())),
+                "{shell:?}"
+            );
+            assert!(names(into.path()).is_empty(), "{shell:?}");
+            let mode = fs::read_to_string(&seen).unwrap();
+            assert!(mode.starts_with("drwx------"), "{shell:?}: {mode}");
+        }
+        // Without cp nothing is made either.
+        let bin = only(
+            &["mkdir", "chmod", "ls", "id", "stat", "rm", "rmdir", "sh"],
+            &[],
+        );
+        let env = [("PATH", bin.path().to_str().unwrap())];
+        for shell in shells() {
+            let got = copy_under(&shell, &env, &Act::Copy(&src, &dir, &[]));
+            assert_eq!(got, Err(Problem::NoTool("cp")), "{shell:?}");
+        }
+        assert!(names(into.path()).is_empty());
+    }
+
+    #[test]
+    fn a_folder_copied_without_write_permission_is_cleared_when_the_copy_is_refused() {
+        if is_root() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let sealed = d.path().join("sealed");
+        fs::create_dir_all(sealed.join("inner")).unwrap();
+        fs::write(sealed.join("inner/f"), "f").unwrap();
+        fs::write(sealed.join("g"), "g").unwrap();
+        for dir in [sealed.join("inner"), sealed.clone()] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let from = sealed.to_string_lossy().into_owned();
+        let empty = tempfile::tempdir().unwrap();
+        let into = empty.path().to_string_lossy().into_owned();
+        let held = ["sealed".to_owned()];
+        for shell in shells() {
+            let got = copy_under(&shell, &[], &Act::Copy(&from, &into, &held));
+            assert_eq!(got, Err(Problem::StillOpen(0)), "{shell:?}");
+            assert!(names(empty.path()).is_empty(), "{shell:?}: {:?}", names(empty.path()));
+        }
+        let got = fsops::copy(&from, &into, None, &held);
+        assert!(got.unwrap_err().contains("is still open"));
+        assert!(names(empty.path()).is_empty(), "{:?}", names(empty.path()));
+        for dir in [sealed.clone(), sealed.join("inner")] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    /// Someone who may rename in `into` puts a link to a folder of the person's at the name just made
+    /// (one holding an entry of the copy's name, a file or a folder, or an empty one), or that folder
+    /// itself: nothing in it is changed or cleared, its mode either.
+    #[test]
+    fn a_scratch_folder_swapped_for_a_link_is_neither_changed_nor_cleared() {
+        let d = tempfile::tempdir().unwrap();
+        let victim = d.path().join("victim");
+        let src = put(d.path(), "a.txt", b"a");
+        let into = tempfile::tempdir().unwrap();
+        let dir = into.path().to_string_lossy().into_owned();
+        // The copy's name is the scratch folder's, after its prefix.
+        let (_bin, path) = shimmed(&[(
+            "mkdir",
+            "case $2 in */.yuzora-save-*)\n\
+             id=${2##*.yuzora-save-}\n\
+             case $ID in file) : > \"$VICTIM/$id\" ;; folder) mkdir \"$VICTIM/$id\" && echo f > \"$VICTIM/$id/f\" ;; esac\n\
+             if [ -n \"$MOVE\" ]; then mv \"$VICTIM\" \"$2\"; else ln -s \"$VICTIM\" \"$2\"; fi\n\
+             exit 0 ;;\n\
+             esac\n\
+             exec mkdir \"$@\"",
+        )]);
+        let hex = |n: &String| n.len() == 32 && n.bytes().all(|b| b.is_ascii_hexdigit());
+        for shell in shells() {
+            for (id, full, moved) in [
+                ("file", true, ""),
+                ("folder", true, ""),
+                ("", false, ""),
+                ("folder", true, "1"),
+            ] {
+                let case = format!("{shell:?} {id} {full} {moved}");
+                fs::create_dir(&victim).unwrap();
+                if full {
+                    fs::create_dir(victim.join("c")).unwrap();
+                    fs::write(victim.join("c/keep"), "keep").unwrap();
+                }
+                fs::set_permissions(&victim, fs::Permissions::from_mode(0o755)).unwrap();
+                let env = [
+                    ("PATH", path.as_str()),
+                    ("VICTIM", victim.to_str().unwrap()),
+                    ("ID", id),
+                    ("MOVE", moved),
+                ];
+                let got = copy_under(&shell, &env, &Act::Copy(&src, &dir, &[]));
+                assert!(
+                    matches!(&got, Err(Problem::Failed(why)) if why.contains("is not the folder just made")),
+                    "{case}: {got:?}"
+                );
+                let there = names(into.path());
+                let now = if moved.is_empty() {
+                    victim.clone()
+                } else {
+                    into.path().join(&there[0])
+                };
+                assert_eq!(mode(&now), 0o755, "{case}");
+                let held = names(&now);
+                let mine: Vec<&String> = held.iter().filter(|n| hex(n)).collect();
+                assert_eq!(held.len(), usize::from(full) * 2, "{case}: {held:?}");
+                if full {
+                    assert_eq!(fs::read(now.join("c/keep")).unwrap(), b"keep", "{case}");
+                    let kept = now.join(mine[0]);
+                    let what = if id == "file" { kept } else { kept.join("f") };
+                    assert!(what.is_file(), "{case}: {what:?}");
+                }
+                for entry in there {
+                    let entry = into.path().join(entry);
+                    if entry.is_symlink() {
+                        fs::remove_file(entry).unwrap();
+                    } else {
+                        fs::remove_dir_all(entry).unwrap();
+                    }
+                }
+                if victim.exists() {
+                    fs::remove_dir_all(&victim).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_folder_is_not_copied_into_itself_spelled_in_other_letters_on_a_disk_that_folds_case() {
+        let d = tempfile::tempdir().unwrap();
+        if !folds_case(d.path()) {
+            return;
+        }
+        fs::create_dir_all(d.path().join("Src/sub")).unwrap();
+        let from = at(d.path(), "Src");
+        let into = at(d.path(), "src/sub");
+        let act = Act::Copy(&from, &into, &[]);
+        for shell in shells() {
+            assert_eq!(copy_under(&shell, &[], &act), Err(Problem::IntoItself), "{shell:?}");
+        }
+        assert_eq!(
+            fsops::copy(&from, &into, None, &[]),
+            Err(act.describe(&Problem::IntoItself, "this machine"))
+        );
+        assert!(names(&d.path().join("Src/sub")).is_empty());
+    }
+
+    #[test]
+    fn every_shell_copies_a_fifo_as_a_new_fifo_and_this_machine_refuses_it() {
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::os::unix::fs::FileTypeExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("box");
+        fs::create_dir(&src).unwrap();
+        let pipe = std::ffi::CString::new(src.join("pipe").as_os_str().as_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(pipe.as_ptr(), 0o644) }, 0);
+        let from = src.to_string_lossy().into_owned();
+        let into = d.path().to_string_lossy().into_owned();
+        for shell in shells() {
+            let got = copy_under(&shell, &[], &Act::Copy(&from, &into, &[])).unwrap();
+            let made = fs::symlink_metadata(format!("{got}/pipe")).unwrap();
+            assert!(made.file_type().is_fifo(), "{shell:?}");
+            fs::remove_dir_all(&got).unwrap();
+        }
+        let refused = fsops::copy(&from, &into, None, &[]).unwrap_err();
+        assert!(refused.contains("pipe is not a file, a folder or a link"), "{refused}");
+        assert!(scratch_left(d.path()).is_empty());
+    }
+
+    /// `req` run here under `shell` as `hc exec` runs it, with `path` for PATH, and killed with all it
+    /// started (SIGKILL: no trap of the script runs) after a second, as `hc` does at the timeout.
+    fn killed_after_a_second(shell: &[&str], path: &str, mut req: ExecRequest) -> ExecRequest {
+        req.args = shell[1..]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .chain(req.args)
+            .collect();
+        req.program = shell[0].to_owned();
+        req.timeout(Duration::from_secs(1)).env("PATH", path)
+    }
+
+    /// A `cp` that copies some, then never ends.
+    fn hung_cp() -> (tempfile::TempDir, String) {
+        shimmed(&[(
+            "cp",
+            "mkdir -p \"$4/half\" && : > \"$4/half/f\" && exec sleep 30",
+        )])
+    }
+
+    #[test]
+    fn a_copy_killed_at_its_timeout_leaves_nothing_when_the_machine_answers_again() {
+        let d = tempfile::tempdir().unwrap();
+        let src = sample(d.path());
+        let into = tempfile::tempdir().unwrap();
+        let dir = into.path().to_string_lossy().into_owned();
+        let (_bin, path) = hung_cp();
+        for shell in shells() {
+            let mut left_by_the_kill = Vec::new();
+            let got = copy_by(&src, &dir, &[], None, |req| {
+                if req.args.iter().any(|a| a == CLEAR_SCRIPT) {
+                    left_by_the_kill = scratch_left(into.path());
+                }
+                fsops::run(killed_after_a_second(&shell, &path, req))
+            });
+            assert!(
+                matches!(&got, Err(Problem::Failed(why)) if why.starts_with("took longer than 1 s")
+                    && !why.contains("partial")
+                    && !why.contains("The copy may or may not have been made")),
+                "{shell:?}: {got:?}"
+            );
+            assert_eq!(left_by_the_kill.len(), 1, "{shell:?}: the kill ran no trap");
+            assert!(names(into.path()).is_empty(), "{shell:?}: {:?}", names(into.path()));
+        }
+    }
+
+    #[test]
+    fn a_killed_copy_that_cannot_be_cleared_says_where_a_partial_copy_may_be_and_clears_nothing_else() {
+        let d = tempfile::tempdir().unwrap();
+        let src = sample(d.path());
+        let into = tempfile::tempdir().unwrap();
+        let dir = into.path().to_string_lossy().into_owned();
+        let mine = d.path().join("mine");
+        let (_bin, path) = hung_cp();
+        // At the clear: the machine is gone; the scratch folder is a link to a folder of the person's; it
+        // is a folder of the person's, moved there, that holds what its own name does not say is the copy.
+        for at_the_clear in ["unreachable", "link", "folder"] {
+            fs::create_dir_all(mine.join("c")).unwrap();
+            fs::write(mine.join("c/keep"), "keep").unwrap();
+            let mut scratch = String::new();
+            let got = copy_by(&src, &dir, &[], None, |req| {
+                if !req.args.iter().any(|a| a == CLEAR_SCRIPT) {
+                    return fsops::run(killed_after_a_second(&["/bin/sh"], &path, req));
+                }
+                scratch = format!("{dir}/{}", scratch_left(into.path())[0]);
+                match at_the_clear {
+                    "unreachable" => return Err(ExecError::Remote("machine lab is not connected".into())),
+                    "link" => {
+                        fs::rename(&scratch, d.path().join("aside")).unwrap();
+                        symlink(&mine, &scratch).unwrap();
+                    }
+                    _ => {
+                        fs::rename(&scratch, d.path().join("aside")).unwrap();
+                        fs::rename(&mine, &scratch).unwrap();
+                    }
+                }
+                fsops::run(killed_after_a_second(&["/bin/sh"], &path, req))
+            });
+            let Err(Problem::Failed(why)) = &got else {
+                panic!("{at_the_clear}: {got:?}")
+            };
+            assert!(why.starts_with("took longer than 1 s"), "{at_the_clear}: {why}");
+            assert!(
+                why.contains(&format!("A partial copy may be left in {scratch}, ")),
+                "{at_the_clear}: {why}"
+            );
+            let kept = if at_the_clear == "folder" { Path::new(&scratch) } else { mine.as_path() };
+            assert_eq!(fs::read(kept.join("c/keep")).unwrap(), b"keep", "{at_the_clear}");
+            assert_eq!(names(kept), ["c"], "{at_the_clear}");
+            if at_the_clear == "folder" {
+                fs::rename(&scratch, &mine).unwrap();
+            } else if at_the_clear == "link" {
+                fs::remove_file(&scratch).unwrap();
+            }
+            let aside = d.path().join("aside");
+            if aside.exists() {
+                fs::remove_dir_all(&aside).unwrap();
+            }
+            if Path::new(&scratch).exists() {
+                fs::remove_dir_all(&scratch).unwrap();
+            }
+        }
+    }
+
+    /// `hc` answers a script killed by a signal before its timeout with no exit code (`"code": null,
+    /// "signal": 9` from hc 0.1.21), read as -1. Its trap did not run either: the copy's scratch
+    /// folder is cleared as after the timeout.
+    #[test]
+    fn a_copy_killed_by_a_signal_leaves_nothing_when_the_machine_answers_again() {
+        let d = tempfile::tempdir().unwrap();
+        let src = sample(d.path());
+        let into = tempfile::tempdir().unwrap();
+        let dir = into.path().to_string_lossy().into_owned();
+        // Copies some, then kills the script and all it started (its own process group).
+        let (_bin, path) = shimmed(&[(
+            "cp",
+            "mkdir -p \"$4/half\" && : > \"$4/half/f\" && kill -KILL 0",
+        )]);
+        for shell in shells() {
+            let mut left_by_the_kill = Vec::new();
+            let mut code = None;
+            let got = copy_by(&src, &dir, &[], None, |req| {
+                let clear = req.args.iter().any(|a| a == CLEAR_SCRIPT);
+                if clear {
+                    left_by_the_kill = scratch_left(into.path());
+                }
+                let answer = fsops::run(
+                    killed_after_a_second(&shell, &path, req).timeout(Duration::from_secs(20)),
+                );
+                if !clear {
+                    code = answer.as_ref().ok().map(|out| out.code);
+                }
+                answer
+            });
+            assert_eq!(code, Some(-1), "{shell:?}: the copy ended by a signal");
+            assert!(
+                matches!(&got, Err(Problem::Failed(why)) if !why.contains("partial")),
+                "{shell:?}: {got:?}"
+            );
+            assert_eq!(left_by_the_kill.len(), 1, "{shell:?}: the kill ran no trap");
+            assert!(
+                names(into.path()).is_empty(),
+                "{shell:?}: {:?}",
+                names(into.path())
+            );
+        }
+    }
+
+    /// Someone who may rename in `into` swaps the scratch folder for another folder after the
+    /// copy's last look at it and before the rename: `<hex>` in that folder is not what is renamed
+    /// in, and that folder is not removed, even when empty.
+    #[test]
+    fn a_scratch_folder_swapped_just_before_the_rename_gives_up_nothing_of_the_folder_put_there() {
+        let d = tempfile::tempdir().unwrap();
+        let src = put(d.path(), "a.txt", b"mine");
+        let swap = r#"d=$(pwd -P) id=${d##*/.yuzora-save-}
+mv "$d" "$d.away" && mkdir "$d" && if [ -n "$SWAP_ENTRY" ]; then mkdir "$d/$id" && echo theirs > "$d/$id/precious"; fi"#;
+        // The rename itself (GNU mv -nT, or perl's rename): the swap, then the real one.
+        let mv = format!("case \" $* \" in *\" -nT \"*) {swap} ;; esac\nexec mv \"$@\"");
+        let perl = format!("case \"$2\" in *rename*) {swap} ;; esac\nexec perl \"$@\"");
+        let (_bin, path) = shimmed(&[("mv", mv.as_str()), ("perl", perl.as_str())]);
+        for shell in shells() {
+            for entry in ["1", ""] {
+                let into = tempfile::tempdir().unwrap();
+                let dir = into.path().to_string_lossy().into_owned();
+                let env = [("PATH", path.as_str()), ("SWAP_ENTRY", entry)];
+                let got = copy_under(&shell, &env, &Act::Copy(&src, &dir, &[]));
+                let why = format!("{shell:?}, an entry at the hex: {entry:?}");
+                assert_eq!(
+                    got.as_ref().ok(),
+                    Some(&format!("{dir}/a.txt")),
+                    "{why}: {got:?}"
+                );
+                assert_eq!(
+                    fs::read(into.path().join("a.txt")).unwrap(),
+                    b"mine",
+                    "{why}"
+                );
+                let put_there: Vec<String> = scratch_left(into.path())
+                    .into_iter()
+                    .filter(|n| !n.ends_with(".away"))
+                    .collect();
+                assert_eq!(put_there.len(), 1, "{why}: {:?}", names(into.path()));
+                let held = names(&into.path().join(&put_there[0]));
+                if entry.is_empty() {
+                    assert!(held.is_empty(), "{why}: {held:?}");
+                } else {
+                    let id = put_there[0].trim_start_matches(fsops::SCRATCH_PREFIX);
+                    assert_eq!(held, [id], "{why}");
+                    let precious = into.path().join(&put_there[0]).join(id).join("precious");
+                    assert_eq!(fs::read(precious).unwrap(), b"theirs\n", "{why}");
+                }
+            }
+        }
+    }
+
+    /// Someone renames another folder to the scratch name while the clear runs: the clear takes
+    /// the copy out of the folder it entered and checked, and leaves the one put there, even empty.
+    #[test]
+    fn a_clear_leaves_a_folder_renamed_to_the_scratch_name_while_it_ran() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let swap = "case \" $* \" in *\" -rf \"*) d=$(pwd -P); mv \"$d\" \"$d.away\" && mkdir \"$d\" ;; esac\nexec rm \"$@\"";
+        let (_bin, path) = shimmed(&[("rm", swap)]);
+        for shell in shells() {
+            let d = tempfile::tempdir().unwrap();
+            let into = d.path().join("into");
+            let scratch = format!("{}{id}", fsops::SCRATCH_PREFIX);
+            fs::create_dir_all(into.join(&scratch).join(id).join("half")).unwrap();
+            fs::write(into.join(&scratch).join(id).join("half/f"), "f").unwrap();
+            let said = clear_under(&shell, &[("PATH", path.as_str())], &into, id);
+            assert_eq!(said, "left", "{shell:?}");
+            assert!(
+                into.join(&scratch).is_dir(),
+                "{shell:?}: {:?}",
+                names(&into)
+            );
+            assert!(names(&into.join(&scratch)).is_empty(), "{shell:?}");
+            assert!(
+                names(&into.join(format!("{scratch}.away"))).is_empty(),
+                "{shell:?}"
+            );
+        }
+    }
+
+    /// Someone who may rename where the target folder is swaps it for a link to another folder
+    /// while the copy runs: the copy is made in the folder entered, under whatever name that has
+    /// by now, nothing is made in the link's target, and the scratch folder is gone.
+    #[test]
+    fn a_target_folder_swapped_for_a_link_while_the_copy_runs_gets_the_copy_and_the_link_target_nothing()
+     {
+        let d = tempfile::tempdir().unwrap();
+        let src = put(d.path(), "authorized_keys", b"mine");
+        // The copy runs in the scratch folder: its ".." is the folder entered.
+        let cp = "case \" $* \" in *\" -RP \"*) i=$(cd -P .. && pwd -P); mv \"$i\" \"$i.away\" && ln -s \"$VICTIM\" \"$i\" ;; esac\nexec cp \"$@\"";
+        let (_bin, path) = shimmed(&[("cp", cp)]);
+        for (shell, taken) in shells()
+            .into_iter()
+            .flat_map(|s| [(s.clone(), false), (s, true)])
+        {
+            let base = tempfile::tempdir().unwrap();
+            let (into, victim) = (base.path().join("into"), base.path().join("victim"));
+            fs::create_dir(&into).unwrap();
+            fs::create_dir(&victim).unwrap();
+            // The name free or taken in the link's target: neither is looked at.
+            if taken {
+                put(&victim, "authorized_keys", b"theirs");
+            }
+            let dir = into.to_string_lossy().into_owned();
+            let env = [
+                ("PATH", path.as_str()),
+                ("VICTIM", victim.to_str().unwrap()),
+            ];
+            let got = copy_under(&shell, &env, &Act::Copy(&src, &dir, &[]));
+            let away = base.path().join("into.away");
+            let why = format!("{shell:?}, taken in the link's target: {taken}");
+            assert!(got.is_ok(), "{why}: {got:?}");
+            assert_eq!(names(&away), ["authorized_keys"], "{why}");
+            assert_eq!(
+                fs::read(away.join("authorized_keys")).unwrap(),
+                b"mine",
+                "{why}"
+            );
+            let theirs: &[&str] = if taken { &["authorized_keys"] } else { &[] };
+            assert_eq!(names(&victim), theirs, "{why}");
+            if taken {
+                assert_eq!(
+                    fs::read(victim.join("authorized_keys")).unwrap(),
+                    b"theirs",
+                    "{why}"
+                );
+            }
+        }
+    }
+
+    /// The folder a killed copy was made in is renamed while the clear runs: the clear still takes
+    /// the scratch folder out of it, through the scratch folder's "..".
+    #[test]
+    fn a_clear_removes_the_scratch_folder_from_the_folder_it_entered_though_that_was_renamed() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let swap = "case \" $* \" in *\" -rf \"*) i=$(cd -P .. && pwd -P); mv \"$i\" \"$i.away\" && mkdir \"$i\" ;; esac\nexec rm \"$@\"";
+        let (_bin, path) = shimmed(&[("rm", swap)]);
+        for shell in shells() {
+            let d = tempfile::tempdir().unwrap();
+            let into = d.path().join("into");
+            let scratch = format!("{}{id}", fsops::SCRATCH_PREFIX);
+            fs::create_dir_all(into.join(&scratch).join(id).join("half")).unwrap();
+            let said = clear_under(&shell, &[("PATH", path.as_str())], &into, id);
+            assert_eq!(said, "done", "{shell:?}");
+            assert!(names(&d.path().join("into.away")).is_empty(), "{shell:?}");
+            assert!(names(&into).is_empty(), "{shell:?}");
+        }
+    }
+
+    /// The line to the machine is lost during a copy: the machine kills the script's process group
+    /// (no trap runs), and `hc` answers `lost the line to <machine> during the call`. The clear
+    /// follows; when it cannot be sent either, the answer says where a partial copy may be. A
+    /// machine never reached was sent nothing, and gets no clear and no word of a partial copy. The
+    /// texts are hc 0.1.21's own (`/tmp/swarm-pr-a/owner-r2/e1/summary.txt`).
+    #[test]
+    fn a_copy_cut_short_by_a_lost_line_is_cleared_or_says_where_a_partial_copy_may_be() {
+        let d = tempfile::tempdir().unwrap();
+        let src = sample(d.path());
+        let into = tempfile::tempdir().unwrap();
+        let dir = into.path().to_string_lossy().into_owned();
+        let (_bin, path) = hung_cp();
+        let lost = "lost the line to lab during the call";
+        const UNREACHABLE: &str = "lab is unreachable: cannot reach /srv/via: ssh: connect to host lab: Connection refused";
+        for the_clear_answers in [true, false] {
+            let mut cleared = 0;
+            let got = copy_by(&src, &dir, &[], None, |req| {
+                if req.args.iter().any(|a| a == CLEAR_SCRIPT) {
+                    cleared += 1;
+                    if !the_clear_answers {
+                        return Err(ExecError::Remote(UNREACHABLE.into()));
+                    }
+                    return fsops::run(killed_after_a_second(&["/bin/sh"], &path, req));
+                }
+                let _ = fsops::run(killed_after_a_second(&["/bin/sh"], &path, req));
+                Err(ExecError::Remote(lost.into()))
+            });
+            let why = format!("the clear answers: {the_clear_answers}");
+            assert_eq!(cleared, 1, "{why}");
+            let Err(Problem::Failed(said)) = &got else {
+                panic!("{why}: {got:?}")
+            };
+            assert!(said.starts_with(lost), "{why}: {said}");
+            if the_clear_answers {
+                assert!(!said.contains("partial"), "{why}: {said}");
+                assert!(
+                    said.contains(&format!(
+                        "The copy may or may not have been made: look in {dir}"
+                    )),
+                    "{why}: {said}"
+                );
+                assert!(
+                    names(into.path()).is_empty(),
+                    "{why}: {:?}",
+                    names(into.path())
+                );
+            } else {
+                assert!(
+                    said.contains("A partial copy may be left in"),
+                    "{why}: {said}"
+                );
+                for left in scratch_left(into.path()) {
+                    fs::remove_dir_all(into.path().join(left)).unwrap();
+                }
+            }
+        }
+        // The line lost after the copy was placed: only its answer is lost, and the copy is there.
+        let placed = tempfile::tempdir().unwrap();
+        let placed_in = placed.path().to_string_lossy().into_owned();
+        let mut asked = 0;
+        let got = copy_by(&src, &placed_in, &[], None, |req| {
+            asked += 1;
+            if asked == 1 {
+                fsops::run(req).unwrap();
+                return Err(ExecError::Remote(lost.into()));
+            }
+            fsops::run(req)
+        });
+        assert_eq!(asked, 2);
+        assert!(
+            matches!(&got, Err(Problem::Failed(said)) if said.contains(&format!("The copy may or may not have been made: look in {placed_in}"))),
+            "{got:?}"
+        );
+        assert_eq!(names(placed.path()), ["src.d"]);
+        // Words of hc's this does not know are read as "may have started": the clear is sent, and when it
+        // cannot clear, the answer says where a partial copy may be.
+        let mut asked = 0;
+        let got = copy_by(&src, &dir, &[], None, |_| {
+            asked += 1;
+            Err(ExecError::Remote("lab hung up".into()))
+        });
+        assert_eq!(asked, 2, "the copy, then the clear");
+        assert!(
+            matches!(&got, Err(Problem::Failed(said)) if said.starts_with("lab hung up. A partial copy may be left in ")),
+            "{got:?}"
+        );
+        for never_reached in [
+            UNREACHABLE,
+            "lab is unreachable: cannot reach /srv/via: the connection closed",
+            "machine lab is not connected",
+            // hc 0.1.21 on a Space whose machine was removed (`hc machine rm`).
+            "unknown machine \"ghost\"",
+        ] {
+            let mut asked = 0;
+            let got = copy_by(&src, &dir, &[], None, |_| {
+                asked += 1;
+                Err(ExecError::Remote(never_reached.into()))
+            });
+            assert_eq!(asked, 1, "no clear after: {never_reached}");
+            assert!(
+                matches!(&got, Err(Problem::Failed(said)) if said == never_reached),
+                "{got:?}"
+            );
+        }
+        // A machine with no sh: nothing ran there, so no clear either.
+        let mut asked = 0;
+        let got = copy_by(&src, &dir, &[], None, |_| {
+            asked += 1;
+            Err(ExecError::Remote(
+                "cannot start sh: No such file or directory (os error 2)".into(),
+            ))
+        });
+        assert_eq!(asked, 1);
+        assert_eq!(got, Err(Problem::NoShell));
+    }
+
+    /// [`CLEAR_SCRIPT`] under `shell`, with `env` set, for the copy `id` made in `into`: the line it
+    /// prints.
+    fn clear_under(shell: &[&str], env: &[(&str, &str)], into: &Path, id: &str) -> String {
+        let into = into.to_string_lossy();
+        let req = fsops::sh_request(None, CLEAR_SCRIPT, &[&into, id], TIMEOUT, MAX_OUTPUT);
+        let out = Command::new(shell[0])
+            .args(&shell[1..])
+            .args(&req.args)
+            .envs(env.iter().copied())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn a_clear_that_cannot_see_the_folder_the_copy_was_made_in_says_the_copy_is_left() {
+        let id = "0123456789abcdef0123456789abcdef";
+        for shell in shells() {
+            let d = tempfile::tempdir().unwrap();
+            let into = d.path().join("into");
+            let scratch = format!("{}{id}", fsops::SCRATCH_PREFIX);
+            fs::create_dir_all(into.join(&scratch).join(id).join("half")).unwrap();
+            fs::write(into.join(&scratch).join(id).join("half/f"), "f").unwrap();
+            // The folder renamed away: the copy is out of sight, not gone.
+            let moved = d.path().join("moved");
+            fs::rename(&into, &moved).unwrap();
+            assert_eq!(clear_under(&shell, &[], &into, id), "left", "{shell:?}");
+            assert!(
+                moved.join(&scratch).join(id).join("half/f").exists(),
+                "{shell:?}"
+            );
+            // A folder that cannot be entered.
+            if !is_root() {
+                fs::set_permissions(&moved, fs::Permissions::from_mode(0o600)).unwrap();
+                assert_eq!(clear_under(&shell, &[], &moved, id), "left", "{shell:?}");
+                fs::set_permissions(&moved, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            // In sight: cleared, then known to be gone.
+            assert_eq!(clear_under(&shell, &[], &moved, id), "done", "{shell:?}");
+            assert!(names(&moved).is_empty(), "{shell:?}");
+            assert_eq!(clear_under(&shell, &[], &moved, id), "done", "{shell:?}");
+        }
+    }
+
+    /// A scratch folder of another account's (its owner as `stat` tells it) is not the copy's: nothing
+    /// in it is removed, and the copy may be left.
+    #[test]
+    fn a_clear_leaves_a_scratch_folder_another_account_owns() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let (_bin, path) = shimmed(&[(
+            "stat",
+            "case \"$*\" in *%u*) echo 4242; exit 0 ;; esac\nexec stat \"$@\"",
+        )]);
+        for shell in shells() {
+            let d = tempfile::tempdir().unwrap();
+            let scratch = d.path().join(format!("{}{id}", fsops::SCRATCH_PREFIX));
+            fs::create_dir_all(scratch.join(id).join("half")).unwrap();
+            fs::write(scratch.join(id).join("half/f"), "f").unwrap();
+            let env = [("PATH", path.as_str())];
+            assert_eq!(clear_under(&shell, &env, d.path(), id), "left", "{shell:?}");
+            assert!(scratch.join(id).join("half/f").exists(), "{shell:?}");
+            assert_eq!(clear_under(&shell, &[], d.path(), id), "done", "{shell:?}");
+        }
+    }
+
+    /// Where the freedesktop trash of `home` is, and what it holds.
+    fn trashed(data: &Path) -> (Vec<String>, Vec<String>) {
+        let at = |sub: &str| {
+            let dir = data.join("Trash").join(sub);
+            if dir.exists() {
+                names(&dir)
+            } else {
+                Vec::new()
+            }
+        };
+        (at("files"), at("info"))
+    }
+
+    const TRASH_TOOLS: [&str; 9] = ["mkdir", "mv", "stat", "od", "date", "rm", "ls", "chmod", "id"];
+
+    #[test]
+    fn every_shell_moves_to_the_freedesktop_trash_when_nothing_else_can() {
+        let bin = only(&TRASH_TOOLS, &[]);
+        for shell in shells() {
+            let home = tempfile::tempdir().unwrap();
+            let data = home.path().join("data");
+            let env = [
+                ("PATH", bin.path().to_str().unwrap()),
+                ("HOME", home.path().to_str().unwrap()),
+                ("XDG_DATA_HOME", data.to_str().unwrap()),
+            ];
+            let d = tempfile::tempdir().unwrap();
+            let first = put(d.path(), "a b%.txt", b"one");
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Trash(&first)),
+                Ok(()),
+                "{shell:?}"
+            );
+            let second = put(d.path(), "a b%.txt", b"two");
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Trash(&second)),
+                Ok(()),
+                "{shell:?}"
+            );
+            fs::create_dir(d.path().join("folder")).unwrap();
+            fs::write(d.path().join("folder/in"), "in").unwrap();
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Trash(&at(d.path(), "folder"))),
+                Ok(())
+            );
+            symlink("nowhere", d.path().join("link")).unwrap();
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Trash(&at(d.path(), "link"))),
+                Ok(())
+            );
+            assert!(names(d.path()).is_empty(), "{shell:?}");
+            let files = data.join("Trash/files");
+            assert_eq!(
+                trashed(&data),
+                (
+                    vec![
+                        "a b%.2.txt".into(),
+                        "a b%.txt".into(),
+                        "folder".into(),
+                        "link".into()
+                    ],
+                    vec![
+                        "a b%.2.txt.trashinfo".into(),
+                        "a b%.txt.trashinfo".into(),
+                        "folder.trashinfo".into(),
+                        "link.trashinfo".into()
+                    ]
+                ),
+                "{shell:?}"
+            );
+            assert_eq!(fs::read(files.join("a b%.txt")).unwrap(), b"one");
+            assert_eq!(fs::read(files.join("a b%.2.txt")).unwrap(), b"two");
+            assert_eq!(fs::read(files.join("folder/in")).unwrap(), b"in");
+            assert!(
+                fs::symlink_metadata(files.join("link"))
+                    .unwrap()
+                    .is_symlink()
+            );
+            // The info says where it was, URL-escaped, and when.
+            let info = fs::read_to_string(data.join("Trash/info/a b%.txt.trashinfo")).unwrap();
+            let lines: Vec<&str> = info.lines().collect();
+            assert_eq!(lines[0], "[Trash Info]");
+            let escaped = lines[1].strip_prefix("Path=").unwrap();
+            assert!(escaped.ends_with("/a%20b%25.txt"), "{escaped}");
+            let mut bytes = Vec::new();
+            let mut rest = escaped.as_bytes();
+            while let Some((&b, tail)) = rest.split_first() {
+                if b == b'%' {
+                    bytes.push(
+                        u8::from_str_radix(std::str::from_utf8(&tail[..2]).unwrap(), 16).unwrap(),
+                    );
+                    rest = &tail[2..];
+                } else {
+                    bytes.push(b);
+                    rest = tail;
+                }
+            }
+            assert_eq!(String::from_utf8(bytes).unwrap(), first);
+            let date = lines[2].strip_prefix("DeletionDate=").unwrap();
+            assert!(
+                date.len() == 19 && date.as_bytes()[10] == b'T' && date.as_bytes()[4] == b'-',
+                "{date}"
+            );
+            assert_eq!(lines.len(), 3);
+        }
+        // XDG_DATA_HOME that is not a full path is not used: the home's own is.
+        let home = tempfile::tempdir().unwrap();
+        let env = [
+            ("PATH", bin.path().to_str().unwrap()),
+            ("HOME", home.path().to_str().unwrap()),
+            ("XDG_DATA_HOME", "relative"),
+        ];
+        let d = tempfile::tempdir().unwrap();
+        let f = put(d.path(), "f", b"f");
+        assert_eq!(run_under(&["/bin/sh"], None, &env, &Act::Trash(&f)), Ok(()));
+        assert_eq!(trashed(&home.path().join(".local/share")).0, ["f"]);
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::symlink_metadata(path).unwrap().mode() & 0o7777
+    }
+
+    #[test]
+    fn the_trash_by_hand_is_for_its_owner_alone() {
+        let bin = only(&TRASH_TOOLS, &[]);
+        for shell in shells() {
+            for already in [false, true] {
+                let home = tempfile::tempdir().unwrap();
+                let data = home.path().join("data");
+                if already {
+                    fs::create_dir_all(data.join("Trash")).unwrap();
+                    fs::set_permissions(data.join("Trash"), fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                }
+                let env = [
+                    ("PATH", bin.path().to_str().unwrap()),
+                    ("HOME", home.path().to_str().unwrap()),
+                    ("XDG_DATA_HOME", data.to_str().unwrap()),
+                ];
+                let d = tempfile::tempdir().unwrap();
+                let f = put(d.path(), "f.txt", b"x");
+                let got = run_under(&shell, Some("022"), &env, &Act::Trash(&f));
+                assert_eq!(got, Ok(()), "{shell:?} {already}");
+                let why = format!("{shell:?}, a trash there before: {already}");
+                assert_eq!(mode(&data.join("Trash")), 0o700, "{why}");
+                assert_eq!(mode(&data.join("Trash/info/f.txt.trashinfo")), 0o600, "{why}");
+                if !already {
+                    assert_eq!(mode(&data.join("Trash/files")), 0o700, "{why}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gio_is_asked_first_then_a_trash_command_then_the_trash_by_hand() {
+        let took = tempfile::tempdir().unwrap();
+        let log = took.path().join("log");
+        let works = |tool: &str, arg: &str| {
+            format!("echo {tool} >> \"$LOG\"; mv -- \"{arg}\" \"$TOOK/{tool}\"")
+        };
+        let fails = |tool: &str| format!("echo {tool} >> \"$LOG\"; exit 1");
+        // A tool that says it did but did not is not believed either.
+        let lies = |tool: &str| format!("echo {tool} >> \"$LOG\"; exit 0");
+        for (gio, trash, want, by_hand) in [
+            (works("gio", "$2"), works("trash", "$1"), "gio\n", false),
+            (fails("gio"), works("trash", "$1"), "gio\ntrash\n", false),
+            (lies("gio"), fails("trash"), "gio\ntrash\n", true),
+        ] {
+            let bin = only(&TRASH_TOOLS, &[("gio", &gio), ("trash", &trash)]);
+            let home = tempfile::tempdir().unwrap();
+            let data = home.path().join("data");
+            let env = [
+                ("PATH", bin.path().to_str().unwrap()),
+                ("HOME", home.path().to_str().unwrap()),
+                ("XDG_DATA_HOME", data.to_str().unwrap()),
+                ("LOG", log.to_str().unwrap()),
+                ("TOOK", took.path().to_str().unwrap()),
+            ];
+            let d = tempfile::tempdir().unwrap();
+            let f = put(d.path(), "f.txt", b"x");
+            assert_eq!(run_under(&["/bin/sh"], None, &env, &Act::Trash(&f)), Ok(()));
+            assert!(names(d.path()).is_empty());
+            assert_eq!(fs::read_to_string(&log).unwrap(), want);
+            assert_eq!(trashed(&data).0.len(), usize::from(by_hand), "{want}");
+            fs::remove_file(&log).unwrap();
+        }
+    }
+
+    #[test]
+    fn what_no_trash_can_take_stays_where_it_is_and_says_why() {
+        let bin = only(&TRASH_TOOLS, &[]);
+        let home = tempfile::tempdir().unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let f = put(d.path(), "f.txt", b"x");
+        let path = bin.path().to_str().unwrap();
+        let ghost = at(d.path(), "ghost");
+        if !is_root() {
+            let locked = home.path().join("locked");
+            fs::create_dir(&locked).unwrap();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+            let shut = home.path().join("shut");
+            fs::create_dir(&shut).unwrap();
+            let inside = put(&shut, "in.txt", b"in");
+            fs::set_permissions(&shut, fs::Permissions::from_mode(0o555)).unwrap();
+            for shell in shells() {
+                let env = [
+                    ("PATH", path),
+                    ("HOME", home.path().to_str().unwrap()),
+                    ("XDG_DATA_HOME", locked.to_str().unwrap()),
+                ];
+                assert_eq!(
+                    run_under(&shell, None, &env, &Act::Trash(&f)),
+                    Err(Problem::NoTrash)
+                );
+                assert_eq!(
+                    run_under(&shell, None, &env, &Act::Trash(&inside)),
+                    Err(Problem::FolderNotWritable)
+                );
+            }
+            assert_eq!(fs::read(&inside).unwrap(), b"in");
+            fs::set_permissions(&shut, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let data = home.path().join("data");
+        let env = [
+            ("PATH", path),
+            ("HOME", home.path().to_str().unwrap()),
+            ("XDG_DATA_HOME", data.to_str().unwrap()),
+        ];
+        for shell in shells() {
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Trash(&ghost)),
+                Err(Problem::Gone)
+            );
+        }
+        // A program the trash by hand needs is named.
+        let no_mv = only(&["mkdir", "stat", "od", "date", "rm"], &[]);
+        let env = [
+            ("PATH", no_mv.path().to_str().unwrap()),
+            ("HOME", home.path().to_str().unwrap()),
+            ("XDG_DATA_HOME", data.to_str().unwrap()),
+        ];
+        assert_eq!(
+            run_under(&["/bin/sh"], None, &env, &Act::Trash(&f)),
+            Err(Problem::NoTool("mv"))
+        );
+        assert_eq!(fs::read(&f).unwrap(), b"x");
+        assert_eq!(names(d.path()), ["f.txt"]);
+    }
+
+    #[test]
+    fn a_file_on_another_disk_than_the_trash_is_refused_as_such_and_stays() {
+        let real = Command::new("/bin/sh")
+            .args(["-c", "command -v stat"])
+            .output()
+            .unwrap();
+        let real = String::from_utf8(real.stdout).unwrap();
+        // Everything in a folder named "far" is on device 99.
+        let stat = format!(
+            "for a; do last=$a; done\ncase $last in /*) at=$last ;; *) at=$(pwd -P)/$last ;; esac\ncase \" $* \" in *' %d -- '*) case $at in */far/*) echo 99; exit 0 ;; esac ;; esac\nexec {} \"$@\"",
+            real.trim()
+        );
+        let tools: Vec<&str> = TRASH_TOOLS.into_iter().filter(|t| *t != "stat").collect();
+        let bin = only(&tools, &[("stat", &stat)]);
+        for shell in shells() {
+            let home = tempfile::tempdir().unwrap();
+            let data = home.path().join("data");
+            let env = [
+                ("PATH", bin.path().to_str().unwrap()),
+                ("HOME", home.path().to_str().unwrap()),
+                ("XDG_DATA_HOME", data.to_str().unwrap()),
+            ];
+            let d = tempfile::tempdir().unwrap();
+            fs::create_dir(d.path().join("far")).unwrap();
+            let f = put(&d.path().join("far"), "f.txt", b"x");
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Trash(&f)),
+                Err(Problem::OtherDevice),
+                "{shell:?}"
+            );
+            assert_eq!(fs::read(&f).unwrap(), b"x", "{shell:?}");
+            assert_eq!(trashed(&data), (vec![], vec![]), "{shell:?}");
+        }
+    }
+
+    /// Someone who may rename where the folder is swaps it, after the trash looked at it, for a link
+    /// to another folder holding an entry of the same name: the entry moved is the one in the folder
+    /// entered, and the one in the link's target stays.
+    #[test]
+    fn a_folder_swapped_for_a_link_during_a_trash_gives_up_nothing_of_the_link_target() {
+        let real = |tool: &str| {
+            let out = Command::new("/bin/sh")
+                .args(["-c", &format!("command -v {tool}")])
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
+        };
+        // `date` runs after every check and before the move.
+        let date = format!(
+            "{} \"$FOLDER\" \"$FOLDER.away\" && {} -s \"$VICTIM\" \"$FOLDER\"\nexec {} \"$@\"",
+            real("mv"),
+            real("ln"),
+            real("date")
+        );
+        let tools: Vec<&str> = TRASH_TOOLS.into_iter().filter(|t| *t != "date").collect();
+        let bin = only(&tools, &[("date", &date)]);
+        for shell in shells() {
+            let base = tempfile::tempdir().unwrap();
+            let (folder, victim) = (base.path().join("w"), base.path().join("v"));
+            fs::create_dir(&folder).unwrap();
+            fs::create_dir(&victim).unwrap();
+            let f = put(&folder, "f.txt", b"mine");
+            put(&victim, "f.txt", b"theirs");
+            let data = base.path().join("data");
+            let env = [
+                ("PATH", bin.path().to_str().unwrap()),
+                ("HOME", base.path().to_str().unwrap()),
+                ("XDG_DATA_HOME", data.to_str().unwrap()),
+                ("FOLDER", folder.to_str().unwrap()),
+                ("VICTIM", victim.to_str().unwrap()),
+            ];
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Trash(&f)),
+                Ok(()),
+                "{shell:?}"
+            );
+            assert_eq!(
+                fs::read(victim.join("f.txt")).unwrap(),
+                b"theirs",
+                "{shell:?}"
+            );
+            assert!(names(&base.path().join("w.away")).is_empty(), "{shell:?}");
+            assert_eq!(trashed(&data).0, ["f.txt"], "{shell:?}");
+            assert_eq!(
+                fs::read(data.join("Trash/files/f.txt")).unwrap(),
+                b"mine",
+                "{shell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_trash_that_is_someone_elses_gets_nothing_made_in_it_and_nothing_moved_to_it() {
+        let tools: Vec<&str> = TRASH_TOOLS.into_iter().filter(|t| *t != "id").collect();
+        let bin = only(&tools, &[("id", "echo 4242")]);
+        for shell in shells() {
+            for there_before in [true, false] {
+                let home = tempfile::tempdir().unwrap();
+                let data = home.path().join("data");
+                if there_before {
+                    fs::create_dir_all(data.join("Trash")).unwrap();
+                    fs::set_permissions(data.join("Trash"), fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                }
+                let env = [
+                    ("PATH", bin.path().to_str().unwrap()),
+                    ("HOME", home.path().to_str().unwrap()),
+                    ("XDG_DATA_HOME", data.to_str().unwrap()),
+                ];
+                let d = tempfile::tempdir().unwrap();
+                let f = put(d.path(), "f.txt", b"x");
+                let why = format!("{shell:?}, a trash there before: {there_before}");
+                assert_eq!(
+                    run_under(&shell, None, &env, &Act::Trash(&f)),
+                    Err(Problem::NoTrash),
+                    "{why}"
+                );
+                assert_eq!(fs::read(&f).unwrap(), b"x", "{why}");
+                if there_before {
+                    assert!(names(&data.join("Trash")).is_empty(), "{why}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_od_that_writes_no_octal_is_named_and_no_trash_info_is_left_without_a_path() {
+        let tools: Vec<&str> = TRASH_TOOLS.into_iter().filter(|t| *t != "od").collect();
+        let bin = only(&tools, &[("od", "echo 'od: invalid option -- t' >&2; exit 1")]);
+        for shell in shells() {
+            let home = tempfile::tempdir().unwrap();
+            let data = home.path().join("data");
+            let env = [
+                ("PATH", bin.path().to_str().unwrap()),
+                ("HOME", home.path().to_str().unwrap()),
+                ("XDG_DATA_HOME", data.to_str().unwrap()),
+            ];
+            let d = tempfile::tempdir().unwrap();
+            let f = put(d.path(), "f.txt", b"x");
+            assert_eq!(
+                run_under(&shell, None, &env, &Act::Trash(&f)),
+                Err(Problem::NoTool("od")),
+                "{shell:?}"
+            );
+            assert_eq!(fs::read(&f).unwrap(), b"x", "{shell:?}");
+            assert_eq!(trashed(&data), (vec![], vec![]), "{shell:?}");
+        }
+    }
+
+    #[test]
+    fn a_trash_info_that_cannot_be_written_is_taken_back_and_the_file_stays() {
+        let bin = only(&TRASH_TOOLS, &[]);
+        for shell in shells() {
+            let home = tempfile::tempdir().unwrap();
+            let data = home.path().join("data");
+            let d = tempfile::tempdir().unwrap();
+            let f = put(d.path(), "f.txt", b"x");
+            let req = request(&Act::Trash(&f), None).unwrap();
+            // A disk with no room left: a name can be made, nothing written in it.
+            let out = Command::new("/bin/sh")
+                .args(["-c", "ulimit -f 0; exec \"$@\"", "x"])
+                .args(&shell)
+                .args(&req.args)
+                .env("PATH", bin.path())
+                .env("HOME", home.path())
+                .env("XDG_DATA_HOME", &data)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            let got = interpret(Ok(ExecOutput {
+                code: out.status.code().unwrap_or(-1),
+                stdout: out.stdout,
+                stderr: out.stderr,
+            }));
+            assert!(
+                matches!(&got, Err(Problem::Failed(why)) if why.contains("the trash information for f.txt could not be written")),
+                "{shell:?}: {got:?}"
+            );
+            assert_eq!(trashed(&data), (vec![], vec![]), "{shell:?}");
+            assert_eq!(fs::read(&f).unwrap(), b"x", "{shell:?}");
+        }
+    }
+
     /// On Linux machines, in throwaway containers (`docker info` must work, and the images are
     /// pulled): the scripts as an ordinary user, against folders with default ACLs and setgid, makers
-    /// and movers that race, two file systems, programs that are missing.
+    /// and movers that race, two file systems, programs that are missing, copies, the home trash.
     /// `YZ_DOCKER=1 cargo test --locked -p yuzora-files --lib -- --ignored --exact
     /// remote_entry::tests::linux_entries_on_real_machines --nocapture`.
     #[test]
@@ -1882,6 +3562,8 @@ exec mv -n -- "$from" "$to""#,
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("make.sh"), MAKE_SCRIPT).unwrap();
         fs::write(dir.path().join("move.sh"), MOVE_SCRIPT).unwrap();
+        fs::write(dir.path().join("copy.sh"), COPY_SCRIPT).unwrap();
+        fs::write(dir.path().join("trash.sh"), TRASH_SCRIPT).unwrap();
         fs::write(
             dir.path().join("entry.sh"),
             include_str!("../tests/docker/remote-entry.sh"),

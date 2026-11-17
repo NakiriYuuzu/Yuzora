@@ -1,13 +1,15 @@
 #!/bin/sh
-# Runs the remote make script (/w/make.sh) and the remote move script (/w/move.sh) on Linux, as
-# ordinary users: what a new file or folder gets compared with what `touch` and `mkdir` give in the
-# same folder, names that are taken, makers and movers that race, a move between file systems,
-# programs that are missing.
+# Runs the remote make, move, copy and trash scripts (/w/make.sh, /w/move.sh, /w/copy.sh, /w/trash.sh)
+# on Linux, as ordinary users: what a new file or folder gets compared with what `touch` and `mkdir` give
+# in the same folder, names that are taken, makers and movers that race, a move between file systems,
+# programs that are missing, copies beside the original and onto another file system, the home trash.
 # usage (as root, in a throwaway container with two tmpfs at /mnt/a and /mnt/b):
 #   remote-entry.sh [shell to run the scripts under]
 SH=${1:-sh}
 MAKE=/w/make.sh
 MOVE=/w/move.sh
+COPY=/w/copy.sh
+TRASH=/w/trash.sh
 fails=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fails=$((fails + 1)); }
@@ -425,6 +427,61 @@ if [ "$root_fs" = overlay ] && [ -d /usr/local/share ] && [ -d /usr/local/lib ] 
   expect "17 it is the same folder" "$runtime_inode" "$(inode /usr/local/runtime.new)"
 else
   echo "note 17: the container's root is not an overlay file system with /usr/local/{share,lib,bin}"
+fi
+
+# copy AS FROM INTO NAME STEM EXT: the script's one line, then exit=N
+ID=0123456789abcdef0123456789abcdef
+copy() {
+  su -s /bin/sh "$1" -c "$SH -c \"\$(cat $COPY)\" sh \"\$0\" \"\$1\" \"\$2\" \"\$3\" \"\$4\" $ID \"\$(cat $MOVE)\" 2>/tmp/stderr.txt; echo exit=\$?" "$2" "$3" "$4" "$5" "$6"
+}
+# trash AS PATH, with the home of AS and no XDG_DATA_HOME
+trash() {
+  su -s /bin/sh "$1" -c "unset XDG_DATA_HOME; HOME=/home/$1 $SH -c \"\$(cat $TRASH)\" sh \"\$0\" 2>/tmp/stderr.txt; echo exit=\$?" "$2"
+}
+scratch() { ls -A -- "$1" | grep -c '^\.yuzora-save-'; }
+
+echo "-- 18. a copy takes the first free name beside it or in another folder, keeps what it holds, and leaves no scratch folder"
+reset /tmp/u18
+as bob 'umask 022; cd /tmp/u18 && printf one > a.txt && chmod 640 a.txt && mkdir -p src/in && printf two > src/in/b && ln -s a.txt src/link'
+expect "18 a file beside itself" "done file 1" "$(verdict copy bob /tmp/u18/a.txt /tmp/u18 a.txt a .txt)"
+expect "18 its bytes" "one" "$(cat '/tmp/u18/a copy.txt')"
+expect "18 its mode" "640 bob bob" "$(mode '/tmp/u18/a copy.txt')"
+expect "18 the next copy" "done file 2" "$(verdict copy bob /tmp/u18/a.txt /tmp/u18 a.txt a .txt)"
+expect "18 a folder beside itself" "done folder 1" "$(verdict copy bob /tmp/u18/src /tmp/u18 src src '')"
+expect "18 what it holds" "two" "$(cat '/tmp/u18/src copy/in/b')"
+expect "18 a link stays a link" "a.txt" "$(readlink '/tmp/u18/src copy/link')"
+expect "18 a folder into itself is refused" "refused inside" "$(verdict copy bob /tmp/u18/src /tmp/u18/src/in src src '')"
+expect "18 no scratch folder is left" "0" "$(scratch /tmp/u18)"
+if grep -q ' /mnt/a tmpfs ' /proc/mounts 2>/dev/null; then
+  as bob 'mkdir -p /mnt/a/u18'
+  expect "18 onto another file system, under its own name" "done folder 0" "$(verdict copy bob /tmp/u18/src /mnt/a/u18 src src '')"
+  expect "18 what it holds there" "two" "$(cat /mnt/a/u18/src/in/b)"
+  expect "18 no scratch folder is left there" "0" "$(scratch /mnt/a/u18)"
+else
+  echo "note 18: the container has no tmpfs at /mnt/a"
+fi
+
+echo "-- 19. with no gio and no trash command, a file goes to the home trash with its trash info, and one on another file system stays"
+if command -v gio >/dev/null 2>&1 || command -v trash >/dev/null 2>&1; then
+  echo "note 19: the image has gio or a trash command, which the script uses first"
+else
+  rm -rf /home/bob/.local/share/Trash /home/bob/u19
+  as bob 'mkdir -p /home/bob/u19 && cd /home/bob/u19 && printf x > f.txt && printf y > "a b.txt"'
+  expect "19 a file" "done" "$(verdict trash bob /home/bob/u19/f.txt)"
+  expect "19 it is gone from where it was" "a b.txt" "$(ls /home/bob/u19 | tr '\n' ' ' | sed 's/ $//')"
+  expect "19 it is in the trash" "x" "$(cat /home/bob/.local/share/Trash/files/f.txt)"
+  yes "19 its trash info says where it was" "$(cat /home/bob/.local/share/Trash/info/f.txt.trashinfo)" "Path=/home/bob/u19/f.txt"
+  expect "19 the trash is its owner's alone" "700 bob bob" "$(mode /home/bob/.local/share/Trash)"
+  as bob 'printf z > /home/bob/u19/f.txt'
+  expect "19 a second file of that name" "done" "$(verdict trash bob /home/bob/u19/f.txt)"
+  expect "19 it takes the next name" "z" "$(cat /home/bob/.local/share/Trash/files/f.2.txt)"
+  expect "19 a name with a space" "done" "$(verdict trash bob '/home/bob/u19/a b.txt')"
+  yes "19 is escaped in its trash info" "$(cat '/home/bob/.local/share/Trash/info/a b.txt.trashinfo')" "Path=/home/bob/u19/a%20b.txt"
+  if grep -q ' /mnt/a tmpfs ' /proc/mounts 2>/dev/null; then
+    as bob 'printf w > /mnt/a/u19.txt'
+    expect "19 a file on another file system is refused" "refused device" "$(verdict trash bob /mnt/a/u19.txt)"
+    expect "19 it stays" "w" "$(cat /mnt/a/u19.txt)"
+  fi
 fi
 
 echo "RESULT fails=$fails"
