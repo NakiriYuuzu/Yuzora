@@ -681,6 +681,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_set_that_adds_a_status_bar_below_the_old_one_moves_the_chip_to_it() {
+        let file = parse(r#"{ "id": "root", "type": "column", "children": [
+            { "id": "main", "type": "block", "content": { "tab": "active" } },
+            { "id": "old", "type": "block", "size": { "px": 28 }, "content": { "mod": "m" } }] }"#);
+        let mut sent = file.clone();
+        inject_with(&mut sent, true, None);
+        let mut new = Node::block("new", Content::Mod { name: "m".into(), props: Value::Null });
+        new.size = Some(Size::Px { px: 28.0 });
+        sent.children_mut().unwrap().push(new);
+        // A person's layout: the tree becomes the file, and the file's last 28px bar is the status bar.
+        ensure_with(&mut sent, true, None, Some(&file), None);
+        assert_eq!((ids(sent.find("old").unwrap()), ids(sent.find("new").unwrap())), (vec![], CHIP.to_vec()));
+        assert_eq!(sent, as_read_with(&sent, Some(&file), true, None), "the window shows what the written file reads back as");
+    }
+
+    #[test]
+    fn a_mods_edit_of_what_the_chip_wraps_reaches_the_file() {
+        // A row root with no status bar: on screen the root's id is the row inside the chip's column.
+        let file = parse(r#"{ "id": "root", "type": "row", "children": [
+            { "id": "side", "type": "block", "size": { "px": 200 }, "content": { "mod": "m" } },
+            { "id": "main", "type": "block", "content": { "tab": "active" } }] }"#);
+        let mut sent = file.clone();
+        inject_with(&mut sent, true, None);
+        sent.find_mut("root").unwrap().padding = serde_json::from_value(json!([8, 8])).unwrap();
+        ensure_with(&mut sent, true, None, Some(&file), None);
+        assert_eq!(strip(&sent, Some(&file)).find("root").unwrap().padding, sent.find("root").unwrap().padding, "the padding is written");
+        assert!(sent.find("root").unwrap().padding.is_some());
+        assert_eq!(sent, as_read_with(&sent, Some(&file), true, None), "the window shows what the written file reads back as");
+    }
+
     /// What a person does to the dock: opens it on Git, widens it and hides the bar (panel), or drags the drawer to the other edge.
     fn click(chrome: &mut Node, placed: Placed) {
         match placed {
