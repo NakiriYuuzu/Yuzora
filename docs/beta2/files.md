@@ -43,7 +43,7 @@ beta.2 的檔案模式、程式碼編輯器、Markdown 預覽與圖片檢視。�
   - 檔案消失：橫幅提供「重新儲存」。
   - 只改權限（chmod 不動大小與時間）：本機檢查也比對權限位元，變了才重新判斷能不能寫，編輯器跟著切換唯讀。
 - **「<Agent> 也在改」**：文件記住最後一次被外部修改的時間（`externalAt`）。3 分鐘內，若有 agent 狀態為 working、且它所在 pane 的 cwd 包含這個檔案（Windows 路徑兩種斜線都認、不分大小寫），標頭顯示該 agent 的名稱：`raised` 底、`muted` 字，前面一個品牌色圓點（`tokens()` 的 agent 品牌色，沒有時用 `th.blocked`）。品牌色直接當文字在淺色底上不到 4.5:1，所以只用在圓點。
-- 關閉有未儲存變更的 pane：buffer 保留在記憶體（toast 提示），重新開啟同一檔案即可找回；Yuzora 結束才會遺失。
+- 關閉有未儲存變更的 pane：若沒有別的 pane 還顯示這份文件，先問「Save／Don't Save／Cancel」（mod `yuzora-unsaved`，判斷在 `app/src/yuzora/unsaved.rs`）；關閉 tab、Space（在「Close space?」確認之後）、視窗（macOS 以外；macOS 的紅色按鈕只是隱藏）、結束 App 與套用已下載的更新也一樣。Save 全部存好才繼續，有一個存不了就留在對話框、在檔名下顯示原因；Don't Save 丟掉變更（文件改讀磁碟上的版本），再繼續；Cancel 什麼都不做。同一份文件另一個 pane 還開著（例如右側模式換掉 pane 時先開新的再關舊的）就不問。只有人執行的命令會問：`herdr-app do`、agent 與腳本照舊直接關，buffer 保留在記憶體（toast 提示），重新開啟同一檔案即可找回，結束 App 時再一起問。
 - 大檔保護：超過 16 MiB 不開；超過 2 MiB 以純文字開啟（關閉上色與摺疊）；含 NUL 的二進位檔不開；非 UTF-8 以唯讀開啟。重新讀取時（外部變更、Reload），檔案變成二進位或超過上限就不再顯示編輯器，未存的修改一併丟掉，不會再被存回去；大小跨過 2 MiB 時重建編輯器，上色與摺疊跟著開或關。
 - 搜尋取代：用 gpui-base 內建的搜尋引擎（`set_search_query`、`next/previous_search_match`、`replace_*`），關掉它的內建面板（`searchable(false)`），讓 ⌘F 冒泡到 JS 的搜尋列。文件還在載入時輸入的查詢會記住，編輯器建立後再套用。
 
@@ -286,7 +286,8 @@ JS（`yuzora:files`，完整宣告在 app home 的 `yuzora.d.ts`）：`openDocum
 - 沒有未儲存變更時的自動重新載入用 `set_value`，會清掉該文件的 undo 歷史。
 - 修改 app home 裡這幾個 mod 造成的熱重載不會呼叫 `close()`：已開的文件多一個參考（Yuzora 結束前不會釋放），舊的 owner 留在文件上，重載後的 pane 要按「在這裡編輯」接手。
 - 右側模式的檔名與內容搜尋只丟掉過期結果，背景工作不會取消；大 repo 剛輸入時可能同時跑多個完整列舉。
-- 有未儲存變更且檔案已從磁碟刪除時，只能「重新儲存」，沒有「捨棄」。
+- 有未儲存變更且檔案已從磁碟刪除時，編輯器的橫幅只能「重新儲存」，沒有「捨棄」；關閉最後一個顯示它的 pane 時，對話框的 Don't Save 可以捨棄（文件在 pane 關掉時一併放掉）。
+- 關閉前不會問的情況：`herdr-app do`、agent 與腳本的關閉（只有結束 App 時才問）；herdr-core 送來的 layout 變更（例如官方 Herdr 關掉同一個 Space）；macOS Dock 選單的「結束」、登出、`SIGTERM`（vendored GPUI 沒有可以攔的地方，直接結束）。`worktree` mod 移除 worktree 時會問，但它不等回答就接著刪掉資料夾。套用更新時按 Don't Save 之後若換檔失敗（例如 Windows 的檔案鎖），變更已經丟掉而 App 不會重啟。
 
 ## 延後項目
 
