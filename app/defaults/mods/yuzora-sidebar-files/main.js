@@ -125,8 +125,9 @@ export default class FilesSidebar extends View {
   // Watches are recursive on macOS: the home folder (or /) itself is left to the timer.
   watch(here, cx) {
     const root = here.root;
-    if (here.on || (this.watching === here && this.watchedRoot === root) || root === "/" || root === home()) return;
+    if (this.watching === here && this.watchedRoot === root) return;
     this.unwatch();
+    if (here.on || root === "/" || root === home()) return;
     this.watching = here; this.watchedRoot = root;
     const token = ++this.watchSeq;
     const same = () => this.watching === here && this.watchSeq === token;

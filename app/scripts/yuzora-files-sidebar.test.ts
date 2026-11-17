@@ -791,6 +791,19 @@ test("the folder git moved the root off lets go of its watch", async () => {
   expect(s.pending("watch").map(c => c.args[0])).toEqual(["/repo"]);
 });
 
+test("the folder git moved the root off lets go of its watch, though the home folder it moved to is not watched", async () => {
+  const sub = "/home/me/proj/sub";
+  const s = sidebar(two(sub, "/b"));
+  await flush();
+  await s.fail(s.pending("git")[0], new Error("git timed out"));
+  await s.answer(s.pending("list")[0], listing("inner.txt"));
+  expect(s.pending("watch").map(c => c.args[0])).toEqual([sub]);
+  s.view.reload(s.cx);
+  await s.settle({ [sub]: listing("inner.txt"), "/home/me": listing("proj/") }, repo("/home/me"));
+  expect(s.frame().texts).toContain("proj");
+  expect(s.pending("watch")).toHaveLength(0);
+});
+
 test("an open search follows the files when a read ends, though another read is already asked for", async () => {
   const s = sidebar();
   await s.settle(A, repo("/a"));
