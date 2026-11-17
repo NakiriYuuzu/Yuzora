@@ -825,7 +825,7 @@ impl DocView {
     }
 
     /// Writes the editor's text. `force`: even if the file changed on disk; a
-    /// file seen deleted, only if it is still gone.
+    /// file seen deleted, only if it is still gone when the save looks.
     pub fn save(&mut self, force: bool, cx: &mut Context<Self>) -> oneshot::Receiver<Saved> {
         let (tx, rx) = oneshot::channel();
         let Some(state) = self.state.clone() else {
@@ -843,8 +843,10 @@ impl DocView {
         let rope = state.read(cx).text().clone();
         let text = rope.to_string();
         // `deleted` is as of the last look at the disk. Forced, such a file is
-        // put back only if it is still gone; one written again since is held
-        // to what was read, as without force.
+        // put back only if it is still gone when the worker looks again; one
+        // written again since is held to what was read, as without force. The
+        // look and the write are two steps (two `hc exec` on a machine), and a
+        // file written back between them is replaced.
         let restore = force && self.deleted;
         let expected = if force && !restore {
             None
