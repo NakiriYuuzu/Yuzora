@@ -397,7 +397,7 @@ fn ensure_with(n: &mut Node, on: bool, personal: Option<Choice>, fallback: Optio
     }
     let mut want = strip(n, fallback);
     inject_sized(&mut want, true, personal, file);
-    if reserved_ids(n) != reserved_ids(&want) {
+    if placement(n) != placement(&want) {
         // The stacks keep what they showed, where that child is still there.
         for x in n.walk() {
             if let Kind::Stack { active: Some(a), .. } = &x.kind {
@@ -466,6 +466,16 @@ pub fn stale_window(spec: &Value, chrome: &Node) -> bool {
 /// Every reserved node and float id in `n`, in tree order.
 fn reserved_ids(n: &Node) -> Vec<String> {
     n.walk().iter().flat_map(|x| x.floating.iter().map(|f| f.id.clone()).chain([x.id.clone()])).filter(|id| reserved(id)).collect()
+}
+
+/// Where the injection put its nodes: each reserved id with the id of what holds it (none for the root).
+fn placement(n: &Node) -> Vec<(&str, &str)> {
+    let mut at = vec![("", n.id.as_str())];
+    for x in n.walk() {
+        at.extend(x.floating.iter().map(|f| f.id.as_str()).chain(x.children().iter().map(|c| c.id.as_str())).map(|id| (x.id.as_str(), id)));
+    }
+    at.retain(|(_, id)| reserved(id));
+    at
 }
 
 #[cfg(test)]
