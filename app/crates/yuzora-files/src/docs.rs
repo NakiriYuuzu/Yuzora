@@ -122,6 +122,24 @@ fn forget(id: u64, cx: &mut App) {
     }
 }
 
+/// Drops a document's unsaved changes (Don't Save when closing or quitting).
+/// One a pane holds takes its file from disk again; if the file is gone it
+/// keeps its text, no longer unsaved, until that pane lets go. One no pane
+/// holds is forgotten.
+pub fn discard(id: u64, cx: &mut App) {
+    let Some(view) = get(id, cx) else { return };
+    let held = view.update(cx, |doc, cx| {
+        doc.dirty = false;
+        if doc.refs > 0 {
+            doc.reload(cx);
+        }
+        doc.refs > 0
+    });
+    if !held {
+        forget(id, cx);
+    }
+}
+
 /// Renames a file or folder (here, or on the machine `on`), then points the documents
 /// open at it, or under it, on that machine at the new path: their panes keep showing them,
 /// and the next look at the disk finds the file where it now is. Refused
@@ -806,7 +824,8 @@ impl DocView {
         self.bump(cx);
     }
 
-    /// Writes the editor's text. `force`: even if the file changed on disk.
+    /// Writes the editor's text. `force`: even if the file changed on disk; a
+    /// file seen deleted, only if it is still gone when the save looks.
     pub fn save(&mut self, force: bool, cx: &mut Context<Self>) -> oneshot::Receiver<Saved> {
         let (tx, rx) = oneshot::channel();
         let Some(state) = self.state.clone() else {
@@ -823,7 +842,13 @@ impl DocView {
         }
         let rope = state.read(cx).text().clone();
         let text = rope.to_string();
-        let expected = if force {
+        // `deleted` is as of the last look at the disk. Forced, such a file is
+        // put back only if it is still gone when the worker looks again; one
+        // written again since is held to what was read, as without force. The
+        // look and the write are two steps (two `hc exec` on a machine), and a
+        // file written back between them is replaced.
+        let restore = force && self.deleted;
+        let expected = if force && !restore {
             None
         } else {
             self.disk.map(|stamp| Seen {
@@ -840,6 +865,8 @@ impl DocView {
             let bytes = fsops::encode_text(&text, eol, bom);
             let (hash, crc) = (fsops::content_hash(&bytes), posix_crc(&bytes));
             let result = blocking(move || {
+                let gone = restore && matches!(fsops::stat(&path, on.as_deref()), Ok(None));
+                let expected = if gone { None } else { expected };
                 fsops::write_on(&path, on.as_deref(), &text, eol, bom, expected)
             })
                 .await
@@ -2002,6 +2029,116 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n");
         cx.update(|cx| assert!(!view.read(cx).deleted && !view.read(cx).dirty));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_forced_save_puts_a_deleted_file_back_only_while_it_is_gone(cx: &mut gpui::TestAppContext) {
+        for machine in [None, Some("lab")] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("a.txt");
+            std::fs::write(&path, "one\n").unwrap();
+            let (view, window) = match machine {
+                Some(m) => editing_on(m, &path, cx),
+                None => editing(&path, cx),
+            };
+            type_text(&view, window, "mine ", cx);
+            std::fs::remove_file(&path).unwrap();
+            drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+            cx.run_until_parked();
+            cx.update(|cx| assert!(view.read(cx).deleted, "{machine:?}"));
+            // Written again before the document looked again. Refused, as a changed file is.
+            std::fs::write(&path, "theirs\n").unwrap();
+            let saved = view.update(cx, |doc, cx| doc.save(true, cx));
+            cx.run_until_parked();
+            let saved = futures::executor::block_on(saved).unwrap();
+            assert_eq!((saved.ok, saved.conflict), (false, true), "{machine:?}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n", "{machine:?}");
+            cx.update(|cx| {
+                let doc = view.read(cx);
+                assert!(doc.conflict && doc.dirty && !doc.deleted, "{machine:?}");
+                assert_eq!(doc.incoming.as_ref().map(|f| f.text.as_str()), Some("theirs\n"), "{machine:?}");
+            });
+            // Gone again, so it is put back.
+            std::fs::remove_file(&path).unwrap();
+            drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+            cx.run_until_parked();
+            let saved = view.update(cx, |doc, cx| doc.save(true, cx));
+            cx.run_until_parked();
+            assert!(futures::executor::block_on(saved).unwrap().ok, "{machine:?}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine one\n", "{machine:?}");
+        }
+    }
+
+    #[gpui::test]
+    fn dont_save_takes_the_file_from_disk_again(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let (view, window) = editing(&path, cx);
+        type_text(&view, window, "mine ", cx);
+        // Someone else changed it too: Don't Save takes theirs.
+        std::fs::write(&path, "theirs, longer\n").unwrap();
+        drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        cx.run_until_parked();
+        let id = cx.update(|cx| view.read(cx).id);
+        cx.update(|cx| assert!(view.read(cx).dirty() && unsaved(cx) == 1));
+        cx.update(|cx| discard(id, cx));
+        // Clean at once: the command the dialog runs next finds nothing to ask about.
+        cx.update(|cx| assert!(!view.read(cx).dirty() && unsaved(cx) == 0));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(view.read(cx).text(cx).as_ref(), "theirs, longer\n");
+            assert!(!view.read(cx).dirty() && !view.read(cx).conflict);
+            assert!(get(id, cx).is_some(), "a pane still holds it");
+        });
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs, longer\n");
+        cx.update(|cx| release(id, None, cx));
+        cx.update(|cx| assert!(get(id, cx).is_none()));
+    }
+
+    #[gpui::test]
+    fn dont_save_forgets_a_document_whose_file_is_gone_when_its_pane_lets_go(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "one\n").unwrap();
+        std::fs::write(&b, "two\n").unwrap();
+        let (kept, window) = editing(&b, cx);
+        type_text(&kept, window, "mine ", cx);
+        let (gone, window) = editing(&a, cx);
+        type_text(&gone, window, "mine ", cx);
+        std::fs::remove_file(&a).unwrap();
+        std::fs::remove_file(&b).unwrap();
+        for view in [&kept, &gone] {
+            drop(view.update(cx, |doc, cx| doc.check_disk(cx)));
+        }
+        cx.run_until_parked();
+        let (a_id, b_id) = cx.update(|cx| (gone.read(cx).id, kept.read(cx).id));
+        cx.update(|cx| discard(a_id, cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(!gone.read(cx).dirty() && get(a_id, cx).is_some(), "clean, and still drawn by its pane");
+            release(a_id, None, cx);
+            release(b_id, None, cx);
+            assert!(get(a_id, cx).is_none(), "Don't Save let it go with its pane");
+            assert!(get(b_id, cx).is_some(), "without Don't Save its changes stay in memory");
+        });
+        assert!(!a.exists(), "nothing was written back");
+    }
+
+    #[gpui::test]
+    fn dont_save_forgets_a_document_no_pane_holds(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let (view, window) = editing(&path, cx);
+        type_text(&view, window, "mine ", cx);
+        let id = cx.update(|cx| view.read(cx).id);
+        cx.update(|cx| release(id, None, cx));
+        cx.update(|cx| assert!(get(id, cx).is_some() && unsaved(cx) == 1, "kept in memory after its pane closed"));
+        cx.update(|cx| discard(id, cx));
+        cx.update(|cx| assert!(get(id, cx).is_none() && unsaved(cx) == 0));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n");
     }
 
     #[test]

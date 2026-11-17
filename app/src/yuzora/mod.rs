@@ -18,6 +18,7 @@ pub mod motion;
 pub mod release;
 pub mod shell;
 pub mod trust;
+pub mod unsaved;
 
 /// The name people see (window title, setup screen).
 pub const APP_NAME: &str = "Yuzora";
