@@ -267,9 +267,10 @@ fn beside(x: &mut Node, axis: Axis, px: f32) {
 /// [`beside`] undone: a node holding a body (a [`BODY`], or the one child of a
 /// [`ROOT`] without a reserved id) and nothing else of its own shows the body
 /// itself again. Anything else beside a body (a mod's `layout.set` put it
-/// there), or a node that has a field [`beside`] moves (a reserved id a person
-/// wrote), keeps the body a child and drops the reserved ids, so nothing that
-/// isn't the injection's is ever lost.
+/// there), a node that has a field [`beside`] moves (a reserved id a person
+/// wrote), or a body with a field [`beside`] doesn't give it (a mod's edit)
+/// keeps the body a child and drops the reserved ids, so nothing that isn't
+/// the injection's is ever lost.
 fn take_body_back(x: &mut Node) {
     let rooted = x.id == ROOT;
     if rooted {
@@ -277,7 +278,7 @@ fn take_body_back(x: &mut Node) {
     }
     let left = (x.gap, &x.divider, x.resizable, x.window_drag) == (None, &None, Some(false), false);
     let Some(children) = x.children_mut() else { return };
-    let is_body = |c: &Node| left && if rooted { !reserved(&c.id) } else { c.id == BODY };
+    let is_body = |c: &Node| left && bare(c) && if rooted { !reserved(&c.id) } else { c.id == BODY };
     if children.iter().filter(|c| is_body(c)).count() != 1 || !children.iter().all(|c| is_body(c) || reserved(&c.id)) {
         children.iter_mut().filter(|c| c.id == BODY).for_each(|c| c.id.clear());
         return;
@@ -291,6 +292,13 @@ fn take_body_back(x: &mut Node) {
     x.divider = body.divider;
     x.resizable = body.resizable;
     x.window_drag = body.window_drag;
+}
+
+/// Whether `c` has only what [`beside`] gives a body, so taking it back loses nothing.
+fn bare(c: &Node) -> bool {
+    let mut plain = Node::new(c.id.clone(), c.kind.clone());
+    (plain.gap, plain.divider, plain.resizable, plain.window_drag) = (c.gap, c.divider.clone(), c.resizable, c.window_drag);
+    plain == *c
 }
 
 /// `n` without anything the injection put there. A stack that showed a
