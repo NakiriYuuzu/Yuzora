@@ -6888,6 +6888,7 @@ export default class Probe extends View {
     include!("window/overlay_motion_tests.rs"); // yuzora(motion): the arrival of dialogs, popups and toasts
     include!("window/yuzora_pane_list_tests.rs"); // yuzora(v0.1.0 files-open): what panes() lists of a pane not started, and a pane replaced in place
     include!("window/yuzora_dock_tests.rs"); // yuzora(dock): the right dock never reaches a layout file
+    include!("window/yuzora_band_tests.rs"); // yuzora(L8): the resource chip's band under every layout
     include!("window/yuzora_unsaved_tests.rs"); // yuzora(unsaved): a person's close asks before unsaved changes are lost
 
     /// What a `{"command":"tab.move","args":{"by":-1}}` key runs.
