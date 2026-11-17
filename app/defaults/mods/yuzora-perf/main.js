@@ -1,5 +1,6 @@
-// Resource usage in the window's bottom-right corner: in a layout's status bar (yuzora's), or in the band the
-// window draws under a layout that places no chip of its own (props().band). Owned by lane L8.
+// Resource usage in the window's bottom-right corner, at the right end of the status bar: a block of its own in
+// yuzora's, and in a layout that places no chip, the window draws it there and names that bar's mod (props().bar).
+// Owned by lane L8.
 // The chip shows this computer's Yuzora (the app, its herdr-core, the tools it starts) as
 // "{cpu}% · {memory}MB", with ⚠ while sampling has trouble; a press opens the details above it,
 // right edges aligned (also "yuzora-perf.toggle"). yuzora:perf samples on a worker thread; this mod
@@ -7,7 +8,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Popover, ToggleGroup, Toggle } from "gpui-base";
-import { theme, window, settings, nextCommand, props } from "herdr";
+import { theme, window, settings, shared, nextCommand, props } from "herdr";
 import { t, tokens, motion } from "yuzora:core";
 import { state, tick } from "yuzora:perf";
 
@@ -29,7 +30,7 @@ const processes = (count) => (count === 1 ? t("process_one") : t("process_other"
 
 export default class Perf extends View {
   init(_props, cx) {
-    this.band = Boolean(props()?.band);
+    this.bar = props()?.bar ?? null;
     this.state = state();
     this.open = false;
     this.sort = "memory";
@@ -57,33 +58,45 @@ export default class Perf extends View {
     });
   }
 
+  // What the bar around the chip paints, so the two read as one bar. k scales the chip: win98's taskbar keeps its
+  // size in Win98 pixels at any zoom, so zoomed in the chip keeps its size too and never outgrows the taskbar;
+  // zoomed out it shrinks with the window and still fits the room the window gives it.
+  face(th) {
+    if (this.bar === "win98") {
+      const u = (shared("win98.scale") === 2 ? 2 : 1) / (Number(settings()?.zoom) || 1);
+      return { k: Math.min(1, u), bg: "#c0c0c0", edge: [[u, "#dfdfdf"], [u, "#ffffff"]], size: 11, text: "#000000" };
+    }
+    // Any other bar: as herdr's own status bar (workspace-status) paints.
+    if (this.bar) return { k: 1, bg: th.chrome, edge: [[1, th.border]], size: 11.8, text: th.muted };
+    // A block of the layout (yuzora's status bar): as yuzora-statusbar beside it.
+    return { k: 1, bg: th.chrome, edge: [[1, th.divider ?? th.border]], size: 11.5, text: th.muted };
+  }
+
   render() {
     const th = theme(), tk = tokens();
+    const f = this.face(th), k = f.k;
     const { snapshot: snap, health: h } = this.state;
     const trouble = h.failures + h.empty;
     const warn = trouble > 0 || (snap !== null && snap.core_pid === null);
     const text = snap
       ? t("chip", { cpu: Math.round(snap.total.cpu), memory: Math.round(mb(snap.total.memory)) })
       : t(trouble > 0 ? "chip_unavailable" : "chip_waiting");
-    const chip = h_flex().id("chip").h(20).px(6).gap(5).items_center().rounded(4).cursor_pointer()
-      .text_color(this.open ? th.foreground : th.muted)
+    const chip = h_flex().id("chip").h(20 * k).px(6 * k).gap(5 * k).items_center().rounded(4 * k).cursor_pointer()
+      .text_size(f.size * k).text_color(this.open ? th.foreground : f.text)
       .when(this.open, (el) => el.bg(th.selected))
       .hover((s) => s.bg(th.hover).text_color(th.foreground))
       .when(!this.open, (el) => el.tooltip(this.tip(snap, h)))
-      .child(svg(`${ICONS}/cpu.svg`).size(12).flex_none())
+      .child(svg(`${ICONS}/cpu.svg`).size(12 * k).flex_none())
       .child(div().whitespace_nowrap().child(text))
       .when(warn, (el) => el.child(div().text_color(tk.status.blocked.color).child("⚠")))
-      .child(svg(`${ICONS}/chevron-up.svg`).size(10).flex_none());
-    // The band is the window's own bar: a theme or layout that gives surfaces a face of their own (win98's gray)
-    // paints it that face, the rest in chrome, as their status bars.
-    const face = this.band && th.surface !== th.background ? th.surface : th.chrome;
-    return h_flex().id("root").size_full().min_w(0).pr(4).justify_end().items_center()
-      .bg(face).border_t(1).border_color(th.divider ?? th.border)
-      .text_size(11.5).text_color(th.muted)
-      .child(Popover.new("usage").anchor("bottom_right").open(this.open)
-        .on_open_change((open, cx) => { this.open = open; cx.notify(); })
-        .trigger(chip)
-        .when(this.open, (el) => el.content(this.panel(th, tk))));
+      .child(svg(`${ICONS}/chevron-up.svg`).size(10 * k).flex_none());
+    return v_flex().id("root").size_full().min_w(0).bg(f.bg).text_size(11.5).text_color(th.muted)
+      .children(f.edge.map(([px, color]) => div().flex_none().h(px).w_full().bg(color)))
+      .child(h_flex().flex_1().min_h(0).pr(4 * k).justify_end().items_center()
+        .child(Popover.new("usage").anchor("bottom_right").open(this.open)
+          .on_open_change((open, cx) => { this.open = open; cx.notify(); })
+          .trigger(chip)
+          .when(this.open, (el) => el.content(this.panel(th, tk)))));
   }
 
   tip(snap, h) {

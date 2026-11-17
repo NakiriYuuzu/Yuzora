@@ -12,10 +12,10 @@
 use gpui_shell::policy::Policy;
 use std::path::{Path, PathBuf};
 
-pub mod band;
 pub mod dock;
 pub mod herdr_compat;
 pub mod motion;
+pub mod perf_chip;
 pub mod release;
 pub mod shell;
 pub mod trust;
