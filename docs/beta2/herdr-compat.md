@@ -202,6 +202,26 @@ L9 另開同步 PR（`beta2/l9-upstream-sync`，**必須 merge commit 合併**�
 - **本機沒跑的一個上游測試**：`macos_check::tests::checker_job_waits_for_demand_and_runs_once` 會在目前使用者的 GUI launchd domain 註冊一個暫時的 job（`/usr/bin/true`）再移除。本機用 `--skip` 略過，由 CI 的 macOS runner 跑。
 - **core 下限維持 0.1.11**（`app/distribution/core-version`，和上游一樣）。v0.1.0 的遠端存檔用 `hc exec --stdin`，0.1.19 才有（[files.md](files.md)），但只有這一個功能需要它，而且已經會說清楚：這台或那台機器的 core 太舊時，存檔被拒絕並顯示「saving needs a newer herdr-core: update it here and on that machine (hc update, hc machine update)」（`Refusal::CoreTooOld`，有測試）。遠端的新增與改名不用 `--stdin`。曾經把下限提高到 0.1.19（`63538bc3`），審查指出代價：`hc::check` 在 `after_update` 之前跑（`app/src/main.rs:142-158`），core 低於下限時自我更新後的第一次啟動不會自動升級 core，而是停在「Update herdr-core」畫面；離線、或 core 由 Homebrew、Nix、mise 管理的人按了也過不去，整個 app 不能用。維持 0.1.11 的話，這些人照常開啟，`after_update` 會把 core 升到同代最新（能升的時候），所以改回來了。core 0.1.20 是 core 自己的修正，不必改 app。
 
+### C1d. 同步到 v0.1.16（2026-11-17）
+
+上游從 `a547b16c` 同步到正式 tag v0.1.16（`034f8b85`，75 個 commit；squash `e6f62cac`）。第一次用 `app/scripts/yuzora/sync-pull v0.1.16` 做。core 需求不變（0.1.11，generation 1），ghostty pin 不變。
+
+- **16 個衝突，4 個由 `sync-pull` 自己解**：`Cargo.toml`、`Cargo.lock`、`CHANGELOG.md`（Yuzora 的在最上面，上游 0.1.16 接在後面）、`THIRD-PARTY-NOTICES`（重產）。其餘 12 個手動：
+  - 兩邊都留：`frame/settings/main.js`（上游的 `notify` 與 Yuzora 的 `yuzora.js` import）、`layout.rs`（上游的 `window_blur` 與 Yuzora 的 `yuzora` 欄位）、`keys.rs`、`SKILL.md`（home 那一行維持 Yuzora 的）、`render_tests.rs`、`window.rs` 測試模組（上游的新測試接在 Yuzora 的三行 `include!` 之後）、`spaces.test.ts`（harness 的 `gitStatus` 排在上游新參數之後）。
+  - `worktree/main.js`：目的地改讀上游新的 `worktrees.directory` 設定（`this.root`），`untrusted()` 閘門保留。
+  - `files.rs`：上游重寫了 `watchFolder` 的登記（`generation`、沒人等就收回）；Yuzora 的 `paths::plain`（Windows 不帶 `\\?\`）與 `Ignores`（不回報被忽略資料夾裡的變動）接在新的結構上。
+  - `main.rs`、`update.rs`、`window.rs` 的 `app.update`：上游的 `update::apply()` 改回傳 `io::Result<bool>`、`after_update` 多收一個 core 連線。Yuzora 的 `note_swap_failure` 從 `swap` 裡面移到它的兩個呼叫端（`apply` 與 `apply_on_startup`）：上游的新測試會直接呼叫 `swap` 讓它失敗，留在裡面的話，失敗原因會寫進同一個測試行程共用的欄位。`app.update` 失敗時仍說 `apply_failure()` 的話（Settings › Updates 與 toast 靠同一段文字對上），不用上游那句帶 Herdr 字樣的訊息。
+- **上游新增完整的 macOS 選單列**（`macos.rs` 的 `menus()`，取代原本只有 app 選單的那一份）：整份採用，四個帶 Herdr 的標題改成 Yuzora（app 選單、Hide、Quit、Welcome），`yuzora-brand.test.ts` 改成檢查「沒有任何項目寫 Herdr」。選單項目跑的指令（`app.feedback`、`app.settings:updates`、`layout.toggle:sidebar`、`mod.open:picker` 等）在 Yuzora 都存在。
+- **`setWindowTitle(null)` 還原成 `Yuzora`**（上游是 `Herdr`）：`window.rs` 一行，上游的 `window_title` 測試跟著改。`defaults/herdr.d.ts` 與 `defaults/AGENTS.md` 裡那句說明沒改，仍寫 Herdr。
+- **macOS 預設鍵多了兩個**（`cmd-m` 最小化、終端機的 `cmd-a` 全選）：上游為此加了 `v0.1.15-keys.macos.json` 快照，Yuzora 另外補 `yuzora-v0.1.2-keys.macos.json`（beta.4 到 v0.1.2 寫出的那一份），沒改過 `keys.json` 的使用者才會升到新預設。非 macOS 的預設鍵這次沒變。
+- **上游新行為讓 Yuzora 的一個測試改期望值**：上游修了「zoom 一個 pane 之後鍵盤還留在被遮住的 pane」（#1058），`pane.zoom` 現在會把焦點給被 zoom 的 pane。`window/pane_replace_tests.rs` 最後一個斷言原本寫的是舊行為，改成新的。
+- **上游的新視窗測試關掉 dock**：`open_heavy` 與 `load_recovery_survives_switches` 數的是版面上載入了幾個 mod，Yuzora 的 dock 會多算一個，測試用的版面加上 `"yuzora": {"dock": "off"}`（`yuzora(dock)` 註記）。
+- **Yuzora 的測試替身跟著調整**：`yuzora-trust-mods.test.ts` 補 `appHome`、`watching` 改成 `Map`（上游改了型別）；上游新的 `settings.test.ts` 多濾掉 Yuzora 那行結尾帶註解的 import；`render_tests.rs` 裡兩個會畫出貨 mod 的上游新測試改用 `shell_init`。
+- **CI 的 apt 安裝改用上游新的 `app/scripts/ci-apt`**（鏡像站連不上時換下一個）：`app-ci.yml` 兩處、`app-package.yml` 一處，和上游 `ci.yml`／`release.yml` 這次的改動一致。
+- **沒有新的對外端點**：新增的 URL 只有 `ci-apt` 的 Ubuntu 鏡像站與一個授權條款連結。
+- **本機很慢的一個上游測試**：`files::tests::cancelled_waits_release_quiet_folders_without_stopping_other_callers` 連續建立 76 個資料夾監看，建立時握著登記表的鎖。在開一個 FSEvents 監看要 2 到 4 秒的 Mac 上，它單獨跑要 5 分鐘（會過），同時跑的其他監看測試等不到鎖而超過 10 秒期限。本機全量測試用 `-- --skip` 略過它另外單獨跑；CI 的 runner 不受影響時不用處理。
+- **沒有跟進的上游改動**（Yuzora 用自己的 mod，要不要做另案決定）：上游 `tabs` mod 的兩項新行為（agent 的即時標題顯示在 tab 上、觸控板一次滑動只換一個 tab）與 `localStorage` 內容壞掉時的防護，`yuzora-shell-tabs` 都還沒有。
+
 ### C2. 同步流程與 `app/scripts/yuzora/sync-check`
 
 ```bash

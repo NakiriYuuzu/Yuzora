@@ -5,9 +5,12 @@ import { readFile } from "node:fs/promises";
 
 const read = (path: string) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-test("the macOS app menu hides and quits Yuzora", async () => {
-  const labels = [...(await read("src/macos.rs")).matchAll(/(?:Menu::new|MenuItem::action)\("([^"]+)"/g)].map((m) => m[1]);
-  expect(labels).toEqual(["Yuzora", "Settings", "Hide Yuzora", "Hide Others", "Show All", "Quit Yuzora"]);
+test("the macOS menu bar names Yuzora, and no item says Herdr", async () => {
+  const source = await read("src/macos.rs");
+  const labels = [...source.matchAll(/(?:Menu::new|command|MenuItem::os_action|MenuItem::os_submenu)\("([^"]+)"/g)].map((m) => m[1]);
+  expect(/Menu::new\("([^"]+)"/.exec(source)?.[1]).toBe("Yuzora");
+  expect(labels).toEqual(expect.arrayContaining(["Hide Yuzora", "Quit Yuzora", "Welcome to Yuzora", "Settings…", "Window"]));
+  expect(labels.filter((label) => /herdr/i.test(label))).toEqual([]);
 });
 
 test("the palette's Quit names Yuzora, and typing herdr still finds it", async () => {
