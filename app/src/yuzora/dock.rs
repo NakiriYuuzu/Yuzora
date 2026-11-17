@@ -185,9 +185,10 @@ fn shows_perf(n: &Node) -> bool {
 /// Puts the resource chip into a layout that doesn't show it: beside the
 /// status bar (a mod block of at most [`STATUS_MAX`], last in the column that
 /// holds the tab), else at the bottom of the root. Found by position, as in
-/// [`place_panel`]. Sizes are clicks, so with `file` (the tree as the file has
-/// it) its sizes decide: a tree a mod sends back gets the chip where the window
-/// shows it, though win98 fits its taskbar to a status bar's height.
+/// [`place_panel`]. The sizes that decide are the layout file's, never a
+/// click's: `file`'s (the tree as the file has it, when `n` carries clicks),
+/// else `n`'s own (`n` is the file). So the window and the next load of the
+/// file always put the chip in the same place.
 fn place_perf(n: &mut Node, file: Option<&Node>) {
     if shows_perf(n) {
         return;
@@ -381,15 +382,19 @@ fn as_read_with(n: &Node, fallback: Option<&Node>, on: bool, personal: Option<Ch
 /// `fallback` (the tree as the file has it) is what a stack that showed a
 /// removed dock node goes back to when the dock is rebuilt.
 pub fn ensure(n: &mut Node, layout: &str, fallback: Option<&Node>) {
-    ensure_with(n, enabled(), personal(layout), fallback);
+    // The chip goes where the layout's file, as it is after this set, puts it: a shipped layout's file stays (what the
+    // tree changes are clicks); a person's becomes the tree (written, then read back by `as_read`).
+    let file = if crate::window::shipped_layouts().contains(&layout) { fallback } else { None };
+    ensure_with(n, enabled(), personal(layout), fallback, file);
 }
 
-fn ensure_with(n: &mut Node, on: bool, personal: Option<Choice>, fallback: Option<&Node>) {
+/// [`ensure`], the chip placed by `file`'s sizes, or by `n`'s own when `n` becomes the file.
+fn ensure_with(n: &mut Node, on: bool, personal: Option<Choice>, fallback: Option<&Node>, file: Option<&Node>) {
     if !on {
         return;
     }
     let mut want = strip(n, fallback);
-    inject_sized(&mut want, true, personal, fallback);
+    inject_sized(&mut want, true, personal, file);
     if reserved_ids(n) != reserved_ids(&want) {
         // The stacks keep what they showed, where that child is still there.
         for x in n.walk() {
@@ -612,22 +617,25 @@ mod tests {
     #[test]
     fn a_tree_a_mod_sends_back_has_the_chip_where_the_file_puts_it() {
         // win98's taskbar fits itself to 28px with a click, then win98 sets layout() back (or a tree built without the
-        // dock): a status bar's height now, but the file's sizes say the chip is below it, as the window shows it. Beside
-        // it would be a change of structure, which a shipped layout refuses.
+        // dock): a status bar's height now.
         let (_, file, _) = injected(WIN98);
         let mut clicked = file.clone();
         clicked.find_mut("taskbar").unwrap().size = Some(Size::Px { px: 28.0 });
         let mut chipless = clicked.clone();
         chipless.children_mut().unwrap().retain(|c| c.id != PERF);
         for sent in [clicked.clone(), strip(&clicked, None), chipless] {
-            let mut set = sent;
-            ensure_with(&mut set, true, None, Some(&file));
-            assert_eq!(set, clicked);
+            // win98 itself: its file stays, and its 40px say the chip is below the taskbar, as the window shows it.
+            // Beside it would be a change of structure, which a shipped layout refuses.
+            let mut shipped = sent.clone();
+            ensure_with(&mut shipped, true, None, Some(&file), Some(&file));
+            assert_eq!(shipped, clicked);
+            // A copy of win98: its file becomes the tree, a 28px taskbar is a status bar there, and the chip goes beside
+            // it at once, as the written file reads back.
+            let mut copy = sent;
+            ensure_with(&mut copy, true, None, Some(&file), None);
+            assert_eq!(ids(copy.find("taskbar").unwrap()), CHIP);
+            assert_eq!(copy, as_read_with(&clicked, Some(&file), true, None));
         }
-        // A file that says 28px has a status bar there: the chip goes beside it.
-        let mut reread = strip(&clicked, None);
-        inject_with(&mut reread, true, None);
-        assert_eq!(ids(reread.find("taskbar").unwrap()), CHIP);
     }
 
     /// What a person does to the dock: opens it on Git, widens it and hides the bar (panel), or drags the drawer to the other edge.
@@ -734,7 +742,7 @@ mod tests {
             // What a save would write for it (nothing edited) is the file's text.
             assert_eq!(text_of(&strip(&without_clicks(&file, &n), Some(&file))), text_of(&file));
             let mut shown = file.clone();
-            ensure_with(&mut shown, false, None, None);
+            ensure_with(&mut shown, false, None, None, None);
             assert_eq!(shown, file, "ensure does nothing while off");
         }
     }
@@ -746,11 +754,11 @@ mod tests {
             let mut n = parse(text);
             assert_eq!(inject_with(&mut n, enabled(), None), want);
             let mut shown = n.clone();
-            ensure_with(&mut shown, enabled(), None, None);
+            ensure_with(&mut shown, enabled(), None, None, None);
             assert_eq!(shown, n, "a tree that has the dock keeps it");
         }
         let mut bare = parse(MAIN);
-        ensure_with(&mut bare, enabled(), None, None);
+        ensure_with(&mut bare, enabled(), None, None, None);
         assert!(bare.find("yuzora-dock-bar").is_some(), "a tree built without the dock gets it");
     }
 
@@ -832,19 +840,19 @@ mod tests {
         let (file, mut chrome, placed) = injected(MAIN);
         click(&mut chrome, placed);
         let mut kept = chrome.clone();
-        ensure_with(&mut kept, true, None, None);
+        ensure_with(&mut kept, true, None, None, None);
         assert_eq!(kept, chrome, "a tree that has the dock keeps it, clicks and all");
         let mut bare = file.clone();
-        ensure_with(&mut bare, true, None, None);
+        ensure_with(&mut bare, true, None, None, None);
         assert_eq!(strip(&bare, None), file);
         assert!(bare.find("yuzora-dock-bar").is_some());
         // The drawer too, and a dock the tree opted out of stays out.
         let mut win = parse(WIN98);
-        ensure_with(&mut win, true, None, None);
+        ensure_with(&mut win, true, None, None, None);
         assert!(win.floating.iter().any(|f| f.id == PREFIX));
         let mut off = parse(&MAIN.replacen("\"id\": \"root\",", "\"id\": \"root\", \"yuzora\": { \"dock\": \"off\" },", 1));
         let before = off.clone();
-        ensure_with(&mut off, true, None, None);
+        ensure_with(&mut off, true, None, None, None);
         assert_eq!(reserved_ids(&off), CHIP, "the dock stays out; the chip is no part of it");
         assert_eq!(strip(&off, None), before);
     }
@@ -895,11 +903,11 @@ mod tests {
         assert_eq!(placed(WIN98, Some(Choice::Off)), Placed::Off);
         // The choice reaches what a mod's layout.set and a save's read-back make, not only a load.
         let mut bare = parse(MAIN);
-        ensure_with(&mut bare, true, Some(Choice::Off), None);
+        ensure_with(&mut bare, true, Some(Choice::Off), None, None);
         assert_eq!(reserved_ids(&bare), CHIP, "off: a tree built without the dock stays without (the chip is no part of it)");
         let mut shown = parse(MAIN);
         inject_with(&mut shown, true, None);
-        ensure_with(&mut shown, true, Some(Choice::Off), None);
+        ensure_with(&mut shown, true, Some(Choice::Off), None, None);
         assert_eq!(reserved_ids(&shown), CHIP, "off: a tree that had the dock loses it, as a load would");
         let file = parse(MAIN);
         assert_eq!(reserved_ids(&as_read_with(&shown, Some(&file), true, Some(Choice::Off))), CHIP);
@@ -1131,7 +1139,7 @@ mod tests {
         let mut n: Node = serde_json::from_value(bare).unwrap();
         assert_eq!(inject_with(&mut n, true, None), Placed::Panel);
         let mut again: Node = serde_json::from_value(serde_json::to_value(strip(&n, None)).unwrap()).unwrap();
-        ensure_with(&mut again, true, None, None);
+        ensure_with(&mut again, true, None, None, None);
         assert!(again.find("yuzora-dock-bar").is_some());
         // Several panel-bodies: the modes join the one inside the panel.
         let many = json!({ "id": "root", "type": "row", "children": [
@@ -1240,7 +1248,7 @@ mod tests {
                 assert_eq!(chips(&shown_tree), chips(&node).max(1), "{}", ctx("one chip, or the file's own"));
                 assert_eq!(strip(&shown_tree, None), node, "{}", ctx("strip(inject(F)) == F"));
                 let mut ensured = shown_tree.clone();
-                ensure_with(&mut ensured, true, None, None);
+                ensure_with(&mut ensured, true, None, None, None);
                 assert_eq!(ensured, shown_tree, "{}", ctx("ensure(inject(F)) == inject(F)"));
             }
             for (on, personal) in [(true, None), (false, None), (true, Some(Choice::Auto)), (true, Some(Choice::Drawer)), (true, Some(Choice::Off))] {
@@ -1248,7 +1256,7 @@ mod tests {
                 inject_with(&mut a, on, personal);
                 inject_with(&mut a, on, personal);
                 let mut b = node.clone();
-                ensure_with(&mut b, on, personal, None);
+                ensure_with(&mut b, on, personal, None, None);
                 let _ = strip(&a, Some(&b));
                 let _ = strip(&b, None);
                 let _ = as_read_with(&a, Some(&node), on, personal);
