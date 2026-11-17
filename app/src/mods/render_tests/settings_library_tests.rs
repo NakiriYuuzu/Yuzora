@@ -156,6 +156,107 @@ fn a_link_is_installed_only_once_the_person_trusts_its_plan(cx: &mut TestAppCont
     assert!(done.contains("installed"), "{done}");
 }
 
+#[gpui::test]
+fn a_link_that_fails_shows_what_was_asked_of_github(cx: &mut TestAppContext) {
+    shell_init(cx);
+    let staged = Staged::new();
+    let link = "https://github.com/acme/kit/tree/feature/x/side";
+    let answer = json!({"ok": false, "code": "fetch_failed", "message": "HTTP 404", "github": {"repo": "acme/kit", "ref": "feature", "folder": "x/side"}});
+    let typed = format!("this.linkInput = InputState.new({{ value: '{link}' }}); this.fetchLink(cx);");
+    let [(shown, read), _] = answered(cx, &staged, answer, &typed);
+    assert_eq!(read, [json!(["planFetch", link])]);
+    for part in ["install_errors.fetch_failed", "HTTP 404", "github_repo acme/kit", "github_ref feature", "github_folder x/side"] {
+        assert!(shown.contains(part), "{part}: {shown}");
+    }
+    assert!(!shown.contains("in-go"), "{shown}");
+}
+
+/// The page's install panel drawn alone, so that Cancel is all a click can reach, in a window that takes real
+/// clicks. yuzora:settings' planFetch answers `answer` only once the returned sender says so; every planFetch
+/// and installFolder call is kept. `probe`'s `note("panel", …)` says what the panel shows at each frame.
+fn panel(cx: &mut TestAppContext, staged: &Staged, link: &str, answer: Value) -> (Scenario, async_channel::Sender<()>, Rc<RefCell<Vec<Value>>>) {
+    use std::ops::Deref;
+    let calls: Rc<RefCell<Vec<Value>>> = Rc::default();
+    let (fetches, installs) = (calls.clone(), calls.clone());
+    let (answer_now, later) = async_channel::bounded::<()>(1);
+    let settings = yuzora_settings::host_module()
+        .async_function("planFetch", move |a| {
+            fetches.borrow_mut().push(json!(["planFetch", a.string(0)?]));
+            let (later, answer) = (later.clone(), answer.clone());
+            Ok(async move {
+                let _ = later.recv().await;
+                Ok::<_, HostError>(to_host(&answer))
+            })
+        })
+        .async_function("installFolder", move |a| {
+            installs.borrow_mut().push(json!(["installFolder", a.string(0)?]));
+            Ok(std::future::ready(Ok(HostValue::Null)))
+        });
+    let notes: Rc<RefCell<Vec<Vec<Value>>>> = Rc::default();
+    let sink = notes.clone();
+    let herdr = Rc::new(RefCell::new(Calls::default()));
+    let policy = Policy::new()
+        .with_storage_path(staged.0.join("store-panel.json"))
+        .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
+        .with_host_module(module(fixture(false, json!({}), updates("current", "current")), herdr.clone()))
+        .unwrap();
+    let policy = crate::yuzora::with_modules(policy, "")
+        .with_host_module(HostModule::new("probe").function("note", move |a| {
+            sink.borrow_mut().push((0..2).map_while(|i| a.get(i)).map(from_host).collect());
+            Ok(HostValue::Null)
+        }))
+        .unwrap()
+        .with_host_module(settings)
+        .unwrap();
+    gpui_shell::policy::set_default(policy);
+    std::fs::write(staged.0.join("main.js"), format!(
+        "import Real from './mods/yuzora-settings-mods/main.js'; import {{ InputState, v_flex }} from 'gpui-base'; \
+         import {{ theme }} from 'herdr'; import {{ note }} from 'probe'; \
+         export default class Scenario extends Real {{ \
+           init(props, cx) {{ this.refresh = () => {{}}; this.list = () => {{}}; super.init(props, cx); \
+             this.linkInput = InputState.new({{ value: '{link}' }}); this.fetchLink(cx); }} \
+           render(cx) {{ const i = this.install; note('panel', !i ? 'none' : i.plan ? 'plan' : i.error ? 'error' : 'reading'); \
+             return v_flex().size_full().child(this.installPanel(theme()) ?? v_flex()); }} }}"
+    )).unwrap();
+    let runtime = ShellRuntime::new_isolated().unwrap();
+    let window = cx.add_window(|window, cx| Mounted(runtime.try_load(&staged.0, window, cx).unwrap()));
+    let root = window.read_with(cx, |mounted, _| mounted.0.clone()).unwrap();
+    let visual = gpui::VisualTestContext::from_window(*window.deref(), cx);
+    visual.simulate_resize(gpui::size(gpui::px(480.0), gpui::px(120.0)));
+    let mut s = Scenario { visual, notes, calls: herdr, runtime, root };
+    s.settle();
+    (s, answer_now, calls)
+}
+
+// Cancel while the link downloads drops the panel, and the answer that still comes is for no panel: nothing is
+// shown in its place and nothing is installed.
+#[gpui::test]
+fn cancel_while_a_link_downloads_drops_the_panel_and_its_late_answer(cx: &mut TestAppContext) {
+    shell_init(cx);
+    let staged = Staged::new();
+    let plan = json!({"kind": "mod", "source": "https://github.com/acme/kit", "commit": "1a2b3c4", "mods": [{"from": "/tmp/t/kit", "as": "kit"}],
+                      "layouts": [], "keys": false, "reaches": [], "files": 1, "bytes": 9, "token": "t1"});
+    let answer = json!({"ok": true, "plan": plan, "github": {"repo": "acme/kit", "ref": null, "folder": ""}});
+    let (mut s, answer_now, calls) = panel(cx, &staged, "acme/kit", answer);
+    let shows = |s: &Scenario| s.last("panel").map(|n| n[1].clone());
+    assert_eq!(shows(&s), Some(json!("reading")));
+    // Cancel sits at the panel's right end: down its right edge until a click lands on it.
+    for y in (0..120).step_by(2) {
+        if shows(&s) != Some(json!("reading")) {
+            break;
+        }
+        s.click(480.0 - 16.0, f64::from(y));
+    }
+    assert_eq!(shows(&s), Some(json!("none")), "Cancel drops the panel");
+    answer_now.try_send(()).unwrap();
+    s.settle();
+    s.frame();
+    s.settle();
+    assert_eq!(shows(&s), Some(json!("none")), "the late answer shows nothing");
+    assert_eq!(*calls.borrow(), [json!(["planFetch", "acme/kit"])], "and installs nothing");
+    assert!(s.calls.borrow().unexpected.is_empty(), "{:?}", s.calls.borrow().unexpected);
+}
+
 // The settings frame: app.settings {section: "templates"} and the old mod name both open the merged page's
 // Templates tab, unless a page of its own still claims them (an edited copy of the old page left in the home).
 #[gpui::test]
