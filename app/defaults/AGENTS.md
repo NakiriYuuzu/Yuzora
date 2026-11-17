@@ -1600,10 +1600,11 @@ with these differences.
   Its node is `yuzora-dock-perf`, and what the status bar showed moves into `yuzora-dock-body`; the status bar keeps
   its id, so `layout.hide` and `layout.resize` on it act on the whole bar. With no status bar and a root that isn't
   a column, the root becomes a column with the id `yuzora-dock-root`: what it showed is its first child, under the
-  root's own id, with the chip below. The sizes in the layout file decide, never a click: `layout.set` on a layout
-  of your own writes its sizes into the file, so a bar it makes 32px or less is the status bar at once. These ids
-  are reserved, like the dock's. To place the chip yourself, put a `yuzora-perf` block in the layout: the app then
-  adds none.
+  root's own id and with the root's background, font size and floats, with the chip below. Set those on that
+  child: set on `yuzora-dock-root`, they keep that column in your file. The sizes in the layout file decide, never
+  a click: `layout.set` on a layout of your own writes its sizes into the file, so a bar it makes 32px or less is
+  the status bar at once. These ids are reserved, like the dock's. To place the chip yourself, put a `yuzora-perf`
+  block in the layout: the app then adds none.
 - `yuzora:perf`: `tick(focused)` samples on a worker thread (at most once every 1.5 s, whatever the number of
   callers) and `state()` reads the last sample without sampling: `{snapshot: {total, app, core, tools, core_pid,
   core_error}, health: {attempts, failures, empty, skipped, last_error}, cost}`. Each category is

@@ -17,8 +17,9 @@ lane L8 把 beta.1 狀態列的 CPU／記憶體 chip 與「資源用量」popove
 | `app/Cargo.toml` | yuzora crate 區塊加 `yuzora-perf = { path = "crates/yuzora-perf" }` |
 | `app/src/yuzora/mod.rs` | `host_modules()` 加 `yuzora_perf::host_module(),`；同檔測試的模組數 7 → 8（加模組的必然結果） |
 | `app/defaults/layouts/yuzora.json` | `status` 由 block 改成 row：`yuzora-statusbar`（佔滿）＋`yuzora-perf`（150px），`resizable: false` |
-| `app/src/yuzora/dock.rs` | `place_perf`：載入時把 chip 放進其他 layout（見「放置」）；`strip` 的還原；`ensure` 依 `layout.set` 之後 layout 檔的大小放 chip |
+| `app/src/yuzora/dock.rs` | `place_perf`：載入時把 chip 放進其他 layout（見「放置」）；`strip` 的還原；`ensure` 依 `layout.set` 之後 layout 檔的大小放 chip；`edit`：app 自己改結構時改在使用者的樹上，再放一次 chip |
 | `app/src/mods/render_tests.rs` | 一行 `mod yuzora_perf_place_tests;`，註記 `// yuzora(perf-place):` 在同一行；測試在 `render_tests/yuzora_perf_place_tests.rs` |
+| `app/src/window.rs`（非測試） | 3 行，各行同一行註記 `yuzora(perf-place)`：`sync_folders` 把第一次看到的 mod 停靠在邊上時，`dock(&mut self.chrome, …)` 改成 `dock::edit(&mut self.chrome, …, \|t\| dock(t, …))`（改 1 行；`dock()` 改在使用者的樹上做，不再把 chip 包住的根再包一層）；`save` 寫檔後的 `self.file_chrome = edited` 改成 `dock::as_read(&edited, …)`（改 1 行；存檔後 app 手上的檔案樹和載入一樣依大小放 chip）；`layout.set` 個人分支的 `dock::ensure` 移到 `fill_ids` 之前（dock 的那一行，原本的 `yuzora(dock)` 註記之後加上原因；`strip` 清掉保留 id 的節點在同一次寫檔就拿到產生的 id） |
 | `app/src/window.rs`（`mod tests`） | 4 行：`edit_heavy`、`open_heavy`、`load_recovery_survives_switches`、`new_vm_keeps_popup` 數 mod 複本時加上 `&& c.inst.name != "yuzora-perf"`，各行同一行註記 `// yuzora(perf-place):`。這些測試的 layout 現在也有 chip，它的複本不算在內 |
 | `app/Cargo.lock`、`app/THIRD-PARTY-NOTICES` | 新增 workspace package `yuzora-perf`；沒有新的第三方套件（sysinfo 0.37.2 已由 gpui-fps 帶入） |
 
@@ -92,9 +93,12 @@ beta.2 沒有 WebView，分成三類：
 - 不需要改 L1 的 `yuzora-statusbar/main.js`。
 - 其他 layout（`main`、`terminals`、`win98`、使用者自己的）由 `app/src/yuzora/dock.rs` 的 `place_perf` 在載入時放進去。和 dock 一樣只在畫面上，存檔時 `strip` 拿掉，layout 檔不會出現 `yuzora-dock-*`；dock 設成 off 也照放。layout 裡任何地方（block 或 float）已經有 `yuzora-perf` 時不動：`yuzora.json` 與它的複本（包括改過而另存的 `yuzora-edited`）。
   - 狀態列：放 tab 的 block 最近的上層 column，最後一個子節點是 32px 以下的 mod block。那個 block 原地變成 row，原本的內容移到子節點 `yuzora-dock-body`，右邊是 `yuzora-dock-perf`（150px）。id、大小、外觀留在原節點，所以 `.state` 對它的點選（隱藏、改高度）仍是整條狀態列的。`main` 走這條，形狀和 `yuzora.json` 的 `status` 相同。
-  - 沒有狀態列：根是 column 時在最後加一個 26px 高的 block `yuzora-dock-perf`（`terminals`；`win98` 在 taskbar 下方，taskbar 40px 不算狀態列）。根不是 column 時，根原地變成 column（id 改成 `yuzora-dock-root`）：根原本的內容帶著根的 id 成為第一個子節點，下面是 chip。根獨有的欄位（`titlebar`、`theme`、floats 等）留在根上；`layout.select`、終端機 pane、mod 複本照舊用原本的 id 找到內容。
-  - 位置只看 layout 檔裡的大小，不看點選。載入或檔案被改時，看剛讀到的檔。shipped layout 的 `layout.set` 不改檔（送來的大小都是點選），`ensure` 看原本的檔（`file_chrome`）。個人 layout 的 `layout.set` 把送來的樹寫成檔，`ensure` 與 `as_read` 都看送來的樹。所以載入、檔案被改或 `layout.set` 之後，畫面上的樹和 app 手上的檔案樹（`file_chrome`）是同一個形狀，重啟後 chip 在同一個位置，`.state` 不會記到沒有人做的點選。`ensure` 比對每個保留 id 掛在哪個節點下，不只比對有哪些保留 id：在舊狀態列下面再加一條 32px 以下 mod block 的 `layout.set`，chip 當下就移到新的那條。
-  - mod 用 `layout.set` 改了 chip 包住的節點（`yuzora-dock-body`，或根不是 column 時帶著根 id 的子節點），例如加 padding：存檔時那個節點留成子節點，包住它的節點也留下（狀態列成了 row，根成了 column；沒有 id 的由 app 另給），mod 的修改不會不見，重啟後和畫面一樣。代價是使用者的檔多一層。
+  - 沒有狀態列：根是 column 時在最後加一個 26px 高的 block `yuzora-dock-perf`（`terminals`；`win98` 在 taskbar 下方，taskbar 40px 不算狀態列）。根不是 column 時，根原地變成 column（id 改成 `yuzora-dock-root`）：根原本的內容帶著根的 id 成為第一個子節點，下面是 chip。`.state` 以 id 記點選的欄位（隱藏、背景、字級）與根上的 floats 跟著 id 走，所以之後不管什麼包住這個節點，畫面和 app 手上的檔案樹都在同一個節點上看到它們；`titlebar`、`traffic_lights`、`theme`、dock 的 `yuzora` 設定這些只有根才有的欄位，以及大小、padding、邊框，留在根上。`layout.select`、終端機 pane、mod 複本照舊用原本的 id 找到內容。
+  - 位置只看 layout 檔裡的大小，不看點選。載入或檔案被改時，看剛讀到的檔。shipped layout 的 `layout.set` 不改檔（送來的大小都是點選），`ensure` 看原本的檔（`file_chrome`）。個人 layout 的 `layout.set` 把送來的樹寫成檔，`ensure` 與 `as_read` 都看送來的樹。存檔時 `file_chrome` 也是寫出去的樹重新放一次（`as_read`），不是畫面上的樹。app 自己改結構（`sync_folders` 把第一次看到的 mod 停靠在邊上）時，`dock::edit` 把改動做在使用者的樹上，再依檔案的大小放一次 chip。所以載入、檔案被改、`layout.set`、存檔或停靠之後，畫面上的樹和 `file_chrome` 只差點選，重啟後 chip 在同一個位置，`.state` 不會記到沒有人做的點選。
+  - `ensure` 只在送來的樹就是重新放置的樹加上點選時照收；否則換成重新放置的樹（例如在舊狀態列下面再加一條 32px 以下 mod block，chip 當下就移到新的那條）。重新放置時點選不會丟：每個節點的隱藏、在同一個方向（row 裡是寬、column 裡是高）上的大小、stack 顯示的子節點、float（dock 的抽屜）的邊、對齊與隱藏，都從送來的樹帶過去。
+  - `strip` 不刪任何不是保留 id 的節點。chip 的包裝不管被 mod 或 `dock()` 移到哪裡（例如 `yuzora-dock-root` 被包進新的 row），都在原地還原；只拿掉沒有子節點的保留節點（chip、模式列、模式、使用者自己取保留 id 的 block）。`yuzora-dock-body`、`yuzora-dock-root` 與其他有子節點的保留節點還原不了時留下，只清掉 id。
+  - mod 用 `layout.set` 改了狀態列顯示的內容（`yuzora-dock-body`），例如加 padding：狀態列在檔裡成了包著那個內容的 row，不再是狀態列，chip 離開它，視窗底部多一條 26px 的 chip 列（根不是 column 時根被包成 column）。內容留成狀態列的子節點，在同一次寫檔就拿到產生的 id。改的是根不是 column 時帶著根 id 的子節點：包住它的 column 留在檔裡，帶著只有根才有的欄位與大小，在同一次寫檔拿到產生的 id；畫面和原本一樣，chip 在底部。mod 把背景、字級或 floats 設在 `yuzora-dock-root` 本身而不是那個子節點上時也一樣，那個 column 留在檔裡。這些情況 mod 的修改都不會不見，重啟後和畫面一樣，代價是使用者的檔多一層。
+  - 使用者自己在檔裡寫的保留 id：沒有子節點的保留節點（例如自己取名 `yuzora-dock-perf` 的 block）照舊被拿掉，和 `main` 一樣。有子節點的、或取名 `yuzora-dock-body` 的，內容全部留下，id 被清空（`main` 會連同底下的節點一起拿掉）。根取名 `yuzora-dock-root` 時內容也全部留下，但 `main` 保留這個名字，這裡 id 被清空。清空的 id 在 `layout.set` 寫檔時當下換成產生的 id；一般存檔先寫成 `"id": ""`，下次載入時 app 補上產生的 id。
   - win98：`fitLayout` 先用點選把 taskbar 縮成 28px（zoom 改變時是 21.538px 這類值），再把 `layout()`（含 chip）送回 `layout.set`。shipped 的 `win98` 檔仍是 40px，chip 留在 taskbar 下方，結構沒變，所以被接受。win98 的複本則會把縮小後的高度寫進自己的檔，taskbar 從此算狀態列，chip 當下就移到 taskbar 右端（150px 寬），重啟後也一樣。
 - 既有 app home 裡沒有 `yuzora-perf` 的舊 `yuzora` layout 也會在載入時得到 chip，不用重設 layout。
 
@@ -110,9 +114,9 @@ beta.2 沒有 WebView，分成三類：
 ```bash
 cd app
 cargo test --locked -p yuzora-perf          # 聚合、分類、不變式、hc server 辨識與快取、滾動視窗、模組宣告
-cargo test --locked --bin herdr-app yuzora  # 模組數、layout 引用的 mod 都有出貨、每個 layout 剛好一個 chip（yuzora::dock）
-cargo test --locked --bin herdr-app yuzora_perf_place  # 出貨的 yuzora-perf 把一筆樣本畫成 chip（數字與圖示）
-scripts/yuzora/test-isolated -p herdr-app --bin herdr-app window::tests::  # 每個出貨 layout 只載入一個 chip、畫在右下角；layout.set 跨過狀態列高度後，畫面與重啟一致、不記點選
+cargo test --locked --bin herdr-app yuzora  # 模組數、layout 引用的 mod 都有出貨、每個 layout 剛好一個 chip；三個不變式在 38 種 layout × 3 種 dock 設定 × 7 種 layout.set（798 次）與 5 種停靠（570 次）上成立，I1、I2 另在亂數產生的樹上成立（3000 次，能讀成 layout 的才檢查）（yuzora::dock）
+cargo test --locked --bin herdr-app yuzora_perf_place  # 出貨的 yuzora-perf 收到一筆正常樣本時畫出 chip（文字、CPU 圖示、展開箭頭），不是等待中或 ⚠；測試環境沒有字串檔，畫的是字串 key，看不到數字
+scripts/yuzora/test-isolated -p herdr-app --bin herdr-app window::tests::  # 每個出貨 layout 只載入一個 chip、畫在右下角；layout.set 跨過狀態列高度、包住 layout()、改狀態列內容，與停靠新 mod 之後，檔案是使用者的、畫面與重啟一致、不丟也不多記點選
 scripts/yuzora/check-mods yuzora-perf
 cargo run --release -p yuzora-perf --example cost -- <app pid> 30   # 在 app 的隔離環境變數下執行
 ```

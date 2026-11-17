@@ -1,5 +1,7 @@
-//! The resource chip that every layout shows (src/yuzora/dock.rs `place_perf`) draws a sample: the shipped
-//! `yuzora-perf` never reads `layout()`, so which layouts host it, and where, is tested in `yuzora::dock` and in
+//! The resource chip that every layout shows (src/yuzora/dock.rs `place_perf`): given a good sample, the shipped
+//! `yuzora-perf` draws its text, its CPU icon and its chevron, not its waiting state or a warning. A copy staged here
+//! has no strings, so the text drawn is the string's key and the sample's numbers are not seen. The mod never reads
+//! `layout()`, so which layouts host it, and where, is tested in `yuzora::dock` and in
 //! `window::tests::every_shipped_layout_shows_the_resource_chip_in_the_corner`, not here.
 use super::*;
 
@@ -23,7 +25,7 @@ fn one_sample() -> HostModule {
 }
 
 #[gpui::test]
-fn the_shipped_chip_draws_a_sample(cx: &mut TestAppContext) {
+fn a_good_sample_draws_the_shipped_chip_not_its_waiting_state(cx: &mut TestAppContext) {
     shell_init(cx);
     let staged = Staged::new();
     let calls = Rc::new(RefCell::new(Calls::default()));
