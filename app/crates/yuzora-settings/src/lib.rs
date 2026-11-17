@@ -72,9 +72,9 @@ export function resetMod(name: string): string | null;
 export function appStatus(): Promise<Outcome>;
 /** `herdr-app check` on one installed mod: {ok, output}. */
 export function checkMod(name: string): Promise<Outcome>;
-/** What installing a folder would do (nothing is written). */
+/** What installing a folder would do (nothing is written). code stale: a newer planInstall or planFetch was asked for meanwhile. */
 export function planInstall(path: string): Promise<Outcome & { plan?: InstallPlan }>;
-/** What installing from a link would do: a GitHub repository (owner/repo or its address, a tree/<ref>/<folder> address) or a herdr.dev/mods or herdr.dev/layouts page, downloaded from GitHub only, into a temp folder that is gone when this resolves (nothing is written to the home). code bad_source, fetch_failed, unpack_failed, too_big, not_a_mod. */
+/** What installing from a link would do: a GitHub repository (owner/repo or its address, a tree/<ref>/<folder> address) or a herdr.dev/mods or herdr.dev/layouts page, downloaded from GitHub only, into a temp folder that is gone when this resolves (nothing is written to the home). code bad_source, fetch_failed, unpack_failed, too_big, not_a_mod, stale (a newer planInstall or planFetch was asked for meanwhile). */
 export function planFetch(link: string): Promise<Outcome & { plan?: InstallPlan }>;
 /** Installs the files planInstall or planFetch read (plan.token: the latest plan), never overwriting: what was shown is what's installed, whatever the folder holds now. code stale: plan again. */
 export function installFolder(token: string): Promise<Outcome & { plan?: InstallPlan }>;
@@ -325,24 +325,39 @@ fn install_outcome(r: Result<mods::Plan, mods::InstallError>) -> Value {
 /// writes these, never the folder as it is by then.
 static PLANNED: std::sync::Mutex<Option<(String, mods::Plan)>> = std::sync::Mutex::new(None);
 
-fn plan_install(path: &str) -> Value {
-    remember(mods::plan(std::path::Path::new(path), &yuzora_core::paths::app_home()))
+/// planInstall and planFetch calls, counted as they are asked: a download can
+/// end after a plan asked later, and must not take that plan's place.
+static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The number of a plan being asked for, taken on the calling thread.
+fn ask() -> u64 {
+    ASKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
 }
 
-fn plan_fetch(link: &str) -> Value {
+fn plan_install(asked: u64, path: &str) -> Value {
+    remember(asked, mods::plan(std::path::Path::new(path), &yuzora_core::paths::app_home()))
+}
+
+fn plan_fetch(asked: u64, link: &str) -> Value {
     let base = source::base(std::env::var("YUZORA_INSTALL_URL").ok(), cfg!(debug_assertions));
-    remember(fetch::plan(link, &base, &std::env::temp_dir(), &yuzora_core::paths::app_home()))
+    remember(asked, fetch::plan(link, &base, &std::env::temp_dir(), &yuzora_core::paths::app_home()))
 }
 
-/// Keeps `planned` as the one installFolder may write, under a new token.
-fn remember(planned: Result<mods::Plan, mods::InstallError>) -> Value {
+/// Keeps `planned` as the one installFolder may write, under a new token,
+/// unless a newer plan was asked for while it was read: that one is the plan
+/// on screen, and this one is `stale`.
+fn remember(asked: u64, planned: Result<mods::Plan, mods::InstallError>) -> Value {
     match planned {
         Ok(plan) => {
+            let mut slot = PLANNED.lock().unwrap_or_else(|e| e.into_inner());
+            if asked != ASKED.load(std::sync::atomic::Ordering::SeqCst) {
+                return failed("stale", "a newer plan was asked for");
+            }
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
             let token = format!("{}-{}", session(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
             let mut shown = plan.to_json();
             shown["token"] = json!(token);
-            *PLANNED.lock().unwrap_or_else(|e| e.into_inner()) = Some((token, plan));
+            *slot = Some((token, plan));
             json!({ "ok": true, "plan": shown })
         }
         Err(e) => failed(e.code(), e),
@@ -488,11 +503,13 @@ pub fn host_module() -> HostModule {
         })
         .async_function("planInstall", |a| {
             let path = a.string(0)?.to_owned();
-            background(move || plan_install(&path))
+            let asked = ask();
+            background(move || plan_install(asked, &path))
         })
         .async_function("planFetch", |a| {
             let link = a.string(0)?.to_owned();
-            background(move || plan_fetch(&link))
+            let asked = ask();
+            background(move || plan_fetch(asked, &link))
         })
         .async_function("installFolder", |a| {
             let token = a.string(0)?.to_owned();
@@ -536,6 +553,26 @@ mod tests {
         assert_eq!(codes, ["name_invalid", "command_empty", "body_empty"]);
         let text = call("templateText", vec![json!({ "command": "pi" }), json!([["model", "x"], ["bad:key", "y"], ["k", "two\nlines"]]), json!("Hi")]).unwrap();
         assert_eq!(text, "---\ncommand: pi\nmodel: x\n---\nHi\n", "header lines that would break the file are dropped");
+    }
+
+    // A slow download that ends after a plan asked later must not replace it,
+    // or the plan on screen could never be installed.
+    #[test]
+    fn a_plan_asked_before_a_newer_one_never_takes_its_place() {
+        let dir = std::env::temp_dir().join(format!("yuzora-settings-asked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("demo")).unwrap();
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        std::fs::write(dir.join("demo/main.js"), "export default class {}").unwrap();
+        let plan = || mods::plan(&dir.join("demo"), &dir.join("home"));
+        let (slow, newer) = (ask(), ask());
+        let shown = remember(newer, plan());
+        let token = shown["plan"]["token"].as_str().unwrap_or_else(|| panic!("{shown}")).to_owned();
+        let late = remember(slow, plan());
+        assert_eq!(late["code"], "stale", "{late}");
+        let kept = PLANNED.lock().unwrap().as_ref().map(|(t, _)| t.clone());
+        assert_eq!(kept.as_deref(), Some(token.as_str()), "the plan on screen is still the one installFolder writes");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

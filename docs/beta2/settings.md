@@ -151,7 +151,7 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 - 右側 dock 開關（beta.4 PR-4）：Layouts 頁每一列有「Yuzora dock」的 Auto／Drawer／Off 三段切換（頁面是 Yuzora 自己的 `yuzora-settings-mods`，由上游 frame 的 nav 以 layout overlay 承載，不改上游 mod）。選擇寫進 `shell.dock.layouts.<name>`（`getSetting`／`setSetting("shell")`），目前顯示的 layout 接著 `layout.switch {name}` 立即生效，其他 layout 只存設定；未設定時顯示 layout 檔自己的 `yuzora.dock`（`listMods()` 的 layout 的 `dock` 欄位），沒有就是 Auto。
 - 還原內建：layout 用 `layout.reset {name}`。mod 沒有對應指令：`yuzora_settings::mods::reset_mod` 先把 edited 的資料夾移到 `<name>-edited`（與啟動時相同），再寫回 shipped 檔案。它需要 app 交出內嵌的 shipped 檔案（`set_shipped_mods(crate::mods::DEFAULT_MODS)`），目前尚未串接（見後續整合），所以 UI 只說明「下次啟動會還原」，不顯示按鈕。
 - 從資料夾安裝：`pickFolder` → `planInstall`（只讀）→ 顯示「mods 是受信任的程式碼」警告、會裝成什麼名稱、程式碼會不會執行程式／連網／讀寫檔案（字串掃描，只是提示）、有沒有 `keys.json` → 使用者按「我信任它，安裝」→ `installFolder(plan.token)`。
-  - 裝的就是看過的：`planInstall` 讀進來的檔案（已改寫名稱）留在 Rust（只留最新一份），`installFolder` 只寫這一份，不再讀資料夾；token 不符（例如另一個視窗又規劃了一次）回 `stale`，要重新選。
+  - 裝的就是看過的：`planInstall` 讀進來的檔案（已改寫名稱）留在 Rust（只留最新一份），`installFolder` 只寫這一份，不再讀資料夾；token 不符（例如另一個視窗又規劃了一次）回 `stale`，要重新選。「最新」指最後呼叫的那次：`planInstall`／`planFetch` 在呼叫時編號，較早呼叫的那次若比較晚讀完，不會取代它，而是回 `stale`（下載可能比後來選的資料夾還晚結束）。
   - 一個 mod 資料夾（有 `main.js`），或 shared layout 的資料夾（`layouts/*.json`＋`mods/*/`）。
   - 不覆寫：名稱被占用就用 `-2`、`-3`…（連結、壞掉的連結也算占用；同一包裡的名稱不分大小寫比對，`Foo` 與 `foo` 在 Windows／macOS 是同一個資料夾），並把 `mods/<資料夾原名>/` 路徑與 `mod: "<資料夾原名>"` 改寫成安裝的名稱（`my mod` 裝成 `my-mod` 時也改；冒號前後可有任意空白），layout 內引用也一起改。寫入時 mod 資料夾用 `create_dir`、每個檔案用 `create_new`，名稱在這之間被占用就失敗，不會跟著連結寫到 home 外。新名稱也避開同一包裡其他 mod 的名稱（home 有 `x`、包裡有 `x` 與 `x-2` 時，`x` 裝成 `x-3`），改寫才不會連鎖。
   - 不經過連結：`mods/`、`layouts/` 本身或其中的 mod 資料夾、layout 檔是連結時都略過，檔案層的連結也不複製，不會讀到所選資料夾外的東西。
