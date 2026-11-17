@@ -2,6 +2,19 @@
 
 <!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
 <!-- yuzora(L7): each Yuzora entry here has its Traditional Chinese twin in CHANGELOG.zh-TW.md: add a line to both. -->
+## [0.1.3] - 2026-11-17
+
+### New
+- **Yuzora asks before it loses unsaved changes.** When a file has unsaved changes, Yuzora opens one dialog with Save, Don't Save and Cancel before it closes the file's pane, tab or Space, closes the window, quits, or restarts into a downloaded update. Enter is Save and Esc is Cancel. If a file can't be saved, the dialog stays open and shows why under the file's name. Closing one of two panes on the same file doesn't ask. Remove worktree removes nothing while its Space asks. Answer the dialog, then press Enter in Remove worktree again.
+- **Copy, paste and duplicate in the Files sidebar.** Right-click a file or a folder for Copy, Paste and Duplicate. Paste puts the copy in the folder you right-clicked, or beside the file you right-clicked. Duplicate puts it beside the original. If the name is taken, a copy of `notes.txt` becomes `notes copy.txt`, then `notes copy 2.txt`. Nothing is replaced. A copy appears only once it is whole, and a failed copy leaves nothing behind. Links stay links. On macOS, a copy keeps Finder tags, other extended attributes and the quarantine flag. What you copy stays inside Yuzora, not on the system clipboard, and Paste works only on the machine the copy came from.
+- **Move to Trash works on remote Spaces.** On another machine, Yuzora uses that machine's `gio trash` or `trash` command. Without either, it moves the file into the trash folder of your home there (`~/.local/share/Trash`), with the information a file manager needs to restore it. It never deletes a file.
+- **Install mods and layouts from a link.** In Settings › Mods & Templates, Install from link… takes `owner/repo`, a GitHub address, or a herdr.dev/mods or herdr.dev/layouts page. A GitHub address can name a branch, tag or commit and a folder (`…/tree/<ref>/<folder>`). Yuzora downloads the files from GitHub, never from herdr.dev, and shows the repository, branch, folder and commit. Nothing is installed until you click "I trust it: install".
+- Mods and Templates are one Settings page, Mods & Templates, with Mods, Layouts and Templates tabs. Commands that opened the Templates page, such as `app.settings {"section": "templates"}`, open the Templates tab. A script that runs `tab.new --mod yuzora-settings-templates` now needs `--mod yuzora-settings-mods --props '{"tab":"templates"}'`. If you edited the old Templates page, your copy stays as a page of your own, and those commands open it.
+- **Up to date with Herdr 0.1.16.** On macOS, the menu bar has File, Edit, View, Window and Help menus, Cmd+M minimizes the window, and Cmd+A selects all text in a terminal. Settings has the terminal's font weight, line height, cell width and scroll speed. `"copy_on_select": false` in `settings.json` turns copy on select off. Zooming a pane gives it the keyboard. Editing a mod many times no longer breaks every mod. If you edited `keys.json`, add `"cmd-m": "window.minimize"` and `"cmd-a": "terminal.select_all"` yourself.
+
+### Fixed
+- Files: Save it again, offered in a file's pane when the file was deleted on disk, no longer writes over a file that came back after Yuzora saw it deleted. Yuzora treats that file as changed on disk, as it does any other changed file.
+
 ## [0.1.2] - 2026-11-13
 
 ### New

@@ -2,6 +2,54 @@
 
 <samp>English · <a href="CHANGELOG.zh-TW.md">繁體中文</a></samp>
 
+## [0.1.3] - 2026-11-17
+
+Yuzora asks before a close, a quit or an update loses unsaved changes. The Files sidebar can copy, paste and duplicate, and Move to Trash works on remote Spaces. Mods and Templates are one Settings page, which installs mods and layouts from a GitHub or herdr.dev link. Yuzora is up to date with Herdr 0.1.16.
+
+> **Before you upgrade.** 0.1.0 to 0.1.2 update to 0.1.3 by themselves on macOS, Linux and Windows. So do beta.2 to beta.4 on macOS and Linux. On Windows, a beta can't update itself, and the Tauri app (v0.0.19 and 0.1.0-beta.1) doesn't offer 0.1.3. In both cases, download the installer by hand. See the installation notes below.
+
+### Added
+
+- **Yuzora asks before it loses unsaved changes.** When a file has unsaved changes, Yuzora opens one dialog with Save, Don't Save and Cancel before it closes the file's pane, tab or Space, closes the window, quits, or restarts into a downloaded update. Enter is Save and Esc is Cancel. If a file can't be saved, the dialog stays open and shows why under the file's name. Closing one of two panes on the same file doesn't ask. Remove worktree removes nothing while its Space asks. Answer the dialog, then press Enter in Remove worktree again.
+- **Copy, paste and duplicate in the Files sidebar.** Right-click a file or a folder for Copy, Paste and Duplicate. Paste puts the copy in the folder you right-clicked, or beside the file you right-clicked. Duplicate puts it beside the original. If the name is taken, a copy of `notes.txt` becomes `notes copy.txt`, then `notes copy 2.txt`. Nothing is replaced. A copy appears only once it is whole, and a failed copy leaves nothing behind. Links stay links. On macOS, a copy keeps Finder tags, other extended attributes and the quarantine flag. What you copy stays inside Yuzora, not on the system clipboard, and Paste works only on the machine the copy came from.
+- **Move to Trash works on remote Spaces.** On another machine, Yuzora uses that machine's `gio trash` or `trash` command. Without either, it moves the file into the trash folder of your home there (`~/.local/share/Trash`), with the information a file manager needs to restore it. It never deletes a file.
+- **Install mods and layouts from a link.** In Settings › Mods & Templates, Install from link… takes `owner/repo`, a GitHub address, or a herdr.dev/mods or herdr.dev/layouts page. A GitHub address can name a branch, tag or commit and a folder (`…/tree/<ref>/<folder>`). Yuzora downloads the files from GitHub, never from herdr.dev, and shows the repository, branch, folder and commit. Nothing is installed until you click "I trust it: install".
+
+### Changed
+
+- Mods and Templates are one Settings page, Mods & Templates, with Mods, Layouts and Templates tabs. Commands that opened the Templates page, such as `app.settings {"section": "templates"}`, open the Templates tab. A script that runs `tab.new --mod yuzora-settings-templates` now needs `--mod yuzora-settings-mods --props '{"tab":"templates"}'`. If you edited the old Templates page, your copy stays as a page of your own, and those commands open it.
+- **Up to date with Herdr 0.1.16.** On macOS, the menu bar has File, Edit, View, Window and Help menus, Cmd+M minimizes the window, and Cmd+A selects all text in a terminal. Settings has the terminal's font weight, line height, cell width and scroll speed. `"copy_on_select": false` in `settings.json` turns copy on select off. Zooming a pane gives it the keyboard. Editing a mod many times no longer breaks every mod. If you edited `keys.json`, add `"cmd-m": "window.minimize"` and `"cmd-a": "terminal.select_all"` yourself.
+
+### Fixed
+
+- Files: Save it again, offered in a file's pane when the file was deleted on disk, no longer writes over a file that came back after Yuzora saw it deleted. Yuzora treats that file as changed on disk, as it does any other changed file.
+
+### Known limitations
+
+- Unsaved changes: quits that macOS sends end Yuzora without asking, and unsaved changes are lost. These are Quit in the Dock or the app switcher, logging out and shutting down. Quit Yuzora in the menu bar and Cmd+Q ask.
+- Unsaved changes: agents, scripts and `yuzora do` close panes, tabs and Spaces without asking. A file in a pane they close stays unsaved in memory, and your next quit asks about it. A quit, an update or a window close that they run doesn't ask either, and the changes are lost when Yuzora ends.
+- Unsaved changes: while the dialog is open, another close or quit is dropped. Run it again after you answer.
+- Files: Copy, Paste and Duplicate are only in the right-click menu, with no keys yet.
+- Files: a folder that you can't write to yourself (mode 0555) can't be copied, on this computer or on another machine. On macOS and Linux, a copy on this computer refuses a folder with more than 64 levels of folders inside it ("Too many folders inside each other").
+- Files: a hidden `.yuzora-save-…` folder can stay in the target folder when Yuzora quits during a copy, or when a copy on another machine is stopped and can't be cleaned up. In the second case, the toast says so.
+- Files: on another machine, Move to Trash refuses a file on another disk than the trash of your home there ("The trash is on another disk"). A copy there keeps what that machine's `cp -RP` keeps. On Linux, a copy on this computer keeps contents and permissions, not extended attributes.
+- Settings: Install from link reads a branch whose name has a `/`, such as `feature/x`, as the branch `feature` and the folder `x`. For such a branch, use the commit's address (`…/tree/<commit>/<folder>`), or `…/tree/HEAD/<folder>` for the default branch. A repository that was moved or renamed isn't followed, so use its new address.
+- Settings: a tab that showed the old Templates page before the update says it did not load. Close it and open Settings › Mods & Templates.
+- Windows: Copy, Paste and Duplicate on this computer, Install from link and the unsaved-changes dialog were built for Windows, but no test or person ran them there.
+- The known limitations of 0.1.2 still apply.
+
+### Installation notes
+
+- Installs of 0.1.0 to 0.1.2 update themselves to 0.1.3, and so do beta.2 to beta.4 on macOS and Linux. They check 10 seconds after Yuzora starts and then every hour, and apply the update the next time Yuzora restarts. The version you update from doesn't ask about unsaved changes, so save your files before you quit or restart it.
+- **Windows, on 0.1.0 to 0.1.2:** if you installed it over a beta and haven't restarted your PC since, the update can fail once: the beta started a background program (herdr-core) that still holds Yuzora's install folder. Settings › Updates says so. Restart your PC, or run `hc server stop` in a terminal outside Yuzora (it ends every terminal and the agents running in them, the same as a restart would), then start Yuzora again.
+- **Windows, if you are still on a beta (0.1.0-beta.2 to beta.4):** the beta cannot update itself on Windows. It may show `Herdr 0.1.3 is ready`, but Restart doesn't install it. Close Yuzora, download `Yuzora-windows-x64-setup.exe` from this release and run it over your install. (With the beta still open, the installer may not be able to replace its files.) Then restart your PC once, for the reason above.
+- The Tauri app (v0.0.19 and 0.1.0-beta.1) doesn't offer 0.1.3. Download and install 0.1.3 yourself. It is a different app, and the Tauri app's settings and data don't carry over: set up database connections, SSH hosts and settings again. The Tauri app's files stay where they were, so you can go back by installing it again. The new app has no Browser, Companion or AgentZone, and its editor has no LSP. On Windows, the installer offers to remove the old all-users install. The Tauri app's source code left this repository after 0.1.2 and stays in its git history (tag `v0.1.2`).
+- The macOS app supports only Apple Silicon. Download `Yuzora-macos-aarch64.dmg`. The app has only an ad-hoc signature, with no Apple Developer ID signature or notarization, so Gatekeeper blocks the first open. Go to "System Settings › Privacy & Security" and click "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/Yuzora.app`. Do this only for a DMG you downloaded from this repository's Releases. After an update, macOS may ask again for microphone, camera or folder access.
+- On Windows, `Yuzora-windows-x64-setup.exe` is a per-user installer that needs no admin rights. Authenticode isn't enabled, so SmartScreen may show a warning. Choose More info › Run anyway.
+- Linux (experimental) gets `yuzora-0.1.3-linux-x86_64.tar.gz` and `yuzora-0.1.3-linux-aarch64.tar.gz`. Unpack one and run `yuzora/install`.
+- This release was checked on a real Mac. On Windows and Linux, it was checked only by automated runs on CI runners (on Windows, installing, updating twice and uninstalling; on Linux, running `install`). Nobody tried it on a real Windows or Linux machine.
+- Requires herdr-core 0.1.11 or newer. If it isn't installed, the first screen offers to install it. Saving a file on another machine needs herdr-core 0.1.19 or newer on both machines.
+
 ## [0.1.2] - 2026-11-13
 
 Git's diff colors code, selects text by the character, and shows more clearly which lines one side has alone and where only whitespace changed. Git mode answers faster. A file's tab shows the file's icon. Color themes other than Yuzora's own no longer draw a magenta line beside the sidebar.
