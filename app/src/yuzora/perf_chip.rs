@@ -9,9 +9,10 @@ use gpui::{AnyElement, IntoElement, ParentElement, Styled, div};
 
 /// The chip's mod.
 pub const MOD: &str = "yuzora-perf";
-/// A status bar is at most this tall in its layout file. herdr's own are 28 px (`main`) and 40 px (`win98`'s
-/// taskbar); the root's default of 48 still reads as a bar, where a panel docked at the bottom is far taller.
-const BAR_MAX: f32 = 48.0;
+/// A status bar is at most this tall, as its layout file has it or as drawn at the zoom, whichever is less. herdr's own
+/// are 28 px (`main`) and 40 px in the file (`win98`'s taskbar, which win98 fits to 28 Win98 px: drawn 28 px, 56 with
+/// Large Fonts). A copy of `main` with its bar at 40 px is a status bar; a panel docked at the bottom (320 px) is not.
+const BAR_MAX: f32 = 56.0;
 /// The chip's width at zoom 1: what `yuzora`'s status bar gives its `yuzora-perf` block.
 const WIDTH: f32 = 150.0;
 
@@ -36,7 +37,7 @@ pub fn slot(shown: &Node, file: &Node) -> Option<(String, Instance)> {
     if shown.walk().iter().any(|n| n.content().is_some_and(chip) || n.floating.iter().any(|f| chip(&f.content))) {
         return None;
     }
-    let bar = bar(shown, file)?;
+    let bar = bar(shown, file, crate::settings::zoom())?;
     let Some(Content::Mod { name, .. }) = bar.content() else { return None };
     let key = key(&bar.id);
     // Node ids are free text: a node named like the slot keeps the slot to itself.
@@ -60,10 +61,12 @@ pub fn at(shown: &Node, id: &str, held: impl Fn(&str) -> bool) -> Option<String>
 
 /// The status bar of `shown`: the last child of a column that holds the shown tab, below the tab's own branch, when
 /// that child is a mod block of a fixed height of at most [`BAR_MAX`]. The nearest such column to the tab wins. The
-/// height is the file's, so a click or a mod that resizes the bar (win98 fits its taskbar to the zoom) keeps it the
-/// bar. None when the bar is hidden: the chip hides with it, and never moves to another bar.
-fn bar<'a>(shown: &'a Node, file: &Node) -> Option<&'a Node> {
-    let thin = |n: &Node| matches!(file.find(&n.id).unwrap_or(n).size, Some(Size::Px { px }) if px <= BAR_MAX);
+/// height is the file's, so a click that resizes the bar keeps it the bar, and it counts as written or as drawn at
+/// `zoom`, whichever is less: win98 fits its taskbar to 28 × scale / zoom Win98 px, and in a person's copy of its
+/// layout that is written to the file (112 px with Large Fonts at zoom 0.5), drawn 28 × scale. None when the bar is
+/// hidden: the chip hides with it, and never moves to another bar.
+fn bar<'a>(shown: &'a Node, file: &Node, zoom: f32) -> Option<&'a Node> {
+    let thin = |n: &Node| matches!(file.find(&n.id).unwrap_or(n).size, Some(Size::Px { px }) if px.min(px * zoom) <= BAR_MAX);
     let path = to_tab(shown)?;
     let bar = path.windows(2).rev().find_map(|w| {
         let Kind::Column { children } = &w[0].kind else { return None };
@@ -151,13 +154,35 @@ mod tests {
         assert_eq!((key.as_str(), copy.name.as_str(), &copy.props), ("status#yuzora-perf", MOD, &json!({ "bar": "workspace-status" })));
         let win98 = shown(include_str!("../../defaults/layouts/win98.json"), "win98");
         assert_eq!(slot(&win98, &win98).unwrap().1.props, json!({ "bar": "win98" }));
+        for zoom in [0.5, 3.0] {
+            for (name, text, bar) in [
+                ("main", include_str!("../../defaults/layouts/main.json"), Some("status")),
+                ("win98", include_str!("../../defaults/layouts/win98.json"), Some("taskbar")),
+            ] {
+                let n = shown(text, name);
+                assert_eq!(super::bar(&n, &n, zoom).map(|b| b.id.as_str()), bar, "{name} at zoom {zoom}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_bar_fitted_to_the_zoom_stays_the_bar() {
+        // win98's taskbar in a person's copy of its layout, as win98 writes it: 28 × scale / zoom Win98 px.
+        for (scale, zoom) in [(1.0, 1.0), (1.0, 0.5), (2.0, 1.0), (2.0, 0.5), (2.0, 1.1), (1.0, 3.0), (2.0, 3.0)] {
+            let n = column(vec![tab(), thin("taskbar", 28.0 * scale / zoom)]);
+            assert_eq!(bar(&n, &n, zoom).map(|b| b.id.as_str()), Some("taskbar"), "scale {scale} at zoom {zoom}");
+        }
+        let n = column(vec![tab(), thin("panel", 120.0)]);
+        assert_eq!(bar(&n, &n, 0.5).map(|b| b.id.as_str()), None, "a panel drawn 60 px");
+        let n = column(vec![tab(), thin("status", 40.0)]);
+        assert_eq!(bar(&n, &n, 3.0).map(|b| b.id.as_str()), Some("status"), "zoomed in, a bar as written");
     }
 
     #[test]
     fn a_status_bar_is_a_thin_mod_block_last_in_a_column_that_holds_the_tab() {
         assert_eq!(found(&column(vec![tab(), thin("s", 28.0)])).as_deref(), Some("s"));
-        assert_eq!(found(&column(vec![tab(), thin("s", 48.0)])).as_deref(), Some("s"), "48 px");
-        assert_eq!(found(&column(vec![tab(), thin("s", 49.0)])), None, "taller is a panel");
+        assert_eq!(found(&column(vec![tab(), thin("s", 56.0)])).as_deref(), Some("s"), "56 px");
+        assert_eq!(found(&column(vec![tab(), thin("s", 57.0)])), None, "taller is a panel");
         let weighted = json!({ "id": "s", "type": "block", "content": { "mod": "m" } });
         assert_eq!(found(&column(vec![tab(), weighted])), None, "no fixed height");
         let terminal = json!({ "id": "s", "type": "block", "size": { "px": 28 }, "content": { "terminal": "t1" } });

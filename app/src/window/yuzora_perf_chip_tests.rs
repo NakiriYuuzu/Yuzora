@@ -288,7 +288,7 @@ fn perf_chip_in_win98(cx: &mut gpui::TestAppContext) {
     let layout = serde_json::json!({ "id": "root", "type": "column", "theme": "yuzora-dark", "children": [
         { "id": "main", "type": "block", "content": { "tab": "active" } },
         { "id": "taskbar", "type": "block", "size": { "px": 40 }, "content": { "mod": "win98" } }] });
-    let (view, cx) = open_window(cx, "win98", CHIP_BAR_JS, layout);
+    let (view, cx) = open_window(cx, "win98", CHIP_BAR_JS, layout.clone());
     let lines = |quads: &[ChipQuad], chip: ChipQuad| -> Vec<(f32, gpui::Background)> {
         let mut top: Vec<_> = quads.iter().filter(|q| chip_near(q.x, chip.x) && chip_near(q.w, chip.w) && q.h < 4.0).map(|q| (q.y - chip.y, q.h, q.bg)).collect();
         top.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -313,6 +313,25 @@ fn perf_chip_in_win98(cx: &mut gpui::TestAppContext) {
     let bar = chip_bounds(&view, cx, "taskbar").unwrap();
     let chip = chip_drawn(&quads, bar, chip_rgb(0xc0c0c0)).expect("still the taskbar's gray");
     assert!(lines(&quads, chip).iter().all(|l| (l.0 - 1.0).abs() < 0.05), "the edge in Win98 pixels: {:?}", lines(&quads, chip));
+    // In a person's copy of win98's layout, win98's fitting is written to the file: 28 × scale / zoom Win98 px, 56 px
+    // with Large Fonts (scale 2) at zoom 1, or at zoom 0.5, and 112 px with both.
+    assert!(crate::mods::send_command("yuzora-perf", "toggle"), "the details closed");
+    chip_run(&view, cx, "app.zoom_reset", serde_json::json!({}));
+    for (scale, zoom_outs) in [(2.0, 0), (1.0, 5), (2.0, 0)] {
+        for _ in 0..zoom_outs {
+            chip_run(&view, cx, "app.zoom_out", serde_json::json!({}));
+        }
+        let zoom = super::settings::zoom();
+        assert!((zoom - [1.0, 0.5][usize::from(zoom < 0.75)]).abs() < 0.01, "zoom {zoom}");
+        let px = 28.0 * scale / zoom;
+        let mut fitted = layout.clone();
+        fitted["children"][1]["size"]["px"] = serde_json::json!(px);
+        chip_run(&view, cx, "layout.set", serde_json::json!({ "layout": fitted }));
+        let (_, quads) = chip_frame(cx);
+        let bar = chip_bounds(&view, cx, "taskbar").unwrap();
+        assert!(chip_near(bar.3, 28.0 * scale), "{px} px written at zoom {zoom}, drawn {bar:?}");
+        assert!(chip_drawn(&quads, bar, chip_rgb(0xc0c0c0)).is_some(), "the chip at the taskbar's right end, {px} px written at zoom {zoom}: {quads:?}");
+    }
 }
 
 /// Every layout file and `.state` a person's work leaves, in order, and what `layout()` read after each step: a click

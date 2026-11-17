@@ -1653,8 +1653,8 @@ with these differences.
   with the terminals and agents in it, and the tools the app starts). `yuzora-perf.toggle` (a key in keys.json, or
   `herdr-app do`) opens or closes the details. Remote (SSH) Spaces are not measured.
 - A layout with no `yuzora-perf` block or float of its own gets the chip at the right end of its status bar: the last
-  child of a column that holds the tab, when it is a mod block of a fixed height of at most 48px (`main`'s `status`,
-  `win98`'s taskbar). The window draws it there, 150px wide, and gives the bar's mod the width that is left. The chip
+  child of a column that holds the tab, when it is a mod block of a fixed height of at most 56px, as the layout file
+  has it or as drawn at the zoom, whichever is less (`main`'s `status`, `win98`'s taskbar). The window draws it there, 150px wide, and gives the bar's mod the width that is left. The chip
   is not in `layout()` and never reaches the layout file. Hiding the bar hides the chip. A layout without such a bar
   shows no chip, and `yuzora-perf.toggle` then answers `unknown command`; place your own `yuzora-perf` block to choose
   where the chip goes.
