@@ -51,11 +51,13 @@ the same window.
   one transaction, the table structure and a SQL pane.
 - **SSH / SFTP**: hosts from `~/.ssh/config`, Yuzora's own hosts and herdr machines; host keys checked by
   fingerprint; side-by-side SFTP whose transfers resume.
-- **Settings, mods and templates.** Yuzora's own UI is herdr mods you can clone and change, and the Mods page
-  installs others after a trust warning. herdr-core agent templates can be edited and started from Settings.
+- **Settings, mods and templates.** Yuzora's own UI is herdr mods you can clone and change, and the Mods & Templates
+  page installs others from a folder or a GitHub or herdr.dev link after a trust warning. herdr-core agent templates
+  can be edited and started from Settings.
 - English interface only (this README and the changelog also come in Traditional Chinese), light and dark themes, following the system by default.
 - **Nothing is collected.** Telemetry is off and feedback opens a GitHub issue. An installed release checks this
-  repository's GitHub Releases for updates and `releases.herdr.dev` for herdr-core's.
+  repository's GitHub Releases for updates and `releases.herdr.dev` for herdr-core's. A mod installed from a link
+  is downloaded from GitHub, never from herdr.dev.
 
 <p align="center">
   <img src="docs/beta2/evidence/l2-diff.png" width="436" alt="Yuzora's Git mode: staged and unstaged changes and the commit box in the sidebar, and a side-by-side diff pane with buttons to stage or discard a hunk" />
@@ -146,7 +148,7 @@ beta.2 is built in parallel lanes, each owning its own directories and its secti
 <!-- yuzora:lane:L1:start -->
 ### L1 · Shell and workspace
 
-The left side is Herdr's own (`workspace-chrome`, `spaces`, `agents`); the right-hand dock holds the Files, Git, Database and SSH modes: a 40px mode bar with each mode's badge beside a panel, or a drawer in a layout without one (Settings > Mods > Layouts turns it Auto, Drawer or Off per layout; `cmd-alt-b` / `ctrl-alt-b` toggles it). Then the tab bar (the new-pane menu, opened with the `yuzora-shell-tabs.new-pane` command, mixes tool panes, terminals and agents into one tab),
+The left side is Herdr's own (`workspace-chrome`, `spaces`, `agents`); the right-hand dock holds the Files, Git, Database and SSH modes: a 40px mode bar with each mode's badge beside a panel, or a drawer in a layout without one (Settings > Mods & Templates > Layouts turns it Auto, Drawer or Off per layout; `cmd-alt-b` / `ctrl-alt-b` toggles it). Then the tab bar (the new-pane menu, opened with the `yuzora-shell-tabs.new-pane` command, mixes tool panes, terminals and agents into one tab),
 pane headers (amber while an agent needs a reply) and the status bar. A new Space starts by picking its folder; on a
 remote machine you type the path, checked on that machine. `yuzora:shell` (`app/crates/yuzora-shell`) holds the
 workspace model, Space badges and a small Git summary. Details: [docs/beta2/shell.md](docs/beta2/shell.md).
@@ -194,8 +196,9 @@ Details: [docs/beta2/files.md](docs/beta2/files.md).
 Settings open on Yuzora's own pages. Herdr's settings frame gets a "Yuzora" group listing every mod that declares `"yuzora": {"settings": …}`, and Privacy and Updates speak for Yuzora (it collects and sends nothing). L6's pages:
 
 - **General** (`yuzora-settings-general`): look (themes, fonts, size, zoom), terminal clipboard writes, and the right-hand dock mode to open at startup (shown once the dock applies it).
-- **Templates** (`yuzora-settings-templates`): herdr-core agent templates on each machine. List them, edit the frontmatter as a form and the body as text (checked before saving), move one to the trash, or start one in a Space and tab (`yuzora-settings-launch`: `hc run` with `herdr.space`/`herdr.tab` labels).
-- **Mods** (`yuzora-settings-mods`): shipped, edited, cloned and personal mods and layouts with their errors. Clone, show in folder, check, switch or reset a layout, or install from a folder after a trust warning. An edited shipped mod is moved aside to `<name>-edited` and the shipped one comes back at the next start.
+- **Mods & Templates** (`yuzora-settings-mods`), one page with three tabs:
+  - **Mods** and **Layouts**: shipped, edited, cloned and personal mods and layouts with their errors. Clone, show in folder, check, switch or reset a layout, or install one after a trust warning, from a folder or from a link (`owner/repo`, a GitHub address, or a herdr.dev/mods or herdr.dev/layouts page; downloaded from GitHub only, with its address and commit shown before you trust it). An edited shipped mod is moved aside to `<name>-edited` and the shipped one comes back at the next start.
+  - **Templates**: herdr-core agent templates on each machine. List them, edit the frontmatter as a form and the body as text (checked before saving), move one to the trash, or start one in a Space and tab (`yuzora-settings-launch`: `hc run` with `herdr.space`/`herdr.tab` labels).
 
 Native side: `app/crates/yuzora-settings` (`yuzora:settings`). Design and decisions: [docs/beta2/settings.md](docs/beta2/settings.md).
 <!-- yuzora:lane:L6:end -->
@@ -236,7 +239,7 @@ own Spaces, tabs and layout. The terminals belong to herdr-core, so both apps se
 - **Herdr's settings and mods aren't imported.** To bring a mod over, copy its folder from Herdr's `mods/` into
   Yuzora's: `~/.config/herdr-app/mods/` and `~/.config/yuzora/mods/` by default, under `XDG_CONFIG_HOME` when that is
   set, or in the folders `HERDR_APP_HOME` and `YUZORA_APP_HOME` name if you set them. Or pick the mod's folder in
-  Settings › Mods › Install from folder… (which never overwrites a mod you have). `keys.json` and themes can be
+  Settings › Mods & Templates › Install from folder… (which never overwrites a mod you have). `keys.json` and themes can be
   copied the same way; don't copy `installed.json`. Yuzora's own `yuzora-*` mods don't load in Herdr.
 - **Machines and agent templates are shared.** Both apps use herdr-core's machine list and its templates folder
   (`~/.config/herdr-core/templates/`; on Windows `%APPDATA%\herdr-core\templates`; `$XDG_CONFIG_HOME/herdr-core/templates/`

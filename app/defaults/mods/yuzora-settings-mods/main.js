@@ -1,7 +1,11 @@
-// Settings > Yuzora > Mods: the mods and layouts in Yuzora's home, shipped
-// (the app installs and replaces them) or the person's own. Clone, open the
-// folder, check, put a shipped one back, switch layouts, install a folder.
+// Settings > Yuzora > Mods & Templates: the mods and layouts in Yuzora's
+// home, shipped (the app installs and replaces them) or the person's own, and
+// herdr-core's agent templates (templates.js). Clone, open the folder, check,
+// put a shipped one back, switch layouts, install from a folder or a link.
 // Owned by lane L6.
+//
+// Props (all optional): { tab: "mods" | "layouts" | "templates", machine, edit }
+// (machine and edit go to the Templates tab).
 //
 // Shipped ones can't be edited for good: the next start moves edits to
 // <name>-edited and puts the shipped one back. Clone first (mod.clone /
@@ -11,8 +15,9 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState } from "gpui-base";
 import { theme, run, shared, setShared, closeOverlay, pickFolder, props } from "herdr";
 import { t, panes, getSetting, setSetting, session } from "yuzora:core";
-import { listMods, resetMod, appStatus, checkMod, planInstall, installFolder, reveal } from "yuzora:settings";
+import { listMods, resetMod, appStatus, checkMod, planInstall, planFetch, installFolder, reveal } from "yuzora:settings";
 import { page, title, heading, button, segmented, note, badge, spinner, input } from "./ui.js";
+import { Templates } from "./templates.js";
 
 const MONO = "JetBrains Mono";
 // The right dock (src/yuzora/dock.rs): where a layout shows Yuzora's modes.
@@ -21,7 +26,10 @@ const SHELL = "shell"; // the settings.json section: { dock: { layouts: { <layou
 
 export default class Mods extends View {
   init(_props, cx) {
-    this.tab = props()?.tab === "layouts" ? "layouts" : "mods";
+    const p = props() ?? {};
+    this.tab = ["layouts", "templates"].includes(p.tab) ? p.tab : "mods";
+    this.templateOptions = { machine: p.machine, edit: p.edit };
+    this.templates = null; // made when the Templates tab first shows
     this.data = { mods: [], layouts: [] };
     this.loaded = false;
     this.errors = [];
@@ -29,14 +37,30 @@ export default class Mods extends View {
     this.busy = {}; // name -> what's running
     this.results = {}; // name -> { text, tone, output? }
     this.cloning = null; // { kind, name }
-    this.install = null; // { path, plan | error, busy, done }
+    this.install = null; // { path | link, plan | error, busy, done }
     this.cloneInput = InputState.new();
     this.cloneInput.on("focus", (_e, cx) => { this.cloneFocused = true; cx.notify(); });
     this.cloneInput.on("blur", (_e, cx) => { this.cloneFocused = false; cx.notify(); });
     this.cloneInput.on("submit", (_e, cx) => this.clone(cx));
+    this.linking = false;
+    this.linkInput = InputState.new({ placeholder: t("link_placeholder") });
+    this.linkInput.on("focus", (_e, cx) => { this.linkFocused = true; cx.notify(); });
+    this.linkInput.on("blur", (_e, cx) => { this.linkFocused = false; cx.notify(); });
+    this.linkInput.on("submit", (_e, cx) => this.fetchLink(cx));
+    if (this.tab === "templates") this.showTab("templates", cx);
     this.refresh(cx);
     // New folders (a clone, an agent's mod) show up on their own.
-    cx.timer.every(5000, (cx) => this.list(cx));
+    cx.timer.every(5000, (cx) => {
+      if (this.tab !== "templates") this.list(cx);
+    });
+  }
+
+  showTab(tab, cx) {
+    this.tab = tab;
+    this.cloning = null;
+    if (tab === "templates" && !this.templates) this.templates = new Templates(this.templateOptions, cx);
+    if (tab !== "templates") this.list(cx);
+    cx.notify();
   }
 
   // listMods reads (and fingerprints) every mod's files: off the UI thread,
@@ -184,12 +208,29 @@ export default class Mods extends View {
     cx.spawn(async (cx) => {
       const path = await pickFolder({ prompt: t("install_pick") });
       if (!path) return;
-      this.install = { path, busy: true };
+      const install = (this.install = { path, busy: true });
       cx.notify();
       const r = await planInstall(path);
-      this.install = r.ok ? { path, plan: r.plan } : { path, error: r.code };
+      if (this.install !== install) return;
+      this.install = r.ok ? { path, plan: r.plan } : { path, error: r.code, message: r.message };
       cx.notify();
     });
+  }
+
+  // The link is read in Rust: downloaded from GitHub into a temp folder that is
+  // gone again before the plan arrives; nothing reaches the home before Install.
+  fetchLink(cx) {
+    const link = this.linkInput.value().trim();
+    if (!link) return;
+    this.linking = false;
+    const install = (this.install = { link, busy: true });
+    cx.spawn(async (cx) => {
+      const r = await planFetch(link);
+      if (this.install !== install) return;
+      this.install = r.ok ? { link, github: r.github, plan: r.plan } : { link, github: r.github, error: r.code, message: r.message };
+      cx.notify();
+    });
+    cx.notify();
   }
 
   doInstall(cx) {
@@ -199,7 +240,8 @@ export default class Mods extends View {
     cx.spawn(async (cx) => {
       // The files the plan read, whatever the folder holds by now.
       const r = await installFolder(i.plan.token);
-      this.install = r.ok ? { path: i.path, plan: r.plan, done: true } : { path: i.path, error: r.code, message: r.message };
+      const from = { path: i.path, link: i.link, github: i.github };
+      this.install = r.ok ? { ...from, plan: r.plan, done: true } : { ...from, error: r.code, message: r.message };
       this.refresh(cx);
     });
     cx.notify();
@@ -356,11 +398,28 @@ export default class Mods extends View {
     const i = this.install;
     if (!i) return null;
     const box = v_flex().p(12).gap(8).rounded(8).border_1().border_color(i.done ? th.border : th.blocked).bg(th.background);
-    if (i.busy && !i.plan) return box.child(h_flex().gap(8).child(spinner(th)).child(note(th, t("install_reading"))));
+    // A link: what was asked of GitHub, each part on its own (a branch with "/" in a tree/ address reads as a branch and a folder).
+    const asked = (el) => el
+      .child(note(th, `${t("github_repo")} ${i.github.repo}`))
+      .child(note(th, `${t("github_ref")} ${i.github.ref ?? t("github_default")}`))
+      .child(note(th, `${t("github_folder")} ${i.github.folder || t("github_root")}`));
+    if (i.busy && !i.plan) {
+      // Cancel drops the panel; an answer that still comes is not for the install on screen, and is dropped.
+      return box.child(
+        h_flex()
+          .gap(8)
+          .items_center()
+          .child(spinner(th))
+          .child(note(th, t(i.link ? "install_fetching" : "install_reading")))
+          .child(div().flex_1())
+          .child(button(th, "in-cancel", t("cancel"), (_e, cx) => { this.install = null; cx.notify(); })),
+      );
+    }
     if (i.error) {
       return box
         .child(note(th, t(`install_errors.${i.error}`), "error"))
-        .when(Boolean(i.message), (el) => el.child(note(th, i.message)))
+        .when(Boolean(i.message) && i.message !== i.error, (el) => el.child(note(th, i.message)))
+        .when(Boolean(i.github), asked)
         .child(h_flex().child(button(th, "in-close", t("close"), (_e, cx) => { this.install = null; cx.notify(); })));
     }
     const p = i.plan;
@@ -369,6 +428,8 @@ export default class Mods extends View {
       .when(!i.done, (el) => el.child(div().text_size(13).font_semibold().text_color(th.blocked).child(t("trust_title"))).child(note(th, t("trust_about"))))
       .when(Boolean(i.done), (el) => el.child(note(th, t("installed"), "ok")))
       .child(note(th, `${t("install_from")} ${p.source}`))
+      .when(Boolean(i.github), asked)
+      .when(Boolean(p.commit), (el) => el.child(note(th, `${t("install_commit")} ${p.commit}`)))
       .when(p.mods.length > 0, (el) => el.child(note(th, t("install_mods", { list: pairs(p.mods) }))))
       .when(p.layouts.length > 0, (el) => el.child(note(th, t("install_layouts", { list: pairs(p.layouts) }))))
       .when(p.reaches.length > 0, (el) => el.child(note(th, t("install_reaches", { list: p.reaches.map((r) => t(`reaches.${r}`)).join(t("list_sep")) }), "warning")))
@@ -391,27 +452,50 @@ export default class Mods extends View {
     );
   }
 
+  linkRow(th) {
+    if (!this.linking) return null;
+    return v_flex()
+      .gap(6)
+      .child(
+        h_flex()
+          .gap(6)
+          .items_center()
+          .child(div().text_size(12).text_color(th.dim).child(t("link_label")))
+          .child(div().flex_1().child(input(th, this.linkInput, this.linkFocused, MONO)))
+          .child(button(th, "md-link-cancel", t("cancel"), (_e, cx) => { this.linking = false; cx.notify(); }))
+          .child(button(th, "md-link-go", t("link_read"), (_e, cx) => this.fetchLink(cx), "primary")),
+      )
+      .child(note(th, t("link_about")));
+  }
+
   render(cx) {
     const th = theme();
+    const tabs = [["mods", t("tab_mods", { n: this.data.mods.length })], ["layouts", t("tab_layouts", { n: this.data.layouts.length })], ["templates", t("tab_templates")]];
+    const head = h_flex()
+      .gap(8)
+      .items_center()
+      .child(segmented(th, "md-tab", tabs, this.tab, (v, cx) => this.showTab(v, cx)))
+      .child(div().flex_1());
+    const body = v_flex().w_full().gap(6).child(title(th, t("page.title"), t("page.about")));
+    if (this.tab === "templates") return page(th, "md-body", body.child(head).child(this.templates.render(th, cx)));
     const list = this.tab === "mods" ? this.data.mods : this.data.layouts;
     return page(
       th,
       "md-body",
-      v_flex()
-        .w_full()
-        .gap(6)
-        .child(title(th, t("page.title"), t("page.about")))
+      body
         .child(
-          h_flex()
-            .gap(8)
-            .items_center()
-            .child(segmented(th, "md-tab", [["mods", t("tab_mods", { n: this.data.mods.length })], ["layouts", t("tab_layouts", { n: this.data.layouts.length })]], this.tab, (v, cx) => { this.tab = v; this.cloning = null; cx.notify(); }))
-            .child(div().flex_1())
+          head
             .when(!this.loaded, (el) => el.child(spinner(th)))
             .child(button(th, "md-refresh", t("refresh"), (_e, cx) => this.refresh(cx)))
-            .child(button(th, "md-install", t("install"), (_e, cx) => this.pickInstall(cx), "primary")),
+            .child(button(th, "md-install", t("install"), (_e, cx) => this.pickInstall(cx)))
+            .child(button(th, "md-install-link", t("install_link"), (_e, cx) => {
+              this.linking = true;
+              this.linkInput.focus();
+              cx.notify();
+            }, "primary")),
         )
         .when(Boolean(this.statusError), (el) => el.child(note(th, t("status_failed", { message: this.statusError }), "warning")))
+        .child(this.linkRow(th) ?? div())
         .child(this.installPanel(th) ?? div())
         .child(heading(th, this.tab === "mods" ? t("heading_mods") : t("heading_layouts")))
         .child(note(th, this.tab === "mods" ? t("about_mods") : t("about_layouts")))

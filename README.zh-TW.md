@@ -49,11 +49,12 @@ Yuzora 讓 CLI coding agents（Claude Code、Codex、Pi，以及其他 herdr 認
 - **資料庫**：PostgreSQL、SQL Server、SQLite。schema 樹、可在單一交易內寫回修改的資料表格、資料表結構與 SQL pane。
 - **SSH／SFTP**：主機來自 `~/.ssh/config`、Yuzora 自建主機與 herdr machines；以指紋確認主機金鑰；SFTP 雙欄傳輸可以
   續傳。
-- **設定、mods 與模板。** Yuzora 自己的介面就是 herdr mods，可以複製後修改；MOD 頁在顯示信任警告後，也能從資料夾
-  安裝別人的 mod。herdr-core 的 agent 模板可以在設定裡編輯與啟動。
+- **設定、mods 與模板。** Yuzora 自己的介面就是 herdr mods，可以複製後修改；Mods & Templates 頁在顯示信任警告後，
+  也能從資料夾或 GitHub、herdr.dev 的連結安裝別人的 mod。herdr-core 的 agent 模板可以在設定裡編輯與啟動。
 - 介面只有英文（本 README 與 changelog 另有繁體中文版），深色與淺色主題，預設跟隨系統。
 - **不收集任何資料。** 遙測已關閉，意見回饋改開 GitHub Issue。安裝好的正式版會向本 repo 的 GitHub Releases 檢查
-  Yuzora 更新，並向 `releases.herdr.dev` 檢查 herdr-core 的版本。
+  Yuzora 更新，並向 `releases.herdr.dev` 檢查 herdr-core 的版本。從連結安裝的 mod 一律從 GitHub 下載，不會從
+  herdr.dev 下載。
 
 <p align="center">
   <img src="docs/beta2/evidence/l2-diff.png" width="436" alt="Yuzora 的 Git 模式：側欄列出已暫存與未暫存的變更和 commit 區，右側是並排 diff pane，可以暫存或捨棄單一 hunk" />
@@ -138,7 +139,7 @@ beta.2 分成多條 lane 並行開發，每條 lane 擁有自己的目錄與下�
 
 ### L1 · 外殼與工作區
 
-左側是 Herdr 原生的（`workspace-chrome`、`spaces`、`agents`）；右側 dock 放 Files、Git、Database、SSH 四個模式：`panel` 旁 40px 的模式列（帶各模式徽章），沒有 panel 的 layout 改用抽屜（設定 › Mods › Layouts 可對每個 layout 選 Auto／Drawer／Off；`cmd-alt-b`／`ctrl-alt-b` 開關）。另有 tab 列、pane 標頭（agent 需要回覆時轉為
+左側是 Herdr 原生的（`workspace-chrome`、`spaces`、`agents`）；右側 dock 放 Files、Git、Database、SSH 四個模式：`panel` 旁 40px 的模式列（帶各模式徽章），沒有 panel 的 layout 改用抽屜（設定 › Mods & Templates › Layouts 可對每個 layout 選 Auto／Drawer／Off；`cmd-alt-b`／`ctrl-alt-b` 開關）。另有 tab 列、pane 標頭（agent 需要回覆時轉為
 琥珀色）與狀態列；新增 pane 選單（指令 `yuzora-shell-tabs.new-pane`）可把工具 pane、終端機與 agent 混合分割進同一個 tab。新增 Space 時先選資料夾；遠端機器改成輸入路徑，並在那台機器上確認。`yuzora:shell`
 （`app/crates/yuzora-shell`）提供工作區模型、Space 徽章與簡單的 Git 摘要。細節見
 [docs/beta2/shell.md](docs/beta2/shell.md)。
@@ -183,12 +184,14 @@ repo pane（stash、tag、remote、worktree、submodule、patch）。所有 git 
 
 - **一般**（`yuzora-settings-general`）：外觀（主題、字型、字級、縮放）、終端機
   剪貼簿寫入、啟動時開啟的右側 dock 模式（dock 套用後才會出現）。
-- **模板**（`yuzora-settings-templates`）：各台機器上的 herdr-core agent 模板。可以列出、以表單編輯 frontmatter、以
-  文字編輯 body（存檔前檢查）、移到垃圾桶，或啟動到指定的 Space 與 tab（`yuzora-settings-launch`：帶
-  `herdr.space`／`herdr.tab` label 的 `hc run`）。
-- **MOD**（`yuzora-settings-mods`）：內建、已修改、複製與個人的 mods 與 layouts，以及它們的錯誤。可以複製、在資料夾中
-  顯示、檢查、切換或還原 layout，或在顯示信任警告後從資料夾安裝。改過的內建 mod 會在下次啟動時移到
-  `<名稱>-edited`，並換回內建版本。
+- **Mods & Templates**（`yuzora-settings-mods`）：一頁三個分頁。
+  - **Mods** 與 **Layouts**：內建、已修改、複製與個人的 mods 與 layouts，以及它們的錯誤。可以複製、在資料夾中顯示、
+    檢查、切換或還原 layout，或在顯示信任警告後安裝：從資料夾，或從連結（`owner/repo`、GitHub 網址，或 herdr.dev/mods、
+    herdr.dev/layouts 頁面；一律從 GitHub 下載，信任前會先顯示來源網址與 commit）。改過的內建 mod 會在下次啟動時移到
+    `<名稱>-edited`，並換回內建版本。
+  - **Templates**：各台機器上的 herdr-core agent 模板。可以列出、以表單編輯 frontmatter、以文字編輯 body（存檔前
+    檢查）、移到垃圾桶，或啟動到指定的 Space 與 tab（`yuzora-settings-launch`：帶 `herdr.space`／`herdr.tab` label 的
+    `hc run`）。
 
 原生層是 `app/crates/yuzora-settings`（`yuzora:settings`），設計與決策見 [docs/beta2/settings.md](docs/beta2/settings.md)。
 
@@ -226,7 +229,7 @@ Yuzora 與官方 Herdr App 可以同時使用同一個 herdr-core（預設 sessi
   終端機裡的程式全部結束（保留的終端機會換成新的 shell）。要真的停止 core，先關掉兩個 App。
 - **不會匯入 Herdr 的設定與 mods。** 要搬一個 mod，把它的資料夾從 Herdr 的 `mods/` 複製到 Yuzora 的 `mods/`：預設是
   `~/.config/herdr-app/mods/` 與 `~/.config/yuzora/mods/`，設了 `XDG_CONFIG_HOME` 時在它底下，設了 `HERDR_APP_HOME`、
-  `YUZORA_APP_HOME` 時則在它們指定的資料夾。也可以在「設定 › MOD › 從資料夾安裝…」選那個 mod 的資料夾（不會覆寫已有的
+  `YUZORA_APP_HOME` 時則在它們指定的資料夾。也可以在「設定 › Mods & Templates › Install from folder…」選那個 mod 的資料夾（不會覆寫已有的
   mod）。`keys.json` 與 themes 也能這樣複製；不要複製 `installed.json`。Yuzora 自己的 `yuzora-*` mods 在 Herdr 無法
   載入。
 - **machines 與 agent 模板是共用的。** 兩個 App 用的是 herdr-core 的機器清單與模板資料夾

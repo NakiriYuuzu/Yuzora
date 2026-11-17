@@ -319,7 +319,7 @@ CI 連到 herdr.dev 只發生在 CI，不會讓 app 多連任何地方。app 本
 | b. 設定裡加「從 Herdr 匯入」，一次性複製 `keys.json`、`themes/`、使用者自己的 mods（不含內建與 `installed.json`）、字型與外觀設定 | 換過來比較方便 | 要處理名稱衝突與 `-edited` 改名；放在 L6 的設定框架 |
 | c. 持續同步 | — | **不建議**：Yuzora 的 mods 在 Herdr 不能用，雙向同步會產生錯誤 |
 
-**決定**：a，不匯入。使用說明寫明可以手動複製 mod 資料夾、`keys.json` 與 themes；單一 mod 也可以用設定的 Mods 頁「Install from folder…」安裝，它不會覆寫既有的 mod，也會先列出要安裝的內容。
+**決定**：a，不匯入。使用說明寫明可以手動複製 mod 資料夾、`keys.json` 與 themes；單一 mod 也可以用設定的 Mods & Templates 頁（Mods 分頁）「Install from folder…」安裝，它不會覆寫既有的 mod，也會先列出要安裝的內容。
 
 **何時重新評估**：有多位使用者要求一鍵匯入。或者 L6 的設定框架或 beta.1 遷移（`yuzora_core::migrate` 的 `Importer`）已經有可以重用的匯入流程，b 的成本變低。
 

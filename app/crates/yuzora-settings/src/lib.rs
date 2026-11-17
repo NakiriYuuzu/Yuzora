@@ -8,11 +8,14 @@
 //!   here or on another machine (`hc exec --on`).
 //! - [`launch`]: starting an agent from a template into a space and tab.
 //! - [`mods`]: the home's mods and layouts, shipped or not; installing a folder.
+//! - [`source`], [`fetch`]: installing from a link, a folder of a GitHub repository.
 //! - [`trash`]: the system trash.
 //! - [`startup`]: what `general.startup` asks of the window when it opens.
 
+pub mod fetch;
 pub mod launch;
 pub mod mods;
+pub mod source;
 pub mod templates;
 pub mod trash;
 
@@ -44,7 +47,7 @@ export interface ModEntry {
   pane: boolean; settings: boolean; source: "shipped" | "edited" | "clone" | "personal";
 }
 export interface LayoutEntry { name: string; path: string; valid: boolean; shipped: boolean; cloned_from: { name: string; version: string } | null; preview: string | null; /** The layout file's own `yuzora.dock` ("auto", "drawer", "off"), or null when it has none. */ dock: string | null; source: "shipped" | "clone" | "personal" }
-export interface InstallPlan { kind: "mod" | "bundle"; source: string; mods: { from: string; as: string }[]; layouts: { from: string; as: string }[]; keys: boolean; reaches: ("programs" | "network" | "files")[]; files: number; bytes: number; token: string }
+export interface InstallPlan { kind: "mod" | "bundle"; /** The folder, or the GitHub address of a link. */ source: string; /** The commit a link's files are from (null: a folder). */ commit: string | null; mods: { from: string; as: string }[]; layouts: { from: string; as: string }[]; keys: boolean; reaches: ("programs" | "network" | "files")[]; files: number; bytes: number; token: string }
 /** The yuzora-settings crate's version (Yuzora's). */
 export function version(): string;
 /** herdr-core's templates folder on this computer. */
@@ -69,9 +72,11 @@ export function resetMod(name: string): string | null;
 export function appStatus(): Promise<Outcome>;
 /** `herdr-app check` on one installed mod: {ok, output}. */
 export function checkMod(name: string): Promise<Outcome>;
-/** What installing a folder would do (nothing is written). */
+/** What installing a folder would do (nothing is written). code stale: a newer planInstall or planFetch was asked for meanwhile. */
 export function planInstall(path: string): Promise<Outcome & { plan?: InstallPlan }>;
-/** Installs the files planInstall read (plan.token: the latest plan), never overwriting: what was shown is what's installed, whatever the folder holds now. code stale: plan again. */
+/** What installing from a link would do: a GitHub repository (owner/repo or its address, a tree/<ref>/<folder> address) or a herdr.dev/mods or herdr.dev/layouts page, downloaded from GitHub only, into a temp folder that is gone when this resolves (nothing is written to the home). github: what was asked of GitHub, each part on its own (ref null: the default branch; folder "": the repository's root). code bad_source, fetch_failed, unpack_failed, too_big, not_a_mod, io, stale (a newer planInstall or planFetch was asked for meanwhile). */
+export function planFetch(link: string): Promise<Outcome & { plan?: InstallPlan; github?: { repo: string; ref: string | null; folder: string } }>;
+/** Installs the files planInstall or planFetch read (plan.token: the latest plan), never overwriting: what was shown is what's installed, whatever the folder holds now. code stale: plan again. */
 export function installFolder(token: string): Promise<Outcome & { plan?: InstallPlan }>;
 /** Opens a folder (or shows a file) in the system's file manager. */
 export function reveal(path: string): null;
@@ -320,14 +325,42 @@ fn install_outcome(r: Result<mods::Plan, mods::InstallError>) -> Value {
 /// writes these, never the folder as it is by then.
 static PLANNED: std::sync::Mutex<Option<(String, mods::Plan)>> = std::sync::Mutex::new(None);
 
-fn plan_install(path: &str) -> Value {
-    match mods::plan(std::path::Path::new(path), &yuzora_core::paths::app_home()) {
+/// planInstall and planFetch calls, counted as they are asked: a download can
+/// end after a plan asked later, and must not take that plan's place.
+static ASKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The number of a plan being asked for, taken on the calling thread.
+fn ask() -> u64 {
+    ASKED.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+fn plan_install(asked: u64, path: &str) -> Value {
+    remember(asked, mods::plan(std::path::Path::new(path), &yuzora_core::paths::app_home()))
+}
+
+fn plan_fetch(asked: u64, link: &str) -> Value {
+    let Some(source) = source::parse(link) else { return remember(asked, Err(mods::InstallError::BadSource)) };
+    let base = source::base(std::env::var("YUZORA_INSTALL_URL").ok(), cfg!(debug_assertions));
+    let mut outcome = remember(asked, fetch::plan(&source, &base, &std::env::temp_dir(), &yuzora_core::paths::app_home()));
+    outcome["github"] = source.parts();
+    outcome
+}
+
+/// Keeps `planned` as the one installFolder may write, under a new token,
+/// unless a newer plan was asked for while it was read: that one is the plan
+/// on screen, and this one is `stale`.
+fn remember(asked: u64, planned: Result<mods::Plan, mods::InstallError>) -> Value {
+    match planned {
         Ok(plan) => {
+            let mut slot = PLANNED.lock().unwrap_or_else(|e| e.into_inner());
+            if asked != ASKED.load(std::sync::atomic::Ordering::SeqCst) {
+                return failed("stale", "a newer plan was asked for");
+            }
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
             let token = format!("{}-{}", session(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
             let mut shown = plan.to_json();
             shown["token"] = json!(token);
-            *PLANNED.lock().unwrap_or_else(|e| e.into_inner()) = Some((token, plan));
+            *slot = Some((token, plan));
             json!({ "ok": true, "plan": shown })
         }
         Err(e) => failed(e.code(), e),
@@ -473,7 +506,13 @@ pub fn host_module() -> HostModule {
         })
         .async_function("planInstall", |a| {
             let path = a.string(0)?.to_owned();
-            background(move || plan_install(&path))
+            let asked = ask();
+            background(move || plan_install(asked, &path))
+        })
+        .async_function("planFetch", |a| {
+            let link = a.string(0)?.to_owned();
+            let asked = ask();
+            background(move || plan_fetch(asked, &link))
         })
         .async_function("installFolder", |a| {
             let token = a.string(0)?.to_owned();
@@ -505,7 +544,7 @@ mod tests {
         m.validate().unwrap();
         assert_eq!(m.name(), "yuzora:settings");
         assert_eq!(m.call("version", &HostArguments::new([])).unwrap(), HostValue::Str(yuzora_core::VERSION.into()));
-        for f in ["listTemplates", "saveTemplate", "trashTemplate", "runTemplate", "listMods", "appStatus", "checkMod", "planInstall", "installFolder"] {
+        for f in ["listTemplates", "saveTemplate", "trashTemplate", "runTemplate", "listMods", "appStatus", "checkMod", "planInstall", "planFetch", "installFolder"] {
             assert!(m.is_async(f), "{f} must not block the UI thread");
         }
     }
@@ -517,6 +556,30 @@ mod tests {
         assert_eq!(codes, ["name_invalid", "command_empty", "body_empty"]);
         let text = call("templateText", vec![json!({ "command": "pi" }), json!([["model", "x"], ["bad:key", "y"], ["k", "two\nlines"]]), json!("Hi")]).unwrap();
         assert_eq!(text, "---\ncommand: pi\nmodel: x\n---\nHi\n", "header lines that would break the file are dropped");
+    }
+
+    /// ASKED and PLANNED are the process's: tests that ask for plans take turns.
+    pub(crate) static PLANNING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // A slow download that ends after a plan asked later must not replace it,
+    // or the plan on screen could never be installed.
+    #[test]
+    fn a_plan_asked_before_a_newer_one_never_takes_its_place() {
+        let _turn = PLANNING.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("yuzora-settings-asked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("demo")).unwrap();
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        std::fs::write(dir.join("demo/main.js"), "export default class {}").unwrap();
+        let plan = || mods::plan(&dir.join("demo"), &dir.join("home"));
+        let (slow, newer) = (ask(), ask());
+        let shown = remember(newer, plan());
+        let token = shown["plan"]["token"].as_str().unwrap_or_else(|| panic!("{shown}")).to_owned();
+        let late = remember(slow, plan());
+        assert_eq!(late["code"], "stale", "{late}");
+        let kept = PLANNED.lock().unwrap().as_ref().map(|(t, _)| t.clone());
+        assert_eq!(kept.as_deref(), Some(token.as_str()), "the plan on screen is still the one installFolder writes");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
