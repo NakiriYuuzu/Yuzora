@@ -1,0 +1,122 @@
+# Yuzora: once a day, is there a herdr-app release that app/ does not have?
+# When there is, try app/scripts/yuzora/sync-pull on it and open one issue that
+# says how the merge went. Nothing is pushed: a person resolves the merge on a
+# branch of their own and opens the pull request (docs/beta2/architecture.md,
+# "上游同步流程").
+#
+# Two jobs, because sync-pull works on upstream's tree: `look` may read and
+# nothing more, and hands a few values on. `issue` is the only job that may
+# write, to issues alone; it runs nothing of upstream's, and sync-watch checks
+# every value before it prints one.
+#
+# A pull request that changes the watch runs it without the search for an
+# earlier report and without opening anything: the issue's text goes to the
+# run's summary.
+name: Upstream watch
+
+on:
+  schedule:
+    - cron: '17 1 * * *' # 09:17 in Taipei
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/upstream-watch.yml'
+      - 'app/scripts/yuzora/sync-watch'
+      - 'app/scripts/yuzora/sync-pull'
+      - 'app/scripts/yuzora/sync-resolve.ts'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  look:
+    name: Look upstream
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.newest.outputs.tag }}
+      commit: ${{ steps.newest.outputs.commit }}
+      have: ${{ steps.newest.outputs.have }}
+      result: ${{ steps.try.outputs.result }}
+      commits: ${{ steps.try.outputs.commits }}
+      files: ${{ steps.try.outputs.files }}
+      generation: ${{ steps.try.outputs.generation }}
+      generation_have: ${{ steps.try.outputs.generation_have }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The squash commits of app/ are in the history.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Newest release
+        id: newest
+        run: app/scripts/yuzora/sync-watch | tee -a "$GITHUB_OUTPUT"
+      # An issue or a pull request that names the release, open or closed: someone knows.
+      - name: Reported before
+        id: known
+        if: steps.newest.outputs.new == 'true' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.newest.outputs.tag }}
+        run: |
+          count=$(gh api -X GET search/issues -f q="repo:$GITHUB_REPOSITORY in:title \"herdr-app $TAG\"" -q .total_count)
+          echo "count=$count" | tee -a "$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@v2
+        if: steps.newest.outputs.new == 'true' && (github.event_name == 'pull_request' || steps.known.outputs.count == '0')
+        with:
+          bun-version: 1.4.2
+      # From here on the checkout holds upstream's tree. No step below has a token.
+      - name: Try the merge
+        id: try
+        if: steps.newest.outputs.new == 'true' && (github.event_name == 'pull_request' || steps.known.outputs.count == '0')
+        env:
+          TAG: ${{ steps.newest.outputs.tag }}
+        run: |
+          git config user.name upstream-watch
+          git config user.email upstream-watch@invalid
+          app/scripts/yuzora/sync-watch try "$TAG" | tee -a "$GITHUB_OUTPUT"
+
+  issue:
+    name: Open the issue
+    needs: look
+    if: contains(fromJSON('["merged", "conflicts", "unfinished"]'), needs.look.outputs.result)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Write it
+        env:
+          TAG: ${{ needs.look.outputs.tag }}
+          COMMIT: ${{ needs.look.outputs.commit }}
+          HAVE: ${{ needs.look.outputs.have }}
+          RESULT: ${{ needs.look.outputs.result }}
+          COMMITS: ${{ needs.look.outputs.commits }}
+          FILES: ${{ needs.look.outputs.files }}
+          GENERATION: ${{ needs.look.outputs.generation }}
+          GENERATION_HAVE: ${{ needs.look.outputs.generation_have }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          app/scripts/yuzora/sync-watch issue "$RUNNER_TEMP/issue"
+          { echo "### $(cat "$RUNNER_TEMP/issue/title")"; echo; cat "$RUNNER_TEMP/issue/body.md"; } >>"$GITHUB_STEP_SUMMARY"
+      - name: Open it
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" --label needs-triage \
+            --title "$(cat "$RUNNER_TEMP/issue/title")" --body-file "$RUNNER_TEMP/issue/body.md"

@@ -192,6 +192,8 @@ app/scripts/yuzora/sync-pull v0.1.16   # 上游的 tag；也可以給 branch 或
 
 merge commit 之後執行 `app/scripts/yuzora/sync-check`，會依序做上面六項，並擋下只用 `HERDR_APP_HOME` 隔離的測試。加 `--quick` 不跑 cargo test 與 check-mods（bun 測試只要約 2 秒，仍會跑）。說明見 [herdr-compat.md](herdr-compat.md) C2。
 
+上游的新版本由 `.github/workflows/upstream-watch.yml` 每天檢查一次。上游有 `app/` 還沒有的 `vX.Y.Z` tag，而且沒有任何 issue 或 PR 的標題提到它時，workflow 在 runner 上試跑 `sync-pull`，把結果（commit 數、留下衝突的檔案、herdr-core 的世代有沒有變）開成一張標 `needs-triage` 的 issue。它不 push、不開 PR、不解衝突，也不讀任何 secret：同步仍由人照上面的流程在自己的分支做。說明見 [herdr-compat.md](herdr-compat.md) C3。
+
 ## 合併規則
 
 - integration 分支是 `beta2/integration`（從 `main` `d7cbfbe9` 開出）。每條 lane 從它最新版開分支，PR 的 base 也是它。
