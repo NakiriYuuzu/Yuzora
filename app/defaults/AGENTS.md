@@ -1239,6 +1239,8 @@ with these differences.
 - Nothing goes to herdr.dev: telemetry is off, feedback opens a GitHub issue
   on NakiriYuuzu/Yuzora, and the app doesn't update itself from Herdr. Only
   herdr-core's own install and update still come from `releases.herdr.dev`.
+  A herdr.dev gallery link given to Install from link is only read as text:
+  the files are downloaded from GitHub (`codeload.github.com`).
 - Yuzora has no Browser and no language server (LSP).
 
 <!-- yuzora:lane:L1:start -->
@@ -1548,13 +1550,20 @@ with these differences.
 ### Settings, mods and templates (`yuzora:settings`)
 
 - Settings (`app.settings`, ⌘,) open on Yuzora's General page;
-  `{"section": "templates"}` opens another (a Yuzora page's section or mod
+  `{"section": "mods"}` opens another (a Yuzora page's section or mod
   name, or one of Herdr's sections). A mod becomes a page with
   `"yuzora": {"settings": {"title": "settings.title", "icon": "icon.svg", "order": 500, "section": "git"}}`
   and is shown beside the settings nav with `props.section`. General is order
-  0, Templates 800, Mods 900.
+  0, Mods & Templates 900.
+- Mods & Templates (`yuzora-settings-mods`) is one page with three tabs:
+  Mods, Layouts and Templates. `herdr-app do app.settings '{"section":"mods"}'`
+  opens it on Mods; `'{"section":"templates"}'` (or the old page's name,
+  `yuzora-settings-templates`) opens its Templates tab;
+  `herdr-app do tab.new --mod yuzora-settings-mods --props '{"tab":"templates","edit":"<name>"}'`
+  opens that template's form in a tab (`"edit": ""` a new one, `"machine"`
+  another machine's templates; `"tab": "layouts"` the Layouts tab).
 - Agent templates are herdr-core's (`~/.config/herdr-core/templates/<name>.md`,
-  `hc templates`). The Templates settings page edits them on any machine.
+  `hc templates`). The Templates tab edits them on any machine.
   `yuzora-settings-launch` starts one:
   `openOverlay({mod: "yuzora-settings-launch", kind: "dialog", width: 560, props: {template, machine, space, tab, task}})`,
   every prop optional. Without the dialog, `yuzora:settings`
@@ -1566,6 +1575,14 @@ with these differences.
   (`planInstall(path)` reads it and shows what it would install;
   `installFolder(plan.token)` installs exactly what that plan read). Mods
   are trusted code: show the person the plan and ask before installing.
+- Install from link (the Mods and Layouts tabs, or `planFetch(link)`) takes `owner/repo`,
+  `https://github.com/<owner>/<repo>`, `…/tree/<branch, tag or commit>/<folder>`,
+  or a `https://herdr.dev/mods/…` or `https://herdr.dev/layouts/…` page. It
+  asks GitHub only (`codeload.github.com`, never herdr.dev), unpacks the
+  archive into a temporary folder that is gone again before the plan
+  returns, and plans it as a folder install, with the GitHub address and the
+  commit in the plan. Nothing reaches the home before the person picks
+  "I trust it: install" (`installFolder(plan.token)`).
 <!-- yuzora:lane:L6:end -->
 
 <!-- yuzora:lane:L7:start -->

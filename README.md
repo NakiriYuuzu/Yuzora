@@ -55,7 +55,8 @@ the same window.
   installs others after a trust warning. herdr-core agent templates can be edited and started from Settings.
 - English interface only (this README and the changelog also come in Traditional Chinese), light and dark themes, following the system by default.
 - **Nothing is collected.** Telemetry is off and feedback opens a GitHub issue. An installed release checks this
-  repository's GitHub Releases for updates and `releases.herdr.dev` for herdr-core's.
+  repository's GitHub Releases for updates and `releases.herdr.dev` for herdr-core's. A mod installed from a link
+  is downloaded from GitHub, never from herdr.dev.
 
 <p align="center">
   <img src="docs/beta2/evidence/l2-diff.png" width="436" alt="Yuzora's Git mode: staged and unstaged changes and the commit box in the sidebar, and a side-by-side diff pane with buttons to stage or discard a hunk" />
