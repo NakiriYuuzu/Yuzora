@@ -833,6 +833,69 @@ fn perf_chip_corner(cx: &mut gpui::TestAppContext) {
     }
 }
 
+/// A mod sets a person's layout back with a bar on the other side of a status bar's height, then a save and a
+/// restart: what showed after the set is what the restart shows, the file changed only where the mod changed it, and
+/// no click was saved.
+fn perf_chip_after_a_set(cx: &mut gpui::TestAppContext, layout: serde_json::Value, bar: &str, px: f32) -> crate::layout::Node {
+    use crate::layout::{Node, Size};
+    crate::yuzora::dock::force_for_tests();
+    let (view, cx) = open_window(cx, "unused", "", layout.clone());
+    cx.update(|window, cx| view.update(cx, |this, cx| {
+        let mut tree = this.chrome.clone();
+        tree.find_mut(bar).unwrap().size = Some(Size::Px { px });
+        this.run("layout.set", serde_json::json!({ "layout": tree }), window, cx);
+        this.save();
+    }));
+    let shown = view.update(cx, |this, _| this.chrome.clone());
+    let mut want: Node = serde_json::from_value(layout).unwrap();
+    want.find_mut(bar).unwrap().size = Some(Size::Px { px });
+    assert_eq!(serde_json::from_str::<Node>(&layout_file()).unwrap(), want, "the file is the person's with the mod's change only");
+    assert!(super::read_state("test").is_empty(), "no click: {:?}", super::read_state("test"));
+    view.update(cx, |this, _| this.load_layout("test"));
+    view.update(cx, |this, _| assert_eq!(this.chrome, shown, "a restart shows what showed"));
+    shown
+}
+
+// D1 (a): win98's fitLayout in a copy of win98 makes its 40px taskbar 28px and sets the tree back.
+#[test]
+fn a_set_that_makes_a_bar_a_status_bar_shows_the_chip_beside_it_as_a_restart_does() {
+    in_own_process("perf_chip_set_thin");
+}
+
+#[gpui::test]
+fn perf_chip_set_thin(cx: &mut gpui::TestAppContext) {
+    if !running_alone("perf_chip_set_thin") {
+        return;
+    }
+    let layout = serde_json::json!({ "id": "root", "type": "column", "children": [
+        { "id": "screen", "type": "row", "children": [{ "id": "main", "type": "block", "content": { "tab": "active" } }] },
+        { "id": "taskbar", "type": "block", "size": { "px": 40 }, "content": { "mod": "unused" } }] });
+    let shown = perf_chip_after_a_set(cx, layout, "taskbar", 28.0);
+    let chip = shown.find("yuzora-dock-perf").unwrap();
+    assert_eq!((shown.parent_of("yuzora-dock-perf").unwrap().id.as_str(), chip.size), ("taskbar", Some(crate::layout::Size::Px { px: 150.0 })), "beside the bar, as wide as beside a status bar");
+}
+
+// D1 (b): a copy of main whose status bar a mod sets to 40px.
+#[test]
+fn a_set_that_makes_a_status_bar_tall_shows_the_chip_below_as_a_restart_does() {
+    in_own_process("perf_chip_set_tall");
+}
+
+#[gpui::test]
+fn perf_chip_set_tall(cx: &mut gpui::TestAppContext) {
+    if !running_alone("perf_chip_set_tall") {
+        return;
+    }
+    let layout = serde_json::json!({ "id": "root", "type": "row", "background": "canvas", "children": [
+        { "id": "side", "type": "block", "size": { "px": 200 }, "content": { "mod": "unused" } },
+        { "id": "work", "type": "column", "children": [
+            { "id": "main", "type": "block", "content": { "tab": "active" } },
+            { "id": "status", "type": "block", "size": { "px": 28 }, "content": { "mod": "unused" } }] }] });
+    let shown = perf_chip_after_a_set(cx, layout, "status", 40.0);
+    assert_eq!(shown.parent_of("yuzora-dock-perf").unwrap().id, "yuzora-dock-root", "under the whole window");
+    assert!(shown.find("status").unwrap().content().is_some(), "the status bar is a block again");
+}
+
 /// The layout files are written in four places only; a new one (an upstream
 /// change) fails here until someone decides whether the dock may reach it.
 /// Matches the text of the code, not what it does: the tests above are the
