@@ -717,17 +717,25 @@ mod tests {
 
     #[test]
     fn a_mods_edit_of_what_the_chip_wraps_reaches_the_file() {
-        // A row root with no status bar: on screen the root's id is the row inside the chip's column.
-        let file = parse(r#"{ "id": "root", "type": "row", "children": [
+        // A row root with no status bar (on screen the root's id is the row inside the chip's column), and a status bar
+        // (what it shows is yuzora-dock-body beside the chip).
+        let row = r#"{ "id": "root", "type": "row", "children": [
             { "id": "side", "type": "block", "size": { "px": 200 }, "content": { "mod": "m" } },
-            { "id": "main", "type": "block", "content": { "tab": "active" } }] }"#);
-        let mut sent = file.clone();
-        inject_with(&mut sent, true, None);
-        sent.find_mut("root").unwrap().padding = serde_json::from_value(json!([8, 8])).unwrap();
-        ensure_with(&mut sent, true, None, Some(&file), None);
-        assert_eq!(strip(&sent, Some(&file)).find("root").unwrap().padding, sent.find("root").unwrap().padding, "the padding is written");
-        assert!(sent.find("root").unwrap().padding.is_some());
-        assert_eq!(sent, as_read_with(&sent, Some(&file), true, None), "the window shows what the written file reads back as");
+            { "id": "main", "type": "block", "content": { "tab": "active" } }] }"#;
+        let bar = r#"{ "id": "root", "type": "column", "children": [
+            { "id": "main", "type": "block", "content": { "tab": "active" } },
+            { "id": "status", "type": "block", "size": { "px": 28 }, "content": { "mod": "m" } }] }"#;
+        let padding: Option<crate::layout::Padding> = serde_json::from_value(json!([8, 8])).unwrap();
+        for (text, wrapped) in [(row, "root"), (bar, BODY)] {
+            let file = parse(text);
+            let mut sent = file.clone();
+            inject_with(&mut sent, true, None);
+            sent.find_mut(wrapped).unwrap().padding = padding.clone();
+            ensure_with(&mut sent, true, None, Some(&file), None);
+            let written = strip(&sent, Some(&file));
+            assert!(written.walk().iter().any(|x| x.padding == padding), "the padding is written: {written:?}");
+            assert_eq!(sent, as_read_with(&sent, Some(&file), true, None), "the window shows what the written file reads back as");
+        }
     }
 
     /// What a person does to the dock: opens it on Git, widens it and hides the bar (panel), or drags the drawer to the other edge.
