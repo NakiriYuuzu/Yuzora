@@ -176,7 +176,7 @@ hc machine add --via 'sh -c' --name lab-01 --session <另一個測試 session>
 | `l1-brand-dark.png`、`l1-brand-light.png` | （legacy，beta.2／3 的 `yuzora-brand`；beta.4 起左上角是 `workspace-chrome`，需要重拍）側欄頂端（2x 裁切）的 Yuzora 標誌，深色（yuzora-dark）與淺色（paper，`appearance: light`）主題 |
 | `l1-light-*.png` | 淺色主題（`appearance: light`）的各畫面：`workspace`、`sidebar-files`、`sidebar-git`（L2、L5 尚未合併，仍是 L0 的佔位）、`sidebar-database`、`sidebar-ssh`、`database`（資料表與 SQL 查詢）、`sftp`、`settings`、`settings-mods`、`new-pane`、`palette`。SSH 主機來自假的 HOME（`build-server`、`staging-db`） |
 
-beta.4 PR-3、PR-4 之後要重拍或新增的（截圖尚未重拍，圖檔不在此 PR 更新）：設定 › Mods › Layouts 的「Yuzora dock」切換、設定 › 一般的「Right-hand dock」啟動選項、yuzora layout 的全畫面（左上角 `workspace-chrome` 的 Herdr 圖示與字樣、Spaces／Agents、footer、右側 40px 模式列）、模式列開啟 Git 後的畫面、rail 狀態（`cmd-b`）、macOS 紅綠燈與 40px 頂列的位置、淺色主題。
+beta.4 PR-3、PR-4 之後要重拍或新增的（截圖尚未重拍，圖檔不在此 PR 更新）：設定 › Mods & Templates › Layouts 的「Yuzora dock」切換、設定 › 一般的「Right-hand dock」啟動選項、yuzora layout 的全畫面（左上角 `workspace-chrome` 的 Herdr 圖示與字樣、Spaces／Agents、footer、右側 40px 模式列）、模式列開啟 Git 後的畫面、rail 狀態（`cmd-b`）、macOS 紅綠燈與 40px 頂列的位置、淺色主題。
 
 ## 已知限制（右側 dock）
 

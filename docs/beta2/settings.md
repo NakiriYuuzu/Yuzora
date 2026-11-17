@@ -190,8 +190,8 @@ hc run --json --bg --no-parent [--on <machine>] [--cwd <dir>] [--name <n>]
 
 1. **（已完成，beta.4 PR-4）L1 模式列套用啟動模式**——原計畫如下，實際做法見上表 `startup.dock`：模式列 init 時 `const s = startup().sidebar; if (s) run("layout.select", {stack: "yuzora-sidebar", child: s})`，每次 app 啟動只做一次（可用 `session()` 記本次啟動），並 `setShared("yuzora.startup.honored", true)`。一般頁要看到這個旗標才顯示「啟動」區塊，避免出現一個沒有作用的設定。
 2. **L1「＋」選單／側欄「新增」加「從模板啟動」**：`openOverlay({mod: "yuzora-settings-launch", kind: "dialog", width: 560, props: {space, tab}})`，或不帶 props 用 `run("mod.open", {name: "yuzora-settings-launch"})`（預設目前的 space 與 tab）。
-3. **L5 編輯器**：MOD 頁已預留「編輯」按鈕：偵測到 `yuzora:core` `panes()` 裡有 `yuzora-editor` 或 `yuzora-editor-*` 時，以 `tab.new {mod, props: {path}}` 開 `main.js`。L5 定案 props 介面後請對齊（`path` 是假設）。
-4. **mod 立即還原**（總指揮）：新增 `app/src/yuzora/settings.rs`：`pub fn init() { yuzora_settings::mods::set_shipped_mods(crate::mods::DEFAULT_MODS); }`，在 `mod.rs` 加 `mod settings;` 並在 `init_once()` 呼叫 `settings::init()`。lanes.md 只允許 lane 加 `mod <lane>;` 那一行，所以留給總指揮決定；串上之後 MOD 頁的「還原」按鈕就會出現。
+3. **L5 編輯器**：Mods 分頁已預留「編輯」按鈕：偵測到 `yuzora:core` `panes()` 裡有 `yuzora-editor` 或 `yuzora-editor-*` 時，以 `tab.new {mod, props: {path}}` 開 `main.js`。L5 定案 props 介面後請對齊（`path` 是假設）。
+4. **mod 立即還原**（總指揮）：新增 `app/src/yuzora/settings.rs`：`pub fn init() { yuzora_settings::mods::set_shipped_mods(crate::mods::DEFAULT_MODS); }`，在 `mod.rs` 加 `mod settings;` 並在 `init_once()` 呼叫 `settings::init()`。lanes.md 只允許 lane 加 `mod <lane>;` 那一行，所以留給總指揮決定；串上之後 Mods 分頁的「還原」按鈕就會出現。
 5. **OSC 52 預設值**：是否把 `clipboard_write` 預設改成 `false`（改上游 `settings.rs` 與測試），由總指揮決定。OSC 8 連結 scheme 白名單（L0 交接的另一項）未處理。
 
 ## 測試
