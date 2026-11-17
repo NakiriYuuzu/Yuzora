@@ -12,8 +12,7 @@ use std::{
 
 // yuzora(motion): the tests of Yuzora's mod animations, a child so they use these fixtures.
 mod motion_tests;
-// yuzora(perf-place): the resource chip in every layout, a child so it uses these fixtures.
-mod yuzora_perf_place_tests;
+mod yuzora_perf_place_tests; // yuzora(perf-place): the chip that every layout now shows draws a sample, a child so it uses these fixtures.
 
 // yuzora(git-perf): how every test here starts. The shipped yuzora mods call yuzora:* host functions
 // (the status bar asks git about its folder in its first frame) that finish on threads of their own and wake

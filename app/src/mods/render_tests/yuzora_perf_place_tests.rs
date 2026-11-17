@@ -1,5 +1,6 @@
-//! The resource chip in every layout (src/yuzora/dock.rs `place_perf`): each shipped layout, as the window shows it,
-//! names the chip once, and the shipped `yuzora-perf` draws it with that layout as `layout()`.
+//! The resource chip that every layout shows (src/yuzora/dock.rs `place_perf`) draws a sample: the shipped
+//! `yuzora-perf` never reads `layout()`, so which layouts host it, and where, is tested in `yuzora::dock` and in
+//! `window::tests::every_shipped_layout_shows_the_resource_chip_in_the_corner`, not here.
 use super::*;
 
 /// `yuzora:perf` with one sample in it (1% CPU, 203 MB): the real one samples processes on a thread of its own.
@@ -21,11 +22,12 @@ fn one_sample() -> HostModule {
         })
 }
 
-/// What the copy of `yuzora-perf` draws in a window showing `layout`.
-fn chip_in(cx: &mut TestAppContext, staged: &Staged, layout: &Value) -> String {
+#[gpui::test]
+fn the_shipped_chip_draws_a_sample(cx: &mut TestAppContext) {
+    shell_init(cx);
+    let staged = Staged::new();
     let calls = Rc::new(RefCell::new(Calls::default()));
-    let mut values = fixture(true, Value::Null, updates("current", "current"));
-    values.insert("layout".into(), layout.clone());
+    let values = fixture(true, Value::Null, updates("current", "current"));
     let _ = crate::yuzora::with_modules(Policy::new(), "");
     let mut policy = Policy::new()
         .with_storage_path(staged.0.join("store-perf-place.json"))
@@ -47,28 +49,11 @@ fn chip_in(cx: &mut TestAppContext, staged: &Staged, layout: &Value) -> String {
     window.update(cx, |_, window, _| window.remove_window()).unwrap();
     cx.run_until_parked();
     assert!(calls.borrow().unexpected.is_empty(), "{:?}", calls.borrow().unexpected);
-    tree
-}
-
-#[gpui::test]
-fn every_shipped_layout_draws_the_resource_chip(cx: &mut TestAppContext) {
-    shell_init(cx);
-    let staged = Staged::new();
-    for (name, text) in [
-        ("main", include_str!("../../../defaults/layouts/main.json")),
-        ("terminals", include_str!("../../../defaults/layouts/terminals.json")),
-        ("win98", include_str!("../../../defaults/layouts/win98.json")),
-    ] {
-        let layout = dock_layout(text);
-        let chips = layout.to_string().matches(r#""mod":"yuzora-perf""#).count();
-        assert_eq!(chips, 1, "{name} names the chip once: {layout}");
-        // (A copy staged here has no strings folder, so it draws the string's key: "{cpu}% · {memory}MB" in en.json.)
-        let tree = chip_in(cx, &staged, &layout);
-        for part in ["text \"chip\"", "mods/yuzora-perf/cpu.svg", "mods/yuzora-perf/chevron-up.svg"] {
-            assert!(tree.contains(part), "{name}: the chip draws {part}: {tree}");
-        }
-        assert!(!tree.contains("chip_waiting") && !tree.contains('⚠'), "{name}: a good sample, shown as one: {tree}");
+    // (A copy staged here has no strings folder, so it draws the string's key: "{cpu}% · {memory}MB" in en.json.)
+    for part in ["text \"chip\"", "mods/yuzora-perf/cpu.svg", "mods/yuzora-perf/chevron-up.svg"] {
+        assert!(tree.contains(part), "the chip draws {part}: {tree}");
     }
+    assert!(!tree.contains("chip_waiting") && !tree.contains('⚠'), "a good sample, shown as one: {tree}");
     let strings: Value = serde_json::from_str(include_str!("../../../defaults/mods/yuzora-perf/i18n/en.json")).unwrap();
     assert_eq!(strings["chip"], "{cpu}% · {memory}MB");
 }
