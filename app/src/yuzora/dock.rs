@@ -265,22 +265,18 @@ fn beside(x: &mut Node, axis: Axis, px: f32) {
 }
 
 /// [`beside`] undone: a node holding a body (a [`BODY`], or the one child of a
-/// [`ROOT`] without a reserved id) and nothing else of its own shows the body
-/// itself again. Anything else beside a body (a mod's `layout.set` put it
-/// there), a node that has a field [`beside`] moves (a reserved id a person
-/// wrote), or a body with a field [`beside`] doesn't give it (a mod's edit)
-/// keeps the body a child and drops the reserved ids, so nothing that isn't
-/// the injection's is ever lost.
+/// [`ROOT`] without a reserved id) and nothing else but what [`strip`] drops
+/// shows the body itself again. Anything else beside a body (a mod's
+/// `layout.set` put it there), a node that has a field [`beside`] moves (a
+/// reserved id a person wrote), or a body with a field [`beside`] doesn't give
+/// it (a mod's edit) leaves the node as it is, and [`strip`] keeps the body
+/// without its reserved id.
 fn take_body_back(x: &mut Node) {
     let rooted = x.id == ROOT;
-    if rooted {
-        x.id.clear();
-    }
     let left = (x.gap, &x.divider, x.resizable, x.window_drag) == (None, &None, Some(false), false);
     let Some(children) = x.children_mut() else { return };
     let is_body = |c: &Node| left && bare(c) && if rooted { !reserved(&c.id) } else { c.id == BODY };
-    if children.iter().filter(|c| is_body(c)).count() != 1 || !children.iter().all(|c| is_body(c) || reserved(&c.id)) {
-        children.iter_mut().filter(|c| c.id == BODY).for_each(|c| c.id.clear());
+    if children.iter().filter(|c| is_body(c)).count() != 1 || !children.iter().all(|c| is_body(c) || dropped(c)) {
         return;
     }
     let Some(body) = std::mem::take(children).into_iter().find(is_body) else { return };
@@ -301,8 +297,19 @@ fn bare(c: &Node) -> bool {
     plain == *c
 }
 
+/// Whether [`strip`] drops `c`: a reserved node that holds nothing (the chip,
+/// the bar, a mode, a block a person gave a reserved id). A body, a root and
+/// any reserved node with children hold what a person or a mod put there.
+fn dropped(c: &Node) -> bool {
+    reserved(&c.id) && c.id != BODY && c.id != ROOT && c.children().is_empty()
+}
+
 /// `n` without anything the injection put there. A stack that showed a
 /// removed child shows what `fallback` (the tree as the file has it) chose.
+/// Every node without a reserved id stays, wherever a mod moved a wrapper
+/// (`yuzora-dock-root` under a row it was wrapped in included): a wrapper is
+/// undone where it is, and a reserved node that holds something stays, its id
+/// left empty.
 pub fn strip(n: &Node, fallback: Option<&Node>) -> Node {
     fn go(x: &mut Node, fallback: Option<&Node>) {
         x.floating.retain(|f| !reserved(&f.id));
@@ -320,10 +327,13 @@ pub fn strip(n: &Node, fallback: Option<&Node>) -> Node {
                 .filter(|a| !reserved(a));
         }
         if let Some(children) = x.children_mut() {
-            children.retain(|c| !reserved(&c.id));
+            children.retain(|c| !dropped(c));
             for c in children.iter_mut() {
                 go(c, fallback);
             }
+        }
+        if reserved(&x.id) {
+            x.id.clear();
         }
     }
     let mut out = n.clone();
