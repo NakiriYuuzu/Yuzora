@@ -80,6 +80,13 @@ export default class Probe extends View {
         settle(cx);
     };
 
+    // A close key names no target: the dialog runs it again on the tab it was going to close, whatever is shown then.
+    let reply = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("tab.close", serde_json::Value::Null, true, window, cx)));
+    settle(cx);
+    assert_eq!(reply, json!({ "asked": "unsaved" }));
+    assert_eq!(dialogs(cx)[0].1["command"], json!({ "name": "tab.close", "args": { "id": "tb2" } }));
+    close_dialogs(cx);
+
     // The pane's close button: the last pane holding the document stays, and the dialog asks. Pressed again, or
     // cmd-q, while it is open: no second dialog.
     let reply = cx.update(|window, cx| view.update(cx, |this, cx| this.run_as("pane.close", json!({ "pane": "e1" }), true, window, cx)));

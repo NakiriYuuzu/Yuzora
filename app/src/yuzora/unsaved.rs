@@ -150,7 +150,26 @@ pub fn dialog(command: &str, args: &Value, model: &Model, cx: &gpui::App) -> Opt
             json!({ "doc": d.id, "name": name, "path": d.path, "on": d.on })
         })
         .collect();
-    Some(json!({ "mod": MOD, "kind": "dialog", "width": 440, "props": { "docs": listed, "command": { "name": command, "args": args } } }))
+    Some(json!({ "mod": MOD, "kind": "dialog", "width": 440, "props": { "docs": listed, "command": { "name": command, "args": pinned(command, args, model) } } }))
+}
+
+/// The command as the dialog runs it again: a close with no target (a key)
+/// names the pane, tab or Space it was going to close, so a tab shown while
+/// the dialog is open (ctrl-tab still switches) is not the one closed.
+fn pinned(command: &str, args: &Value, model: &Model) -> Value {
+    let (key, target) = match command {
+        "pane.close" => ("pane", model.focused_pane()),
+        "tab.close" => ("id", model.active_tab().map(|t| t.id.clone())),
+        "space.close" => ("id", model.active.clone()),
+        _ => return args.clone(),
+    };
+    let mut pinned = if args.is_object() { args.clone() } else { json!({}) };
+    if pinned.get(key).and_then(Value::as_str).is_none()
+        && let Some(target) = target
+    {
+        pinned[key] = json!(target);
+    }
+    pinned
 }
 
 /// The Quit menu item and its key (macOS) are an action, not a command, so
@@ -369,6 +388,17 @@ mod tests {
         let mut m = world();
         files_root(&mut m, vec![pane("r1", "yuzora-editor", json!({ "path": "/w/a.txt", "on": "lab" })), terminal("p2")]);
         assert_eq!(asked("pane.close", json!({ "pane": "r1" }), &m, &there), Some(vec![1]));
+    }
+
+    #[test]
+    fn a_close_with_no_target_is_run_again_on_the_one_it_was_going_to_close() {
+        let mut m = world();
+        m.tab_mut("files").unwrap().focus("e1");
+        assert_eq!(pinned("pane.close", &Value::Null, &m), json!({ "pane": "e1" }));
+        assert_eq!(pinned("tab.close", &json!({}), &m), json!({ "id": "files" }));
+        assert_eq!(pinned("space.close", &json!({ "confirmed": true }), &m), json!({ "id": "s1", "confirmed": true }));
+        assert_eq!(pinned("pane.close", &json!({ "pane": "e2" }), &m), json!({ "pane": "e2" }), "a target given is kept");
+        assert_eq!(pinned("app.quit", &Value::Null, &m), Value::Null);
     }
 
     /// `asks` with 200 documents open, half of them unsaved, over 200 panes.
