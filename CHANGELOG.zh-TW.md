@@ -2,6 +2,56 @@
 
 <samp><a href="CHANGELOG.md">English</a> · 繁體中文</samp>
 
+## [0.1.3] - 2026-11-18
+
+關閉、結束 App 或套用更新會丟掉未儲存的變更時，Yuzora 會先問你。Files 側欄可以複製、貼上與再製，遠端 Space 也能移到垃圾桶。Mods 與 Templates 合併成一個設定頁，可以從 GitHub 或 herdr.dev 的連結安裝 mod 與 layout。CPU 與記憶體 chip 會出現在每個有狀態列的 layout。Yuzora 跟上了 Herdr 0.1.16。
+
+> **升級前請先看。** macOS、Linux 與 Windows 上的 0.1.0 到 0.1.2 會自己更新到 0.1.3，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Windows 上的 beta 無法自己更新，Tauri 版（v0.0.19、0.1.0-beta.1）也不會提供 0.1.3，這兩種情況都請手動下載安裝程式。詳見下方〈安裝說明〉。
+
+### 新增
+
+- **丟掉未儲存的變更之前，Yuzora 會先問你。** 檔案有未儲存的變更時，關閉它所在的 pane、tab 或 Space、關閉視窗、結束 App，或重新啟動套用已下載的更新之前，Yuzora 都會先開一個對話框，讓你選 Save、Don't Save 或 Cancel。Enter 是 Save，Esc 是 Cancel。檔案存不了的時候，對話框不會關，原因寫在檔名下方。同一個檔案開在兩個 pane 時，關掉其中一個不會詢問。Space 還在詢問時，Remove worktree 不會刪除任何東西：先回答對話框，再到 Remove worktree 按一次 Enter。
+- **Files 側欄可以複製、貼上與再製。** 在檔案或資料夾上按右鍵，選 Copy、Paste 或 Duplicate。Paste 會把複本放進你按右鍵的資料夾，或放在你按右鍵的檔案旁邊；Duplicate 則放在原本的項目旁邊。名稱已經被用掉時，`notes.txt` 的複本會依序取名為 `notes copy.txt`、`notes copy 2.txt`，不會蓋掉任何東西。複本要完整做好才會出現，複製失敗也不會留下任何東西。連結複製後仍然是連結。在 macOS 上，複本會保留 Finder 標籤、其他延伸屬性與隔離標記。Copy 的內容只記在 Yuzora 裡，不會放到系統剪貼簿，而且 Paste 只能貼在複製來源的那台機器上。
+- **遠端 Space 也能 Move to Trash。** 在其他機器上，Yuzora 會用那台機器的 `gio trash` 或 `trash` 指令；兩個都沒有時，就把檔案搬進你在那台機器上家目錄的垃圾桶（`~/.local/share/Trash`），並附上檔案管理員還原時需要的資訊。它絕不會直接刪除檔案。
+- **可以從連結安裝 mod 與 layout。** Settings › Mods & Templates 的 Install from link… 接受 `owner/repo`、GitHub 網址，或 herdr.dev/mods、herdr.dev/layouts 的頁面。GitHub 網址可以指定分支、tag 或 commit 與資料夾（`…/tree/<ref>/<資料夾>`）。檔案一律從 GitHub 下載，不會從 herdr.dev 下載，下載後會先列出 repo、分支、資料夾與 commit。在你按下「I trust it: install」之前，什麼都不會安裝。
+- **每個有狀態列的 layout 都有 CPU 與記憶體 chip。** 以前只有 Yuzora 自己的 layout 有。現在它在 `main` 狀態列的最右端（指令提示的右邊）、`win98` 工作列的最右端，以及你自己底部有狀態列的 layout 裡。它會配合狀態列的外觀，點一下照樣打開明細。沒有狀態列的 layout（例如 `terminals`）不顯示 chip。隱藏狀態列時 chip 也一起隱藏。不會寫入你的 layout 檔。
+
+### 變更
+
+- Mods 與 Templates 合併成一個設定頁「Mods & Templates」，分成 Mods、Layouts、Templates 三個分頁。原本開啟 Templates 頁的指令（例如 `app.settings {"section": "templates"}`）現在會開到 Templates 分頁。執行 `tab.new --mod yuzora-settings-templates` 的腳本要改成 `--mod yuzora-settings-mods --props '{"tab":"templates"}'`。如果你改過舊的 Templates 頁，你的版本會保留下來，成為你自己的一頁，上述指令也會開到它。
+- **跟上 Herdr 0.1.16。** macOS 的選單列多了 File、Edit、View、Window 與 Help 選單，Cmd+M 把視窗縮到最小，Cmd+A 全選終端機裡的文字。Settings 可以調整終端機的字重、行高、字元寬度與捲動速度。在 `settings.json` 寫 `"copy_on_select": false` 可以關掉選取即複製。放大（zoom）一個 pane 時，鍵盤輸入也會跟著到那個 pane。反覆編輯 mod 不會再讓所有 mod 壞掉。pane 放大時也能用 pane 導覽鍵，放大會跟著你到下一個 pane。macOS 上按滑鼠中鍵不再貼上；Linux 上會貼上你最後選取的文字。用套件管理工具安裝的 herdr-core 不再由 App 更新，有新版時 Settings 會告訴你。如果你在 macOS 上改過 `keys.json`，請自己加上 `"cmd-m": "window.minimize"` 與 `"cmd-a": "terminal.select_all"`。
+
+### 修正
+
+- Files：檔案在磁碟上被刪除時，它的 pane 會提供 Save it again。Yuzora 看到檔案被刪除之後，如果檔案又被放回原處，Save it again 不會再蓋掉它，而是和其他在磁碟上改過的檔案一樣，當成已變更處理。
+
+### 已知限制
+
+- 未儲存的變更：系統送出的結束會直接關掉 Yuzora，不會詢問，未儲存的變更也會遺失。macOS 上包括從 Dock 或 App 切換器結束、登出與關機；Windows 上包括登出與關機。選單列的 Quit Yuzora 與 Cmd+Q 會詢問。
+- 未儲存的變更：agent、腳本與 `yuzora do` 關閉 pane、tab 與 Space 時不會詢問。被它們關掉的 pane 裡的檔案，未儲存的變更會留在記憶體裡，你下次結束 App 時會被問到。它們執行的結束、更新或關閉視窗也不會詢問，Yuzora 結束時這些變更就會遺失。在 macOS 上，它們關掉視窗之後，你自己按 Quit 也不會詢問。
+- 未儲存的變更：對話框開著的時候，再一次的關閉或結束會被略過。回答對話框之後再做一次。
+- Files：Copy、Paste 與 Duplicate 目前只在右鍵選單裡，還沒有快捷鍵。
+- Files：自己沒有寫入權限的資料夾（mode 0555）不能複製，本機與其他機器都一樣。在 macOS 與 Linux 上，本機的複製會拒絕連同自己超過 64 層的資料夾（「Too many folders inside each other」）。
+- Files：Yuzora 在複製途中結束，或其他機器上的複製被中止而且清不掉時，目標資料夾裡可能留下一個隱藏的 `.yuzora-save-…` 資料夾。第二種情況 toast 會告訴你。
+- Files：在其他機器上，`gio trash` 與 `trash` 都沒有或都搬不了檔案時，Move to Trash 不會搬和家目錄垃圾桶不在同一顆磁碟上的檔案（「The trash is on another disk」）。在那台機器上的複本，保留的是它的 `cp -RP` 會保留的東西。在 Linux 上，本機的複本只保留內容與權限，不保留延伸屬性。
+- Settings：Install from link 會把名稱帶 `/` 的分支（例如 `feature/x`）讀成分支 `feature` 加上資料夾 `x`。這種分支請改用 commit 的網址（`…/tree/<commit>/<資料夾>`），預設分支則可以用 `…/tree/HEAD/<資料夾>`。搬移或改名過的 repo 不會自動跟過去，請用它的新網址。
+- Settings：更新前開在 tab 裡的舊 Templates 頁，更新後會顯示載入失敗。請關掉它，改開 Settings › Mods & Templates。
+- Windows：本機的 Copy、Paste 與 Duplicate、Install from link，以及未儲存變更的對話框，都只有為 Windows 建置過，沒有任何測試或人在 Windows 上跑過。
+- 資源 chip：它佔狀態列 150px，視窗窄時狀態列自己的項目會先被切掉。只有分頁區下方最後一個、高度不超過 56px 的 mod 列才算狀態列；底部的列比較高、是 stack 或是一排 block 的 layout 不會有 chip。你自己複製的 `win98` layout 開 Large Fonts 時，zoom 小於 1 就沒有 chip，因為 win98 會寫入較高的工作列。停靠在狀態列下方的 mod 會把 chip 拿走，太高時就沒有 chip。
+- 0.1.2 的已知限制仍然適用。
+
+### 安裝說明
+
+- 0.1.0 到 0.1.2 會自己更新到 0.1.3，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Yuzora 啟動 10 秒後檢查一次，之後每小時一次，下次重新啟動 Yuzora 時套用。更新前的版本還不會詢問未儲存的變更，請先存好檔案，再結束或重新啟動它。
+- **Windows 上的 0.1.0 到 0.1.2：** 如果你是在 beta 上覆蓋安裝，之後還沒重新開機過，這次更新可能會先失敗一次：beta 版啟動的背景程式（herdr-core）還握著 Yuzora 的安裝資料夾。Settings › Updates 會說明這個原因。請重新開機，或在 Yuzora 以外的終端機執行 `hc server stop`（它會結束所有終端機與裡面執行的 agent，和重新開機的損失一樣），再重新啟動 Yuzora。
+- **Windows 上還在用 beta（0.1.0-beta.2 到 beta.4）的人：** beta 版在 Windows 上無法自動更新。它可能會顯示 `Herdr 0.1.3 is ready`，但按 Restart 不會安裝。請先完全關閉 Yuzora，再從這個 release 下載 `Yuzora-windows-x64-setup.exe`，直接執行覆蓋安裝（beta 還開著時，安裝程式可能無法取代它的檔案）。裝完請重新開機一次，原因同上一條。
+- Tauri 版（v0.0.19、0.1.0-beta.1）不會提供 0.1.3，請自行下載安裝。這是另一個 App，Tauri 版的設定與資料不會搬過來：資料庫連線、SSH 主機與設定要重新設定。Tauri 版的檔案原封不動，重新安裝 Tauri 版就能回去用。新 App 沒有 Browser、Companion 與 AgentZone，編輯器也沒有 LSP。Windows 的安裝程式會詢問是否移除舊版的全機安裝。Tauri 版的原始碼在 0.1.2 之後已從本 repo 移除，留在 git 歷史裡（tag `v0.1.2`）。
+- macOS App 僅支援 Apple Silicon，請下載 `Yuzora-macos-aarch64.dmg`。App 只有 ad-hoc 簽章，沒有 Apple Developer ID 簽章或公證，所以第一次開啟會被 Gatekeeper 擋下。到「系統設定 › 隱私權與安全性」按「強制打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。只對從本 repo Releases 下載的 DMG 這樣做。更新之後，macOS 可能會再詢問一次麥克風、相機或資料夾的存取權限。
+- Windows 的 `Yuzora-windows-x64-setup.exe` 是免系統管理員權限的個人安裝程式。Authenticode 尚未啟用，SmartScreen 可能出現警告，請點「其他資訊 › 仍要執行」。
+- Linux（實驗性）提供 `yuzora-0.1.3-linux-x86_64.tar.gz` 與 `yuzora-0.1.3-linux-aarch64.tar.gz`，解開其中一個後執行 `yuzora/install`。
+- 這個版本在實體 Mac 上驗收過。Windows 與 Linux 只有 CI runner 上的自動化檢查（Windows 是安裝、更新兩次與解除安裝，Linux 是執行 `install`），沒有人在實體的 Windows 或 Linux 機器上試過。
+- 需要 herdr-core 0.1.11 以上。沒有安裝時，第一次開啟的畫面會提供安裝。在其他機器上存檔需要兩邊的 herdr-core 都是 0.1.19 以上。
+
 ## [0.1.2] - 2026-11-13
 
 Git diff 的程式碼有顏色了，可以逐字元選取文字，只有一側有的行與只改空白的地方也標得更清楚。Git 模式的反應變快。檔案的分頁顯示檔案自己的圖示。Yuzora 以外的顏色主題不再在側邊欄旁畫出洋紅色的線。
