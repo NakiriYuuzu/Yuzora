@@ -1287,6 +1287,7 @@ impl AppWindow {
                 }
             }
         }
+        mods.extend(crate::yuzora::perf_chip::slot(&self.chrome, &self.file_chrome)); // yuzora(L8): the resource chip at the status bar's right end, no node of the layout
         if self.shows_tab()
             && let Some(c) = self.model.active_tab()
         {
@@ -1341,6 +1342,7 @@ impl AppWindow {
                 }
             }
         }
+        out.extend(crate::yuzora::perf_chip::slot(&self.chrome, &self.file_chrome)); // yuzora(L8): the chip's copy lives while its status bar shows
         // The layout's pane header, shown or not (`pane_frame` says what's drawn now).
         let header = self
             .chrome
@@ -4445,7 +4447,7 @@ impl AppWindow {
                 }
                 None => div().into_any_element(),
             },
-            Content::Mod { .. } => self.render_slot(&n.id, cx),
+            Content::Mod { .. } => crate::yuzora::perf_chip::beside(self.render_slot(&n.id, cx), crate::yuzora::perf_chip::at(&self.chrome, &n.id, |k| self.copies.contains_key(k)).map(|k| self.render_slot(&k, cx))), // yuzora(L8): the resource chip at a status bar's right end
             Content::Agent { .. } => match self.shown_agent() {
                 Some(addr) => match self.agent_view(&n.id, &addr) {
                     Some(t) => div().size_full().child(shown_terminal(&t.view, cx)).into_any_element(),
@@ -6884,6 +6886,7 @@ export default class Probe extends View {
     include!("window/overlay_motion_tests.rs"); // yuzora(motion): the arrival of dialogs, popups and toasts
     include!("window/yuzora_pane_list_tests.rs"); // yuzora(v0.1.0 files-open): what panes() lists of a pane not started, and a pane replaced in place
     include!("window/yuzora_dock_tests.rs"); // yuzora(dock): the right dock never reaches a layout file
+    include!("window/yuzora_perf_chip_tests.rs"); // yuzora(L8): the resource chip at the right end of a status bar
     include!("window/yuzora_unsaved_tests.rs"); // yuzora(unsaved): a person's close asks before unsaved changes are lost
 
     /// What a `{"command":"tab.move","args":{"by":-1}}` key runs.
