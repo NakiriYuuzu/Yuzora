@@ -32,7 +32,7 @@ L5 在上游檔（`app/src`、上游 mods、`app/defaults/herdr.d.ts`、vendored
 | `app/src/main.rs`（L5） | `main()` 開頭：帶 `--yuzora-rasterize-svg` 啟動時改當 SVG 子行程，repo 的 SVG 在子行程點陣化，受父行程給的上限約束 |
 | `app/vendor/gpui-pre/src/svg_renderer.rs`（L5） | `ParsedSvg::tree()`，讓呼叫端在點陣化之前先檢查解析出來的樹；`image_href_resolver` 什麼都不載入，因為這裡的 SVG 來自 repo 與 agent，usvg 預設會讀 `<image>` 指到的任何本機路徑、解開 data URI |
 | `app/vendor/gpui-pre/src/assets.rs`（L5） | `RenderImage::with_scale_factor`，子行程送回的像素才會照 `render_parsed` 給的大小顯示 |
-| `app/src/files.rs`（L5） | `next_change` 的根目錄經 `yuzora_core::paths::plain`：Windows 的 `canonicalize` 帶 `\\?\`，不拿掉的話回報的路徑永遠不等於 mod 認得的路徑；測試的 `test_repo` 用同樣的路徑，`a_watched_windows_folder_reports_plain_paths_within_a_second` 在 Windows 上守住這一點 |
+| `app/src/files.rs`（L5） | `next_change` 的根目錄經 `yuzora_core::paths::plain`：Windows 的 `canonicalize` 帶 `\\?\`，不拿掉的話回報的路徑永遠不等於 mod 認得的路徑；測試的 `test_repo` 用同樣的路徑，`a_watched_windows_folder_reports_plain_paths_within_a_second` 只在 Windows 上執行，CI 的 Windows job 沒有跑它 |
 | `app/src/window.rs`（v0.1.0 files-open） | `publish` 讓 `panes()` 也列出 mod pane 的 `props` 與 `started`：還原的 layout 只啟動顯示中的 tab，其他 tab 的 pane 開著哪個檔案只有這裡知道；`mod tests` 的兩行 `include!` 帶入 Yuzora 的測試檔 `window/yuzora_pane_list_tests.rs` 與 `window/pane_replace_tests.rs` |
 | `app/defaults/herdr.d.ts`（v0.1.0 files-open） | `PaneInfo` 的 `props` 與 `started`，上一列兩個欄位的型別與說明 |
 | `app/src/window.rs`（unsaved） | `mod yuzora_unsaved;`，子模組 `window/yuzora_unsaved.rs` 的 `ask_unsaved` 要讀 `AppWindow` 的私有欄位；`run_as` 一行，人執行的關閉、結束或更新會丟掉未儲存的變更時，先開對話框並回 `{"asked":"unsaved"}`，不執行；`on_window_should_close` 一行，Linux 與 Windows 的視窗關閉鈕和 `window.close` 一樣先問；`mod tests` 的 `include!` 帶入 `window/yuzora_unsaved_tests.rs` |

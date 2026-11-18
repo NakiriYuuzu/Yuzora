@@ -10,7 +10,7 @@
 - **可以從連結安裝 mod 與 layout。** Settings › Mods & Templates 的 Install from link… 接受 `owner/repo`、GitHub 網址，或 herdr.dev/mods、herdr.dev/layouts 的頁面。GitHub 網址可以指定分支、tag 或 commit 與資料夾（`…/tree/<ref>/<資料夾>`）。檔案一律從 GitHub 下載，不會從 herdr.dev 下載，下載後會先列出 repo、分支、資料夾與 commit。在你按下「I trust it: install」之前，什麼都不會安裝。
 - Mods 與 Templates 合併成一個設定頁「Mods & Templates」，分成 Mods、Layouts、Templates 三個分頁。原本開啟 Templates 頁的指令（例如 `app.settings {"section": "templates"}`）現在會開到 Templates 分頁。執行 `tab.new --mod yuzora-settings-templates` 的腳本要改成 `--mod yuzora-settings-mods --props '{"tab":"templates"}'`。如果你改過舊的 Templates 頁，你的版本會保留下來，成為你自己的一頁，上述指令也會開到它。
 - **每個有狀態列的 layout 都有 CPU 與記憶體 chip。** 它在 `main` 狀態列、`win98` 工作列，以及你自己 layout 狀態列的最右端。沒有狀態列的 layout（例如 `terminals`）不顯示。不會寫入你的 layout 檔。
-- **跟上 Herdr 0.1.16。** macOS 的選單列多了 File、Edit、View、Window 與 Help 選單，Cmd+M 把視窗縮到最小，Cmd+A 全選終端機裡的文字。Settings 可以調整終端機的字重、行高、字元寬度與捲動速度。在 `settings.json` 寫 `"copy_on_select": false` 可以關掉選取即複製。放大（zoom）一個 pane 時，鍵盤輸入也會跟著到那個 pane。反覆編輯 mod 不會再讓所有 mod 壞掉。如果你改過 `keys.json`，請自己加上 `"cmd-m": "window.minimize"` 與 `"cmd-a": "terminal.select_all"`。
+- **跟上 Herdr 0.1.16。** macOS 的選單列多了 File、Edit、View、Window 與 Help 選單，Cmd+M 把視窗縮到最小，Cmd+A 全選終端機裡的文字。Settings 可以調整終端機的字重、行高、字元寬度與捲動速度。在 `settings.json` 寫 `"copy_on_select": false` 可以關掉選取即複製。放大（zoom）一個 pane 時，鍵盤輸入也會跟著到那個 pane。反覆編輯 mod 不會再讓所有 mod 壞掉。pane 放大時也能用 pane 導覽鍵，放大會跟著你到下一個 pane。macOS 上按滑鼠中鍵不再貼上；Linux 上會貼上你最後選取的文字。用套件管理工具安裝的 herdr-core 不再由 App 更新，有新版時 Settings 會告訴你。如果你在 macOS 上改過 `keys.json`，請自己加上 `"cmd-m": "window.minimize"` 與 `"cmd-a": "terminal.select_all"`。
 
 ### Fixed
 - Files：檔案在磁碟上被刪除時，它的 pane 會提供 Save it again。Yuzora 看到檔案被刪除之後，如果檔案又被放回原處，Save it again 不會再蓋掉它，而是和其他在磁碟上改過的檔案一樣，當成已變更處理。

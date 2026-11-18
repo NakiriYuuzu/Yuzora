@@ -14,12 +14,12 @@
 - **Files 側欄可以複製、貼上與再製。** 在檔案或資料夾上按右鍵，選 Copy、Paste 或 Duplicate。Paste 會把複本放進你按右鍵的資料夾，或放在你按右鍵的檔案旁邊；Duplicate 則放在原本的項目旁邊。名稱已經被用掉時，`notes.txt` 的複本會依序取名為 `notes copy.txt`、`notes copy 2.txt`，不會蓋掉任何東西。複本要完整做好才會出現，複製失敗也不會留下任何東西。連結複製後仍然是連結。在 macOS 上，複本會保留 Finder 標籤、其他延伸屬性與隔離標記。Copy 的內容只記在 Yuzora 裡，不會放到系統剪貼簿，而且 Paste 只能貼在複製來源的那台機器上。
 - **遠端 Space 也能 Move to Trash。** 在其他機器上，Yuzora 會用那台機器的 `gio trash` 或 `trash` 指令；兩個都沒有時，就把檔案搬進你在那台機器上家目錄的垃圾桶（`~/.local/share/Trash`），並附上檔案管理員還原時需要的資訊。它絕不會直接刪除檔案。
 - **可以從連結安裝 mod 與 layout。** Settings › Mods & Templates 的 Install from link… 接受 `owner/repo`、GitHub 網址，或 herdr.dev/mods、herdr.dev/layouts 的頁面。GitHub 網址可以指定分支、tag 或 commit 與資料夾（`…/tree/<ref>/<資料夾>`）。檔案一律從 GitHub 下載，不會從 herdr.dev 下載，下載後會先列出 repo、分支、資料夾與 commit。在你按下「I trust it: install」之前，什麼都不會安裝。
-- **每個有狀態列的 layout 都有 CPU 與記憶體 chip。** 以前只有 Yuzora 自己的 layout 有。現在它在 `main` 狀態列的最右端（「⌘⇧P commands」右邊）、`win98` 工作列的最右端，以及你自己底部有狀態列的 layout 裡。它會配合狀態列的外觀，點一下照樣打開明細。沒有狀態列的 layout（例如 `terminals`）不顯示 chip。隱藏狀態列時 chip 也一起隱藏。不會寫入你的 layout 檔。
+- **每個有狀態列的 layout 都有 CPU 與記憶體 chip。** 以前只有 Yuzora 自己的 layout 有。現在它在 `main` 狀態列的最右端（指令提示的右邊）、`win98` 工作列的最右端，以及你自己底部有狀態列的 layout 裡。它會配合狀態列的外觀，點一下照樣打開明細。沒有狀態列的 layout（例如 `terminals`）不顯示 chip。隱藏狀態列時 chip 也一起隱藏。不會寫入你的 layout 檔。
 
 ### 變更
 
 - Mods 與 Templates 合併成一個設定頁「Mods & Templates」，分成 Mods、Layouts、Templates 三個分頁。原本開啟 Templates 頁的指令（例如 `app.settings {"section": "templates"}`）現在會開到 Templates 分頁。執行 `tab.new --mod yuzora-settings-templates` 的腳本要改成 `--mod yuzora-settings-mods --props '{"tab":"templates"}'`。如果你改過舊的 Templates 頁，你的版本會保留下來，成為你自己的一頁，上述指令也會開到它。
-- **跟上 Herdr 0.1.16。** macOS 的選單列多了 File、Edit、View、Window 與 Help 選單，Cmd+M 把視窗縮到最小，Cmd+A 全選終端機裡的文字。Settings 可以調整終端機的字重、行高、字元寬度與捲動速度。在 `settings.json` 寫 `"copy_on_select": false` 可以關掉選取即複製。放大（zoom）一個 pane 時，鍵盤輸入也會跟著到那個 pane。反覆編輯 mod 不會再讓所有 mod 壞掉。如果你改過 `keys.json`，請自己加上 `"cmd-m": "window.minimize"` 與 `"cmd-a": "terminal.select_all"`。
+- **跟上 Herdr 0.1.16。** macOS 的選單列多了 File、Edit、View、Window 與 Help 選單，Cmd+M 把視窗縮到最小，Cmd+A 全選終端機裡的文字。Settings 可以調整終端機的字重、行高、字元寬度與捲動速度。在 `settings.json` 寫 `"copy_on_select": false` 可以關掉選取即複製。放大（zoom）一個 pane 時，鍵盤輸入也會跟著到那個 pane。反覆編輯 mod 不會再讓所有 mod 壞掉。pane 放大時也能用 pane 導覽鍵，放大會跟著你到下一個 pane。macOS 上按滑鼠中鍵不再貼上；Linux 上會貼上你最後選取的文字。用套件管理工具安裝的 herdr-core 不再由 App 更新，有新版時 Settings 會告訴你。如果你在 macOS 上改過 `keys.json`，請自己加上 `"cmd-m": "window.minimize"` 與 `"cmd-a": "terminal.select_all"`。
 
 ### 修正
 
@@ -27,13 +27,13 @@
 
 ### 已知限制
 
-- 未儲存的變更：macOS 自己送出的結束會直接關掉 Yuzora，不會詢問，未儲存的變更也會遺失。這包括從 Dock 或 App 切換器結束、登出與關機。選單列的 Quit Yuzora 與 Cmd+Q 會詢問。
-- 未儲存的變更：agent、腳本與 `yuzora do` 關閉 pane、tab 與 Space 時不會詢問。被它們關掉的 pane 裡的檔案，未儲存的變更會留在記憶體裡，你下次結束 App 時會被問到。它們執行的結束、更新或關閉視窗也不會詢問，Yuzora 結束時這些變更就會遺失。
+- 未儲存的變更：系統送出的結束會直接關掉 Yuzora，不會詢問，未儲存的變更也會遺失。macOS 上包括從 Dock 或 App 切換器結束、登出與關機；Windows 上包括登出與關機。選單列的 Quit Yuzora 與 Cmd+Q 會詢問。
+- 未儲存的變更：agent、腳本與 `yuzora do` 關閉 pane、tab 與 Space 時不會詢問。被它們關掉的 pane 裡的檔案，未儲存的變更會留在記憶體裡，你下次結束 App 時會被問到。它們執行的結束、更新或關閉視窗也不會詢問，Yuzora 結束時這些變更就會遺失。在 macOS 上，它們關掉視窗之後，你自己按 Quit 也不會詢問。
 - 未儲存的變更：對話框開著的時候，再一次的關閉或結束會被略過。回答對話框之後再做一次。
 - Files：Copy、Paste 與 Duplicate 目前只在右鍵選單裡，還沒有快捷鍵。
-- Files：自己沒有寫入權限的資料夾（mode 0555）不能複製，本機與其他機器都一樣。在 macOS 與 Linux 上，本機的複製會拒絕裡面超過 64 層資料夾的資料夾（「Too many folders inside each other」）。
+- Files：自己沒有寫入權限的資料夾（mode 0555）不能複製，本機與其他機器都一樣。在 macOS 與 Linux 上，本機的複製會拒絕連同自己超過 64 層的資料夾（「Too many folders inside each other」）。
 - Files：Yuzora 在複製途中結束，或其他機器上的複製被中止而且清不掉時，目標資料夾裡可能留下一個隱藏的 `.yuzora-save-…` 資料夾。第二種情況 toast 會告訴你。
-- Files：在其他機器上，Move to Trash 不會搬和家目錄垃圾桶不在同一顆磁碟上的檔案（「The trash is on another disk」）。在那台機器上的複本，保留的是它的 `cp -RP` 會保留的東西。在 Linux 上，本機的複本只保留內容與權限，不保留延伸屬性。
+- Files：在沒有 `gio` 或 `trash` 的其他機器上，Move to Trash 不會搬和家目錄垃圾桶不在同一顆磁碟上的檔案（「The trash is on another disk」）。在那台機器上的複本，保留的是它的 `cp -RP` 會保留的東西。在 Linux 上，本機的複本只保留內容與權限，不保留延伸屬性。
 - Settings：Install from link 會把名稱帶 `/` 的分支（例如 `feature/x`）讀成分支 `feature` 加上資料夾 `x`。這種分支請改用 commit 的網址（`…/tree/<commit>/<資料夾>`），預設分支則可以用 `…/tree/HEAD/<資料夾>`。搬移或改名過的 repo 不會自動跟過去，請用它的新網址。
 - Settings：更新前開在 tab 裡的舊 Templates 頁，更新後會顯示載入失敗。請關掉它，改開 Settings › Mods & Templates。
 - Windows：本機的 Copy、Paste 與 Duplicate、Install from link，以及未儲存變更的對話框，都只有為 Windows 建置過，沒有任何測試或人在 Windows 上跑過。
