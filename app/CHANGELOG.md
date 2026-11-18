@@ -2,7 +2,7 @@
 
 <!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
 <!-- yuzora(L7): each Yuzora entry here has its Traditional Chinese twin in CHANGELOG.zh-TW.md: add a line to both. -->
-## [0.1.3] - 2026-11-17
+## [0.1.3] - 2026-11-18
 
 ### New
 - **Yuzora asks before it loses unsaved changes.** When a file has unsaved changes, Yuzora opens one dialog with Save, Don't Save and Cancel before it closes the file's pane, tab or Space, closes the window, quits, or restarts into a downloaded update. Enter is Save and Esc is Cancel. If a file can't be saved, the dialog stays open and shows why under the file's name. Closing one of two panes on the same file doesn't ask. Remove worktree removes nothing while its Space asks. Answer the dialog, then press Enter in Remove worktree again.
@@ -10,6 +10,7 @@
 - **Move to Trash works on remote Spaces.** On another machine, Yuzora uses that machine's `gio trash` or `trash` command. Without either, it moves the file into the trash folder of your home there (`~/.local/share/Trash`), with the information a file manager needs to restore it. It never deletes a file.
 - **Install mods and layouts from a link.** In Settings › Mods & Templates, Install from link… takes `owner/repo`, a GitHub address, or a herdr.dev/mods or herdr.dev/layouts page. A GitHub address can name a branch, tag or commit and a folder (`…/tree/<ref>/<folder>`). Yuzora downloads the files from GitHub, never from herdr.dev, and shows the repository, branch, folder and commit. Nothing is installed until you click "I trust it: install".
 - Mods and Templates are one Settings page, Mods & Templates, with Mods, Layouts and Templates tabs. Commands that opened the Templates page, such as `app.settings {"section": "templates"}`, open the Templates tab. A script that runs `tab.new --mod yuzora-settings-templates` now needs `--mod yuzora-settings-mods --props '{"tab":"templates"}'`. If you edited the old Templates page, your copy stays as a page of your own, and those commands open it.
+- **The CPU and memory chip in every layout with a status bar.** It sits at the right end of the status bar in `main`, of the taskbar in `win98`, and of your own layouts' status bar. A layout without one, such as `terminals`, shows no chip. Nothing is written into your layout files.
 - **Up to date with Herdr 0.1.16.** On macOS, the menu bar has File, Edit, View, Window and Help menus, Cmd+M minimizes the window, and Cmd+A selects all text in a terminal. Settings has the terminal's font weight, line height, cell width and scroll speed. `"copy_on_select": false` in `settings.json` turns copy on select off. Zooming a pane gives it the keyboard. Editing a mod many times no longer breaks every mod. If you edited `keys.json`, add `"cmd-m": "window.minimize"` and `"cmd-a": "terminal.select_all"` yourself.
 
 ### Fixed

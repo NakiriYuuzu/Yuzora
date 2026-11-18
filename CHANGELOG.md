@@ -2,9 +2,9 @@
 
 <samp>English · <a href="CHANGELOG.zh-TW.md">繁體中文</a></samp>
 
-## [0.1.3] - 2026-11-17
+## [0.1.3] - 2026-11-18
 
-Yuzora asks before a close, a quit or an update loses unsaved changes. The Files sidebar can copy, paste and duplicate, and Move to Trash works on remote Spaces. Mods and Templates are one Settings page, which installs mods and layouts from a GitHub or herdr.dev link. Yuzora is up to date with Herdr 0.1.16.
+Yuzora asks before a close, a quit or an update loses unsaved changes. The Files sidebar can copy, paste and duplicate, and Move to Trash works on remote Spaces. Mods and Templates are one Settings page, which installs mods and layouts from a GitHub or herdr.dev link. The CPU and memory chip shows in the status bar of every layout that has one. Yuzora is up to date with Herdr 0.1.16.
 
 > **Before you upgrade.** 0.1.0 to 0.1.2 update to 0.1.3 by themselves on macOS, Linux and Windows. So do beta.2 to beta.4 on macOS and Linux. On Windows, a beta can't update itself, and the Tauri app (v0.0.19 and 0.1.0-beta.1) doesn't offer 0.1.3. In both cases, download the installer by hand. See the installation notes below.
 
@@ -14,6 +14,7 @@ Yuzora asks before a close, a quit or an update loses unsaved changes. The Files
 - **Copy, paste and duplicate in the Files sidebar.** Right-click a file or a folder for Copy, Paste and Duplicate. Paste puts the copy in the folder you right-clicked, or beside the file you right-clicked. Duplicate puts it beside the original. If the name is taken, a copy of `notes.txt` becomes `notes copy.txt`, then `notes copy 2.txt`. Nothing is replaced. A copy appears only once it is whole, and a failed copy leaves nothing behind. Links stay links. On macOS, a copy keeps Finder tags, other extended attributes and the quarantine flag. What you copy stays inside Yuzora, not on the system clipboard, and Paste works only on the machine the copy came from.
 - **Move to Trash works on remote Spaces.** On another machine, Yuzora uses that machine's `gio trash` or `trash` command. Without either, it moves the file into the trash folder of your home there (`~/.local/share/Trash`), with the information a file manager needs to restore it. It never deletes a file.
 - **Install mods and layouts from a link.** In Settings › Mods & Templates, Install from link… takes `owner/repo`, a GitHub address, or a herdr.dev/mods or herdr.dev/layouts page. A GitHub address can name a branch, tag or commit and a folder (`…/tree/<ref>/<folder>`). Yuzora downloads the files from GitHub, never from herdr.dev, and shows the repository, branch, folder and commit. Nothing is installed until you click "I trust it: install".
+- **The CPU and memory chip in every layout with a status bar.** It used to show only in Yuzora's own layout. Now it sits at the right end of the status bar in `main` (to the right of "⌘⇧P commands"), at the right end of the taskbar in `win98`, and in your own layouts that have a status bar at the bottom. It takes the bar's look, and a click opens the details as before. A layout without a status bar, such as `terminals`, shows no chip. Hiding the status bar hides the chip with it. Nothing is written into your layout files.
 
 ### Changed
 
@@ -36,6 +37,7 @@ Yuzora asks before a close, a quit or an update loses unsaved changes. The Files
 - Settings: Install from link reads a branch whose name has a `/`, such as `feature/x`, as the branch `feature` and the folder `x`. For such a branch, use the commit's address (`…/tree/<commit>/<folder>`), or `…/tree/HEAD/<folder>` for the default branch. A repository that was moved or renamed isn't followed, so use its new address.
 - Settings: a tab that showed the old Templates page before the update says it did not load. Close it and open Settings › Mods & Templates.
 - Windows: Copy, Paste and Duplicate on this computer, Install from link and the unsaved-changes dialog were built for Windows, but no test or person ran them there.
+- Resource chip: it takes 150px of the status bar, so at a narrow window the bar's own items are cut first. A layout's status bar counts only as a mod block at most 56px high, last under the tab; a layout whose bottom bar is taller, a stack or a row gets no chip. In your own copy of `win98`'s layout with Large Fonts, the chip is gone below zoom 1, where win98 writes a taller taskbar. A mod placed at the bottom under a status bar takes the chip, or leaves none when it is tall.
 - The known limitations of 0.1.2 still apply.
 
 ### Installation notes

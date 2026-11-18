@@ -2,9 +2,9 @@
 
 <samp><a href="CHANGELOG.md">English</a> · 繁體中文</samp>
 
-## [0.1.3] - 2026-11-17
+## [0.1.3] - 2026-11-18
 
-關閉、結束 App 或套用更新會丟掉未儲存的變更時，Yuzora 會先問你。Files 側欄可以複製、貼上與再製，遠端 Space 也能移到垃圾桶。Mods 與 Templates 合併成一個設定頁，可以從 GitHub 或 herdr.dev 的連結安裝 mod 與 layout。Yuzora 跟上了 Herdr 0.1.16。
+關閉、結束 App 或套用更新會丟掉未儲存的變更時，Yuzora 會先問你。Files 側欄可以複製、貼上與再製，遠端 Space 也能移到垃圾桶。Mods 與 Templates 合併成一個設定頁，可以從 GitHub 或 herdr.dev 的連結安裝 mod 與 layout。CPU 與記憶體 chip 會出現在每個有狀態列的 layout。Yuzora 跟上了 Herdr 0.1.16。
 
 > **升級前請先看。** macOS、Linux 與 Windows 上的 0.1.0 到 0.1.2 會自己更新到 0.1.3，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Windows 上的 beta 無法自己更新，Tauri 版（v0.0.19、0.1.0-beta.1）也不會提供 0.1.3，這兩種情況都請手動下載安裝程式。詳見下方〈安裝說明〉。
 
@@ -14,6 +14,7 @@
 - **Files 側欄可以複製、貼上與再製。** 在檔案或資料夾上按右鍵，選 Copy、Paste 或 Duplicate。Paste 會把複本放進你按右鍵的資料夾，或放在你按右鍵的檔案旁邊；Duplicate 則放在原本的項目旁邊。名稱已經被用掉時，`notes.txt` 的複本會依序取名為 `notes copy.txt`、`notes copy 2.txt`，不會蓋掉任何東西。複本要完整做好才會出現，複製失敗也不會留下任何東西。連結複製後仍然是連結。在 macOS 上，複本會保留 Finder 標籤、其他延伸屬性與隔離標記。Copy 的內容只記在 Yuzora 裡，不會放到系統剪貼簿，而且 Paste 只能貼在複製來源的那台機器上。
 - **遠端 Space 也能 Move to Trash。** 在其他機器上，Yuzora 會用那台機器的 `gio trash` 或 `trash` 指令；兩個都沒有時，就把檔案搬進你在那台機器上家目錄的垃圾桶（`~/.local/share/Trash`），並附上檔案管理員還原時需要的資訊。它絕不會直接刪除檔案。
 - **可以從連結安裝 mod 與 layout。** Settings › Mods & Templates 的 Install from link… 接受 `owner/repo`、GitHub 網址，或 herdr.dev/mods、herdr.dev/layouts 的頁面。GitHub 網址可以指定分支、tag 或 commit 與資料夾（`…/tree/<ref>/<資料夾>`）。檔案一律從 GitHub 下載，不會從 herdr.dev 下載，下載後會先列出 repo、分支、資料夾與 commit。在你按下「I trust it: install」之前，什麼都不會安裝。
+- **每個有狀態列的 layout 都有 CPU 與記憶體 chip。** 以前只有 Yuzora 自己的 layout 有。現在它在 `main` 狀態列的最右端（「⌘⇧P commands」右邊）、`win98` 工作列的最右端，以及你自己底部有狀態列的 layout 裡。它會配合狀態列的外觀，點一下照樣打開明細。沒有狀態列的 layout（例如 `terminals`）不顯示 chip。隱藏狀態列時 chip 也一起隱藏。不會寫入你的 layout 檔。
 
 ### 變更
 
@@ -36,6 +37,7 @@
 - Settings：Install from link 會把名稱帶 `/` 的分支（例如 `feature/x`）讀成分支 `feature` 加上資料夾 `x`。這種分支請改用 commit 的網址（`…/tree/<commit>/<資料夾>`），預設分支則可以用 `…/tree/HEAD/<資料夾>`。搬移或改名過的 repo 不會自動跟過去，請用它的新網址。
 - Settings：更新前開在 tab 裡的舊 Templates 頁，更新後會顯示載入失敗。請關掉它，改開 Settings › Mods & Templates。
 - Windows：本機的 Copy、Paste 與 Duplicate、Install from link，以及未儲存變更的對話框，都只有為 Windows 建置過，沒有任何測試或人在 Windows 上跑過。
+- 資源 chip：它佔狀態列 150px，視窗窄時狀態列自己的項目會先被切掉。只有分頁區下方最後一個、高度不超過 56px 的 mod 列才算狀態列；底部的列比較高、是 stack 或是一排 block 的 layout 不會有 chip。你自己複製的 `win98` layout 開 Large Fonts 時，zoom 小於 1 就沒有 chip，因為 win98 會寫入較高的工作列。停靠在狀態列下方的 mod 會把 chip 拿走，太高時就沒有 chip。
 - 0.1.2 的已知限制仍然適用。
 
 ### 安裝說明

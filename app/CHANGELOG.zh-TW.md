@@ -1,7 +1,7 @@
 # Yuzora 更新說明
 
 <!-- yuzora(L7): CHANGELOG.md 裡 Yuzora 每一筆的繁體中文版，版本、### New／### Fixed 標題與項目數都要一樣（App 依標題判斷 Fixed）。這裡沒有的版本，App 會改顯示 CHANGELOG.md 的英文。 -->
-## [0.1.3] - 2026-11-17
+## [0.1.3] - 2026-11-18
 
 ### New
 - **丟掉未儲存的變更之前，Yuzora 會先問你。** 檔案有未儲存的變更時，關閉它所在的 pane、tab 或 Space、關閉視窗、結束 App，或重新啟動套用已下載的更新之前，Yuzora 都會先開一個對話框，讓你選 Save、Don't Save 或 Cancel。Enter 是 Save，Esc 是 Cancel。檔案存不了的時候，對話框不會關，原因寫在檔名下方。同一個檔案開在兩個 pane 時，關掉其中一個不會詢問。Space 還在詢問時，Remove worktree 不會刪除任何東西：先回答對話框，再到 Remove worktree 按一次 Enter。
@@ -9,6 +9,7 @@
 - **遠端 Space 也能 Move to Trash。** 在其他機器上，Yuzora 會用那台機器的 `gio trash` 或 `trash` 指令；兩個都沒有時，就把檔案搬進你在那台機器上家目錄的垃圾桶（`~/.local/share/Trash`），並附上檔案管理員還原時需要的資訊。它絕不會直接刪除檔案。
 - **可以從連結安裝 mod 與 layout。** Settings › Mods & Templates 的 Install from link… 接受 `owner/repo`、GitHub 網址，或 herdr.dev/mods、herdr.dev/layouts 的頁面。GitHub 網址可以指定分支、tag 或 commit 與資料夾（`…/tree/<ref>/<資料夾>`）。檔案一律從 GitHub 下載，不會從 herdr.dev 下載，下載後會先列出 repo、分支、資料夾與 commit。在你按下「I trust it: install」之前，什麼都不會安裝。
 - Mods 與 Templates 合併成一個設定頁「Mods & Templates」，分成 Mods、Layouts、Templates 三個分頁。原本開啟 Templates 頁的指令（例如 `app.settings {"section": "templates"}`）現在會開到 Templates 分頁。執行 `tab.new --mod yuzora-settings-templates` 的腳本要改成 `--mod yuzora-settings-mods --props '{"tab":"templates"}'`。如果你改過舊的 Templates 頁，你的版本會保留下來，成為你自己的一頁，上述指令也會開到它。
+- **每個有狀態列的 layout 都有 CPU 與記憶體 chip。** 它在 `main` 狀態列、`win98` 工作列，以及你自己 layout 狀態列的最右端。沒有狀態列的 layout（例如 `terminals`）不顯示。不會寫入你的 layout 檔。
 - **跟上 Herdr 0.1.16。** macOS 的選單列多了 File、Edit、View、Window 與 Help 選單，Cmd+M 把視窗縮到最小，Cmd+A 全選終端機裡的文字。Settings 可以調整終端機的字重、行高、字元寬度與捲動速度。在 `settings.json` 寫 `"copy_on_select": false` 可以關掉選取即複製。放大（zoom）一個 pane 時，鍵盤輸入也會跟著到那個 pane。反覆編輯 mod 不會再讓所有 mod 壞掉。如果你改過 `keys.json`，請自己加上 `"cmd-m": "window.minimize"` 與 `"cmd-a": "terminal.select_all"`。
 
 ### Fixed
