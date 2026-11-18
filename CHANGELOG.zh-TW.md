@@ -33,7 +33,7 @@
 - Files：Copy、Paste 與 Duplicate 目前只在右鍵選單裡，還沒有快捷鍵。
 - Files：自己沒有寫入權限的資料夾（mode 0555）不能複製，本機與其他機器都一樣。在 macOS 與 Linux 上，本機的複製會拒絕連同自己超過 64 層的資料夾（「Too many folders inside each other」）。
 - Files：Yuzora 在複製途中結束，或其他機器上的複製被中止而且清不掉時，目標資料夾裡可能留下一個隱藏的 `.yuzora-save-…` 資料夾。第二種情況 toast 會告訴你。
-- Files：在沒有 `gio` 或 `trash` 的其他機器上，Move to Trash 不會搬和家目錄垃圾桶不在同一顆磁碟上的檔案（「The trash is on another disk」）。在那台機器上的複本，保留的是它的 `cp -RP` 會保留的東西。在 Linux 上，本機的複本只保留內容與權限，不保留延伸屬性。
+- Files：在其他機器上，`gio trash` 與 `trash` 都沒有或都搬不了檔案時，Move to Trash 不會搬和家目錄垃圾桶不在同一顆磁碟上的檔案（「The trash is on another disk」）。在那台機器上的複本，保留的是它的 `cp -RP` 會保留的東西。在 Linux 上，本機的複本只保留內容與權限，不保留延伸屬性。
 - Settings：Install from link 會把名稱帶 `/` 的分支（例如 `feature/x`）讀成分支 `feature` 加上資料夾 `x`。這種分支請改用 commit 的網址（`…/tree/<commit>/<資料夾>`），預設分支則可以用 `…/tree/HEAD/<資料夾>`。搬移或改名過的 repo 不會自動跟過去，請用它的新網址。
 - Settings：更新前開在 tab 裡的舊 Templates 頁，更新後會顯示載入失敗。請關掉它，改開 Settings › Mods & Templates。
 - Windows：本機的 Copy、Paste 與 Duplicate、Install from link，以及未儲存變更的對話框，都只有為 Windows 建置過，沒有任何測試或人在 Windows 上跑過。
