@@ -30,6 +30,7 @@ Files 側欄可以讀取 Windows 機器上的遠端 Space，即使那台機器�
 - Git 模式與模板：只有 Files 會透過 PowerShell 讀取。Git 模式與模板在其他機器上仍然執行 `sh`，和 0.1.3 一樣。
 - Files：讀取沒有 `sh` 的 Windows 機器這件事，只在 Windows CI runner 上執行過它的 PowerShell 腳本。沒有人透過 herdr-core 在實體的 Windows 機器上試過。
 - 語法顏色：`.aspx`、`.cshtml` 與 `.razor` 只以 HTML 上色。Visual Basic、Vue、Haskell、OCaml、Objective-C、Terraform、GraphQL、Julia 與 Groovy 的檔案打開時仍然沒有顏色。
+- 更新：安裝這次更新之前，0.1.3 會把 Herdr 0.1.4 的說明（agent 的優先排序、釘選與摺疊）當成這次更新的說明。Herdr 有自己的版號，0.1.3 把 Herdr 的 0.1.4 條目當成了這一版。更新之後，Settings › Updates 的 What's new 顯示的就是這一版的說明。從 0.1.4 起，Yuzora 只顯示自己的條目。
 - 0.1.3 的已知限制仍然適用。
 
 ### 安裝說明

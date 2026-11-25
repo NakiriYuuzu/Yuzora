@@ -184,9 +184,9 @@
 - **下載**：找到新版時下載英文 `notes`。比對 manifest 裡的 sha256，不符就丟掉並記 log，**不會改用另一份**；更新說明是選用的，失敗不影響更新本身。
 - **快取**：app home 裡的 `update-notes-cache.md`（上游原本的檔名）。舊版留下的 `update-notes-cache.zh-TW.md` 不再讀取。
 - **兩份 changelog**：
-  - `app/CHANGELOG.md`（上游檔）是英文，Yuzora 的段落在 Herdr 的上面。上游的解析器、`scripts/yuzora/sync-check` 與 justfile 都照舊可用。
+  - `app/CHANGELOG.md`（上游檔）是英文，Yuzora 的段落在 Herdr 的上面，由新到舊。App 只顯示 Yuzora 的段落（`release::notes::yuzoras`：讀到第一個比上一段新的版本就停）。Herdr 有自己的版號，它的 0.1.4 不是 Yuzora 的 0.1.4；0.1.3 以前整份都讀，所以 0.1.3 把 Herdr 0.1.4 的說明當成 0.1.4 這次更新的說明。上游的解析器、`scripts/yuzora/sync-check` 與 justfile 都照舊可用。
   - `app/CHANGELOG.zh-TW.md`（Yuzora 自有）只放 Yuzora 的段落，是同一批版本的繁中版。標題仍用英文的 `### New`／`### Fixed`，因為 App 靠這個標題判斷 Fixed。
-  - 只有英文的 `CHANGELOG.md` 內嵌進 build（`release::notes::bundled`）；繁中檔由測試守著與英文一致，但不進 App 的畫面。
+  - 只有英文的 `CHANGELOG.md` 內嵌進 build（`release::notes::bundled`，只取 Yuzora 的段落；下載回來的 `update-notes-cache.md` 也一樣）；繁中檔由測試守著與英文一致，但不進 App 的畫面。
   - 發布時 `app-package.yml` 把兩份複製成 `dist/changelog.md`、`dist/changelog.zh-TW.md`，manifest 帶兩份的 sha256。
 - **新增條目**：每筆都要兩份各加一行，英文進 `app/CHANGELOG.md`，繁中進 `app/CHANGELOG.zh-TW.md`。測試會擋下這些情況：
   - 任一份的第一段不是 `CARGO_PKG_VERSION`；
