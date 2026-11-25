@@ -131,7 +131,7 @@ pub fn started(first_install: bool) {
 
 // yuzora(L7): a newer release's notes, kept for later launches.
 pub fn cache(text: &str) {
-    let notes = parse(text);
+    let notes = crate::yuzora::release::notes::yuzoras(text);
     if notes.is_empty() { return; }
     *FETCHED.lock().unwrap() = Some(notes.clone());
     std::thread::spawn(move || fetch_media(&notes));
@@ -148,7 +148,7 @@ pub fn has(version: &str) -> bool {
 fn all() -> Vec<Note> {
     let mut notes = crate::yuzora::release::notes::bundled(); // yuzora(L7)
     let fetched = FETCHED.lock().unwrap().get_or_insert_with(|| {
-        std::fs::read_to_string(path(crate::yuzora::release::notes::CACHE_FILE)).map(|s| parse(&s)).unwrap_or_default()
+        std::fs::read_to_string(path(crate::yuzora::release::notes::CACHE_FILE)).map(|s| crate::yuzora::release::notes::yuzoras(&s)).unwrap_or_default()
     }).clone();
     // The running binary's curated notes win over cached copies of its releases.
     for note in fetched {

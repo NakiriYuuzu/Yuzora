@@ -1,6 +1,6 @@
 # Herdr changelog
 
-<!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
+<!-- yuzora: Yuzora's entries sit above Herdr's, newest first; the app shows Yuzora's only. Herdr numbers its own releases. -->
 <!-- yuzora(L7): each Yuzora entry here has its Traditional Chinese twin in CHANGELOG.zh-TW.md: add a line to both. -->
 ## [0.1.4] - 2026-11-26
 

@@ -30,6 +30,7 @@ The Files sidebar can read a remote Space on a Windows machine that has no `sh`.
 - Git mode and templates: only Files reads through PowerShell. Git mode and templates still run `sh` on the other machine, as in 0.1.3.
 - Files: reading a Windows machine without `sh` was tested only by running its PowerShell scripts on a Windows CI runner. Nobody tried it through herdr-core with a real Windows machine.
 - Syntax colors: `.aspx`, `.cshtml` and `.razor` files are colored as HTML only. Visual Basic, Vue, Haskell, OCaml, Objective-C, Terraform, GraphQL, Julia and Groovy files still open without colors.
+- Updates: before you install this update, 0.1.3 shows the notes of Herdr 0.1.4 (agent priority, pins and folding) as this update's notes. Herdr numbers its own releases, and 0.1.3 took Herdr's 0.1.4 entry for this one. After the update, What's new in Settings › Updates shows these notes. From 0.1.4 on, Yuzora shows only its own entries.
 - The known limitations of 0.1.3 still apply.
 
 ### Installation notes
