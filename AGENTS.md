@@ -98,7 +98,7 @@ scripts/yuzora/package             # release build 並打包到 dist/（YUZORA_P
 - 設計、API 與待辦：`docs/beta2/files.md`。
 - 測試：`cargo test --locked -p yuzora-files`；mods：`scripts/yuzora/check-mods yuzora-sidebar-files yuzora-editor yuzora-markdown yuzora-files-image`。
 - `yuzora-editor/doc-pane.js` 與 `yuzora-markdown/doc-pane.js` 必須完全相同（測試守著）：改一份就複製到另一份。
-- 上色在 `src/highlight/`：新增語言＝加語法 crate、`Lang` 加一項、補測試樣本。其他 crate 要編輯器時用 `yuzora_files::editor::new_code_editor` 與 `code_editor`。
+- 上色在 `src/highlight/`：新增語言＝加語法 crate、`Lang` 加一項、`languages.rs` 的 `SPECS` 在同一位置加一列、補測試樣本與偵測案例。其他 crate 要編輯器時用 `yuzora_files::editor::new_code_editor` 與 `code_editor`。
 - 執行任何程式（本機或 `hc exec --on`）一律經 `fsops::run`：它帶上 `GIT_NO_LAZY_FETCH=1`、`GIT_ALLOW_PROTOCOL=file`（`fsops::tests::everything_it_runs_runs_offline` 守著）。
 - 磁碟 I/O 一律在 worker thread。需要 `Window` 的操作（`set_value`、focus、取代）延後到 foreground task 執行，不要在 host function 裡同步做：host function 執行時 window 正在更新。
 - 上游改動只有帶 `yuzora(L5)`、`yuzora(v0.1.0 files-open)`、`yuzora(unsaved)` 的行（SVG 子行程與 vendored gpui-pre、`files.rs`、`window.rs`、`herdr.d.ts`、`macos.rs` 的 Quit、上游 `worktree` mod），每一處與原因列在 `docs/beta2/files.md`〈上游改動〉。上游同步時保留它們，`svg_renderer.rs` 的 `image_href_resolver` 什麼都不載入（SVG 的 `<image>` 不讀路徑、不解任何 data URI）；SVG 的回歸測試在 `yuzora-files` 的 `image::tests::an_svg_*`、`svgs_nested_in_data_*` 與 `tests/svg_child.rs`。

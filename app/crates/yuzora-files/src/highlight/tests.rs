@@ -54,94 +54,530 @@ fn folds(lang: Lang, text: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// A short piece of real code in one language and the spans it must give.
+struct Sample {
+    id: &'static str,
+    code: &'static str,
+    /// (text, semantic name) pairs that must appear among the spans.
+    expect: &'static [(&'static str, &'static str)],
+}
+
+/// Every sample checks a keyword, a string and a comment, except these
+/// (language id, name) pairs: the language has no such thing, or its
+/// grammar's query does not color it.
+const WITHOUT: &[(&str, &str)] = &[
+    ("json", "keyword"),
+    ("json", "comment"),
+    ("toml", "keyword"),
+    ("yaml", "keyword"),
+    ("markdown", "keyword"),
+    ("markdown", "string"),
+    ("markdown", "comment"),
+    ("html", "keyword"),
+    ("xml", "keyword"),
+    ("ini", "keyword"),
+    ("ini", "string"),
+    ("properties", "keyword"),
+    ("diff", "comment"),
+    ("clojure", "keyword"),
+];
+
+const SAMPLES: &[Sample] = &[
+    Sample {
+        id: "rust",
+        code: "fn main() { let s = \"a\"; } // c",
+        expect: &[("fn", "keyword"), ("\"a\"", "string"), ("// c", "comment")],
+    },
+    Sample {
+        id: "typescript",
+        code: "const x: number = 1; // c\nlet s = \"a\";",
+        expect: &[
+            ("const", "keyword"),
+            ("number", "type.builtin"),
+            ("\"a\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "tsx",
+        code: "const a = <div className=\"x\">hi</div>; // c",
+        expect: &[
+            ("const", "keyword"),
+            ("div", "tag"),
+            ("\"x\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "javascript",
+        code: "function foo() { return \"a\"; } // c",
+        expect: &[
+            ("function", "keyword"),
+            ("foo", "function"),
+            ("\"a\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "json",
+        code: "{\"a\": \"b\", \"n\": 1, \"t\": true}",
+        expect: &[("\"a\"", "property"), ("\"b\"", "string"), ("1", "number")],
+    },
+    Sample {
+        id: "toml",
+        code: "# c\n[package]\nname = \"x\"\nn = 1\n",
+        expect: &[
+            ("name", "property"),
+            ("\"x\"", "string"),
+            ("1", "number"),
+            ("# c", "comment"),
+        ],
+    },
+    Sample {
+        id: "yaml",
+        code: "key: \"v\"\nn: 1\n# c\n",
+        expect: &[("key", "property"), ("\"v\"", "string"), ("# c", "comment")],
+    },
+    Sample {
+        id: "markdown",
+        code: "# Title\n\ntext\n",
+        expect: &[("Title", "heading")],
+    },
+    Sample {
+        id: "python",
+        code: "def f(x):\n    return \"a\"  # c\n",
+        expect: &[
+            ("def", "keyword"),
+            ("f", "function"),
+            ("\"a\"", "string"),
+            ("# c", "comment"),
+        ],
+    },
+    Sample {
+        id: "go",
+        code: "package main\n// c\nfunc main() { s := \"a\" }\n",
+        expect: &[
+            ("package", "keyword"),
+            ("func", "keyword"),
+            ("\"a\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "sql",
+        code: "SELECT 1, 'a' -- c",
+        expect: &[
+            ("SELECT", "keyword"),
+            ("1", "number"),
+            ("'a'", "string"),
+            ("-- c", "comment"),
+        ],
+    },
+    Sample {
+        id: "bash",
+        code: "if true; then echo \"hi\"; fi # c",
+        expect: &[("if", "keyword"), ("\"hi\"", "string"), ("# c", "comment")],
+    },
+    Sample {
+        id: "css",
+        code: "@media print { a { color: red; content: \"x\"; } } /* c */",
+        expect: &[
+            ("@media", "keyword"),
+            ("a", "tag"),
+            ("color", "property"),
+            ("\"x\"", "string"),
+            ("/* c */", "comment"),
+        ],
+    },
+    Sample {
+        id: "html",
+        code: "<!-- c --><div class=\"a\">hi</div>",
+        expect: &[
+            ("div", "tag"),
+            ("class", "attribute"),
+            ("a", "string"),
+            ("<!-- c -->", "comment"),
+        ],
+    },
+    Sample {
+        id: "csharp",
+        code: "// c\nnamespace App { class A { string s = \"hi\"; } }",
+        expect: &[
+            ("class", "keyword"),
+            ("\"hi\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "xml",
+        code: "<?xml version=\"1.0\"?>\n<!-- c -->\n<a href=\"x\">t</a>\n",
+        expect: &[
+            ("a", "tag"),
+            ("href", "property"),
+            ("x", "string"),
+            ("<!-- c -->", "comment"),
+        ],
+    },
+    Sample {
+        id: "c",
+        code: "// c\nint main(void) { return puts(\"hi\"); }",
+        expect: &[
+            ("return", "keyword"),
+            ("\"hi\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        // The string and the comment come from the C query it builds on.
+        id: "cpp",
+        code: "// c\nnamespace app { auto s = std::string(\"hi\"); }",
+        expect: &[
+            ("namespace", "keyword"),
+            ("\"hi\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "java",
+        code: "// c\nclass A { String s = \"hi\"; }",
+        expect: &[
+            ("class", "keyword"),
+            ("\"hi\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "kotlin",
+        code: "// c\nfun main() { val s = \"hi\" }",
+        expect: &[
+            ("fun", "keyword"),
+            ("\"hi\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "swift",
+        code: "// c\nfunc main() { let s = \"hi\" }",
+        expect: &[
+            ("func", "keyword"),
+            ("\"hi\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "ruby",
+        code: "# c\ndef hi\n  \"hi\"\nend\n",
+        expect: &[("def", "keyword"), ("\"hi\"", "string"), ("# c", "comment")],
+    },
+    Sample {
+        id: "php",
+        code: "<?php\n// c\nfunction hi() { return \"hi\"; }\n",
+        expect: &[
+            ("function", "keyword"),
+            ("\"hi\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "lua",
+        code: "-- c\nlocal function hi() return \"hi\" end",
+        expect: &[
+            ("local", "keyword"),
+            ("\"hi\"", "string"),
+            ("-- c", "comment"),
+        ],
+    },
+    Sample {
+        id: "zig",
+        code: "// c\nconst s = \"hi\";",
+        expect: &[
+            ("const", "keyword"),
+            ("\"hi\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "scala",
+        code: "// c\nobject A { val s = \"hi\" }",
+        expect: &[
+            ("object", "keyword"),
+            ("\"hi\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "dart",
+        code: "// c\nvoid main() { var s = 'hi'; }",
+        expect: &[("var", "keyword"), ("'hi'", "string"), ("// c", "comment")],
+    },
+    Sample {
+        id: "elixir",
+        code: "# c\ndefmodule A do\n  def hi, do: \"hi\"\nend\n",
+        expect: &[
+            ("defmodule", "keyword"),
+            ("\"hi\"", "string"),
+            ("# c", "comment"),
+        ],
+    },
+    Sample {
+        id: "powershell",
+        code: "# c\nfunction Hi { return \"hi\" }",
+        expect: &[
+            ("function", "keyword"),
+            ("\"hi\"", "string"),
+            ("# c", "comment"),
+        ],
+    },
+    Sample {
+        id: "dockerfile",
+        code: "# c\nFROM alpine\nLABEL a=\"hi\"\n",
+        expect: &[
+            ("FROM", "keyword"),
+            ("\"hi\"", "string"),
+            ("# c\n", "comment"),
+        ],
+    },
+    Sample {
+        id: "make",
+        code: "# c\nifeq ($(A),1)\nB := \"x\"\nendif\n",
+        expect: &[("ifeq", "keyword"), ("\"x\"", "string"), ("# c", "comment")],
+    },
+    Sample {
+        id: "ini",
+        code: "; c\n[section]\nkey = value\n",
+        expect: &[
+            ("section", "type"),
+            ("key", "property"),
+            ("; c\n", "comment"),
+        ],
+    },
+    Sample {
+        id: "properties",
+        code: "# c\nkey=value\n",
+        expect: &[("key", "property"), ("value", "string"), ("# c", "comment")],
+    },
+    Sample {
+        // Added lines read as strings, removed ones as keywords.
+        id: "diff",
+        code: "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n",
+        expect: &[("-old", "keyword"), ("+new", "string")],
+    },
+    Sample {
+        id: "svelte",
+        code: "<!-- c -->\n{#if a}<p class=\"b\">hi</p>{/if}",
+        expect: &[
+            ("if", "keyword"),
+            ("p", "tag"),
+            ("b", "string"),
+            ("<!-- c -->", "comment"),
+        ],
+    },
+    Sample {
+        id: "nix",
+        code: "# c\nlet a = \"x\"; in a",
+        expect: &[("let", "keyword"), ("\"x\"", "string"), ("# c", "comment")],
+    },
+    Sample {
+        id: "proto",
+        code: "// c\nsyntax = \"proto3\";\noption go_package = \"x\";\nmessage A { string s = 1; }",
+        expect: &[
+            ("message", "keyword"),
+            ("\"x\"", "string"),
+            ("// c", "comment"),
+        ],
+    },
+    Sample {
+        id: "cmake",
+        code: "# c\nif(A)\n  set(B \"x\")\nendif()",
+        expect: &[("if", "keyword"), ("\"x\"", "string"), ("# c", "comment")],
+    },
+    Sample {
+        id: "r",
+        code: "# c\nf <- function(x) \"a\"",
+        expect: &[
+            ("function", "keyword"),
+            ("\"a\"", "string"),
+            ("# c", "comment"),
+        ],
+    },
+    Sample {
+        id: "erlang",
+        code: "% c\nf(X) -> case X of _ -> \"hi\" end.",
+        expect: &[
+            ("case", "keyword"),
+            ("\"hi\"", "string"),
+            ("% c", "comment"),
+        ],
+    },
+    Sample {
+        id: "clojure",
+        code: "; c\n(defn f [] \"hi\")",
+        expect: &[("\"hi\"", "string"), ("; c\n", "comment")],
+    },
+    Sample {
+        id: "perl",
+        code: "# c\nmy $s = \"hi\";",
+        expect: &[("my", "keyword"), ("\"hi\"", "string"), ("# c", "comment")],
+    },
+    Sample {
+        id: "batch",
+        code: "REM c\n@echo off\nset A=hi\necho \"hi\"\n",
+        expect: &[
+            ("set", "keyword"),
+            ("\"hi\"", "string"),
+            ("REM c", "comment"),
+        ],
+    },
+];
+
 #[test]
-fn every_language_compiles_and_highlights_a_sample() {
-    // (language, sample, expected (text, semantic name) pairs)
-    type Sample = (Lang, &'static str, &'static [(&'static str, &'static str)]);
-    let samples: &[Sample] = &[
+fn every_language_loads_its_grammar_and_colors_a_sample() {
+    let mut failures = Vec::new();
+    for lang in Lang::all() {
+        if !SAMPLES.iter().any(|sample| sample.id == lang.id()) {
+            failures.push(format!("{}: no sample", lang.id()));
+        }
+    }
+    for sample in SAMPLES {
+        let id = sample.id;
+        for basic in ["keyword", "string", "comment"] {
+            let without = WITHOUT.contains(&(id, basic));
+            if without == sample.expect.iter().any(|(_, name)| *name == basic) {
+                failures.push(format!(
+                    "{id}: checks a {basic} and lists it as missing, or neither"
+                ));
+            }
+        }
+        let Some(lang) = Lang::from_id(id).filter(|lang| lang.id() == id) else {
+            failures.push(format!("{id}: no such language"));
+            continue;
+        };
+        // A grammar built for another runtime ABI is refused here; the
+        // editor would then show the file unstyled without an error.
+        if let Err(error) = tree_sitter::Parser::new().set_language(&lang.ts_language()) {
+            failures.push(format!("{id}: the grammar does not load: {error}"));
+            continue;
+        }
+        if lang.query_level() != Some(0) {
+            failures.push(format!("{id}: query level {:?}", lang.query_level()));
+        }
+        let found = spans(lang, sample.code);
+        for (text, name) in sample.expect {
+            if !has(&found, text, name) {
+                failures.push(format!("{id}: expected {text:?} as {name}, got {found:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+#[test]
+fn every_name_a_language_lists_leads_back_to_it() {
+    for lang in Lang::all() {
+        for name in lang.names() {
+            let found = match name.strip_suffix('*') {
+                Some(start) => Lang::detect(&format!("{start}local")),
+                None if name.contains('.') || name.starts_with('.') => Lang::detect(name),
+                None => Lang::from_id(name).or_else(|| Lang::detect(name)),
+            };
+            assert_eq!(found, Some(*lang), "{name:?} is listed for {}", lang.id());
+        }
+    }
+}
+
+#[test]
+fn aspnet_pages_read_as_html_around_their_server_blocks() {
+    // An approximation: the server code stays plain, the markup around it,
+    // before and after each block, keeps its colours.
+    let aspx = concat!(
+        "<%@ Page Language=\"C#\" CodeBehind=\"Default.aspx.cs\" Inherits=\"App._Default\" %>\n",
+        "<!DOCTYPE html>\n",
+        "<html>\n",
+        "<body>\n",
+        "  <form id=\"form1\" runat=\"server\">\n",
+        "    <asp:Button ID=\"Go\" runat=\"server\" Text=\"Go\" OnClick=\"Go_Click\" />\n",
+        "    <% if (ok) { %><p class=\"note\">Hi <%= Name %></p><% } %>\n",
+        "  </form>\n",
+        "</body>\n",
+        "</html>\n",
+    );
+    let razor = concat!(
+        "@model App.Models.Home\n",
+        "@{\n",
+        "    ViewData[\"Title\"] = \"Home\";\n",
+        "}\n",
+        "<div class=\"text-center\">\n",
+        "    <h1 class=\"display-4\">@ViewData[\"Title\"]</h1>\n",
+        "    @if (Model.Ok) { <p>Ok</p> }\n",
+        "</div>\n",
+        "<!-- end -->\n",
+    );
+    type Page = (
+        &'static str,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+    );
+    let pages: &[Page] = &[
         (
-            Lang::Rust,
-            "fn main() { let s = \"a\"; }",
-            &[("fn", "keyword"), ("\"a\"", "string")],
-        ),
-        (
-            Lang::TypeScript,
-            "const x: number = 1;",
-            &[("const", "keyword"), ("number", "type.builtin")],
-        ),
-        (
-            Lang::Tsx,
-            "const a = <div className=\"x\">hi</div>;",
-            &[("const", "keyword"), ("div", "tag")],
-        ),
-        (
-            Lang::JavaScript,
-            "function foo() { return 1; }",
+            "Default.aspx",
+            aspx,
             &[
-                ("function", "keyword"),
-                ("foo", "function"),
-                ("1", "number"),
+                ("form", "tag"),
+                ("id", "attribute"),
+                ("form1", "string"),
+                ("asp:Button", "tag"),
+                ("Go_Click", "string"),
+                ("p", "tag"),
+                ("note", "string"),
+                ("body", "tag"),
+                ("html", "tag"),
             ],
         ),
         (
-            Lang::Json,
-            "{\"a\": \"b\", \"n\": 1, \"t\": true}",
-            &[("\"a\"", "property"), ("\"b\"", "string"), ("1", "number")],
-        ),
-        (
-            Lang::Toml,
-            "[package]\nname = \"x\"\nn = 1\n",
-            &[("name", "property"), ("\"x\"", "string"), ("1", "number")],
-        ),
-        (
-            Lang::Yaml,
-            "key: value\nn: 1\n# note\n",
-            &[("key", "property"), ("# note", "comment")],
-        ),
-        (Lang::Markdown, "# Title\n\ntext\n", &[("Title", "heading")]),
-        (
-            Lang::Python,
-            "def f(x):\n    return 1\n",
-            &[("def", "keyword"), ("f", "function"), ("1", "number")],
-        ),
-        (
-            Lang::Go,
-            "package main\nfunc main() {}\n",
-            &[("package", "keyword"), ("func", "keyword")],
-        ),
-        (
-            Lang::Sql,
-            "SELECT 1",
-            &[("SELECT", "keyword"), ("1", "number")],
-        ),
-        (Lang::Bash, "echo \"hi\"", &[("\"hi\"", "string")]),
-        (
-            Lang::Css,
-            "a { color: red; }",
-            &[("a", "tag"), ("color", "property")],
-        ),
-        (
-            Lang::Html,
-            "<div class=\"a\">hi</div>",
-            &[("div", "tag"), ("class", "attribute")],
+            "Index.cshtml",
+            razor,
+            &[
+                ("div", "tag"),
+                ("class", "attribute"),
+                ("text-center", "string"),
+                ("h1", "tag"),
+                ("display-4", "string"),
+                ("p", "tag"),
+                ("<!-- end -->", "comment"),
+            ],
         ),
     ];
-    assert_eq!(samples.len(), Lang::all().len());
-
-    for (lang, sample, expected) in samples {
-        assert!(
-            lang.query_level().is_some(),
-            "{lang:?}: no highlight query compiled"
-        );
-        let found = spans(*lang, sample);
-        assert!(!found.is_empty(), "{lang:?}: no spans");
-        for (text, name) in *expected {
+    for (name, page, expect) in pages {
+        let lang = Lang::detect(name).unwrap();
+        assert_eq!(lang, Lang::Html, "{name}");
+        let found = spans(lang, page);
+        for (text, semantic) in *expect {
             assert!(
-                has(&found, text, name),
-                "{lang:?}: expected {text:?} as {name}, got {found:?}"
+                has(&found, text, semantic),
+                "{name}: expected {text:?} as {semantic}, got {found:?}"
             );
         }
+        // The last line still has its colours: nothing swallowed the rest of the file.
+        let (last, _) = highlight(lang, page).pop().unwrap();
+        assert_eq!(last.end, page.trim_end().len(), "{name}: {found:?}");
     }
+}
+
+#[test]
+fn neovim_lua_match_predicates_filter_as_they_do_in_neovim() {
+    // Zig: an identifier is a type or a constant only by its case.
+    let found = spans(Lang::Zig, "const MAX_LEN = 4;\nconst count = MAX_LEN;\n");
+    assert!(has(&found, "MAX_LEN", "constant"), "{found:?}");
+    assert!(
+        !found
+            .iter()
+            .any(|(t, n)| t == "count" && (*n == "type" || *n == "constant")),
+        "{found:?}"
+    );
+    // CMake: `%u` and `%d` are Lua classes; upper-case arguments are constants.
+    let found = spans(Lang::CMake, "set(A2 ON)\nset(b files)\n");
+    assert!(has(&found, "ON", "constant"), "{found:?}");
+    assert!(!has(&found, "files", "constant"), "{found:?}");
 }
 
 #[test]
@@ -236,6 +672,218 @@ fn typescript_adds_types_on_top_of_the_javascript_query() {
     assert!(has(&found, "Foo", "type"));
 }
 
+/// (file name or path, language id) pairs; None stays plain text.
+const DETECTED: &[(&str, Option<&str>)] = &[
+    // ASP.NET: the code-behind is C#, whatever comes before ".cs".
+    ("Program.cs", Some("csharp")),
+    ("Default.aspx.cs", Some("csharp")),
+    ("Site.Master.cs", Some("csharp")),
+    ("Foo.designer.cs", Some("csharp")),
+    ("Global.asax.cs", Some("csharp")),
+    ("script.csx", Some("csharp")),
+    ("C:\\src\\App\\Default.aspx.cs", Some("csharp")),
+    // The project, config and resource files around it are XML.
+    ("web.config", Some("xml")),
+    ("App.config", Some("xml")),
+    ("C:\\src\\App\\Web.config", Some("xml")),
+    ("App.csproj", Some("xml")),
+    ("Lib.vbproj", Some("xml")),
+    ("Lib.fsproj", Some("xml")),
+    ("Directory.Build.props", Some("xml")),
+    ("Directory.Build.targets", Some("xml")),
+    ("Resources.resx", Some("xml")),
+    ("MainWindow.xaml", Some("xml")),
+    ("Package.nuspec", Some("xml")),
+    ("Web.sitemap", Some("xml")),
+    ("schema.xsd", Some("xml")),
+    ("page.xsl", Some("xml")),
+    ("page.xslt", Some("xml")),
+    ("service.wsdl", Some("xml")),
+    ("app.manifest", Some("xml")),
+    ("rules.ruleset", Some("xml")),
+    ("FolderProfile.pubxml", Some("xml")),
+    ("Settings.settings", Some("xml")),
+    ("Model.dbml", Some("xml")),
+    ("Model.edmx", Some("xml")),
+    ("pom.xml", Some("xml")),
+    ("icon.svg", Some("xml")),
+    ("Info.plist", Some("xml")),
+    // Web Forms pages read as HTML: an approximation around the server blocks.
+    ("Default.aspx", Some("html")),
+    ("Header.ascx", Some("html")),
+    ("Site.Master", Some("html")),
+    ("Service.asmx", Some("html")),
+    ("Handler.ashx", Some("html")),
+    ("Global.asax", Some("html")),
+    ("Index.vbhtml", Some("html")),
+    ("Index.cshtml", Some("html")),
+    ("Counter.razor", Some("html")),
+    ("C:\\src\\App\\Views\\Home\\Index.cshtml", Some("html")),
+    // C and C++: .h is C.
+    ("main.c", Some("c")),
+    ("stdio.h", Some("c")),
+    ("main.cpp", Some("cpp")),
+    ("main.cc", Some("cpp")),
+    ("main.cxx", Some("cpp")),
+    ("vector.hpp", Some("cpp")),
+    ("vector.hh", Some("cpp")),
+    ("vector.hxx", Some("cpp")),
+    ("C:\\src\\main.cpp", Some("cpp")),
+    ("Main.java", Some("java")),
+    ("Main.kt", Some("kotlin")),
+    ("build.gradle.kts", Some("kotlin")),
+    ("App.swift", Some("swift")),
+    ("app.rb", Some("ruby")),
+    ("tasks.rake", Some("ruby")),
+    ("app.gemspec", Some("ruby")),
+    ("config.ru", Some("ruby")),
+    ("Gemfile", Some("ruby")),
+    ("Rakefile", Some("ruby")),
+    ("index.php", Some("php")),
+    ("init.lua", Some("lua")),
+    ("main.zig", Some("zig")),
+    ("build.zig.zon", Some("zig")),
+    ("Main.scala", Some("scala")),
+    ("build.sbt", Some("scala")),
+    ("main.dart", Some("dart")),
+    ("lib.ex", Some("elixir")),
+    ("test.exs", Some("elixir")),
+    ("Build.ps1", Some("powershell")),
+    ("Module.psm1", Some("powershell")),
+    ("Module.psd1", Some("powershell")),
+    ("Dockerfile", Some("dockerfile")),
+    ("Containerfile", Some("dockerfile")),
+    ("Dockerfile.dev", Some("dockerfile")),
+    ("app.dockerfile", Some("dockerfile")),
+    ("C:\\proj\\Dockerfile", Some("dockerfile")),
+    ("Makefile", Some("make")),
+    ("makefile", Some("make")),
+    ("GNUmakefile", Some("make")),
+    ("rules.mk", Some("make")),
+    ("settings.ini", Some("ini")),
+    ("setup.cfg", Some("ini")),
+    (".editorconfig", Some("ini")),
+    (".gitconfig", Some("ini")),
+    ("/home/u/.gitconfig", Some("ini")),
+    (".gitmodules", Some("ini")),
+    ("app.properties", Some("properties")),
+    (".env", Some("bash")),
+    (".env.local", Some("bash")),
+    ("C:\\proj\\.env.production", Some("bash")),
+    ("fix.diff", Some("diff")),
+    ("fix.patch", Some("diff")),
+    ("App.svelte", Some("svelte")),
+    ("site.scss", Some("css")),
+    ("flake.nix", Some("nix")),
+    ("api.proto", Some("proto")),
+    ("CMakeLists.txt", Some("cmake")),
+    ("deps.cmake", Some("cmake")),
+    ("plot.r", Some("r")),
+    ("plot.R", Some("r")),
+    ("app.erl", Some("erlang")),
+    ("app.hrl", Some("erlang")),
+    ("rebar.config", Some("erlang")),
+    ("core.clj", Some("clojure")),
+    ("core.cljs", Some("clojure")),
+    ("deps.edn", Some("clojure")),
+    ("script.pl", Some("perl")),
+    ("Module.pm", Some("perl")),
+    ("build.bat", Some("batch")),
+    ("build.cmd", Some("batch")),
+    // What it knew before.
+    ("a.tsx", Some("tsx")),
+    ("x.d.ts", Some("typescript")),
+    ("src/lib.rs", Some("rust")),
+    ("C:\\proj\\Main.PY", Some("python")),
+    ("Cargo.lock", Some("toml")),
+    ("/home/u/.zshrc", Some("bash")),
+    (".envrc", Some("bash")),
+    ("README.md", Some("markdown")),
+    ("view.jsx", Some("javascript")),
+    // No grammar.
+    ("App.sln", None),
+    ("Module1.vb", None),
+    ("Main.hs", None),
+    ("main.ml", None),
+    ("main.m", None),
+    ("README", None),
+    (".gitignore", None),
+    ("foo.unknown", None),
+    ("notes.txt", None),
+];
+
+#[test]
+fn detect_knows_the_files_people_open() {
+    let failures: Vec<String> = DETECTED
+        .iter()
+        .filter_map(|&(path, id)| {
+            let got = Lang::detect(path).map(Lang::id);
+            (got != id).then(|| format!("{path}: {got:?}, expected {id:?}"))
+        })
+        .collect();
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+#[test]
+fn code_fences_name_languages_as_people_type_them() {
+    let failures: Vec<String> = [
+        ("c", "c"),
+        ("cpp", "cpp"),
+        ("c++", "cpp"),
+        ("cs", "csharp"),
+        ("csharp", "csharp"),
+        ("c#", "csharp"),
+        ("java", "java"),
+        ("kt", "kotlin"),
+        ("kotlin", "kotlin"),
+        ("swift", "swift"),
+        ("rb", "ruby"),
+        ("ruby", "ruby"),
+        ("php", "php"),
+        ("lua", "lua"),
+        ("zig", "zig"),
+        ("scala", "scala"),
+        ("dart", "dart"),
+        ("elixir", "elixir"),
+        ("xml", "xml"),
+        ("xaml", "xml"),
+        ("ps1", "powershell"),
+        ("powershell", "powershell"),
+        ("pwsh", "powershell"),
+        ("dockerfile", "dockerfile"),
+        ("docker", "dockerfile"),
+        ("make", "make"),
+        ("makefile", "make"),
+        ("ini", "ini"),
+        ("properties", "properties"),
+        ("dotenv", "bash"),
+        ("diff", "diff"),
+        ("patch", "diff"),
+        ("svelte", "svelte"),
+        ("scss", "css"),
+        ("nix", "nix"),
+        ("proto", "proto"),
+        ("protobuf", "proto"),
+        ("cmake", "cmake"),
+        ("r", "r"),
+        ("erlang", "erlang"),
+        ("clojure", "clojure"),
+        ("perl", "perl"),
+        ("bat", "batch"),
+        ("batch", "batch"),
+        ("razor", "html"),
+        ("cshtml", "html"),
+        ("aspx", "html"),
+    ]
+    .into_iter()
+    .filter_map(|(fence, id)| {
+        let got = Lang::from_id(fence).map(Lang::id);
+        (got != Some(id)).then(|| format!("{fence}: {got:?}, expected {id:?}"))
+    })
+    .collect();
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
 #[test]
 fn detect_picks_a_language_from_the_file_name() {
     assert_eq!(Lang::detect("a.tsx"), Some(Lang::Tsx));
@@ -247,7 +895,6 @@ fn detect_picks_a_language_from_the_file_name() {
     assert_eq!(Lang::detect(".envrc"), Some(Lang::Bash));
     assert_eq!(Lang::detect("README.md"), Some(Lang::Markdown));
     assert_eq!(Lang::detect("view.jsx"), Some(Lang::JavaScript));
-    assert_eq!(Lang::detect("Dockerfile"), None);
     assert_eq!(Lang::detect("README"), None);
     assert_eq!(Lang::detect(".gitignore"), None);
     assert_eq!(Lang::detect("foo.unknown"), None);
