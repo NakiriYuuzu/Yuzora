@@ -1,6 +1,16 @@
 # Yuzora 更新說明
 
 <!-- yuzora(L7): CHANGELOG.md 裡 Yuzora 每一筆的繁體中文版，版本、### New／### Fixed 標題與項目數都要一樣（App 依標題判斷 Fixed）。這裡沒有的版本，App 會改顯示 CHANGELOG.md 的英文。 -->
+## [0.1.4] - 2026-11-26
+
+### New
+- **替 pane 取名。** 在終端機上按右鍵選 Rename，或在命令面板執行 Rename pane，就能替目前的 pane 取名。Yuzora 的 pane 標頭會顯示這個名稱，取代原本顯示的程式或工具。
+- **多 29 種語言有語法顏色。** 編輯器、Markdown 的程式碼區塊與 Git 的 diff 現在會替 C#、XML、C、C++、Java、Kotlin、Swift、Ruby、PHP、Lua、Zig、Scala、Dart、Elixir、PowerShell、Dockerfile、Makefile、INI、Properties、Diff、Svelte、Nix、Protobuf、CMake、R、Erlang、Clojure、Perl 與 Batch 上色，總共 43 種語言。`Default.aspx.cs`、`Site.Master.cs` 這類檔案會當成 C#，`.config`、`.csproj`、`.resx`、`.xaml` 會當成 XML。`.aspx`、`.ascx`、`.master`、`.cshtml` 與 `.razor` 以 HTML 上色：標籤、屬性與字串有顏色，`<% %>` 與 `@{ }` 裡的伺服器程式碼沒有。
+- **跟上 Herdr 0.1.18。** Shift+點擊可以延伸終端機裡的選取範圍。`pane.resize` 用鍵盤調整 pane 的大小，`agent.select` 依 agent 在清單中的位置跳到它。兩者都沒有預設按鍵，請自己加進 `keys.json`。在 `settings.json` 寫 `font_weight_bold` 可以設定終端機粗體字的字重。Cmd+點擊（Windows 與 Linux 是 Ctrl+點擊）可以開啟帶行號範圍或 `#L` 錨點的檔案連結，也能開啟 Cursor 與 VS Code 的遠端連結。toast 會顯示完整的訊息。Remove worktree 會告訴你 worktree 已被鎖定，並在刪除資料夾之前先停止這個 Space 裡的程式。名稱以 emoji 開頭的 Space，在 Spaces 清單與 Go to space or tab 裡會顯示完整的 emoji。tab 列、pane 標頭與狀態列的徽章仍然顯示名稱的第一個字母。名稱含有句點、冒號或 emoji 的 mod 或 layout 不會再讓 Yuzora 當掉。在 WSL 上，按滑鼠中鍵又能貼上剪貼簿的內容了。agent 會讀你寫在 `~/.config/yuzora/AGENTS.local.md` 的筆記，Yuzora 絕不寫入這個檔案。如果你在 Settings › General 打開了 Herdr 的 Files 與 Changes 面板，它們在大型 repo 裡用的 CPU 少很多，切換 Space 時也跟得上，程式碼也改用你的終端機字級顯示。給 layout 與 mod 作者：layout 的 `link_handlers` 讓 mod 接手終端機裡的 Cmd+點擊，pane 外框的 `veil` 會讓你不在的 pane 變淡，mod 也可以在命令面板加入項目，並用 `pickFiles` 開啟系統的檔案選擇器。Herdr 0.1.17 與 0.1.18 沒有新增預設按鍵，改過 `keys.json` 的人不用補任何東西。
+
+### Fixed
+- Files：在沒有 `sh` 的 Windows 機器上的遠端 Space，側欄可以列出資料夾、依名稱找檔案，並以唯讀方式開啟檔案與圖片。它透過 Windows PowerShell 讀取那台機器。以前側欄在那裡連一個資料夾都列不出來。
+
 ## [0.1.3] - 2026-11-18
 
 ### New

@@ -2,6 +2,48 @@
 
 <samp>English · <a href="CHANGELOG.zh-TW.md">繁體中文</a></samp>
 
+## [0.1.4] - 2026-11-26
+
+The Files sidebar can read a remote Space on a Windows machine that has no `sh`. You can name a pane, and Yuzora's pane header shows the name. The editor and Git's diff color 29 more languages, C# and the ASP.NET files among them. Yuzora is up to date with Herdr 0.1.18.
+
+> **Before you upgrade.** 0.1.0 to 0.1.3 update to 0.1.4 by themselves on macOS, Linux and Windows. So do beta.2 to beta.4 on macOS and Linux. On Windows, a beta can't update itself, and the Tauri app (v0.0.19 and 0.1.0-beta.1) doesn't offer 0.1.4. In both cases, download the installer by hand. See the installation notes below.
+
+### Added
+
+- **Name a pane.** Right-click a terminal and choose Rename, or run Rename pane in the command palette to name the focused pane. Yuzora's pane header shows the name in place of the program or the tool.
+- **Syntax colors for 29 more languages.** The editor, Markdown code blocks and Git's diff now color C#, XML, C, C++, Java, Kotlin, Swift, Ruby, PHP, Lua, Zig, Scala, Dart, Elixir, PowerShell, Dockerfile, Makefile, INI, Properties, Diff, Svelte, Nix, Protobuf, CMake, R, Erlang, Clojure, Perl and Batch, 43 languages in all. Files such as `Default.aspx.cs` and `Site.Master.cs` are C#, and `.config`, `.csproj`, `.resx` and `.xaml` are XML. `.aspx`, `.ascx`, `.master`, `.cshtml` and `.razor` are colored as HTML: tags, attributes and strings get colors, the server code inside `<% %>` and `@{ }` doesn't.
+
+### Changed
+
+- **Up to date with Herdr 0.1.18.** Shift+click extends a terminal selection. `pane.resize` resizes a pane from the keyboard, and `agent.select` jumps to an agent by its place in the agents list. Neither has a default key, so add them to `keys.json` yourself. `font_weight_bold` in `settings.json` sets the weight of bold terminal text. Cmd-click (Ctrl-click on Windows and Linux) opens a file link with a line range or a `#L` anchor, and opens Cursor and VS Code remote links. Toasts show the whole message. Remove worktree says when a worktree is locked, and stops the Space's programs before it deletes the folder. A Space whose name starts with an emoji shows the whole emoji in the Spaces list and in Go to space or tab. The badges in the tab bar, pane headers and status bar still show the name's first letter. A mod or layout with a dot, a colon or an emoji in its name no longer crashes Yuzora. On WSL, middle-click pastes the clipboard again. Agents read your own notes in `~/.config/yuzora/AGENTS.local.md`, and Yuzora never writes that file. If you turned on Herdr's Files and Changes panels in Settings › General, they use far less CPU in large repositories, keep up when you switch Spaces, and show code at your terminal font size. For layout and mod authors: `link_handlers` in a layout lets a mod take over Cmd-clicks in terminals, `veil` on a pane frame fades the panes you're not in, and a mod can add command palette entries and open the system file picker with `pickFiles`. Herdr 0.1.17 and 0.1.18 add no default keys, so an edited `keys.json` needs nothing new.
+
+### Fixed
+
+- Files: in a remote Space on a Windows machine without `sh`, the sidebar lists folders, finds files by name, and opens files and images, read-only. It reads that machine through Windows PowerShell. Before, it couldn't list any folder there.
+
+### Known limitations
+
+- Files: on a Windows machine without `sh`, Files only reads. Saving, New file, New folder, Rename, Paste, Duplicate and Move to Trash are refused there, and files always open read-only.
+- Files: on such a machine, a path longer than 260 characters may not open. Yuzora doesn't use the `\\?\` form that Windows has for long paths.
+- Files: on such a machine, finding a file by name doesn't use ripgrep. Outside a Git repository that you trust, or without Git on that machine, the results include ignored files, and the search says so.
+- Files: a Windows machine that has `sh` on its PATH, from Git Bash for example, is still read through `sh`, as in 0.1.3.
+- Git mode and templates: only Files reads through PowerShell. Git mode and templates still run `sh` on the other machine, as in 0.1.3.
+- Files: reading a Windows machine without `sh` was tested only by running its PowerShell scripts on a Windows CI runner. Nobody tried it through herdr-core with a real Windows machine.
+- Syntax colors: `.aspx`, `.cshtml` and `.razor` files are colored as HTML only. Visual Basic, Vue, Haskell, OCaml, Objective-C, Terraform, GraphQL, Julia and Groovy files still open without colors.
+- The known limitations of 0.1.3 still apply.
+
+### Installation notes
+
+- Installs of 0.1.0 to 0.1.3 update themselves to 0.1.4, and so do beta.2 to beta.4 on macOS and Linux. They check 10 seconds after Yuzora starts and then every hour, and apply the update the next time Yuzora restarts. 0.1.3 asks about unsaved changes before it quits or restarts. Older versions don't, so save your files before you quit or restart them.
+- **Windows, on 0.1.0 to 0.1.3:** if you installed it over a beta and haven't restarted your PC since, the update can fail once: the beta started a background program (herdr-core) that still holds Yuzora's install folder. Settings › Updates says so. Restart your PC, or run `hc server stop` in a terminal outside Yuzora (it ends every terminal and the agents running in them, the same as a restart would), then start Yuzora again.
+- **Windows, if you are still on a beta (0.1.0-beta.2 to beta.4):** the beta cannot update itself on Windows. It may show `Herdr 0.1.4 is ready`, but Restart doesn't install it. Close Yuzora, download `Yuzora-windows-x64-setup.exe` from this release and run it over your install. (With the beta still open, the installer may not be able to replace its files.) Then restart your PC once, for the reason above.
+- The Tauri app (v0.0.19 and 0.1.0-beta.1) doesn't offer 0.1.4. Download and install 0.1.4 yourself. It is a different app, and the Tauri app's settings and data don't carry over: set up database connections, SSH hosts and settings again. The Tauri app's files stay where they were, so you can go back by installing it again. The new app has no Browser, Companion or AgentZone, and its editor has no LSP. On Windows, the installer offers to remove the old all-users install. The Tauri app's source code left this repository after 0.1.2 and stays in its git history (tag `v0.1.2`).
+- The macOS app supports only Apple Silicon. Download `Yuzora-macos-aarch64.dmg`. The app has only an ad-hoc signature, with no Apple Developer ID signature or notarization, so Gatekeeper blocks the first open. Go to "System Settings › Privacy & Security" and click "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/Yuzora.app`. Do this only for a DMG you downloaded from this repository's Releases. After an update, macOS may ask again for microphone, camera or folder access.
+- On Windows, `Yuzora-windows-x64-setup.exe` is a per-user installer that needs no admin rights. Authenticode isn't enabled, so SmartScreen may show a warning. Choose More info › Run anyway.
+- Linux (experimental) gets `yuzora-0.1.4-linux-x86_64.tar.gz` and `yuzora-0.1.4-linux-aarch64.tar.gz`. Unpack one and run `yuzora/install`.
+- This release was checked on a real Mac. On Windows and Linux, it was checked only by automated runs on CI runners (on Windows, installing, updating twice and uninstalling; on Linux, running `install`). Nobody tried it on a real Windows or Linux machine.
+- Requires herdr-core 0.1.11 or newer. If it isn't installed, the first screen offers to install it. Saving a file on another machine needs herdr-core 0.1.19 or newer on both machines.
+
 ## [0.1.3] - 2026-11-18
 
 Yuzora asks before a close, a quit or an update loses unsaved changes. The Files sidebar can copy, paste and duplicate, and Move to Trash works on remote Spaces. Mods and Templates are one Settings page, which installs mods and layouts from a GitHub or herdr.dev link. The CPU and memory chip shows in the status bar of every layout that has one. Yuzora is up to date with Herdr 0.1.16.

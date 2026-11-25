@@ -2,6 +2,16 @@
 
 <!-- yuzora: Yuzora's entries sit above Herdr's; the app shows the first one as its version's notes. -->
 <!-- yuzora(L7): each Yuzora entry here has its Traditional Chinese twin in CHANGELOG.zh-TW.md: add a line to both. -->
+## [0.1.4] - 2026-11-26
+
+### New
+- **Name a pane.** Right-click a terminal and choose Rename, or run Rename pane in the command palette to name the focused pane. Yuzora's pane header shows the name in place of the program or the tool.
+- **Syntax colors for 29 more languages.** The editor, Markdown code blocks and Git's diff now color C#, XML, C, C++, Java, Kotlin, Swift, Ruby, PHP, Lua, Zig, Scala, Dart, Elixir, PowerShell, Dockerfile, Makefile, INI, Properties, Diff, Svelte, Nix, Protobuf, CMake, R, Erlang, Clojure, Perl and Batch, 43 languages in all. Files such as `Default.aspx.cs` and `Site.Master.cs` are C#, and `.config`, `.csproj`, `.resx` and `.xaml` are XML. `.aspx`, `.ascx`, `.master`, `.cshtml` and `.razor` are colored as HTML: tags, attributes and strings get colors, the server code inside `<% %>` and `@{ }` doesn't.
+- **Up to date with Herdr 0.1.18.** Shift+click extends a terminal selection. `pane.resize` resizes a pane from the keyboard, and `agent.select` jumps to an agent by its place in the agents list. Neither has a default key, so add them to `keys.json` yourself. `font_weight_bold` in `settings.json` sets the weight of bold terminal text. Cmd-click (Ctrl-click on Windows and Linux) opens a file link with a line range or a `#L` anchor, and opens Cursor and VS Code remote links. Toasts show the whole message. Remove worktree says when a worktree is locked, and stops the Space's programs before it deletes the folder. A Space whose name starts with an emoji shows the whole emoji in the Spaces list and in Go to space or tab. The badges in the tab bar, pane headers and status bar still show the name's first letter. A mod or layout with a dot, a colon or an emoji in its name no longer crashes Yuzora. On WSL, middle-click pastes the clipboard again. Agents read your own notes in `~/.config/yuzora/AGENTS.local.md`, and Yuzora never writes that file. If you turned on Herdr's Files and Changes panels in Settings › General, they use far less CPU in large repositories, keep up when you switch Spaces, and show code at your terminal font size. For layout and mod authors: `link_handlers` in a layout lets a mod take over Cmd-clicks in terminals, `veil` on a pane frame fades the panes you're not in, and a mod can add command palette entries and open the system file picker with `pickFiles`. Herdr 0.1.17 and 0.1.18 add no default keys, so an edited `keys.json` needs nothing new.
+
+### Fixed
+- Files: in a remote Space on a Windows machine without `sh`, the sidebar lists folders, finds files by name, and opens files and images, read-only. It reads that machine through Windows PowerShell. Before, it couldn't list any folder there.
+
 ## [0.1.3] - 2026-11-18
 
 ### New

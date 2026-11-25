@@ -72,7 +72,7 @@ Not in the new app: the Browser, Companion and AgentZone of the Tauri app.
 
 ## Download and install
 
-Download v0.1.3 from [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) or from the website. Installs of 0.1.0 to 0.1.2 update themselves to it, and so do beta.2 to beta.4 on macOS and Linux. On Windows, a beta can't update itself: close Yuzora, download the installer, run it over your install, and read the Windows note in the [release notes](CHANGELOG.md).
+Download v0.1.4 from [GitHub Releases](https://github.com/NakiriYuuzu/Yuzora/releases) or from the website. Installs of 0.1.0 to 0.1.3 update themselves to it, and so do beta.2 to beta.4 on macOS and Linux. On Windows, a beta can't update itself: close Yuzora, download the installer, run it over your install, and read the Windows note in the [release notes](CHANGELOG.md).
 
 | Platform | File | Installs to |
 |:--|:--|:--|
@@ -89,7 +89,7 @@ v0.0.19, the last stable Tauri release, stays on its own release page.
   `xattr -dr com.apple.quarantine /Applications/Yuzora.app`. Do this only for a DMG you downloaded from this
   repository's Releases. After an update, macOS may ask again for microphone, camera or folder access.
 - **Windows: no Authenticode signature.** SmartScreen may warn; choose More info › Run anyway.
-- **Windows and Linux have only passed CI.** Nobody has tried 0.1.3 on a real Windows or Linux machine. Linux is experimental.
+- **Windows and Linux have only passed CI.** Nobody has tried 0.1.4 on a real Windows or Linux machine. Linux is experimental.
 - **herdr-core.** Terminals and agents run in herdr-core (`hc`), version 0.1.11 or newer. If it isn't installed, the
   first screen offers to install it with herdr-core's own installer.
 - Starting with v0.0.9, the macOS app requires Apple Silicon. Intel Macs remain supported as remote hosts.
@@ -183,9 +183,9 @@ The SSH / SFTP mode in the right-hand dock lists hosts from `~/.ssh/config`, Yuz
 ### L5 · Files and editor
 
 - **Files** mode in the right-hand dock: the focused pane's repo as a tree with git marks (M/A/D/U/?), new file and folder, rename, move to Trash, copy path, reveal in Finder; fuzzy file-name search and content search (ripgrep when installed, a built-in search otherwise).
-- **Editor** pane: tree-sitter highlighting for 14 languages, save with a conflict check (⌘S), find and replace (⌘F / ⌘H). It follows changes made on disk and shows when an agent is editing the same file.
+- **Editor** pane: tree-sitter highlighting for 43 languages, save with a conflict check (⌘S), find and replace (⌘F / ⌘H). It follows changes made on disk and shows when an agent is editing the same file.
 - **Markdown** pane: a GFM preview that follows the editor as you type, with a source / preview toggle. An image and SVG viewer.
-- Files on another machine (remote spaces) can be browsed since beta.2. Since 0.1.0 they can be edited and saved, and files and folders can be created and renamed there. Saving needs herdr-core 0.1.19 or newer on both machines. Deleting there isn't available yet.
+- Files on another machine (remote spaces) can be browsed since beta.2. Since 0.1.0 they can be edited and saved, and files and folders can be created and renamed there. Saving needs herdr-core 0.1.19 or newer on both machines. Since 0.1.3, Move to Trash works there too.
 
 Details: [docs/beta2/files.md](docs/beta2/files.md).
 <!-- yuzora:lane:L5:end -->
@@ -209,7 +209,7 @@ Native side: `app/crates/yuzora-settings` (`yuzora:settings`). Design and decisi
 The packages in [Download and install](#download-and-install) are made by `app/scripts/yuzora/package` and checked on all four targets by `.github/workflows/app-package.yml`.
 
 - **Updates.** An installed Yuzora checks this repository's GitHub Releases every hour, downloads a newer version next to itself and switches to it when it restarts. The update manifest must be signed with the release key and every file must match its SHA-256, or nothing is installed. A beta build only updates to a stable release (0.1.0 and later), never to another beta: download betas by hand. A stable build follows stable releases; `"update": {"channel": "beta"}` in `~/.config/yuzora/yuzora/settings.json` makes it take pre-releases too.
-- **Coming from 0.0.x or 0.1.0-beta.1.** Download and install 0.1.3 yourself (see [Download and install](#download-and-install)): the old app's updater doesn't offer it. The old app's data stays where it was. Connections and settings aren't brought over, so set them up again. On Windows, the installer offers to remove the old all-users install.
+- **Coming from 0.0.x or 0.1.0-beta.1.** Download and install 0.1.4 yourself (see [Download and install](#download-and-install)): the old app's updater doesn't offer it. The old app's data stays where it was. Connections and settings aren't brought over, so set them up again. On Windows, the installer offers to remove the old all-users install.
 - **The command line program is `yuzora`** (the same commands as `herdr-app`: `yuzora status`, `yuzora do …`). Yuzora never puts `herdr-app` on your PATH, so an official Herdr install keeps its own.
 
 Design, keys and the release steps: [docs/beta2/release.md](docs/beta2/release.md).
