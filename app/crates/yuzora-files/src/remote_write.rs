@@ -428,8 +428,6 @@ fn refusal_in(message: &str, len: usize) -> Option<Refusal> {
             bytes: len,
             limit: MAX_BYTES,
         })
-    } else if message.starts_with("cannot start sh") {
-        Some(Refusal::NoShell)
     } else {
         None
     }
@@ -448,6 +446,9 @@ pub(crate) fn interpret(
     };
     let out = match answer {
         Ok(out) => out,
+        Err(e) if yuzora_core::remote::no_sh(&e) => {
+            return Err(WriteError::Refused(Refusal::NoShell));
+        }
         Err(ExecError::Remote(m) | ExecError::Protocol(m)) => {
             return Err(refusal_in(&m, len).map_or_else(|| failed(&m), WriteError::Refused));
         }

@@ -49,7 +49,10 @@ fn a_file_on_a_machine_without_sh_is_looked_at_and_one_not_there_is_none() {
             mtime_ms: 1_700_000_000_000
         }))
     );
-    assert_eq!(fsops::stat(r"C:\proj\gone.txt", Some("win-stat-gone")), Ok(None));
+    assert_eq!(
+        fsops::stat(r"C:\proj\gone.txt", Some("win-stat-gone")),
+        Ok(None)
+    );
 }
 
 #[test]
@@ -74,10 +77,7 @@ fn an_image_on_a_machine_without_sh_is_read() {
 
 #[test]
 fn files_under_a_folder_on_a_machine_without_sh_are_found() {
-    windows_machine(
-        "win-find",
-        r"printf 'find\0a.txt\0src/b.rs\0.hidden\0'",
-    );
+    windows_machine("win-find", r"printf 'find\0a.txt\0src/b.rs\0.hidden\0'");
     assert_eq!(
         search::list_files(r"C:\proj", Some("win-find"), false, 100),
         Ok(FileList {

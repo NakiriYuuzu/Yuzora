@@ -1,6 +1,7 @@
 //! Search for the Files lane: the file list for quick open, fuzzy matching of
 //! paths, and content search through ripgrep. Blocking. Here or on a
-//! herdr-core machine (`on: Some(machine)`, POSIX paths).
+//! herdr-core machine (`on: Some(machine)`, POSIX paths; the file list of one
+//! with no `sh`, Windows, comes from its PowerShell: [`crate::remote_shell`]).
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -14,7 +15,8 @@ use serde_json::Value;
 use yuzora_core::git_trust;
 use yuzora_core::remote::{ExecError, ExecOutput, ExecRequest};
 
-use crate::fsops::{self, failure, machine, run_sh};
+use crate::fsops::{self, failure, machine};
+use crate::remote_shell::{self, Script};
 
 const LIST_TIMEOUT: Duration = Duration::from_secs(20);
 const LIST_MAX_OUTPUT: u64 = 32 << 20;
@@ -142,14 +144,15 @@ fn list_sh_with(
     limit: usize,
 ) -> Result<FileList, String> {
     let git = crate::git::work_tree_open(trusted, root, on);
-    let out = run_sh(
+    let script = Script {
+        sh: LIST_SCRIPT,
+        ps: remote_shell::FILES,
+    };
+    let out = remote_shell::run(
         on,
-        LIST_SCRIPT,
-        &[
-            root,
-            if hidden { "1" } else { "0" },
-            if git { "1" } else { "0" },
-        ],
+        &script,
+        root,
+        &[if hidden { "1" } else { "0" }, if git { "1" } else { "0" }],
         LIST_TIMEOUT,
         LIST_MAX_OUTPUT,
     )?;
@@ -1322,6 +1325,89 @@ mod tests {
         }
         let (out, code) = run_list_script(&[], &d.path().join("nope"), false, true);
         assert_eq!((out.is_empty(), code), (true, 3));
+    }
+
+    /// The PowerShell twin of the file list (a machine with no `sh`, #294), run
+    /// here as it runs there: git's list in a work tree git may read, else every
+    /// file going down the folders, no link followed.
+    #[cfg(windows)]
+    #[test]
+    fn files_are_found_in_windows_powershell_as_they_are_here() {
+        let files = |root: &Path, git: &str, hidden: bool| {
+            let script = Script {
+                sh: LIST_SCRIPT,
+                ps: remote_shell::FILES,
+            };
+            let root = root.to_str().unwrap();
+            let out = remote_shell::run(
+                None,
+                &script,
+                root,
+                &["0", git],
+                LIST_TIMEOUT,
+                LIST_MAX_OUTPUT,
+            )
+            .unwrap();
+            read_listing(&out, hidden, 100).unwrap()
+        };
+        let put = |root: &Path, rel: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, rel).unwrap();
+        };
+        let d = tempfile::tempdir().unwrap();
+        for rel in [
+            "a.txt",
+            r"src\b.rs",
+            "src\\deep\\c \u{4e2d}\u{6587}.md",
+            r".hidden\x",
+            r".git\config",
+        ] {
+            put(d.path(), rel);
+        }
+        // A junction, which no privilege is needed for (unlike a symbolic link).
+        let made = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(d.path().join("jn"))
+            .arg(d.path().join("src"))
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let walked = FileList {
+            files: vec![
+                ".hidden/x".into(),
+                "a.txt".into(),
+                "src/b.rs".into(),
+                "src/deep/c \u{4e2d}\u{6587}.md".into(),
+            ],
+            truncated: false,
+            unfiltered: true,
+            skipped: false,
+        };
+        assert_eq!(files(d.path(), "0", true), walked);
+        // Not a work tree: git has nothing to say, and the folders are walked.
+        assert_eq!(files(d.path(), "1", true), walked);
+
+        let repo = tempfile::tempdir().unwrap();
+        for rel in ["a.txt", "ignored.txt", r"src\b.rs"] {
+            put(repo.path(), rel);
+        }
+        std::fs::write(repo.path().join(".gitignore"), "ignored.txt\n").unwrap();
+        let init = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(init.status.success(), "{init:?}");
+        assert_eq!(
+            files(repo.path(), "1", false),
+            FileList {
+                files: vec!["a.txt".into(), "src/b.rs".into()],
+                truncated: false,
+                unfiltered: false,
+                skipped: false,
+            }
+        );
     }
 
     #[cfg(unix)]
