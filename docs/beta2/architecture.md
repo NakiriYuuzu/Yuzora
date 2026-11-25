@@ -17,7 +17,8 @@ beta.2 改以 [herdrdev/herdr-app](https://github.com/herdrdev/herdr-app)（Rust
 
 - 指令：`git subtree add --prefix=app https://github.com/herdrdev/herdr-app.git master --squash`。
 - 上游 commit：`9c678b0fc84625b57ba7be4f56319802ee366765`（herdr-app v0.1.12 之後的 master）。squash commit `32fd5c6f`、merge commit `b486feb0` 帶有 `git-subtree-dir: app`／`git-subtree-split` metadata。
-- 最近一次同步（2026-11-17）：上游正式 tag **v0.1.16**（`034f8b85`，squash `e6f62cac`；`distribution/core-version` 仍是 0.1.11、`hc::GENERATION` 仍是 1）。細節見 [herdr-compat.md](herdr-compat.md) 的 C1d。
+- 最近一次同步（2026-11-25）：上游正式 tag **v0.1.18**（`9a9ae13d`，連同 v0.1.17；squash `ddfba50c`；`distribution/core-version` 仍是 0.1.11、`hc::GENERATION` 仍是 1）。細節見 [herdr-compat.md](herdr-compat.md) 的 C1e。
+- 上一次同步（2026-11-17）：上游正式 tag **v0.1.16**（`034f8b85`，squash `e6f62cac`；`distribution/core-version` 仍是 0.1.11、`hc::GENERATION` 仍是 1）。細節見 [herdr-compat.md](herdr-compat.md) 的 C1d。
 - 上一次同步（v0.1.0）：上游 `a547b16c`，即正式 tag **v0.1.15**（`99508873`）加 tag 之後的兩個修正（squash `f618a292`、merge `21eba59d`；`distribution/core-version` 仍是 0.1.11、`hc::GENERATION` 仍是 1）。細節見 [herdr-compat.md](herdr-compat.md) 的 C1c。
 - 上一次同步（beta.4）：上游正式 tag **v0.1.14**（`2405bf38`，`distribution/core-version` 仍是 0.1.11、`hc::GENERATION` 仍是 1）。squash commit `f33087e0`、merge commit `15b4426d`。之前停在 `f6fe216e`（v0.1.12 之後）。
 - ghostty 是上游的 submodule。subtree 只帶進 gitlink（`app/vendor/ghostty` → `291fd050b9e9c293c8adb6a140742649b7e42d3a`），所以 root `.gitmodules` 另外登記同一個 URL：
@@ -98,7 +99,7 @@ herdr-core 每台機器依名稱存一份 layout 文件（`doc.get`／`doc.set {
 ### D7. 唯一整合點：`app/src/yuzora/mod.rs`
 
 - `host_modules(mod_name)` 列出 `yuzora:core` 與 6 個 lane 模組；`with_modules(policy, mod_name)` 把它們掛進每個 mod copy 的 policy。
-- 上游 `src/mods.rs` 只有 4 處呼叫：`app_dir()`、`write_workspace()`、`install_policy()`（`herdr-app check` 用）、`prepare_load()`（每個 mod copy）。任務原本要求「只加一處」，但 check 的 policy 與每個 copy 的 policy 是分開建立的，至少要兩處；另外兩處是 app home 與 `yuzora.d.ts`。
+- 上游 `src/mods.rs` 只有 4 處呼叫：`app_dir()`、`write_workspace()`、`install_policy()`（`herdr-app check` 用）、`mod_policy()`（每個 mod copy，v0.1.18 起也給 mod 的 link handler；原本在 `prepare_load()`）。任務原本要求「只加一處」，但 check 的 policy 與每個 copy 的 policy 是分開建立的，至少要兩處；另外兩處是 app home 與 `yuzora.d.ts`。
 - `app/Cargo.toml` 已預先依賴全部 `yuzora-*` crate，lane 之後不需要改它，也不需要改 `mod.rs`：在自己 crate 的 `host_module()` 加函式或元件即可。
 - 啟動時在 app home 寫出 `yuzora.d.ts`（與 `herdr.d.ts` 並列），內容是每個 `yuzora:*` 模組的 TypeScript 宣告。
 - `HostModule` 的 `declarations` 必須與註冊的函式完全一致，否則啟動時 `validate` 失敗。新增函式時，`export function …` 那一行要一起加。

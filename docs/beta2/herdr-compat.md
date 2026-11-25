@@ -222,6 +222,35 @@ L9 另開同步 PR（`beta2/l9-upstream-sync`，**必須 merge commit 合併**�
 - **本機很慢的一個上游測試**：`files::tests::cancelled_waits_release_quiet_folders_without_stopping_other_callers` 連續建立 76 個資料夾監看，建立時握著登記表的鎖。在開一個 FSEvents 監看要 2 到 4 秒的 Mac 上，它單獨跑要 5 分鐘（會過），同時跑的其他監看測試等不到鎖而超過 10 秒期限。本機全量測試用 `-- --skip` 略過它另外單獨跑；CI 的 runner 不受影響時不用處理。
 - **沒有跟進的上游改動**（Yuzora 用自己的 mod，要不要做另案決定）：上游 `tabs` mod 的兩項新行為（agent 的即時標題顯示在 tab 上、觸控板一次滑動只換一個 tab）與 `localStorage` 內容壞掉時的防護，`yuzora-shell-tabs` 都還沒有。
 
+### C1e. 同步到 v0.1.18（2026-11-25）
+
+上游從 `034f8b85`（v0.1.16）同步到正式 tag v0.1.18（`9a9ae13d`，85 個 commit，v0.1.17 一起帶進來；squash `ddfba50c`，merge `abd9494a`）。用 `app/scripts/yuzora/sync-pull v0.1.18` 做。core 需求不變（0.1.11，generation 1），ghostty pin 不變。
+
+- **16 個衝突，4 個由 `sync-pull` 自己解**：`Cargo.toml`、`Cargo.lock`、`CHANGELOG.md`、`THIRD-PARTY-NOTICES`（重產）。其餘 12 個手動：
+  - 兩邊都留：`frame/palette/main.js`（上游改成依視窗明暗列出主題；Yuzora 的「Quit Yuzora」那一行保留）、`herdr.d.ts`（`PaneInfo` 的說明多了上游的 `name`）、`spaces/main.js`、`render_tests.rs`（上游替身的 `pickFiles` 與新的狀態列測試接在 Yuzora 的之後）、`window.rs` 的欄位、初始化、`publish`（mod pane 同時帶 Yuzora 的 `props`／`started` 與上游的 `name`）與兩處讀 layout 檔的地方。
+  - `window.rs` 的 `render_overlays`：上游把 toast 分出來，放進一個可以捲動的 toast 堆疊（`OverlaySlot`、`toast_scroll`），函式多收 `rendered_dividers`。Yuzora 的出現動畫（`yuzora(motion)`）接在新的結構上：先對 overlay 本體套 `arrival`，toast 一樣進 `OverlaySlot`。
+  - `mods.rs`：上游新增 link handler（mod 的 `link.js`，#1203）並把 policy 收進 `mod_policy`。Yuzora 的 `with_modules` 移進 `mod_policy`，link handler 和 `main.js` 一樣拿得到 `yuzora:*`。
+  - `worktree/main.js`：上游刪 worktree 前先關 Space，再等它的終端機停止（最多 10 秒，`a282ed54`）。Yuzora 的未儲存檢查（`yuzora(unsaved)`）放在等待之前：對話框在問時立刻說明，不等 10 秒。`untrusted()` 閘門保留。
+  - `changes/main.js`、`files/main.js`：上游讓兩個 mod 共用一份節流的 `git status`（`f2af8edc`，`globalThis[Symbol.for("herdr.repoStatus.v2")]`），`context` 改成物件。Yuzora 的 `untrusted()` 閘門放在 `watch` 與 `repoStatus` 之前：未信任的資料夾不讀也不寫共用的結果。Changes 判斷「這次重新整理還算不算數」改用上游的 `this.current(context)`；原本的 `key() === context` 遇到新的 context 物件永遠是 false。
+  - gpui-kit 的 `entity_api.rs`、`quickjs/mod.rs`、`typings.rs`：上游加了讀捲動位置的 API（`1c0c5288`）與滑鼠移動事件的 `pressed_button`（`17211fce`），和 Yuzora 的三處 `yuzora(git-copy)` 補丁做同一件事。補丁拿掉，三個檔回到上游的樣子。`yuzora-git-diff` 改用 `offset().y`（已除掉 zoom，等於原本的 `unzoom(offset())`）與 `pressed_button !== "left"`（等於原本的 `!dragging`）；細節見 [git.md](git.md)。
+- **`sync-check` 認得刻意拿掉的註記**：上面三個檔回到上游的樣子，`lifecycle_tests.rs` 有一個註記改了說法，第 1 項原本會判 FAIL。`sync-check` 多了 `RETIRED` 清單（檔案加上註記的開頭）：清單上的註記不算遺失，檔案的註記全都在清單上時，回到上游的樣子算 ok。下一次同步的「同步前」已經沒有這些註記，清單可以清空。
+- **上游新行為讓測試改期望值**：
+  - toast：上游內建的 `toast` mod 沒給高度時，toast 跟內容一樣高（最少 72 px，`a833e0ba`），不再固定 72 px。`overlay_motion_tests.rs` 的 toast 畫的是 90 px 高的探針，停的位置改成 `v.1 − 16 − 92`（內容 90 加上下 1 px 邊框）。
+  - `yuzora_dock_tests.rs` 的守門測試：上游存 layout 之後讀回檔案，確認 link handler 真的寫進去了，讀 layout 檔的地方從 4 處變成 5 處。這一處只讀 `link_handlers`，不把樹拿來顯示，所以不用放 dock，期望值改成 5。
+  - `lifecycle_tests.rs` 的捲動測試改名為 `…_in_the_pixels_it_writes`，期望值除以 zoom。
+- **測試替身跟著調整**：
+  - `render_tests.rs` 的上游新測試 `changes_retries_when_the_files_copy_owning_its_git_scan_closes_or_reloads` 自己組 policy，補上 `yuzora:git`（已信任）與 `yuzora:core` 替身。
+  - 上游的 `changes.test.ts`、`worktree.test.ts`：harness 補 `gitOpen`／`gitStatus`／`tr` 替身，全部當成已信任；`worktree.test.ts` 的 `space.close` 會把 Space 從快照拿掉，不然 Yuzora 的未儲存檢查會以為對話框在問。
+  - `yuzora-trust-mods.test.ts`：補 `cx.sleep`，`spawn` 回傳 `{is_done}`；呼叫 git 的地方照新程式碼重數；Remove 的情境改用 linked worktree（上游在 main checkout 上按 Enter 什麼都不做）；新增一個測試：信任時共用的 status，資料夾變成未信任後不會顯示，也不會再跑。
+  - `yuzora-unsaved-worktree.test.ts` 新增三個 Space 有終端機的情境：對話框在問時不等終端機；回答之後等終端機停了才刪；沒有未儲存的變更時也要等。
+  - `yuzora-render-effects.ts`：`JSON.stringify` 的 replacer 當場執行，列進 `CALLS_NOW`（上游 palette 的 `entryId` 用到）。
+- **`scripts/test-terminal-lifetime`（上游新的 Linux 回歸腳本）補 `YUZORA_APP_HOME`**：它只設 `HERDR_APP_HOME`，照原樣跑會用到真的 `~/.config/yuzora`。沒有實際跑過（要 Linux 與真的 core）。
+- **預設鍵沒變**：`keys.json`、`keys.macos.json` 這兩版都沒有改，不用新的快照。
+- **品牌**：上游新加的 Herdr 字樣只有 key context（`keys.rs` 的 `Herdr`、`window.rs` 的 `key_context`）與註解，畫面上看不到。
+- **沒有新的對外端點**：新增的 URL 只有 SVG namespace，以及測試裡的 localhost 和 example.com。
+- **Yuzora 自己留一份的上游檔**（`sync-check` 第 6 項）：這次都沒動。上游 `justfile` 的 `test` 多跑 `changes.test.ts`，不在對照表裡。
+- **沒有跟進的上游改動**（要不要做另案決定）：`yuzora-shell-pane` 顯示 pane 名稱（`pane.rename`，#1086）、整個視窗的滑鼠移動與放開事件（#523）、`pickFiles`（#1385）、mod 自己的 palette 項目（#1354）、mod 處理終端機連結（#1203、#1237）。上游 `tabs` mod 這次沒有改；C1d 的兩項還沒做。
+
 ### C2. 同步流程與 `app/scripts/yuzora/sync-check`
 
 ```bash
@@ -241,6 +270,7 @@ app/scripts/yuzora/sync-check --quick    # 同上，但不跑 cargo test、check
 1. **Yuzora 的改動還在**：
    - 同步前 Yuzora 改過的上游檔，同步後若和上游一樣就 FAIL。
    - 每個 `yuzora` marker 的註解，從 `//`、`#`、`<!--` 起算，都必須還在。
+   - 例外是腳本裡 `RETIRED` 列出的註記（檔案加上註記的開頭）：同步時刻意拿掉的，例如上游已經做了同一件事的補丁。它們不算遺失；檔案的註記全都在清單上時，回到上游的樣子算 ok。
    - 另外列出兩邊都改過的檔案（要重讀），以及沒有 marker 的改動（warn）。
 2. **CHANGELOG**：第一筆等於 workspace 版本。
 3. **ghostty**：兩份 `.gitmodules` 的 URL 相同、gitlink 和上游相同、已經 checkout。
