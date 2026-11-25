@@ -14,8 +14,9 @@ use gpui::{
 use yuzora_core::HostValue;
 
 use crate::docs::blocking;
-use crate::fsops::{failure, machine, run_sh};
+use crate::fsops::{failure, machine};
 use crate::highlight;
+use crate::remote_shell::{self, Script};
 use crate::svg::Cancel;
 
 /// Images above this are not shown.
@@ -172,10 +173,15 @@ pub(crate) fn read(path: &str, on: Option<&str>) -> Result<Vec<u8>, String> {
 
 fn read_sh(path: &str, on: Option<&str>) -> Result<Vec<u8>, String> {
     let upto = (MAX_IMAGE_BYTES + 1).to_string();
-    let out = run_sh(
+    let script = Script {
+        sh: READ_SCRIPT,
+        ps: remote_shell::IMAGE,
+    };
+    let out = remote_shell::run(
         on,
-        READ_SCRIPT,
-        &[path, &upto],
+        &script,
+        path,
+        &[&upto],
         Duration::from_secs(30),
         MAX_IMAGE_BYTES + 1,
     )?;
@@ -561,6 +567,23 @@ mod tests {
                 .unwrap_err()
                 .starts_with("no such file")
         );
+    }
+
+    /// The PowerShell twin (a machine with no `sh`, #294), run here as it runs there.
+    #[cfg(windows)]
+    #[test]
+    fn an_image_is_read_in_windows_powershell_as_it_is_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("it's \u{2018}q\u{2019} \u{fc}.png");
+        std::fs::write(&p, [1u8, 2, 3]).unwrap();
+        assert_eq!(read_sh(p.to_str().unwrap(), None).unwrap(), vec![1, 2, 3]);
+        assert_eq!(
+            read_sh(dir.path().to_str().unwrap(), None).unwrap_err(),
+            "unsupported"
+        );
+        let missing = dir.path().join("missing.png");
+        let e = read_sh(missing.to_str().unwrap(), None).unwrap_err();
+        assert!(e.contains("no such file"), "{e}");
     }
 
     use super::test_gif as gif;

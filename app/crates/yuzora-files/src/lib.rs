@@ -18,6 +18,7 @@ pub mod highlight;
 pub mod image;
 pub mod markdown;
 mod remote_entry;
+mod remote_shell;
 pub mod remote_write;
 pub mod search;
 pub mod svg;
@@ -644,6 +645,9 @@ pub fn host_module() -> HostModule {
 
 #[cfg(test)]
 mod tree_state_tests;
+
+#[cfg(all(test, unix))]
+mod no_sh_tests;
 
 #[cfg(test)]
 mod tests {

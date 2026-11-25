@@ -428,8 +428,6 @@ fn refusal_in(message: &str, len: usize) -> Option<Refusal> {
             bytes: len,
             limit: MAX_BYTES,
         })
-    } else if message.starts_with("cannot start sh") {
-        Some(Refusal::NoShell)
     } else {
         None
     }
@@ -448,6 +446,9 @@ pub(crate) fn interpret(
     };
     let out = match answer {
         Ok(out) => out,
+        Err(e) if yuzora_core::remote::no_sh(&e) => {
+            return Err(WriteError::Refused(Refusal::NoShell));
+        }
         Err(ExecError::Remote(m) | ExecError::Protocol(m)) => {
             return Err(refusal_in(&m, len).map_or_else(|| failed(&m), WriteError::Refused));
         }
@@ -514,6 +515,13 @@ case $on in
   offline) fail '{"error":{"hint":"","kind":"unreachable","message":"machine offline is not connected"}}' 1 ;;
   old-core) [ "$stdin" = 1 ] && fail '{"error":{"hint":"","kind":"spawn_failed","message":"cannot start --stdin: No such file or directory (os error 2)"}}' 1 ;;
   no-sh) [ "$1" = sh ] && fail '{"error":{"hint":"","kind":"spawn_failed","message":"cannot start sh: No such file or directory (os error 2)"}}' 1 ;;
+  # A Windows machine: no sh, as hc there says it. Its PowerShell is the
+  # stand-in a test put at <this file>.ps/<machine>, which logs each program.
+  win-*) printf '%s\n' "$1" >> "$0.ps/$on.log"
+    case $1 in
+      sh) fail '{"error":{"hint":"","kind":"spawn_failed","message":"cannot start sh: program not found"}}' 1 ;;
+      powershell.exe) shift; set -- /bin/sh "$0.ps/$on" "$@" ;;
+    esac ;;
   slow) fail '{"code":null,"signal":9,"stderr":"","stdout":"","timed_out":true,"truncated":false}' 0 ;;
 esac
 in=$(mktemp) out=$(mktemp) err=$(mktemp)
@@ -528,19 +536,36 @@ printf '{"code":%d,"ms":1,"signal":null,"stderr":"%s","stdout":"%s","timed_out":
 rm -f "$in" "$out" "$err"
 "#;
 
-    /// Makes every `hc exec` this crate starts go through the stand-in.
-    pub(crate) fn fake_hc() {
+    fn hc() -> &'static PathBuf {
         static PATH: OnceLock<PathBuf> = OnceLock::new();
-        let hc = PATH.get_or_init(|| {
+        PATH.get_or_init(|| {
             use std::os::unix::fs::PermissionsExt as _;
             let path =
                 std::env::temp_dir().join(format!("yuzora-files-test-hc-{}", std::process::id()));
             std::fs::write(&path, HC).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::create_dir_all(path.with_extension("ps")).unwrap();
             path
-        });
-        let hc = hc.clone();
+        })
+    }
+
+    /// Makes every `hc exec` this crate starts go through the stand-in.
+    pub(crate) fn fake_hc() {
+        let hc = hc().clone();
         yuzora_core::remote::set_hc_program(move || hc.clone());
+    }
+
+    /// A Windows machine `name` (it starts with `win-`) whose PowerShell runs `answer` in `sh`:
+    /// what the script hc is given there would print. Returns what to read the programs hc was
+    /// asked to start there from, one per line.
+    pub(crate) fn windows_machine(name: &str, answer: &str) -> PathBuf {
+        assert!(name.starts_with("win-"));
+        fake_hc();
+        let dir = hc().with_extension("ps");
+        std::fs::write(dir.join(name), answer).unwrap();
+        let log = dir.join(format!("{name}.log"));
+        let _ = std::fs::remove_file(&log);
+        log
     }
 }
 

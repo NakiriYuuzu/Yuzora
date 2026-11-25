@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use yuzora_core::remote::{ExecError, ExecRequest, run};
+use yuzora_core::remote::{ExecError, ExecRequest, no_sh, run};
 
 /// How long resolving folders on a machine may take.
 pub const TIMEOUT: Duration = Duration::from_secs(10);
@@ -142,9 +142,9 @@ pub fn resolve(folders: &[String], on: Option<&str>) -> Result<Vec<Option<String
     let out = match ask("sh", args) {
         // No `sh` there (Windows): its PowerShell, as for terminals there. When
         // that can't start either, sh's error says more.
-        Err(ExecError::Remote(why)) => ask("powershell.exe", powershell_args(folders)).map_err(|e| match e {
-            ExecError::Remote(_) => Problem::Unreachable(why),
-            e => Problem::Unreachable(e.to_string()),
+        Err(e) if no_sh(&e) => ask("powershell.exe", powershell_args(folders)).map_err(|ps| match ps {
+            ExecError::Remote(_) => Problem::Unreachable(e.to_string()),
+            ps => Problem::Unreachable(ps.to_string()),
         })?,
         r => r.map_err(|e| Problem::Unreachable(e.to_string()))?,
     };

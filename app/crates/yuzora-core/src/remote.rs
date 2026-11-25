@@ -157,6 +157,13 @@ impl std::fmt::Display for ExecError {
 
 impl std::error::Error for ExecError {}
 
+/// Whether hc answered that the machine has no `sh` to start: a Windows machine, where it says
+/// `cannot start sh: program not found` (elsewhere the system's words follow the colon). hc
+/// names neither a machine's system nor its shells: this answer is how a caller learns it.
+pub fn no_sh(error: &ExecError) -> bool {
+    matches!(error, ExecError::Remote(m) | ExecError::Protocol(m) if m.starts_with("cannot start sh:"))
+}
+
 /// The `hc` arguments for a remote request (`None` when it runs here).
 pub fn hc_exec_args(req: &ExecRequest) -> Option<Vec<String>> {
     let machine = req.on.as_ref()?;
@@ -583,6 +590,21 @@ mod tests {
         let refused = run(&ExecRequest::new("sh", ["-c", script.as_str()]).env("bad", "1"));
         assert!(matches!(&refused, Err(ExecError::Spawn(e)) if e.contains("\"bad\"")), "{refused:?}");
         assert!(!mark.exists(), "it ran");
+    }
+
+    #[test]
+    fn a_machine_without_sh_is_told_from_other_failures() {
+        for said in ["cannot start sh: program not found", "cannot start sh: No such file or directory (os error 2)"] {
+            assert!(no_sh(&ExecError::Remote(said.into())), "{said}");
+        }
+        for other in [
+            ExecError::Remote("machine lab is not connected".into()),
+            ExecError::Remote("cannot start powershell.exe: program not found".into()),
+            ExecError::Remote("cannot start shasum: program not found".into()),
+            ExecError::Spawn("cannot run sh: No such file or directory (os error 2)".into()),
+        ] {
+            assert!(!no_sh(&other), "{other}");
+        }
     }
 
     #[test]

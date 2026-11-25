@@ -407,9 +407,7 @@ fn unreadable() -> Problem {
 fn read(answer: Result<ExecOutput, ExecError>) -> Result<Verdict, Problem> {
     let out = match answer {
         Ok(out) => out,
-        Err(ExecError::Remote(m) | ExecError::Protocol(m)) if m.starts_with("cannot start sh") => {
-            return Err(Problem::NoShell);
-        }
+        Err(e) if yuzora_core::remote::no_sh(&e) => return Err(Problem::NoShell),
         Err(e @ ExecError::TimedOut { .. }) => {
             return Err(Problem::Failed(format!(
                 "{e}. It may or may not have been done: reload the folder to see"

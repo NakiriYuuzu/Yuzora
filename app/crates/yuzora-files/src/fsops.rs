@@ -2,7 +2,8 @@
 //! create, rename, copy, trash, reveal. Every function blocks (call it from a worker
 //! thread). `on: Some(machine)` runs the operation on a herdr-core machine
 //! through `sh` scripts (POSIX paths, arguments always as argv, never spliced
-//! into the script); `None` works on this machine directly.
+//! into the script), and the reads on one with no `sh` (Windows) through
+//! PowerShell ([`crate::remote_shell`]); `None` works on this machine directly.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -16,6 +17,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use yuzora_core::remote::{self, ExecError, ExecOutput, ExecRequest};
 
 use crate::remote_entry::{self, Act, Kind, Problem};
+use crate::remote_shell::{self, Script};
 pub use crate::remote_write::Refusal;
 use crate::remote_write::{MAX_BYTES, posix_crc, resolve_links, save_gate};
 
@@ -254,18 +256,7 @@ fn offline(req: ExecRequest) -> ExecRequest {
     OFFLINE.iter().fold(req, |req, (k, v)| req.env(*k, *v))
 }
 
-/// Runs `script` with `sh -c script sh args…` here (`on = None`) or on a machine.
-pub(crate) fn run_sh(
-    on: Option<&str>,
-    script: &str,
-    args: &[&str],
-    timeout: Duration,
-    max_output: u64,
-) -> Result<ExecOutput, String> {
-    run(sh_request(on, script, args, timeout, max_output)).map_err(|e| e.to_string())
-}
-
-/// What [`run_sh`] runs, before [`OFFLINE`].
+/// `sh -c script sh args…` here (`on = None`) or on a machine, before [`OFFLINE`].
 pub(crate) fn sh_request(
     on: Option<&str>,
     script: &str,
@@ -396,7 +387,11 @@ fn read_entries<E: Listed>(
 
 fn list_sh(path: &str, on: Option<&str>, limit: usize) -> Result<Listing, String> {
     let max = limit.saturating_add(1).to_string();
-    let out = run_sh(on, LIST_SCRIPT, &[path, &max], LIST_TIMEOUT, 16 << 20)?;
+    let script = Script {
+        sh: LIST_SCRIPT,
+        ps: remote_shell::LIST,
+    };
+    let out = remote_shell::run(on, &script, path, &[&max], LIST_TIMEOUT, 16 << 20)?;
     if out.code != 0 {
         return Err(failure(&out, "listing"));
     }
@@ -544,7 +539,11 @@ fn stat_local(path: &Path) -> Result<Option<Stamp>, String> {
 }
 
 fn stat_sh(path: &str, on: Option<&str>) -> Result<Option<Stamp>, String> {
-    let out = run_sh(on, STAT_SCRIPT, &[path], LIST_TIMEOUT, 4 << 10)?;
+    let script = Script {
+        sh: STAT_SCRIPT,
+        ps: remote_shell::STAT,
+    };
+    let out = remote_shell::run(on, &script, path, &[], LIST_TIMEOUT, 4 << 10)?;
     match out.code {
         0 => parse_stamp(&out.stdout_text())
             .map(Some)
@@ -743,10 +742,15 @@ fn read_sh(path: &str, on: Option<&str>, max_bytes: u64) -> Result<TextFile, Str
         max_bytes.saturating_add(1).to_string(),
         max_bytes.to_string(),
     );
-    let out = run_sh(
+    let script = Script {
+        sh: READ_SCRIPT,
+        ps: remote_shell::READ,
+    };
+    let out = remote_shell::run(
         on,
-        READ_SCRIPT,
-        &[path, &upto, &max],
+        &script,
+        path,
+        &[&upto, &max],
         READ_TIMEOUT,
         max_bytes.saturating_add(1 << 10),
     )?;
@@ -3031,6 +3035,99 @@ mod tests {
                 .unwrap_err()
                 .contains("not a regular file")
         );
+    }
+
+    /// A junction to `to` at `link` (no privilege needed, unlike a symbolic link).
+    #[cfg(windows)]
+    fn junction(link: &Path, to: &Path) {
+        let made = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(to)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+    }
+
+    /// The PowerShell twins of the scripts (a machine with no `sh`, #294), run
+    /// here as they run there, agree with what this machine says: names with
+    /// spaces, quotes and other scripts, a junction.
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_is_listed_in_windows_powershell_as_it_is_here() {
+        let d = fixture();
+        for name in [
+            "with space.txt",
+            "it's \u{2018}q\u{2019}.txt",
+            "\u{4e2d}\u{6587} \u{fc}.txt",
+        ] {
+            put(&d, name, b"abc");
+        }
+        junction(&d.path().join("jn"), &d.path().join("b"));
+        let Listing { entries: local, .. } = list_dir(&p(&d, ""), None, 100).unwrap();
+        let remote = list_sh(&p(&d, ""), None, 100).unwrap();
+        assert_eq!((remote.truncated, remote.skipped), (false, false));
+        assert_eq!(remote.entries, local);
+        let jn = remote.entries.iter().find(|e| e.name == "jn").unwrap();
+        assert!(jn.dir && jn.link);
+        assert!(names(&remote.entries).contains(&"it's \u{2018}q\u{2019}.txt"));
+        let cut = list_sh(&p(&d, ""), None, 4).unwrap();
+        assert_eq!((cut.entries.len(), cut.truncated), (4, true));
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            list_sh(&p(&empty, ""), None, 4).unwrap(),
+            Listing::default()
+        );
+        for not_a_folder in ["nope", "file2.txt"] {
+            let e = list_sh(&p(&d, not_a_folder), None, 4).unwrap_err();
+            assert!(e.contains("cannot open"), "{e}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_is_looked_at_and_read_in_windows_powershell_as_it_is_here() {
+        let d = tempfile::tempdir().unwrap();
+        let f = put(&d, "it's \u{2018}q\u{2019} \u{4e2d}\u{6587}.txt", b"hello");
+        let local = stat(&f, None).unwrap().unwrap();
+        let remote = stat_sh(&f, None).unwrap().unwrap();
+        assert_eq!(remote.len, local.len);
+        assert_eq!(remote.mtime_ms, local.mtime_ms / 1000 * 1000);
+        assert_eq!(stat_sh(&p(&d, "nope"), None), Ok(None));
+        assert_eq!(stat_sh(&p(&d, r"no\folder\either"), None), Ok(None));
+        assert_eq!(stat_sh(&format!(r"{f}\x"), None), Ok(None));
+        for (name, bytes) in [
+            ("a", &b"a\r\nb\nc"[..]),
+            ("b", b"\xef\xbb\xbfx\n"),
+            ("c", b""),
+            ("d", b"%PDF-1.4"),
+            ("e", b"f\xffo"),
+        ] {
+            let f = put(&d, name, bytes);
+            let local = read_text(&f, None, 1 << 20).unwrap();
+            let remote = read_sh(&f, None, 1 << 20).unwrap();
+            // Nothing is saved to a machine with no sh: what is read there is read-only.
+            assert!(remote.readonly && !local.readonly, "{name}");
+            assert_eq!(remote.stamp.len, local.stamp.len, "{name}");
+            assert_eq!(
+                TextFile {
+                    stamp: local.stamp,
+                    crc: 0,
+                    readonly: false,
+                    ..remote.clone()
+                },
+                local,
+                "{name}"
+            );
+        }
+        let f = put(&d, "big", &[b'x'; 50]);
+        let large = read_sh(&f, None, 49).unwrap();
+        assert!(large.too_large && large.text.is_empty() && large.size == 50);
+        assert!(!read_sh(&f, None, 50).unwrap().too_large);
+        let e = read_sh(&p(&d, "nope"), None, 10).unwrap_err();
+        assert!(e.contains("no such file"), "{e}");
+        let e = read_sh(&p(&d, ""), None, 10).unwrap_err();
+        assert!(e.contains("not a regular file"), "{e}");
     }
 
     #[cfg(unix)]
