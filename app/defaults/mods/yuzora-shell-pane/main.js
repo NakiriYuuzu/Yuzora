@@ -3,7 +3,8 @@
 // 28px: the Space's badge, the program's icon, its name, "folder · branch", the agent's
 // state (shape and word), then split / zoom on hover and close. A pane whose agent needs a
 // reply gets an amber header (the frame's `blocked` border goes with it). Tool panes
-// (mod panes) show the name and icon their mod.json gives the new-pane menu.
+// (mod panes) show the name and icon their mod.json gives the new-pane menu. A pane someone
+// named (pane.rename) shows that name.
 // Props from the app: { pane, terminal }. Click: focus the pane.
 
 import { View, div, svg, image } from "gpui-kit";
@@ -29,10 +30,10 @@ const base = (path) => (path ?? "").replace(/[/\\]+$/, "").split(/[/\\]/).pop() 
 export function describe(p, tools) {
   if (p.mod) {
     const tool = tools.find((x) => x.mod === p.mod);
-    return { name: tool?.label ?? p.title ?? p.mod, icon: tool?.icon ?? null, tint: true, where: "" };
+    return { name: p.name || (tool?.label ?? p.title ?? p.mod), icon: tool?.icon ?? null, tint: true, where: "" };
   }
   const prog = p.program;
-  const name = ((prog?.agent || prog?.shell) && prog.name) || p.title || prog?.name || "";
+  const name = p.name || ((prog?.agent || prog?.shell) && prog.name) || p.title || prog?.name || "";
   const where = [base(p.cwd), p.branch].filter(Boolean).join(" · ");
   return { name, icon: prog?.icon ?? null, tint: Boolean(prog?.tint), where };
 }
