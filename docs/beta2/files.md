@@ -9,7 +9,7 @@ beta.2 的檔案模式、程式碼編輯器、Markdown 預覽與圖片檢視。�
 | 路徑 | 內容 |
 | --- | --- |
 | `app/crates/yuzora-files/src/lib.rs` | `yuzora:files` HostModule：函式、3 個原生元件、TypeScript 宣告 |
-| `src/highlight/` | tree-sitter 上色：14 種語言、`InputHighlighter` 實作、One Dark 色盤（mod 以主題色覆寫）、無狀態 `highlight()` API |
+| `src/highlight/` | tree-sitter 上色：43 種語言、`InputHighlighter` 實作、One Dark 色盤（mod 以主題色覆寫）、無狀態 `highlight()` API |
 | `src/editor.rs` | 可重用的程式碼編輯器：`new_code_editor()`、`code_editor()`、`Look` |
 | `src/docs.rs` | 開啟中的文件（每個檔案一份 buffer）、存檔衝突檢查、外部變更、搜尋取代、`Editor` 元件 |
 | `src/markdown.rs` | `Markdown` 元件（gpui-base `TextView`，GFM） |
@@ -65,11 +65,17 @@ L5 在上游檔（`app/src`、上游 mods、`app/defaults/herdr.d.ts`、vendored
 
 ### 上色（`highlight/`）
 
-- tree-sitter 0.27 與 13 個語法 crate：rust、typescript／tsx、javascript（含 JSX）、json、toml、yaml、markdown（block 語法）、python、go、sql（tree-sitter-sequel）、bash、css、html。
+- tree-sitter 0.27 與 42 個語法 crate，43 種語言：rust、typescript／tsx、javascript（含 JSX）、json、toml、yaml、markdown（block 語法）、python、go、sql（tree-sitter-sequel）、bash、css、html、C#、XML、C、C++、Java、Kotlin、Swift、Ruby、PHP、Lua、Zig、Scala、Dart、Elixir、PowerShell、Dockerfile、Makefile、INI、Properties、Diff、Svelte、Nix、Protocol Buffers、CMake、R、Erlang、Clojure、Perl、Batch。每個語法 crate 都經 `tree-sitter-language` 給 `LanguageFn`，共用同一個 runtime。
+- 語言表在 `highlight/languages.rs` 的 `SPECS`：一種語言一列（id、名稱、徽章與顏色、別名／fence 名稱／副檔名、整個檔名、語法、query），列的順序與 `Lang` 相同（編譯時檢查）。新增語言＝`Lang` 加一項、`SPECS` 加一列、測試補一個樣本（關鍵字、字串、註解各要上色）與偵測案例。
+- 偵測順序：整個檔名（`Dockerfile`、`CMakeLists.txt`、`rebar.config`、`.gitconfig`）、副檔名、檔名前綴（`Dockerfile.dev`、`.env.local`）。路徑的 `/` 與 `\` 都當分隔符。`.h` 是 C。
+- 近似的對應（沒有合用的語法）：ASP.NET Web Forms 的 `.aspx`、`.ascx`、`.master`、`.asmx`、`.ashx`、`.asax` 與 Razor 的 `.cshtml`、`.vbhtml`、`.razor` 用 HTML 語法：標籤、屬性、字串照常上色，`<% %>`、`<%@ %>` 與 `@{ }` 裡的伺服器程式碼不上色（`<%@ Page … %>` 那一行的屬性也不上色），不會讓後面整個檔案變成錯誤；`.env` 用 shell；`.scss` 仍用 CSS。專案、設定與資源檔（`.config`、`.csproj`、`.resx`、`.xaml`、`.svg`、`.plist`…）用 XML。
+- 沒有上色的：`.sln`（沒有語法）、Visual Basic（crate 沒有附 highlight query）、HCL／Terraform、GraphQL、Groovy、Julia（crate 沒有附可用的 query）、Vue（crates.io 上的 crate 不是直接綁 tree-sitter 本身、不經 `tree-sitter-language`，就是 `lib.rs` 引用的 query 檔不在套件裡）、Haskell、OCaml、Objective-C（語法超過 3 MB）、專用的 Razor 與 SCSS 語法（會把全 workspace 的 `cc` 升到 1.10，連帶把 tree-sitter-sequel 換成 0.3.13，rlib 從 3.2 MB 變成 14.2 MB；Razor 的 query 不接 C# 的 query 就不上色程式碼，接了又編不過）。
 - 增量解析：`InputEdit` 轉成 `tree_sitter::InputEdit`，用舊 tree 重新解析（一批 edit 只重解析一次）；`styles(range)` 只對可見範圍跑 `QueryCursor`。debug 建置下 2 MiB 的 Rust 全文解析約 0.9 秒、增量約 80 ms、一屏約 1–2 ms。
 - capture 名稱對應到固定的語意名稱（keyword、function、type、string…），由 `SyntaxPalette`（`HighlightStyleResolver`）決定顏色；預設 One Dark（設計稿的配色）。編輯器與 Markdown 由 `doc-pane.js` 的 `SYNTAX` 傳入主題色（`syntax: {名稱: 色碼}`，對應到 `ansi1`–`ansi14` 與 `dim`），淺色主題也看得清楚：One Dark 有上色的每個名稱都列出來（覆寫依前綴比對，只列 `function` 的話 `function.builtin` 也會變成 function 的色）。淺色主題的目前行用 hover 與背景各半，程式碼在上面仍有 4.5:1；深色主題維持 hover。語言徽章同樣是主題色的名稱（`languages()` 的 `color`、文件的 `badgeColor`）。
 - 同一段文字有多個 capture 時：範圍最小的優先，一樣大時比 pattern 的限定程度（節點數＋predicate），再相同才取後面的。上游各語言的查詢對先後順序的假設互相矛盾（JS 要後面的贏、JSON 與 Go 要前面的贏），單一規則無法全對。
 - 上游查詢的兩處執行期修補（各有測試）：tree-sitter-sequel 把數字寫成 Lua 的 `%d`，換成 `[0-9]`；tree-sitter-toml-ng 的 `(pair (bare_key)) @property` 會把整個 pair 上色，改成 `(pair (bare_key) @property)`。
+- 給 Neovim 寫的查詢用 `#lua-match?` 過濾，tree-sitter 不認得它，pattern 就會套到每個節點（Zig 的每個識別字都變成型別、CMake 的每個引數都變成常數）。編譯前一律改成 `#match?`，Lua 的 `%u`、`%d` 等字元類換成 POSIX 類（`[[:upper:]]`），`%.` 換成 `\.`（有測試）。
+- 只補充別的語言的查詢要接在後面：C++ 接在 C 之後、Svelte 接在 HTML 之後（和 TypeScript 接在 JavaScript 之後一樣），否則字串、註解這些基本結構不上色。
 - 摺疊範圍來自語法樹（成對括號跨行的節點、python `block`、markdown `section`…）。
 - Markdown 只用 block 語法：fenced code 依 info string 上色，`*強調*`、連結等 inline 語法不上色。
 

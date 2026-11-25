@@ -2857,18 +2857,21 @@ return JSON.stringify([a, b, c, d]); }})()"#
         };
         let hex = |s: &str| parse_hex(s).unwrap();
         let one_dark = SyntaxPalette::one_dark();
-        // Before the badges took theme colors.
-        let old_badge = |lang: Lang| match lang {
-            Lang::Rust | Lang::Html => "#f08a5d",
-            Lang::TypeScript | Lang::Tsx | Lang::Python => "#60a5fa",
-            Lang::JavaScript | Lang::Json => "#e5c07b",
-            Lang::Toml => "#9ca3af",
-            Lang::Yaml => "#f87171",
-            Lang::Markdown => "#93c5fd",
-            Lang::Go => "#7dd3fc",
-            Lang::Sql => "#a78bfa",
-            Lang::Bash => "#86d17a",
-            Lang::Css => "#f472b6",
+        // Before the badges took theme colors; the languages added since had none.
+        let old_badge = |lang: Lang| {
+            Some(match lang {
+                Lang::Rust | Lang::Html => "#f08a5d",
+                Lang::TypeScript | Lang::Tsx | Lang::Python => "#60a5fa",
+                Lang::JavaScript | Lang::Json => "#e5c07b",
+                Lang::Toml => "#9ca3af",
+                Lang::Yaml => "#f87171",
+                Lang::Markdown => "#93c5fd",
+                Lang::Go => "#7dd3fc",
+                Lang::Sql => "#a78bfa",
+                Lang::Bash => "#86d17a",
+                Lang::Css => "#f472b6",
+                _ => return None,
+            })
         };
         for (file, light) in [
             (
@@ -2927,13 +2930,15 @@ return JSON.stringify([a, b, c, d]); }})()"#
                 let r = contrast(c(lang.badge_color()), c("background"));
                 if light {
                     assert!(r >= 4.5, "light: {} badge is {r:.2}", lang.id());
-                } else {
-                    let was = contrast(hex(old_badge(*lang)), c("background"));
+                } else if let Some(old) = old_badge(*lang) {
+                    let was = contrast(hex(old), c("background"));
                     assert!(
                         r + 0.01 >= was,
                         "dark: {} badge is {r:.2}, was {was:.2}",
                         lang.id()
                     );
+                } else {
+                    assert!(r >= 4.5, "dark: {} badge is {r:.2}", lang.id());
                 }
             }
         }
