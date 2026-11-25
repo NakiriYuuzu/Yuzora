@@ -51,20 +51,38 @@ changed_after=$(git diff --name-only --diff-filter=M "$new" "HEAD:app" | sort)
 # ends at its `-->`: the prose after it on the line is Yuzora's own and may
 # be reworded.
 markers() { git show "$1:app/$2" 2>/dev/null | grep -oE '(//|#|/\*) ?yuzora.*|<!-- ?yuzora([^-]|-[^-]|--[^>])*(-->)?' | sed 's/[[:space:]]*$//' | sort || true; }
+# Markers dropped on purpose by this sync, as `<file> <start of the marker>`: the patch went because upstream now
+# does the same, or the note had to say something else. The next sync's "before" tree no longer has them.
+RETIRED='vendor/gpui-kit/crates/shell/src/engine/quickjs/entity_api.rs // yuzora(git-copy)
+vendor/gpui-kit/crates/shell/src/engine/quickjs/mod.rs // yuzora(git-copy)
+vendor/gpui-kit/crates/shell/src/typings.rs // yuzora(git-copy)
+src/mods/lifecycle_tests.rs // yuzora(v010-git-diff-fu): the list reports how far it is scrolled in window pixels'
+# The markers of a file at a commit that are not retired.
+kept() {
+  local starts
+  starts=$(awk -v f="$2" '$1 == f { sub(/^[^ ]+ /, ""); print }' <<<"$RETIRED")
+  if [[ -z $starts ]]; then markers "$1" "$2"; else markers "$1" "$2" | grep -vF "$starts" || true; fi
+}
 
 # --- 1. Yuzora's changes to upstream files are still there ----------------------
 echo "1. Yuzora's changes to upstream files"
 lost=$(comm -23 <(echo "$changed_before") <(echo "$changed_after"))
+lost_any=0
 for f in $lost; do
   if git cat-file -e "$new:$f" 2>/dev/null; then
-    fail "app/$f is upstream's again: Yuzora's change is gone"
+    if [[ -n $(markers "$base" "$f") && -z $(kept "$base" "$f") ]]; then
+      ok "app/$f is upstream's again: every patch it had is retired"
+    else
+      lost_any=1
+      fail "app/$f is upstream's again: Yuzora's change is gone"
+    fi
   else
     warn "app/$f: upstream removed it (Yuzora had changed it)"
   fi
 done
 missing_any=0
 for f in $changed_before; do
-  gone=$(comm -23 <(markers "$base" "$f") <(markers HEAD "$f"))
+  gone=$(comm -23 <(kept "$base" "$f") <(markers HEAD "$f"))
   [[ -z $gone ]] && continue
   missing_any=1
   while IFS= read -r line; do fail "app/$f lost the marker: $line"; done <<<"$gone"
@@ -75,7 +93,7 @@ for f in $changed_after; do
   [[ -z $(markers HEAD "$f") ]] && unmarked+=" app/$f"
 done
 [[ -n $unmarked ]] && warn "changed from upstream without a yuzora marker:$unmarked"
-[[ -z $lost && $missing_any == 0 ]] && ok "$(wc -w <<<"$changed_after" | tr -d ' ') upstream files carry Yuzora changes; every marker is still there"
+[[ $lost_any == 0 && $missing_any == 0 ]] && ok "$(wc -w <<<"$changed_after" | tr -d ' ') upstream files carry Yuzora changes; every marker is still there"
 overlap=$(comm -12 <(echo "$changed_before") <(git diff --name-only "$old" "$new" | sort))
 [[ -n $overlap ]] && echo "  touched by both (re-read these):" $(sed 's|^|app/|' <<<"$overlap")
 

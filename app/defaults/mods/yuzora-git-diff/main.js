@@ -472,7 +472,7 @@ export default class GitDiff extends View {
   // a row before the one at the top).
   rowAt(y) {
     const last = (this.view?.rows.length ?? 1) - 1;
-    return Math.min(last, Math.max(0, Math.floor((unzoom(y) + unzoom(this.scroll.offset())) / ROW)));
+    return Math.min(last, Math.max(0, Math.floor((unzoom(y) + this.scroll.offset().y) / ROW)));
   }
 
   // The pointer is at `at` in the window: a press that has not moved is still a click, and one that has begins the drag. A move
@@ -510,7 +510,7 @@ export default class GitDiff extends View {
   extend(cx, scroll) {
     const s = this.sweep, rows = this.view?.rows;
     if (!s || !rows) return;
-    const p = unzoom(s.y - s.top), h = this.listHeight(), off = unzoom(this.scroll.offset());
+    const p = unzoom(s.y - s.top), h = this.listHeight(), off = this.scroll.offset().y;
     const up = p < EDGE, depth = up ? EDGE - p : Math.max(0, p - (h - EDGE));
     let moved = false;
     if (scroll && depth > 0 && (up ? off > 0 : off < rows.length * ROW - h - 0.5)) {
@@ -574,7 +574,7 @@ export default class GitDiff extends View {
       .on_mouse_move((e, cx) => {
         // The release of a button can be missed: a shortcut of the app takes a key from the pane, and after a key the window counts
         // the pointer as over nothing till it moves. A move with the button up says it is up.
-        if (!e.dragging) { if (this.drag) this.drop(cx); this.endSweep(); }
+        if (e.pressed_button !== "left") { if (this.drag) this.drop(cx); this.endSweep(); }
         else if (this.drag) this.dragTo(e.position.x, cx);
         else if (this.sweep) this.sweepTo(e.position, cx);
       })

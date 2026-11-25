@@ -3,7 +3,7 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
-import { run, props, closeOverlay, theme, spaces, panes, exec, home, appHome, readTextFile } from "herdr";
+import { run, props, closeOverlay, theme, spaces, panes, terminals, exec, home, appHome, readTextFile } from "herdr";
 // yuzora(L2c): whether the folder waits for trust, and the note saying so.
 import { t as tr } from "yuzora:core";
 import { open as gitOpen, status as gitStatus } from "yuzora:git";
@@ -128,7 +128,9 @@ async function repoOf(folder, on) {
   const common = await git(folder, ["rev-parse", "--path-format=absolute", "--git-common-dir"], on);
   if (!top.ok || !common.ok) return null;
   const main = common.out.endsWith("/.git") ? common.out.slice(0, -5) : common.out;
-  return { top: top.out, main, name: main.split("/").pop(), linked: main !== top.out };
+  // A bare repo hidden beside its worktrees (<project>/.bare) is named after its project.
+  const parts = main.split("/"), name = parts.at(-1) === ".bare" ? parts.at(-2) : parts.at(-1);
+  return { top: top.out, main, name, linked: main !== top.out };
 }
 
 export default class Worktree extends View {
@@ -200,7 +202,8 @@ export default class Worktree extends View {
   }
 
   async work(cx) {
-    if (this.busy || !this.repo || this.untrusted) return; // yuzora(L2c): untrusted
+    const remove = props()?.action === "remove";
+    if (this.busy || !this.repo || (remove && !this.repo.linked) || this.untrusted) return; // yuzora(L2c): untrusted
     this.busy = true;
     this.error = "";
     cx.notify();
@@ -208,7 +211,7 @@ export default class Worktree extends View {
       // yuzora(L2c): asked again, as the config may have gained a program since the dialog opened.
       const waits = await untrusted(this.repo.top, this.on);
       if (waits) this.untrusted = tr("untrusted", { keys: waits.join(", ") });
-      else this.error = props().action === "remove" ? await this.remove(cx) : await this.create(); // yuzora(unsaved): cx
+      else this.error = remove ? await this.remove(cx) : await this.create(); // yuzora(unsaved): cx
     }
     catch (error) { this.error = String(error); }
     this.busy = false;
@@ -255,13 +258,30 @@ export default class Worktree extends View {
     this.dirty ||= status.out !== "";
     this.unpushed = [...new Set([...this.unpushed, ...unpushed])];
     if (changed) return "It changed since this opened. Enter again removes it anyway.";
-    // Terminals first: a shell sitting in the folder keeps it busy on Windows.
-    if (s?.id) run("space.close", { id: s.id, confirmed: true }); // yuzora(unsaved): no Space once the unsaved dialog's answer closed it
-    if (s?.id) await cx.sleep(100); // yuzora(unsaved): the window runs the close after run() returns
+    const list = await git(this.repo.main, ["-c", "core.quotePath=false", "worktree", "list", "--porcelain"], this.on);
+    if (!list.ok) return list.err || "git worktree list failed.";
+    const checkout = list.out.split(/\n\n+/).map((record) => record.split("\n"))
+      .find(([path]) => path === `worktree ${this.repo.top}`);
+    const lock = checkout?.find((field) => field === "locked" || field.startsWith("locked "));
+    if (lock) return lock === "locked" ? "This worktree is locked." : `This worktree is locked: ${lock.slice(7)}`;
+
+    if (s?.id) { // yuzora(unsaved): no Space once the unsaved dialog's answer closed it
+      const tabs = new Set(s.tabs.map((tab) => tab.id));
+      this.closingTerminals = new Set(panes().filter((p) => p.terminal && tabs.has(p.tab)).map((p) => p.terminal));
+      run("space.close", { id: s.id, confirmed: true });
+      await cx.sleep(100); // yuzora(unsaved): the window runs the close after run() returns
+    }
     if (this.space()?.id) return "Nothing was removed because its space has unsaved changes; answer that dialog, then remove again."; // yuzora(unsaved): it asks and stays open
+    // Closing the space queues the kills. Wait for its programs to stop writing.
+    const deadline = Date.now() + 10_000;
+    while (this.closingTerminals?.size && terminals().some((t) => t.state === "live" && this.closingTerminals.has(t.address))) {
+      if (Date.now() >= deadline) return "The space's terminals haven't stopped yet. Press Enter to check again.";
+      await cx.sleep(50);
+    }
     const force = this.dirty || mods.length > 0;
     const r = await git(this.repo.main, ["worktree", "remove", ...(force ? ["--force"] : []), this.repo.top], this.on, 600_000);
-    return r.ok ? "" : r.err || "git worktree remove failed.";
+    if (!r.ok) return r.err || "git worktree remove failed.";
+    return "";
   }
 
   key(e, cx) {

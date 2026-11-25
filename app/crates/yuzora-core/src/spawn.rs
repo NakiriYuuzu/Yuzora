@@ -482,7 +482,6 @@ mod tests {
         ("yuzora-settings/src/trash.rs", "platform", 2, "/usr/bin/trash and osascript: the macOS variant; the Windows powershell is flagged"),
         ("src/yuzora/trust.rs", "in_work_tree_at", 2, "`#[cfg(target_os = \"linux\")]`: the folder watcher that calls it exists nowhere else"),
         ("app/src/files.rs", "watch_directories", 1, "the Linux folder watcher (`mod linux`), upstream"),
-        ("app/src/core_bin.rs", "login_shell_path", 1, "returns at once on Windows (`cfg!(windows)`), upstream"),
         ("app/src/update.rs", "unpack", 1, "codesign, inside `cfg!(target_os = \"macos\")`; curl and tar go through `spawn::command`"),
         ("app/src/update.rs", "prepare_macos_bundle", 3, "codesign and PlistBuddy: macOS only"),
         ("app/src/macos_check.rs", "drop", 2, "launchctl: the file is `#[cfg(target_os = \"macos\")]` (upstream's mod check job)"),

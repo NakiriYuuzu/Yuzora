@@ -39,8 +39,10 @@ await mkdir(home, { recursive: true });
 await writeFile(join(home, ".gitconfig"), "[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n");
 afterAll(() => rm(base, { recursive: true, force: true }));
 
-// A repo with a linked worktree on `branch`, and the Remove worktree dialog opened on the Space showing it.
-async function removing(branch: string, unsaved: boolean) {
+// A repo with a linked worktree on `branch`, and the Remove worktree dialog opened on the Space showing it. With
+// `stopsAfter`, the Space has a terminal (upstream 0.1.18 waits for it before git runs): live while its Space is
+// open, and for that many turns of the window after it closed.
+async function removing(branch: string, unsaved: boolean, stopsAfter = 0) {
   const repo = join(base, `repo-${branch}`), checkout = join(base, `wt-${branch}`);
   await mkdir(repo, { recursive: true });
   git(["init", "-q"], repo);
@@ -49,8 +51,10 @@ async function removing(branch: string, unsaved: boolean) {
   git(["commit", "-qm", "one"], repo);
   git(["worktree", "add", "-q", "-b", branch, checkout], repo);
 
-  let spaces = [{ id: "wt", name: branch, folder: checkout, machine: null, tabs: [] }];
-  const queued: [string, any][] = [], runs: [string, any][] = [], closed: string[] = [];
+  let spaces = [{ id: "wt", name: branch, folder: checkout, machine: null, tabs: stopsAfter ? [{ id: "tab" }] : [] }];
+  const queued: [string, any][] = [], runs: [string, any][] = [], closed: string[] = [], removedWhile: string[] = [];
+  let left = stopsAfter, sleeps = 0;
+  const state = () => (spaces.length || left > 0 ? "live" : "finished");
   const stubs: Record<string, unknown> = {
     View: class {}, div: element, v_flex: element, h_flex: element, Input: { new: element }, Scrollbar: { vertical: element },
     InputState: { new: () => ({ on() {}, value: () => "", focus() {} }) },
@@ -58,9 +62,11 @@ async function removing(branch: string, unsaved: boolean) {
     props: () => ({ overlay: "remove", space: "wt", action: "remove" }),
     closeOverlay: (id: string) => closed.push(id),
     run: (name: string, args: any) => { runs.push([name, args]); queued.push([name, args]); },
-    spaces: () => spaces, panes: () => [],
+    spaces: () => spaces, panes: () => (stopsAfter && spaces.length ? [{ tab: "tab", terminal: "t1", cwd: checkout }] : []),
+    terminals: () => [{ address: "t1", state: state() }],
     gitOpen: async () => ({ id: 1 }), gitStatus: async () => ({ branch }),
     exec: async (command: string, args: string[], o: { cwd?: string } = {}) => {
+      if (args[0] === "worktree" && args[1] === "remove") removedWhile.push(state());
       const p = Bun.spawn([command, ...args], { cwd: o.cwd, env, stdout: "pipe", stderr: "pipe" });
       const [code, stdout, stderr] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
       return { code, stdout, stderr };
@@ -72,9 +78,11 @@ async function removing(branch: string, unsaved: boolean) {
     focus_handle: () => ({ focus() {} }), timer: { after() {} }, notify() {}, stop_propagation() {},
     spawn: (fn: (cx: unknown) => Promise<unknown>) => tasks.push(fn(cx)),
     async sleep() {
+      sleeps++;
       for (const [name, args] of queued.splice(0)) {
         if (name === "space.close" && !unsaved) spaces = spaces.filter((s) => s.id !== args.id);
       }
+      if (!spaces.length && left > 0) left--;
     },
   };
   const view = new Worktree();
@@ -83,7 +91,7 @@ async function removing(branch: string, unsaved: boolean) {
   // Enter in the dialog.
   const enter = async () => { await view.work(cx); };
   const answered = () => { spaces = []; };
-  return { view, cx, checkout, runs, closed, enter, answered };
+  return { view, cx, checkout, runs, closed, enter, answered, removedWhile, sleeps: () => sleeps };
 }
 
 test("while the Space asks about unsaved changes, nothing is removed and the dialog says why", async () => {
@@ -110,6 +118,33 @@ test("with nothing unsaved, the Space closes and the worktree is removed at once
   const { checkout, runs, closed, enter } = await removing("quiet", false);
   await enter();
   expect(runs).toEqual([["space.close", { id: "wt", confirmed: true }]]);
+  expect(existsSync(checkout)).toBe(false);
+  expect(closed).toEqual(["remove"]);
+});
+
+test("while the Space asks, Enter says why at once and does not wait for the Space's terminals", async () => {
+  const { view, cx, checkout, enter, sleeps } = await removing("asks-live", true, 3);
+  await enter();
+  expect(sleeps()).toBe(1);
+  expect(existsSync(checkout)).toBe(true);
+  expect(textOf(view.render(cx).node)).toContain("unsaved changes");
+});
+
+test("once the answer has closed the Space, Enter again waits for its terminals to stop, then removes", async () => {
+  const { checkout, closed, enter, answered, removedWhile, sleeps } = await removing("answered-live", true, 3);
+  await enter();
+  answered();
+  await enter();
+  expect(sleeps()).toBe(4);
+  expect(removedWhile).toEqual(["finished"]);
+  expect(existsSync(checkout)).toBe(false);
+  expect(closed).toEqual(["remove"]);
+});
+
+test("with nothing unsaved, the Space closes and its terminals stop before the worktree is removed", async () => {
+  const { checkout, closed, enter, removedWhile } = await removing("quiet-live", false, 3);
+  await enter();
+  expect(removedWhile).toEqual(["finished"]);
   expect(existsSync(checkout)).toBe(false);
   expect(closed).toEqual(["remove"]);
 });
