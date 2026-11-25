@@ -11,7 +11,7 @@ lane L1 負責 Yuzora 的外殼：右側 dock 的模式（Files、Git、Database
 | `app/defaults/mods/yuzora-sidebar-workspace/` | **legacy**（beta.4 起預設 layout 不再使用，只給 beta.2／3 的舊 clone）：側欄工作區模式；`status/*.svg` 是 5 種 agent 狀態的形狀，其他 L1 mod 也引用 |
 | `app/defaults/mods/yuzora-modebar/` | 模式列，依 `props().dock` 有三種形態：`bar`（右側 dock 的 40px 垂直列）、`drawer`（沒有 panel 的 layout 的抽屜）、`head`（抽屜開出的 window 標頭）；沒有 `dock` 時是舊行為（**legacy**：舊 yuzora clone 的橫向 5 模式列、工作區徽章、設定齒輪） |
 | `app/defaults/mods/yuzora-shell-tabs/` | tab 列與新增 pane 選單（由指令開啟） |
-| `app/defaults/mods/yuzora-shell-pane/` | pane 標頭 |
+| `app/defaults/mods/yuzora-shell-pane/` | pane 標頭。名稱依序取：使用者用 `pane.rename` 取的名稱、agent 或 shell 的程式名稱（工具 pane 是 `mod.json` 的 label）、終端機標題 |
 | `app/defaults/mods/yuzora-new-space/` | 新增 Space 的資料夾對話框 |
 | `app/defaults/mods/yuzora-statusbar/` | 狀態列 |
 | `app/defaults/mods/yuzora-brand/` | **legacy**（beta.4 起預設 layout 不再使用）：側欄頂端的品牌列，標誌與搜尋（開指令面板）；只給舊 clone，之後的 legacy 清理會刪 |
