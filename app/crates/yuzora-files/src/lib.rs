@@ -645,6 +645,9 @@ pub fn host_module() -> HostModule {
 #[cfg(test)]
 mod tree_state_tests;
 
+#[cfg(all(test, unix))]
+mod no_sh_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
