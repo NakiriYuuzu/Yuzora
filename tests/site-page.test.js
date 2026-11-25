@@ -33,9 +33,9 @@ describe("GitHub Pages product page", () => {
   it("publishes the static stylesheet and one application module", () => {
     expect(page.querySelector('link[href="./styles.css"]')).not.toBeNull()
     // The modules are cached for hours: their URLs carry a version that changes with them.
-    expect(page.querySelector('script[type="module"][src="./app.js?v=0.1.3"]')).not.toBeNull()
-    expect(appSource).toContain('from "./downloads.js?v=0.1.3"')
-    expect(appSource).toContain('from "./i18n.js?v=0.1.3"')
+    expect(page.querySelector('script[type="module"][src="./app.js?v=0.1.4"]')).not.toBeNull()
+    expect(appSource).toContain('from "./downloads.js?v=0.1.4"')
+    expect(appSource).toContain('from "./i18n.js?v=0.1.4"')
   })
 
   it("contains the current product narrative and download surfaces", () => {

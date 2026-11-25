@@ -2,6 +2,48 @@
 
 <samp><a href="CHANGELOG.md">English</a> · 繁體中文</samp>
 
+## [0.1.4] - 2026-11-26
+
+Files 側欄可以讀取 Windows 機器上的遠端 Space，即使那台機器沒有 `sh`。你可以替 pane 取名，Yuzora 的 pane 標頭會顯示這個名稱。編輯器與 Git 的 diff 多了 29 種語言的語法顏色，包含 C# 與 ASP.NET 的檔案。Yuzora 跟上了 Herdr 0.1.18。
+
+> **升級前請先看。** macOS、Linux 與 Windows 上的 0.1.0 到 0.1.3 會自己更新到 0.1.4，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Windows 上的 beta 無法自己更新，Tauri 版（v0.0.19、0.1.0-beta.1）也不會提供 0.1.4，這兩種情況都請手動下載安裝程式。詳見下方〈安裝說明〉。
+
+### 新增
+
+- **替 pane 取名。** 在終端機上按右鍵選 Rename，或在命令面板執行 Rename pane，就能替目前的 pane 取名。Yuzora 的 pane 標頭會顯示這個名稱，取代原本顯示的程式或工具。
+- **多 29 種語言有語法顏色。** 編輯器、Markdown 的程式碼區塊與 Git 的 diff 現在會替 C#、XML、C、C++、Java、Kotlin、Swift、Ruby、PHP、Lua、Zig、Scala、Dart、Elixir、PowerShell、Dockerfile、Makefile、INI、Properties、Diff、Svelte、Nix、Protobuf、CMake、R、Erlang、Clojure、Perl 與 Batch 上色，總共 43 種語言。`Default.aspx.cs`、`Site.Master.cs` 這類檔案會當成 C#，`.config`、`.csproj`、`.resx`、`.xaml` 會當成 XML。`.aspx`、`.ascx`、`.master`、`.cshtml` 與 `.razor` 以 HTML 上色：標籤、屬性與字串有顏色，`<% %>` 與 `@{ }` 裡的伺服器程式碼沒有。
+
+### 變更
+
+- **跟上 Herdr 0.1.18。** Shift+點擊可以延伸終端機裡的選取範圍。`pane.resize` 用鍵盤調整 pane 的大小，`agent.select` 依 agent 在清單中的位置跳到它。兩者都沒有預設按鍵，請自己加進 `keys.json`。在 `settings.json` 寫 `font_weight_bold` 可以設定終端機粗體字的字重。Cmd+點擊（Windows 與 Linux 是 Ctrl+點擊）可以開啟帶行號範圍或 `#L` 錨點的檔案連結，也能開啟 Cursor 與 VS Code 的遠端連結。toast 會顯示完整的訊息。Remove worktree 會告訴你 worktree 已被鎖定，並在刪除資料夾之前先停止這個 Space 裡的程式。名稱以 emoji 開頭的 Space，在 Spaces 清單與 Go to space or tab 裡會顯示完整的 emoji。tab 列、pane 標頭與狀態列的徽章仍然顯示名稱的第一個字母。名稱含有句點、冒號或 emoji 的 mod 或 layout 不會再讓 Yuzora 當掉。在 WSL 上，按滑鼠中鍵又能貼上剪貼簿的內容了。agent 會讀你寫在 `~/.config/yuzora/AGENTS.local.md` 的筆記，Yuzora 絕不寫入這個檔案。如果你在 Settings › General 打開了 Herdr 的 Files 與 Changes 面板，它們在大型 repo 裡用的 CPU 少很多，切換 Space 時也跟得上，程式碼也改用你的終端機字級顯示。給 layout 與 mod 作者：layout 的 `link_handlers` 讓 mod 接手終端機裡的 Cmd+點擊，pane 外框的 `veil` 會讓你不在的 pane 變淡，mod 也可以在命令面板加入項目，並用 `pickFiles` 開啟系統的檔案選擇器。Herdr 0.1.17 與 0.1.18 沒有新增預設按鍵，改過 `keys.json` 的人不用補任何東西。
+
+### 修正
+
+- Files：在沒有 `sh` 的 Windows 機器上的遠端 Space，側欄可以列出資料夾、依名稱找檔案，並以唯讀方式開啟檔案與圖片。它透過 Windows PowerShell 讀取那台機器。以前側欄在那裡連一個資料夾都列不出來。
+
+### 已知限制
+
+- Files：在沒有 `sh` 的 Windows 機器上，Files 只能讀取。存檔、New file、New folder、Rename、Paste、Duplicate 與 Move to Trash 在那裡都會被拒絕，檔案一律以唯讀方式開啟。
+- Files：在這種機器上，超過 260 個字元的路徑可能打不開。Yuzora 不使用 Windows 為長路徑準備的 `\\?\` 寫法。
+- Files：在這種機器上，依名稱找檔案不會用 ripgrep。在你信任的 Git repo 以外，或那台機器沒有 Git 時，結果會包含被忽略的檔案，搜尋結果也會註明。
+- Files：PATH 上有 `sh` 的 Windows 機器（例如裝了 Git Bash）仍然透過 `sh` 讀取，和 0.1.3 一樣。
+- Git 模式與模板：只有 Files 會透過 PowerShell 讀取。Git 模式與模板在其他機器上仍然執行 `sh`，和 0.1.3 一樣。
+- Files：讀取沒有 `sh` 的 Windows 機器這件事，只在 Windows CI runner 上執行過它的 PowerShell 腳本。沒有人透過 herdr-core 在實體的 Windows 機器上試過。
+- 語法顏色：`.aspx`、`.cshtml` 與 `.razor` 只以 HTML 上色。Visual Basic、Vue、Haskell、OCaml、Objective-C、Terraform、GraphQL、Julia 與 Groovy 的檔案打開時仍然沒有顏色。
+- 0.1.3 的已知限制仍然適用。
+
+### 安裝說明
+
+- 0.1.0 到 0.1.3 會自己更新到 0.1.4，macOS 與 Linux 上的 beta.2 到 beta.4 也會。Yuzora 啟動 10 秒後檢查一次，之後每小時一次，下次重新啟動 Yuzora 時套用。0.1.3 在結束或重新啟動之前會詢問未儲存的變更。更早的版本不會，請先存好檔案，再結束或重新啟動它們。
+- **Windows 上的 0.1.0 到 0.1.3：** 如果你是在 beta 上覆蓋安裝，之後還沒重新開機過，這次更新可能會先失敗一次：beta 版啟動的背景程式（herdr-core）還握著 Yuzora 的安裝資料夾。Settings › Updates 會說明這個原因。請重新開機，或在 Yuzora 以外的終端機執行 `hc server stop`（它會結束所有終端機與裡面執行的 agent，和重新開機的損失一樣），再重新啟動 Yuzora。
+- **Windows 上還在用 beta（0.1.0-beta.2 到 beta.4）的人：** beta 版在 Windows 上無法自動更新。它可能會顯示 `Herdr 0.1.4 is ready`，但按 Restart 不會安裝。請先完全關閉 Yuzora，再從這個 release 下載 `Yuzora-windows-x64-setup.exe`，直接執行覆蓋安裝（beta 還開著時，安裝程式可能無法取代它的檔案）。裝完請重新開機一次，原因同上一條。
+- Tauri 版（v0.0.19、0.1.0-beta.1）不會提供 0.1.4，請自行下載安裝。這是另一個 App，Tauri 版的設定與資料不會搬過來：資料庫連線、SSH 主機與設定要重新設定。Tauri 版的檔案原封不動，重新安裝 Tauri 版就能回去用。新 App 沒有 Browser、Companion 與 AgentZone，編輯器也沒有 LSP。Windows 的安裝程式會詢問是否移除舊版的全機安裝。Tauri 版的原始碼在 0.1.2 之後已從本 repo 移除，留在 git 歷史裡（tag `v0.1.2`）。
+- macOS App 僅支援 Apple Silicon，請下載 `Yuzora-macos-aarch64.dmg`。App 只有 ad-hoc 簽章，沒有 Apple Developer ID 簽章或公證，所以第一次開啟會被 Gatekeeper 擋下。到「系統設定 › 隱私權與安全性」按「強制打開」，或在終端機執行 `xattr -dr com.apple.quarantine /Applications/Yuzora.app`。只對從本 repo Releases 下載的 DMG 這樣做。更新之後，macOS 可能會再詢問一次麥克風、相機或資料夾的存取權限。
+- Windows 的 `Yuzora-windows-x64-setup.exe` 是免系統管理員權限的個人安裝程式。Authenticode 尚未啟用，SmartScreen 可能出現警告，請點「其他資訊 › 仍要執行」。
+- Linux（實驗性）提供 `yuzora-0.1.4-linux-x86_64.tar.gz` 與 `yuzora-0.1.4-linux-aarch64.tar.gz`，解開其中一個後執行 `yuzora/install`。
+- 這個版本在實體 Mac 上驗收過。Windows 與 Linux 只有 CI runner 上的自動化檢查（Windows 是安裝、更新兩次與解除安裝，Linux 是執行 `install`），沒有人在實體的 Windows 或 Linux 機器上試過。
+- 需要 herdr-core 0.1.11 以上。沒有安裝時，第一次開啟的畫面會提供安裝。在其他機器上存檔需要兩邊的 herdr-core 都是 0.1.19 以上。
+
 ## [0.1.3] - 2026-11-18
 
 關閉、結束 App 或套用更新會丟掉未儲存的變更時，Yuzora 會先問你。Files 側欄可以複製、貼上與再製，遠端 Space 也能移到垃圾桶。Mods 與 Templates 合併成一個設定頁，可以從 GitHub 或 herdr.dev 的連結安裝 mod 與 layout。CPU 與記憶體 chip 會出現在每個有狀態列的 layout。Yuzora 跟上了 Herdr 0.1.16。
