@@ -1083,10 +1083,22 @@ pub(crate) mod tests {
         // missed counts as changed.
         assert_eq!(wait(&log).recv_timeout(Duration::from_secs(5)), Ok(true), "a log view alone never got its watcher back");
         assert!(wait_until(|| r.watch.lock().unwrap().is_some()));
-        let heard = wait(&log);
+        // From here the log is used as its pane uses it: logWait in a loop. One
+        // wait can end with nothing new (the file is written and the commit not
+        // made yet, or the refresh that wake started ends with a change of its
+        // own), so the log itself is what is checked: the commit shows up in it.
+        assert!(wait_until(|| log.info()["loading"] == false));
+        let (pane, closed) = (log.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let gone = closed.clone();
+        std::thread::spawn(move || {
+            while !gone.load(Ordering::SeqCst) {
+                futures_lite_block(pane.wait(pane.generation()));
+            }
+        });
         std::thread::sleep(Duration::from_millis(400));
         s.commit("a.txt", "2\n", "second");
-        assert_eq!(heard.recv_timeout(Duration::from_secs(5)), Ok(true), "the log missed a commit");
+        assert!(wait_until(|| log.info()["rows"] == 2), "the log missed a commit");
+        closed.store(true, Ordering::SeqCst);
         crate::log::close(log.id);
         close(&r.id);
     }
