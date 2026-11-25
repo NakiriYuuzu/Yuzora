@@ -238,6 +238,7 @@ L9 另開同步 PR（`beta2/l9-upstream-sync`，**必須 merge commit 合併**�
   - toast：上游內建的 `toast` mod 沒給高度時，toast 跟內容一樣高（最少 72 px，`a833e0ba`），不再固定 72 px。`overlay_motion_tests.rs` 的 toast 畫的是 90 px 高的探針，停的位置改成 `v.1 − 16 − 92`（內容 90 加上下 1 px 邊框）。
   - `yuzora_dock_tests.rs` 的守門測試：上游存 layout 之後讀回檔案，確認 link handler 真的寫進去了，讀 layout 檔的地方從 4 處變成 5 處。這一處只讀 `link_handlers`，不把樹拿來顯示，所以不用放 dock，期望值改成 5。
   - `lifecycle_tests.rs` 的捲動測試改名為 `…_in_the_pixels_it_writes`，期望值除以 zoom。
+  - `yuzora-core` 的 `every_spawn_is_quiet`：上游的 `login_shell_path` 改用 `spawn::detached_command`（經過 `spawn::command`，在 Windows 上帶 `CREATE_NO_WINDOW`），不再需要例外，從 `ALLOWED` 拿掉。
 - **測試替身跟著調整**：
   - `render_tests.rs` 的上游新測試 `changes_retries_when_the_files_copy_owning_its_git_scan_closes_or_reloads` 自己組 policy，補上 `yuzora:git`（已信任）與 `yuzora:core` 替身。
   - 上游的 `changes.test.ts`、`worktree.test.ts`：harness 補 `gitOpen`／`gitStatus`／`tr` 替身，全部當成已信任；`worktree.test.ts` 的 `space.close` 會把 Space 從快照拿掉，不然 Yuzora 的未儲存檢查會以為對話框在問。
@@ -246,6 +247,7 @@ L9 另開同步 PR（`beta2/l9-upstream-sync`，**必須 merge commit 合併**�
   - `yuzora-render-effects.ts`：`JSON.stringify` 的 replacer 當場執行，列進 `CALLS_NOW`（上游 palette 的 `entryId` 用到）。
 - **`scripts/test-terminal-lifetime`（上游新的 Linux 回歸腳本）補 `YUZORA_APP_HOME`**：它只設 `HERDR_APP_HOME`，照原樣跑會用到真的 `~/.config/yuzora`。沒有實際跑過（要 Linux 與真的 core）。
 - **預設鍵沒變**：`keys.json`、`keys.macos.json` 這兩版都沒有改，不用新的快照。
+- **本機的監看測試**：herdr-app 的 `files::tests` 有幾個監看測試在全量時逾時，單獨跑會過（C1d 那一個照舊 `--skip` 後單獨跑）。`yuzora-git` 的 `repo::tests` 有三個「監看放掉後再開」的測試（`a_watcher_starts_again_off_the_calling_thread`、`a_repo_no_view_uses_stops_being_watched_until_one_does`、`a_log_view_alone_brings_its_watcher_back_and_hears_commits`）在同步當天的這台 Mac 上單獨跑也失敗；main（`34212cd0`）的原始碼快照用同一個指令跑，三個都以同樣的斷言失敗，所以與這次同步無關。`yuzora-git` 的原始碼與 `notify` 版本這次都沒變。
 - **品牌**：上游新加的 Herdr 字樣只有 key context（`keys.rs` 的 `Herdr`、`window.rs` 的 `key_context`）與註解，畫面上看不到。
 - **沒有新的對外端點**：新增的 URL 只有 SVG namespace，以及測試裡的 localhost 和 example.com。
 - **Yuzora 自己留一份的上游檔**（`sync-check` 第 6 項）：這次都沒動。上游 `justfile` 的 `test` 多跑 `changes.test.ts`，不在對照表裡。
