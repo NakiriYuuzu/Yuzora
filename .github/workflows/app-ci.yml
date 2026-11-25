@@ -221,7 +221,8 @@ jobs:
       # A filter that matches nothing passes: spawn:: names the tests of
       # yuzora-core, remote:: those of its remote.rs (including the Windows ones), exec::
       # those of yuzora-git, run_starts the one of yuzora-files, in_windows_powershell
-      # yuzora-files' reads on a machine with no sh, run here in powershell.exe.
+      # yuzora-files' reads on a machine with no sh, run here in powershell.exe,
+      # highlight:: the syntax colors of yuzora-files (grammars built by MSVC).
       - name: yuzora-core (spawn)
         run: 'cargo test --locked --config ''profile.dev.package."*".opt-level=0'' -p yuzora-core -p yuzora-git -p yuzora-files spawn:: -- --test-threads=1'
       - name: yuzora-core (remote)
@@ -236,6 +237,9 @@ jobs:
       - name: yuzora-files (reads in PowerShell)
         if: ${{ !cancelled() }}
         run: 'cargo test --locked --config ''profile.dev.package."*".opt-level=0'' -p yuzora-core -p yuzora-git -p yuzora-files in_windows_powershell -- --test-threads=1'
+      - name: yuzora-files (syntax colors)
+        if: ${{ !cancelled() }}
+        run: 'cargo test --locked --config ''profile.dev.package."*".opt-level=0'' -p yuzora-core -p yuzora-git -p yuzora-files highlight:: -- --test-threads=1'
 
   # The PostgreSQL and SQL Server tests of yuzora-db skip without a fixture, which
   # the jobs above don't have. This one starts the fixtures in
