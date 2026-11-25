@@ -2,7 +2,8 @@
 // drop (docs/beta2/motion.md). What is observed is what the last frame painted (`painted_quads`), on a clock the
 // test moves, so a frame is a point in time and nothing here depends on how fast the machine is.
 
-/// What a dialog or popup shows: a red 100x40 button in a 90 px tall body. Its clicks are counted in `probe.clicks`.
+/// What a dialog, a popup or a toast shows: a red 100x40 button in a 90 px tall body. Its clicks are counted in
+/// `probe.clicks`.
 const ARRIVAL_PROBE: &str = r##"
 import { View, div } from "gpui-kit";
 import { setShared, shared } from "herdr";
@@ -230,7 +231,9 @@ fn arrival_cases() -> Vec<ArrivalCase> {
             id: "toast",
             spec: json!({ "kind": "toast", "notification": { "title": "Saved" } }),
             body_width: 340.0,
-            rests_at: |v| (v.0 - 16.0 - 340.0, v.1 - 16.0 - 72.0),
+            // As tall as what it shows (upstream 0.1.18; it was 72 px whatever it showed): the probe's 90 px and the
+            // 1 px border above and below.
+            rests_at: |v| (v.0 - 16.0 - 340.0, v.1 - 16.0 - 92.0),
             duration_ms: ARRIVAL_TOAST_MS,
         },
     ]

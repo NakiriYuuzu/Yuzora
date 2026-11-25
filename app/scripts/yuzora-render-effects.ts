@@ -312,7 +312,7 @@ const HOST_READS = new Set([
 
 // Callees that call the closure they are given before they return, and those that keep it for another phase.
 // A callee not named here (or a local one that calls its parameter) is reported by `scanMod` as unclassified.
-const CALLS_NOW = new Set(["map", "filter", "forEach", "find", "findIndex", "findLast", "some", "every", "reduce", "flatMap", "sort", "toSorted", "when", "unless", "from", "replace", "replaceAll", "uniform_list", "virtual_list", "v_virtual_list"]);
+const CALLS_NOW = new Set(["map", "filter", "forEach", "find", "findIndex", "findLast", "some", "every", "reduce", "flatMap", "sort", "toSorted", "stringify", "when", "unless", "from", "replace", "replaceAll", "uniform_list", "virtual_list", "v_virtual_list"]);
 const KEEPS = new Set(["hover", "tooltip", "then", "catch", "finally", "after", "every", "observe", "subscribe", "on_size_change"]);
 
 export type Finding = { mod: string; file: string; where: string; effect: string; detail: string; chain: string[]; line: number };
