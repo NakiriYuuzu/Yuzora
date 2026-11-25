@@ -807,13 +807,14 @@ fn dock_guard_the_layout_file_is_written_from_known_places_only() {
     assert_eq!(code.matches("write_atomic(&path, &layout)").count(), 1);
     assert!(code.contains("text_of(&crate::yuzora::dock::strip(&edited, Some(&self.file_chrome)))"));
     assert!(code.contains("text_of(&crate::yuzora::dock::strip(&n, Some(&self.file_chrome)))"));
-    // Every load injects after keep_ids; every other read of a file is a copy (clone_layout) or only looks (missing_mods).
+    // Every load injects after keep_ids; every other read of a file is a copy (clone_layout) or only looks (missing_mods,
+    // and which link handlers a save kept: upstream 0.1.18, the tree itself is not taken).
     assert_eq!(code.matches("crate::yuzora::dock::inject(").count(), 2);
     assert_eq!(code.matches("crate::yuzora::dock::ensure(&mut n, &self.layout_name, Some(&self.file_chrome))").count(), 2);
     // Every write of the clicks (save, and a file edit's) keeps the ones on a dock part that isn't shown; every apply of them skips the dock's panel click when the dock isn't in the panel.
     assert_eq!(code.matches("crate::yuzora::dock::keep_clicks(&mut state, &read_state(&self.layout_name), &").count(), 2);
     assert_eq!(code.matches("crate::yuzora::dock::without_panel_click(&state, &").count(), 2);
-    assert_eq!(code.matches("std::fs::read_to_string(layout_path(").count(), 4, "a new read of a layout file: should it inject?");
+    assert_eq!(code.matches("std::fs::read_to_string(layout_path(").count(), 5, "a new read of a layout file: should it inject?");
     // The submodules of window never touch a layout file.
     for (name, sub) in [
         ("floats", include_str!("floats.rs")),

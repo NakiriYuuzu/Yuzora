@@ -37,7 +37,7 @@ L5 在上游檔（`app/src`、上游 mods、`app/defaults/herdr.d.ts`、vendored
 | `app/defaults/herdr.d.ts`（v0.1.0 files-open） | `PaneInfo` 的 `props` 與 `started`，上一列兩個欄位的型別與說明 |
 | `app/src/window.rs`（unsaved） | `mod yuzora_unsaved;`，子模組 `window/yuzora_unsaved.rs` 的 `ask_unsaved` 要讀 `AppWindow` 的私有欄位；`run_as` 一行，人執行的關閉、結束或更新會丟掉未儲存的變更時，先開對話框並回 `{"asked":"unsaved"}`，不執行；`on_window_should_close` 一行，Linux 與 Windows 的視窗關閉鈕和 `window.close` 一樣先問；`mod tests` 的 `include!` 帶入 `window/yuzora_unsaved_tests.rs` |
 | `app/src/macos.rs`（unsaved） | `Quit` action 改呼叫 `yuzora::unsaved::quit`：選單的 Quit Yuzora 與 Cmd+Q 不經過 `run_as`，有未儲存的變更時要在這裡先問 |
-| `app/defaults/mods/worktree/main.js`（unsaved，上游 mod） | `work()` 把 `cx` 交給 `remove(cx)`；`remove` 只對還在的 Space 送 `space.close`，等 100 ms 後 Space 還在（對話框正在問）就不刪資料夾。mod 的 `run()` 拿不到 `{"asked":"unsaved"}`，所以看 `spaces()` |
+| `app/defaults/mods/worktree/main.js`（unsaved，上游 mod） | `work()` 把 `cx` 交給 `remove(cx)`；`remove` 只對還在的 Space 送 `space.close`，等 100 ms 後 Space 還在（對話框正在問）就不刪資料夾。mod 的 `run()` 拿不到 `{"asked":"unsaved"}`，所以看 `spaces()`。上游 v0.1.18 起刪除前會等這個 Space 的終端機停止（最多 10 秒），這個檢查放在等待之前：對話框在問時立刻說明，不等終端機 |
 
 ## 設計
 

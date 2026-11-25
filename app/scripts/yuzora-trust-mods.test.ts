@@ -45,6 +45,9 @@ for (const [key, name, then] of [["filter.evil.clean", "clean", "cat"], ["filter
   git(["config", key, join(base, `${name}.sh`)]);
 }
 await writeFile(join(repo, ".git/info/attributes"), "*.txt filter=evil\n");
+// A linked checkout, for Remove worktree.
+const linked = join(base, "linked");
+git(["worktree", "add", "-q", "-b", "linked", linked]);
 const KEYS = ["core.fsmonitor", "filter.evil.clean", "filter.evil.smudge"];
 afterAll(() => rm(base, { recursive: true, force: true }));
 
@@ -84,7 +87,15 @@ function world(trusted: boolean | (() => boolean)) {
     InputState: { new: () => ({ on() {}, value: () => "", set_value() {}, focus() {} }) },
   };
   const tasks: Promise<unknown>[] = [];
-  const cx: any = { focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} }, notify() {}, stop_propagation() {}, spawn: (fn: (cx: unknown) => Promise<unknown>) => tasks.push(fn(cx)) };
+  // A task says when it is done, and a sleep waits on the clock: Changes and Files wait on a shared git status (upstream 0.1.18).
+  const spawn = (fn: (cx: unknown) => Promise<unknown>) => {
+    let done = false;
+    const task = fn(cx);
+    tasks.push(task);
+    task.then(() => { done = true; }, () => { done = true; });
+    return { is_done: () => done };
+  };
+  const cx: any = { focus_handle: () => ({ focus() {} }), timer: { every() {}, after() {} }, notify() {}, stop_propagation() {}, spawn, sleep: (ms: number) => new Promise((wake) => setTimeout(wake, ms)) };
   const settle = async () => { while (tasks.length) await tasks.shift(); };
   // Only these read refs and nothing else (docs/beta2/git.md, outside yuzora:git).
   const refsOnly = () => calls.filter((c) => c[0] === "git").every((c) => c[1] === "rev-parse" && ["--show-toplevel", "--path-format=absolute"].includes(c[2]));
@@ -171,6 +182,37 @@ test("Changes: a refresh asks once, a picked diff asks again", async () => {
   expect(w.opened).toEqual([[repo, null], [repo, null]]);
 });
 
+// Changes and Files share one git status per repo for 10 s (upstream 0.1.18). A folder that waits for trust gets
+// none of a status run before: no files, no marks, and no status of its own.
+test("Changes and Files: a status shared while trusted is neither shown nor run again once the folder waits", async () => {
+  await touch();
+  await ran();
+  let trusted = true;
+  const w = world(() => trusted);
+  const changes = new (await load("changes", "Changes", w.stubs))(), files = new (await load("files", "Files", w.stubs))();
+  changes.init({}, w.cx);
+  files.init({}, w.cx);
+  await w.settle();
+  expect(changes.files.map((f: { path: string }) => f.path)).toEqual(["a.txt"]);
+  expect(Object.keys(files.marks)).toEqual([`${repo}/a.txt`]);
+  // A status newer than the one Changes showed: Changes may take it as it is.
+  files.refresh(w.cx);
+  await w.settle();
+  trusted = false;
+  await touch();
+  await ran();
+  const from = w.calls.length;
+  changes.refresh(w.cx);
+  files.refresh(w.cx);
+  await w.settle();
+  expect(changes.files).toEqual([]);
+  expect(changes.error).toBe(`untrusted (${KEYS.join(", ")})`);
+  expect(files.marks).toEqual({});
+  expect(files.untrusted).toBe(`untrusted (${KEYS.join(", ")})`);
+  expect(w.calls.slice(from).filter((c) => c[0] === "git").every((c) => c[1] === "rev-parse" && c[2] === "--show-toplevel")).toBe(true);
+  expect(await ran()).toEqual([]);
+});
+
 test("Files: an untrusted folder lists its files without marks and says why", async () => {
   await touch();
   await ran();
@@ -240,13 +282,15 @@ for (const action of ["remove", "new", "open"]) {
   });
 }
 
-// The dialog read the answer when it opened; Enter asks again.
+// The dialog read the answer when it opened; Enter asks again. Remove is for a linked checkout: on the main one
+// Enter does nothing at all (upstream 0.1.18).
 for (const action of ["remove", "new"]) {
   test(`Worktree ${action}: Enter asks again before it runs git`, async () => {
     await touch();
     await ran();
     let trusted = true;
-    const { view, w, runs, closed } = await worktree(() => trusted, { folder: repo, action });
+    const { view, w, runs, closed } = await worktree(() => trusted, { folder: action === "remove" ? linked : repo, action });
+    expect(view.repo?.linked).toBe(action === "remove");
     expect(view.untrusted).toBe(undefined);
     await ran();
     trusted = false;
@@ -337,5 +381,5 @@ test("the default mods run git only where it was looked at", async () => {
       seen[`${entry.name} ${name}()`] = (src.match(new RegExp(`(?<![\\w.]|function )${name}\\(`, "g")) ?? []).length;
     }
   }
-  expect(seen).toEqual({ changes: 4, "changes git()": 5, files: 2, menu: 2, "menu checkout()": 1, spaces: 2, worktree: 1, "worktree git()": 15 });
+  expect(seen).toEqual({ changes: 5, "changes git()": 4, files: 2, menu: 2, "menu checkout()": 1, spaces: 2, worktree: 1, "worktree git()": 16 });
 });

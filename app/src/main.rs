@@ -86,6 +86,12 @@ fn attach_console() {
     }
 }
 
+fn link_check_path(args: &[String]) -> Option<&std::path::Path> {
+    let mut paths = args.iter().filter(|arg| !matches!(arg.as_str(), "--print-spec" | "--watch" | "--dev"));
+    let path = paths.next()?;
+    (!path.starts_with('-') && paths.next().is_none()).then(|| std::path::Path::new(path))
+}
+
 fn main() {
     // yuzora(L5): a repo's SVG is drawn in a child of this executable, held to the parent's limits.
     if std::env::args_os().nth(1).is_some_and(|a| a == yuzora_files::svg::CHILD_ARG) {
@@ -101,6 +107,20 @@ fn main() {
     // `herdr-app check <mod>` / `herdr-app types <mod>`: gpui-shell's own checker, with Herdr's module installed.
     if matches!(args.get(1).map(String::as_str), Some("check" | "types")) {
         mods::install_check_policy();
+        if args[1] == "check" && let Some(path) = link_check_path(&args[2..]) {
+            let dir = if path.is_file() { path.parent().unwrap_or(path) } else { path };
+            match mods::check_link_mod(dir) {
+                Ok(true) if dir.join("link.js").is_file() && !dir.join("main.js").is_file() => {
+                    println!("check passed: {}", dir.display());
+                    return;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("herdr-app check: {error:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
         gpui_shell::host::main_with_components(gpui_shell::FrozenComponentRegistry::default());
         return;
     }
